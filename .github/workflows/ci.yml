@@ -1,0 +1,61 @@
+name: ci
+
+# Two jobs mirror the two commands a developer runs locally:
+#   go   `make lint` and `make test` — every Go test, no subset, no skips
+#   npm  the zero-dependency launcher suite
+# There is no separate integration job: the Docker-backed MinIO suites are
+# part of `make test`, and an unreachable daemon fails it.
+# Actions are pinned by full commit SHA (architecture section 21).
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: "1.26.5"
+  NODE_VERSION: "24.19.0"
+  MINIO_IMAGE: "minio/minio:RELEASE.2025-09-07T16-13-09Z"
+
+jobs:
+  go:
+    name: go (libgit2 + MinIO)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: false
+      # The pinned libgit2 build is deterministic, so cache it on the build
+      # script and the pinned version rather than rebuilding every run.
+      - uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: .build/libgit2
+          key: libgit2-v1.9.6-${{ runner.os }}-${{ hashFiles('scripts/build-libgit2.sh') }}
+      - name: build libgit2
+        run: make libgit2
+      # Pre-pull so the container start never pays the image pull inside a
+      # timed test.
+      - name: pre-pull MinIO image
+        run: docker pull "$MINIO_IMAGE"
+      - name: make lint
+        run: make lint
+      - name: make test
+        run: make test
+
+  npm:
+    name: npm launcher
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      # The launcher is a zero-dependency package: no install step exists.
+      - name: npm test
+        run: make npm-test

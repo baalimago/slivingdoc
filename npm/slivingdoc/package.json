@@ -1,0 +1,31 @@
+{
+  "name": "slivingdoc",
+  "version": "0.1.0-dev",
+  "description": "Launcher for the slivingdoc MCP notebook server: selects, downloads, verifies, and runs the native slivingdoc binary for this platform.",
+  "license": "SEE LICENSE IN NOTICE",
+  "type": "module",
+  "bin": {
+    "slivingdoc": "bin/slivingdoc.mjs"
+  },
+  "files": [
+    "bin/",
+    "lib/",
+    "scripts/",
+    "NOTICE",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "test": "node --test \"test/*.test.mjs\"",
+    "check-release": "node scripts/check-release.mjs",
+    "prepublishOnly": "node scripts/check-release.mjs"
+  },
+  "keywords": [
+    "mcp",
+    "notebook",
+    "s3",
+    "slivingdoc"
+  ]
+}

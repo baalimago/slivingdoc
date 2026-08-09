@@ -1,0 +1,15 @@
+# Local build artifacts
+.build/
+
+# Node package artifacts
+node_modules/
+
+# Editor and OS noise
+*.swp
+.DS_Store
+
+# Terraform example state
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log

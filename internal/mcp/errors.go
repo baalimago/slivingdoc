@@ -1,0 +1,176 @@
+package mcp
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"regexp"
+	"strings"
+
+	"github.com/baalimago/slivingdoc/internal/notebook"
+	"github.com/baalimago/slivingdoc/internal/workspace"
+)
+
+// Stable error categories of the tool-error shape (architecture section 2
+// and the worklog error taxonomy). The text of an error can change; the
+// code and the structured conflict paths are stable.
+const (
+	codeInvalidRequest    = "INVALID_REQUEST"
+	codeContentConflict   = "CONTENT_CONFLICT"
+	codeRemoteBusy        = "REMOTE_BUSY"
+	codeStorageFailure    = "STORAGE_FAILURE"
+	codeStorageIntegrity  = "STORAGE_INTEGRITY"
+	codeRecoveryFailure   = "RECOVERY_FAILURE"
+	codeIncompatibleStore = "INCOMPATIBLE_STORE"
+)
+
+// toolError is the structured error object carried in the MCP tool result.
+// Code, retryable, message, and files are always present; recovery appears
+// only for RECOVERY_FAILURE (architecture section 2). Request paths are
+// absolute; every files[].path is relative to the request path and uses
+// the normalized internal slash form.
+type toolError struct {
+	Code      string        `json:"code"`
+	Retryable bool          `json:"retryable"`
+	Message   string        `json:"message"`
+	Files     []errorFile   `json:"files"`
+	Recovery  *recoveryInfo `json:"recovery,omitempty"`
+}
+
+type errorFile struct {
+	Path   string       `json:"path"`
+	Ranges []errorRange `json:"ranges"`
+}
+
+// errorRange is one conflict-marker block: one-based and inclusive.
+type errorRange struct {
+	Start int `json:"start"`
+	End   int `json:"end"`
+}
+
+// recoveryInfo is the RECOVERY_FAILURE report: the failed stage, whether
+// remote acceptance is known, and whether resynchronization succeeded.
+type recoveryInfo struct {
+	Stage          string `json:"stage"`
+	RemoteAccepted string `json:"remoteAccepted"`
+	Resynchronized bool   `json:"resynchronized"`
+}
+
+// mapError converts a service error into the structured tool error. The
+// second result reports whether the error is a domain error: false keeps
+// the error a protocol error (request cancellation), so the SDK reports it
+// outside the tool-error envelope.
+func mapError(err error) (*toolError, bool) {
+	var nb *notebook.Error
+	if errors.As(err, &nb) {
+		return mapNotebookError(nb), true
+	}
+	if errors.Is(err, workspace.ErrInvalidPath) || errors.Is(err, workspace.ErrSymlink) {
+		return &toolError{
+			Code:      codeInvalidRequest,
+			Retryable: false,
+			Message:   Redact(invalidPathMessage(err)),
+			Files:     []errorFile{},
+		}, true
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return nil, false
+	}
+	return &toolError{
+		Code:      codeStorageFailure,
+		Retryable: true,
+		Message:   "the notebook service failed unexpectedly; retry the operation",
+		Files:     []errorFile{},
+	}, true
+}
+
+// mapNotebookError converts one notebook domain error into the stable
+// tool-error shape. Only the notebook's public message reaches the
+// envelope; the wrapped cause stays internal and is never surfaced.
+func mapNotebookError(e *notebook.Error) *toolError {
+	files := make([]errorFile, 0, len(e.Files))
+	for _, f := range e.Files {
+		ranges := make([]errorRange, 0, len(f.Ranges))
+		for _, r := range f.Ranges {
+			ranges = append(ranges, errorRange{Start: r.Start, End: r.End})
+		}
+		files = append(files, errorFile{Path: f.Path, Ranges: ranges})
+	}
+	te := &toolError{
+		Code:      string(e.Code),
+		Retryable: retryable(e.Code),
+		Message:   Redact(e.Message),
+		Files:     files,
+	}
+	if e.Code == notebook.CodeRecoveryFailure && e.Recovery != nil {
+		te.Recovery = &recoveryInfo{
+			Stage:          e.Recovery.Stage,
+			RemoteAccepted: string(e.Recovery.RemoteAccepted),
+			Resynchronized: e.Recovery.Resynchronized,
+		}
+	}
+	return te
+}
+
+// retryable reports whether a notebook error category permits a retry.
+func retryable(code notebook.Code) bool {
+	switch code {
+	case notebook.CodeRemoteBusy, notebook.CodeStorageFailure, notebook.CodeRecoveryFailure:
+		return true
+	default:
+		return false
+	}
+}
+
+// invalidPathMessage explains why the request path was rejected. An
+// out-of-root path names the workspace root so the caller can correct the
+// request; every other case keeps the generic text. No message echoes the
+// rejected path, because it may be a guess at private state.
+func invalidPathMessage(err error) string {
+	var esc *workspace.PathEscapeError
+	if errors.As(err, &esc) {
+		return fmt.Sprintf("the requested path must stay at or below the workspace root %q", esc.Root)
+	}
+	return "the requested path is not a valid notebook path"
+}
+
+// invalidRequest builds an INVALID_REQUEST tool error from a strict-decode
+// failure.
+func invalidRequest(cause error) *toolError {
+	return &toolError{
+		Code:      codeInvalidRequest,
+		Retryable: false,
+		Message:   Redact(cause.Error()),
+		Files:     []errorFile{},
+	}
+}
+
+// Redaction patterns. The architecture (section 2) forbids credentials,
+// S3 keys, private paths, and Git IDs in any error text or data. The
+// notebook messages never contain credentials, but pack keys (for example
+// "packs/checkpoints/1-<uuid>.pack"), the probe key ("probe/<uuid>"), Git
+// object IDs (40 hex), the derived private-directory key (64 hex), and AWS
+// access key IDs (AKIA + 16) are scrubbed as defense in depth.
+var (
+	packKeyRE    = regexp.MustCompile(`packs/(?:checkpoints|increments)/\d+-[0-9a-fA-F-]{36}\.pack`)
+	probeKeyRE   = regexp.MustCompile(`probe/[0-9a-fA-F-]{36}`)
+	gitIDRE      = regexp.MustCompile(`\b[0-9a-fA-F]{40}\b`)
+	derivedKeyRE = regexp.MustCompile(`\b[0-9a-fA-F]{64}\b`)
+	accessKeyRE  = regexp.MustCompile(`\bAKIA[0-9A-Z]{16}\b`)
+	userInfoRE   = regexp.MustCompile(`://[^@/\s]+@`)
+)
+
+const redacted = "[redacted]"
+
+// Redact removes credentials, S3 keys, private paths, and Git IDs from
+// diagnostic text. The output keeps its structure but never leaks a
+// protected value.
+func Redact(s string) string {
+	s = packKeyRE.ReplaceAllString(s, redacted)
+	s = probeKeyRE.ReplaceAllString(s, redacted)
+	s = gitIDRE.ReplaceAllString(s, redacted)
+	s = derivedKeyRE.ReplaceAllString(s, redacted)
+	s = accessKeyRE.ReplaceAllString(s, redacted)
+	s = userInfoRE.ReplaceAllString(s, "://"+redacted+"@")
+	return strings.TrimSpace(s)
+}

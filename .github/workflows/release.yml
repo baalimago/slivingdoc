@@ -1,0 +1,55 @@
+name: release
+
+# The caller workflow. Building slivingdoc links static libgit2 through CGo,
+# so no target can be cross-compiled: every one of the five architecture-21
+# targets needs its own runner and its own libgit2 build. The reusable
+# pipeline in baalimago/simple-go-pipeline owns the matrix, the release
+# creation, and the asset upload; this file supplies the native inputs.
+#
+# The pipeline is referenced by an immutable commit SHA, never a branch or a
+# moving tag. The SHA below is the documented placeholder: the reusable
+# workflow change is prepared but not yet reviewed and committed in that
+# separately owned repository, so GitHub refuses this workflow at dispatch,
+# which is the intended interlock. scripts/check-release-ref.sh reports the
+# placeholder as a clear diagnostic. Replace it with the reviewed commit SHA
+# and re-run that script; see
+# worklogs/26-08-08-v1-implementation/simple-go-pipeline-release-proposal.md.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    uses: baalimago/simple-go-pipeline/.github/workflows/release.yml@0000000000000000000000000000000000000000
+    with:
+      go-version: "1.26.5"
+      binary-name: slivingdoc
+      asset-name-template: "slivingdoc-${RELEASE_VERSION}-${TARGET_OS}-${TARGET_ARCH}"
+      # The five proven targets of architecture section 21. Windows arm64 is
+      # deliberately absent until its native toolchain and runner are proven.
+      targets: |
+        [
+          {"os": "linux",   "arch": "amd64", "runner": "ubuntu-24.04"},
+          {"os": "linux",   "arch": "arm64", "runner": "ubuntu-24.04-arm"},
+          {"os": "darwin",  "arch": "amd64", "runner": "macos-15-intel"},
+          {"os": "darwin",  "arch": "arm64", "runner": "macos-15"},
+          {"os": "windows", "arch": "amd64", "runner": "windows-2025"}
+        ]
+      # One script builds the pinned libgit2 on every target runner.
+      native-setup-command: ./scripts/build-libgit2.sh
+      # The release version is injected by the linker; make build passes it.
+      native-build-command: make build VERSION="${RELEASE_VERSION#v}"
+      # Each target proves its own runtime dependency baseline.
+      dependency-check-command: ./scripts/check-deps-"${TARGET_OS}".sh "${TARGET_BINARY}"
+      # The binary must start and report the injected version.
+      smoke-command: '"${TARGET_BINARY}" --version'
+      # The strict SHA256SUMS grammar of architecture section 21.
+      checksum-command: ./scripts/make-sha256sums.sh dist
+      # The repository has no own license file; the libgit2 notices ship with
+      # every release and are covered by SHA256SUMS.
+      notice-file: NOTICE

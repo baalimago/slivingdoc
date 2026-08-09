@@ -1,0 +1,27 @@
+# Local MinIO for manual slivingdoc evaluation
+#
+# This environment is for humans only. Automated tests start their own
+# MinIO containers through testcontainers (internal/testminio) and never
+# read this file; no test depends on this environment running.
+#
+# The image is the same pin as the automated suites, so the manual
+# evaluation exercises the exact release the contract tests run against.
+#
+#   docker compose up -d
+#   docker compose down          # stop
+#   docker compose down -v       # stop and remove the note data volume
+services:
+  minio:
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: slivingdoc
+      MINIO_ROOT_PASSWORD: slivingdoc-local
+    ports:
+      - "9000:9000" # S3 API
+      - "9001:9001" # web console
+    volumes:
+      - minio-data:/data
+
+volumes:
+  minio-data:

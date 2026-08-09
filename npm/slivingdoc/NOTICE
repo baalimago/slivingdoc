@@ -1,0 +1,17 @@
+slivingdoc npm package — third-party notices
+
+The slivingdoc executable that this package downloads and runs statically
+links the following third-party component:
+
+libgit2 v1.9.6
+  Homepage: https://libgit2.org/
+  Source:   https://github.com/libgit2/libgit2/archive/refs/tags/v1.9.6.tar.gz
+  SHA-256:  a88a42a4ea9bdab7aa8686eead3bf7d9c6dd74529caca16ab22eaa92433d31d9
+  License:  GNU General Public License v2 with linking exception
+            (see the COPYING file inside the libgit2 source tree)
+
+libgit2 is Copyright (C) the libgit2 contributors. It is used under the
+GPL v2 linking exception, which permits linking the compiled library into
+the executable and distributing the combined work. The build procedure in
+the repository (docs/build-libgit2.md) rebuilds the pinned release from
+verified source.
