@@ -58,8 +58,12 @@ jobs:
       # subcommand. The ./ prefix is required because bash does not search
       # the working directory for executables.
       smoke-command: './"${TARGET_BINARY}" version'
-      # The strict SHA256SUMS grammar of architecture section 21.
-      checksum-command: ./scripts/make-sha256sums.sh dist
+      # The strict SHA256SUMS grammar of architecture section 21. The
+      # pipeline appends `dist/*` to this command itself, so the input is
+      # the script path alone: a trailing `dist` argument would make the
+      # script hash the directory and fail ("sha256sum: dist: Is a
+      # directory").
+      checksum-command: ./scripts/make-sha256sums.sh
       # The repository has no own license file; the libgit2 notices ship with
       # every release and are covered by SHA256SUMS.
       notice-file: NOTICE

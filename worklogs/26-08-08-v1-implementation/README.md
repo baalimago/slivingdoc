@@ -1299,3 +1299,43 @@ TestRelease -count=1 .`, `make lint`, `make test` (85.9 % coverage vs the
 70 % floor), and `npm test` all pass. The next run should pass Inspect
 runtime dependencies and reach the smoke test: `./slivingdoc-...exe
 version` must print `slivingdoc 0.1.0-rc9` and exit 0.
+
+### 2026-08-12 — release workflow rc9: checksum command fed a directory (worker session 19 continued)
+
+Run 9 (tag `v0.1.0-rc9`) passed every target job — including the first
+Windows smoke test, where the built exe printed `slivingdoc 0.1.0-rc9` and
+exited 0. The release then failed in the assembly job at Create checksums:
+
+```text
+Run if [[ -n "./scripts/make-sha256sums.sh dist" ]]; then
+  ./scripts/make-sha256sums.sh dist dist/* > dist/SHA256SUMS
+  ...
+sha256sum: dist: Is a directory
+Process completed with exit code 1.
+```
+
+Root cause: the reusable pipeline appends the asset paths to the caller's
+`checksum-command` input itself — the executed line is
+`<command> dist/* > dist/SHA256SUMS`. The caller had passed
+`./scripts/make-sha256sums.sh dist`, so the script received the `dist`
+directory as its first argument and `sha256sum` rejected it. The proposal
+document stated the contract ("`checksum-command` receives the exact
+`dist/*` paths"), but the caller wiring added a stray `dist`.
+
+Fix (`.github/workflows/release.yml`): `checksum-command` is now just
+`./scripts/make-sha256sums.sh`; the pipeline supplies `dist/*`. A comment
+above the input records why the trailing argument must not be there.
+
+Validation: a clean local simulation of the exact pipeline line — five
+dummy assets plus `NOTICE` in `dist/`, then
+`./scripts/make-sha256sums.sh dist/* > dist/SHA256SUMS` — produces the
+strict grammar (LF-terminated, lowercase 64-hex, two spaces, basenames,
+sorted): six lines, one per uploaded asset, with no self-referential
+`SHA256SUMS` line (the shell globs before the redirect truncates the
+target, so the checksum file is not among the hashed inputs). A first
+attempt appeared to show a self-line, but that was a leftover empty
+`dist/SHA256SUMS` from a failed prior invocation, not the pipeline
+behavior; a controlled `ls * > out` test confirmed the glob order.
+`go test -run TestRelease -count=1 .` passes the script's grammar
+self-test, and `make lint` / `make test` / `npm test` pass. The next run
+should reach Classify release kind and Create release and upload assets.
