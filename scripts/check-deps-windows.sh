@@ -16,10 +16,13 @@
 #   check-deps-windows.sh --check <dep...>  check an explicit dependency list
 set -euo pipefail
 
-# The baseline is the documented Windows system DLL allowlist. Dependency
-# names are compared case-insensitively. git2.dll, libgit2.dll, and any
+# The baseline is the documented Windows system DLL allowlist. It covers
+# the classic msvcrt.dll (which the Go runtime links) and the Universal CRT
+# (ucrtbase.dll), which the mingw-w64 UCRT toolchain that builds the Windows
+# release links. Dependency names are compared case-insensitively. git2.dll,
+# libgit2.dll, the mingw runtime DLLs libgcc_s_seh-1.dll, libwinpthread-1.dll, and any
 # third-party DLL are deliberately absent.
-allowed='^(kernel32\.dll|msvcrt\.dll|user32\.dll|advapi32\.dll|shell32\.dll|ws2_32\.dll|ole32\.dll|oleaut32\.dll|bcrypt\.dll|crypt32\.dll|iphlpapi\.dll|ntdll\.dll|gdi32\.dll|version\.dll|winmm\.dll|wininet\.dll|dnsapi\.dll|secur32\.dll|netapi32\.dll|shlwapi\.dll|wtsapi32\.dll|rpcrt4\.dll|setupapi\.dll|dbghelp\.dll|psapi\.dll|wintrust\.dll|wldap32\.dll|normaliz\.dll|userenv\.dll|sspicli\.dll|comdlg32\.dll|comctl32\.dll|imm32\.dll|msimg32\.dll|uxtheme\.dll|dwmapi\.dll|powrprof\.dll|shcore\.dll)$'
+allowed='^(kernel32\.dll|msvcrt\.dll|ucrtbase\.dll|user32\.dll|advapi32\.dll|shell32\.dll|ws2_32\.dll|ole32\.dll|oleaut32\.dll|bcrypt\.dll|crypt32\.dll|iphlpapi\.dll|ntdll\.dll|gdi32\.dll|version\.dll|winmm\.dll|wininet\.dll|dnsapi\.dll|secur32\.dll|netapi32\.dll|shlwapi\.dll|wtsapi32\.dll|rpcrt4\.dll|setupapi\.dll|dbghelp\.dll|psapi\.dll|wintrust\.dll|wldap32\.dll|normaliz\.dll|userenv\.dll|sspicli\.dll|comdlg32\.dll|comctl32\.dll|imm32\.dll|msimg32\.dll|uxtheme\.dll|dwmapi\.dll|powrprof\.dll|shcore\.dll)$'
 
 find_dumpbin() {
 	local vswhere install_dir

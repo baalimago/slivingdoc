@@ -136,11 +136,12 @@ func TestReleaseDependencyBaselines(t *testing.T) {
 		{"windows system dll", "check-deps-windows.sh", []string{"KERNEL32.dll"}, true},
 		{
 			"windows complete baseline", "check-deps-windows.sh",
-			[]string{"KERNEL32.dll", "msvcrt.dll", "WS2_32.dll", "bcrypt.dll", "CRYPT32.dll", "ADVAPI32.dll"},
+			[]string{"KERNEL32.dll", "msvcrt.dll", "ucrtbase.dll", "WS2_32.dll", "bcrypt.dll", "CRYPT32.dll", "ADVAPI32.dll"},
 			true,
 		},
 		{"windows rejects git2", "check-deps-windows.sh", []string{"KERNEL32.dll", "git2.dll"}, false},
 		{"windows rejects libgit2", "check-deps-windows.sh", []string{"KERNEL32.dll", "libgit2.dll"}, false},
+		{"windows rejects mingw runtime", "check-deps-windows.sh", []string{"KERNEL32.dll", "libgcc_s_seh-1.dll"}, false},
 		{"windows rejects third party", "check-deps-windows.sh", []string{"KERNEL32.dll", "libssl-3.dll"}, false},
 	} {
 		t.Run(row.name, func(t *testing.T) {

@@ -8,7 +8,13 @@
 # SSH or HTTPS as runtime dependencies.
 #
 # Requirements: curl, tar, cmake, a C toolchain, and sha256sum (or the
-# macOS shasum equivalent).
+# macOS shasum equivalent). On Windows the C toolchain is mingw-w64 gcc —
+# the Go cgo build drives the same compiler, so a mingw-built archive links
+# without an ABI mismatch — plus a working pkg-config. GitHub Windows
+# runners provide mingw-w64 gcc at C:\mingw64\bin but no usable pkg-config
+# (Strawberry Perl's .bat wrapper fails), so the script installs the real
+# pkg-config through Chocolatey when one is missing and pins PKG_CONFIG to
+# it for the later Go build step.
 set -euo pipefail
 
 version="1.9.6"
@@ -21,16 +27,26 @@ prefix="$build_dir/libgit2"
 archive="$build_dir/libgit2-${version}.tar.gz"
 src="$build_dir/src"
 
+uname_s="$(uname -s)"
+is_windows=0
+if [[ "$uname_s" == MINGW* || "$uname_s" == MSYS* ]]; then
+	is_windows=1
+fi
+
 for tool in curl tar cmake; do
 	if ! command -v "$tool" >/dev/null 2>&1; then
 		echo "build-libgit2: missing required tool: $tool" >&2
 		exit 1
 	fi
-	if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1; then
-		echo "build-libgit2: missing sha256sum or shasum" >&2
-		exit 1
-	fi
 done
+if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1; then
+	echo "build-libgit2: missing sha256sum or shasum" >&2
+	exit 1
+fi
+if [[ "$is_windows" -eq 1 ]] && ! command -v gcc >/dev/null 2>&1; then
+	echo "build-libgit2: Windows build needs mingw-w64 gcc on PATH (the GitHub windows runner provides C:\\mingw64\\bin)" >&2
+	exit 1
+fi
 
 mkdir -p "$build_dir"
 
@@ -57,21 +73,71 @@ mkdir -p "$src"
 # --exclude works on GNU tar and on bsdtar alike.
 tar -xzf "$archive" -C "$src" --exclude='*/tests' --exclude='*/tests/*'
 
-echo "build-libgit2: configuring static build of libgit2 ${version}"
-cmake -S "$src/libgit2-$version" -B "$src/build" \
-	-DCMAKE_BUILD_TYPE=Release \
-	-DCMAKE_INSTALL_PREFIX="$prefix" \
-	-DBUILD_SHARED_LIBS=OFF \
-	-DBUILD_TESTS=OFF \
-	-DBUILD_CLI=OFF \
-	-DBUILD_EXAMPLES=OFF \
-	-DBUILD_FUZZERS=OFF \
-	-DUSE_SSH=OFF \
-	-DUSE_HTTPS=OFF \
-	-DUSE_BUNDLED_ZLIB=ON \
+# Windows toolchain bootstrap. The later Go build resolves the #cgo
+# pkg-config directive by running $PKG_CONFIG (default "pkg-config"). GitHub
+# Windows runners have no working pkg-config: Strawberry Perl's
+# pkg-config.bat is the only match on PATH and it fails, which aborts the
+# cgo compile. Install pkgconfiglite via Chocolatey and pin PKG_CONFIG to
+# the real binary. The variable is written to GITHUB_ENV so the pipeline's
+# Build step (a fresh shell) uses the same binary regardless of PATH order.
+if [[ "$is_windows" -eq 1 ]]; then
+	if ! pkg-config --version >/dev/null 2>&1; then
+		if ! command -v choco >/dev/null 2>&1; then
+			echo "build-libgit2: Windows needs a working pkg-config; install pkgconfiglite (choco install pkgconfiglite) or put one on PATH" >&2
+			exit 1
+		fi
+		echo "build-libgit2: installing pkg-config (pkgconfiglite) via Chocolatey"
+		choco install pkgconfiglite -y --no-progress
+	fi
+	# Prefer the Chocolatey install when present: even after a successful
+	# install, PATH order can still resolve the broken Strawberry Perl
+	# .bat wrapper first.
+	pkg_config_exe="/c/ProgramData/chocolatey/bin/pkg-config.exe"
+	if [[ ! -f "$pkg_config_exe" ]]; then
+		pkg_config_exe="$(command -v pkg-config)"
+	fi
+	export PKG_CONFIG="$(cygpath -w "$pkg_config_exe")"
+	if ! "$pkg_config_exe" --version >/dev/null 2>&1; then
+		echo "build-libgit2: pinned pkg-config does not run: $PKG_CONFIG" >&2
+		exit 1
+	fi
+	if [[ -n "${GITHUB_ENV:-}" ]]; then
+		echo "PKG_CONFIG=$PKG_CONFIG" >> "$GITHUB_ENV"
+	fi
+fi
+
+cmake_args=(
+	-S "$src/libgit2-$version"
+	-B "$src/build"
+	-DCMAKE_BUILD_TYPE=Release
+	-DCMAKE_INSTALL_PREFIX="$prefix"
+	-DBUILD_SHARED_LIBS=OFF
+	-DBUILD_TESTS=OFF
+	-DBUILD_CLI=OFF
+	-DBUILD_EXAMPLES=OFF
+	-DBUILD_FUZZERS=OFF
+	-DUSE_SSH=OFF
+	-DUSE_HTTPS=OFF
+	-DUSE_BUNDLED_ZLIB=ON
 	-DREGEX_BACKEND=builtin
+)
+
+# On Windows, build with the same mingw-w64 gcc that Go's cgo uses. The
+# default generator (Visual Studio) produces an MSVC archive whose ABI does
+# not match the gcc-driven cgo link.
+if [[ "$is_windows" -eq 1 ]]; then
+	cmake_args+=(-G "MinGW Makefiles" -DCMAKE_C_COMPILER=gcc)
+fi
+
+echo "build-libgit2: configuring static build of libgit2 ${version}"
+cmake "${cmake_args[@]}"
 
 cmake --build "$src/build" --config Release -j"$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)"
 cmake --install "$src/build"
+
+# The Makefile's .build-stamp is the "already built" marker: touching it here
+# makes `make build` skip a redundant rebuild when the release pipeline has
+# already run this script in its setup step.
+touch "$prefix/.build-stamp"
 
 echo "build-libgit2: installed to $prefix"

@@ -22,9 +22,13 @@ script fails when the downloaded bytes do not match it.
 Linux requires `curl`, `tar`, `sha256sum`, `cmake`, `pkg-config`, and a C
 toolchain (`gcc` or `clang`). macOS requires Xcode command-line tools, `curl`,
 `tar`, `cmake`, and `shasum` (the script falls back from `sha256sum`). Windows
-requires Git Bash, `curl`, `tar`, `cmake`, and the Visual Studio C++ build
-tools (the script accepts the default CMake generator; `--config Release`
-keeps the configuration explicit for multi-config generators).
+requires Git Bash, `curl`, `tar`, `cmake`, mingw-w64 gcc, and a working
+`pkg-config`. The Go cgo build drives the same mingw-w64 gcc, so a
+mingw-built archive links without an ABI mismatch. GitHub Windows runners
+provide mingw-w64 gcc at `C:\mingw64\bin` but no usable `pkg-config`
+(Strawberry Perl's `.bat` wrapper fails), so on Windows the script installs
+`pkgconfiglite` through Chocolatey when needed and pins `PKG_CONFIG` to the
+real binary for the later Go build step.
 
 ## Procedure
 
@@ -51,6 +55,12 @@ The `scripts/build-libgit2.sh` script performs every step:
    -DREGEX_BACKEND=builtin
    ```
 
+   On Windows the configure also selects the MinGW generator
+   (`-G "MinGW Makefiles" -DCMAKE_C_COMPILER=gcc`) so the archive is built
+   with the same compiler the cgo link uses; on Linux and macOS the native
+   generator and toolchain are used (`--config Release` keeps the
+   configuration explicit for multi-config generators).
+
 5. Build and install into `.build/libgit2/` (headers, `libgit2.a`, and
    `lib/pkgconfig/libgit2.pc`).
 
@@ -62,6 +72,9 @@ PKG_CONFIG_PATH="$(pwd)/.build/libgit2/lib/pkgconfig" go build ./...
 
 `internal/git2/native.go` declares `#cgo pkg-config: --static libgit2`, so
 the CGo toolchain links `libgit2.a` and its transitive baseline libraries.
+On Windows the same file adds `#cgo windows LDFLAGS: -static-libgcc
+-static-libwinpthread`, which keeps the mingw-w64 compiler runtime out of
+the executable's runtime dependency list.
 
 ## Disabled feature rationale
 
@@ -92,8 +105,11 @@ Each script has a `--check` mode that validates an explicit dependency list.
 `TestReleaseDependencyBaselines` in `release_test.go` drives that mode for
 all three platforms, proving the positive and negative cases without the
 target toolchain. The Windows script locates `dumpbin` through `vswhere` on GitHub
-Windows runners; the allowlist is locked by the first real Windows release
-run.
+Windows runners. Its allowlist admits the Windows system DLLs the release
+links — `kernel32.dll`, the Go runtime's `msvcrt.dll`, and the Universal CRT
+`ucrtbase.dll` that the mingw-w64 UCRT toolchain links — and rejects
+`git2.dll`, `libgit2.dll`, and the mingw runtime DLLs `libgcc_s_seh-1.dll`
+and `libwinpthread-1.dll`.
 
 The target jobs of the release pipeline run the matching script against the
 built binary, so a dynamic libgit2 linkage fails the target job before any

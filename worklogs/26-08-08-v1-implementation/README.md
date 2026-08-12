@@ -1083,3 +1083,56 @@ The release pipeline is the first place the Windows code is ever compiled: the r
 Validation: `GOOS=windows CGO_ENABLED=0 go build ./internal/workspace/` compiles the fixed file (the package has no CGo dependency); `go vet` for Windows on the package only fails on test files that import the CGo engine, which the release pipeline never builds; `make lint` and `go test -run TestRelease -count=1 .` pass unchanged.
 
 Watch items for the next run (cannot be proven from a Linux host): the Windows Build step compiles the CGo engine with a C compiler and pkg-config on the runner, and the dependency check runs `dumpbin` against the linked binary — the allowlist in `check-deps-windows.sh` has no VCRUNTIME/ucrtbase/api-ms-win-crt entries, so a MSVC-runtime or mingw-w64 dependency would fail it with a real diagnostic.
+
+### 2026-08-12 — release workflow windows pkg-config failure (worker session 19)
+
+Run 5 (tag `v0.1.0-rc4`, commit `caae4aa`) passed Linux, Darwin, the Windows
+libgit2 build, and the Windows Go compile of `platform_windows.go`; the Build
+step then failed at the first real CGo compile of `internal/git2` with:
+
+```text
+# github.com/baalimago/slivingdoc/internal/git2
+# [pkg-config --cflags --static -- libgit2]
+Can't find C:\Strawberry\perl\bin\pkg-config.bat on PATH, '.' not in PATH.
+```
+
+Root cause: `native.go` resolves the libgit2 flags through `#cgo pkg-config:
+--static libgit2`, and Go runs `$PKG_CONFIG` (default `pkg-config`). The
+windows-2025 runner has no working pkg-config: the only match on PATH is
+Strawberry Perl's `pkg-config.bat` wrapper, which fails when invoked, so the
+cgo compile aborts. The runner image provides mingw-w64 gcc 15.2.0 (UCRT,
+posix threads) at `C:\mingw64\bin` on PATH, but no pkg-config at all (cmake
+reported `Could NOT find PkgConfig`).
+
+Fix (three parts, in `scripts/build-libgit2.sh`, `internal/git2/native.go`,
+and `scripts/check-deps-windows.sh`):
+
+1. On Windows the setup script now installs `pkgconfiglite` through
+   Chocolatey when no working pkg-config is on PATH, pins `PKG_CONFIG` to
+   the installed `C:\ProgramData\chocolatey\bin\pkg-config.exe` (absolute
+   Windows path via `cygpath -w`), and writes `PKG_CONFIG` to `$GITHUB_ENV`
+   so the pipeline's later Build step — a fresh shell — uses the same
+   binary regardless of PATH order. A dev machine that already has a working
+   pkg-config skips the install.
+2. The Windows libgit2 build switches from the default Visual Studio
+   generator to `-G "MinGW Makefiles" -DCMAKE_C_COMPILER=gcc`, so the
+   archive is built with the same mingw-w64 gcc that Go's cgo drives. The
+   MSVC-built archive would link through mingw only by luck of ABI
+   compatibility; the mingw build removes the question.
+3. `native.go` adds `#cgo windows LDFLAGS: -static-libgcc
+   -static-libwinpthread` so the release executable does not import the
+   mingw-w64 runtime DLLs `libgcc_s_seh-1.dll` / `libwinpthread-1.dll`.
+   `check-deps-windows.sh` admits `ucrtbase.dll` (the Universal CRT, which
+   the mingw-w64 UCRT toolchain links; `msvcrt.dll` stays, as the Go
+   runtime links it) and the baseline test in `release_test.go` pins it and
+   rejects the mingw runtime DLLs.
+
+Validation: `make test` and `make lint` pass on Linux with the changed
+script and cgo directive; the release-baseline tests cover the extended
+allowlist positive and negative cases. The runner-specific outcome (exact
+dumpbin DLL set, mingw libgit2 build) is proven by the next release run.
+
+Watch item for the next run: the first real Windows link reports its actual
+dumpbin dependency list; if it contains a DLL outside the allowlist (for
+example `vcruntime140.dll`), the fix is extending the allowlist with that
+exact system DLL rather than weakening the check.
