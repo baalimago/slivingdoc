@@ -3,6 +3,10 @@
   "version": "0.1.0-rc10",
   "description": "Launcher for the slivingdoc MCP notebook server: selects, downloads, verifies, and runs the native slivingdoc binary for this platform.",
   "license": "SEE LICENSE IN NOTICE",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/baalimago/slivingdoc.git"
+  },
   "type": "module",
   "bin": {
     "slivingdoc": "bin/slivingdoc.mjs"

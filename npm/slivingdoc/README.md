@@ -40,3 +40,9 @@ the GitHub release download URLs (tests use both).
 release for the package version contains every required artifact, the
 `SHA256SUMS` checksum file, and the license `NOTICE` — npm publication can
 never precede the complete GitHub release.
+
+On a tagged release the repository workflow publishes this package
+automatically after the GitHub release is complete. It fails unless the
+package version matches the tag, and it publishes prerelease versions to
+the `next` dist-tag and stable versions to `latest`. Publication uses npm
+trusted publishing (OIDC); no npm token is stored in the repository.

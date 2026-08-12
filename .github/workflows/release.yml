@@ -22,6 +22,10 @@ on:
 permissions:
   contents: write
 
+env:
+  # setup-node pin for the publish job; keep in sync with ci.yml.
+  NODE_VERSION: "24.19.0"
+
 jobs:
   release:
     uses: baalimago/simple-go-pipeline/.github/workflows/release.yml@3e130453cd20bc9922901551185c098647592092
@@ -67,3 +71,55 @@ jobs:
       # The repository has no own license file; the libgit2 notices ship with
       # every release and are covered by SHA256SUMS.
       notice-file: NOTICE
+
+  publish-npm:
+    # Publishes the npm launcher after the GitHub release is fully assembled.
+    # The reusable release job above completes only after `gh release create`
+    # has uploaded every asset, so the prepublishOnly gate
+    # (scripts/check-release.mjs) can never precede a complete release.
+    #
+    # Credentials: npm trusted publishing (OIDC). No token is stored in the
+    # repository; npmjs.com accepts publishes only from this workflow file
+    # (package slivingdoc -> Settings -> Trusted Publisher: owner
+    # baalimago, repository slivingdoc, workflow release.yml, no
+    # environment). The job must run on a GitHub-hosted runner and mint an
+    # ID token (id-token: write). npm CLI 11.5.1 or later is required.
+    name: Publish npm launcher
+    needs: [release]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: npm CLI must support trusted publishing
+        run: |
+          npm_version="$(npm --version)"
+          IFS=. read -r major minor patch <<< "$npm_version"
+          if (( major < 11 || (major == 11 && (minor < 5 || (minor == 5 && patch < 1))) )); then
+            echo "::error::npm ${npm_version} predates 11.5.1; trusted publishing (OIDC) requires npm >= 11.5.1" >&2
+            exit 1
+          fi
+      - name: Publish to npm
+        working-directory: npm/slivingdoc
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          package_version="$(node -p "require('./package.json').version")"
+          if [[ "$tag_version" != "$package_version" ]]; then
+            echo "::error::package.json version '${package_version}' does not match tag version '${tag_version}'; bump npm/slivingdoc/package.json in the release commit" >&2
+            exit 1
+          fi
+          dist_tag="latest"
+          core="${tag_version%%+*}"
+          if [[ "$core" == *-* ]]; then
+            dist_tag="next"
+          fi
+          echo "slivingdoc: publishing ${package_version} to the '${dist_tag}' dist-tag"
+          # The prepublishOnly gate runs inside npm publish and blocks until
+          # the GitHub release for this version is complete. Trusted
+          # publishing (OIDC) supplies the credentials; no token exists.
+          npm publish --tag "$dist_tag"

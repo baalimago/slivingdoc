@@ -1242,8 +1242,9 @@ documented Windows system DLLs. All other native dependencies must be linked
 into the artifact or cause the target job to fail.
 
 Native CGo builds run on suitable Linux, macOS, and Windows runners. The
-reusable `baalimago/simple-go-pipeline` release workflow will gain native build,
-test, checksum, and artifact-assembly support.
+reusable `baalimago/simple-go-pipeline` release workflow builds each target,
+checks its runtime dependencies, smoke-tests the binary, and assembles the
+release with its checksum file and notice.
 
 The first supported targets are:
 
@@ -1255,7 +1256,13 @@ Windows arm64 can be added after its native toolchain and runner are proven.
 
 One final release job creates the GitHub release after all target builds pass.
 The npm publish step runs only after every required artifact and checksum is
-available.
+available. It runs in the same workflow, after the release assembly, and
+fails unless `npm/slivingdoc/package.json` reports the tag version. A
+prerelease version publishes to the `next` dist-tag; a stable version
+publishes to `latest`. Publication uses npm trusted publishing (OIDC): the
+repository stores no npm token, the registry accepts publishes only from
+the `release.yml` workflow of `baalimago/slivingdoc`, and provenance
+attestations are generated automatically for the public repository.
 
 ## 22. Operational responsibility
 

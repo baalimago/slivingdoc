@@ -313,3 +313,11 @@ Unsupported platforms fail before any download with an actionable error.
 `npm run check-release` (wired into `prepublishOnly`) fails until the
 GitHub release for the package version contains every required artifact, so
 npm publication can never precede the complete GitHub release.
+
+The same `v<semver>` tag publishes the npm launcher automatically after the
+GitHub release is complete: a prerelease tag (for example `v1.2.3-rc1`)
+publishes to the `next` dist-tag, and a stable tag publishes to `latest`.
+Publication uses npm trusted publishing (OIDC), so the repository stores no
+npm token and each publish carries a provenance attestation. The release
+workflow fails unless `npm/slivingdoc/package.json` reports the tag version,
+so a release commit bumps the package version to match its tag.

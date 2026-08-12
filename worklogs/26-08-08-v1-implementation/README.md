@@ -48,17 +48,17 @@ phase-specific contracts.
 
 | Phase | Required architecture sections (line)                                              |
 | ----- | ---------------------------------------------------------------------------------- |
-| 1     | 5 (L131), 8.1 (L307), 19 (L1122), 21 (L1193)                                       |
+| 1     | 5 (L131), 8.1 (L307), 19 (L1144), 21 (L1215)                                       |
 | 2     | 7.1 (L188), 8 (L305), 9.3 (L537), 12 (L763), 13.2 (L835)                           |
 | 3     | 9 (L386), 14 (L893), 15 (L958)                                                     |
-| 4     | 7 (L186), 18.2 (L1109)                                                             |
+| 4     | 7 (L186), 18.2 (L1131)                                                             |
 | 5     | 2 (L26), 4 (L116), 8.2 (L333), 10–15 (L603–998)                                    |
 | 6     | 9.2 (L423), 13–16 (L813–998)                                                       |
-| 7     | 2 (L26), 17 (L1040), 18 (L1093)                                                    |
-| 8     | 21 (L1193)                                                                         |
-| 9     | All sections (L9–1333)                                                             |
-| 10    | 2 (L26), 7 (L186), 10–18 (L603–1093), 20 (L1147)                                   |
-| 11    | 1 (L9), 4 (L116), 10–14 (L603–998), 17 (L1040), 19 (L1122), 20 (L1147), 25 (L1318) |
+| 7     | 2 (L26), 17 (L1040), 18 (L1115)                                                    |
+| 8     | 21 (L1215)                                                                         |
+| 9     | All sections (L9–1362)                                                             |
+| 10    | 2 (L26), 7 (L186), 10–18 (L603–1115), 20 (L1169)                                   |
+| 11    | 1 (L9), 4 (L116), 10–14 (L603–998), 17 (L1040), 19 (L1144), 20 (L1169), 25 (L1347) |
 
 Line numbers refer to [`../../architecture/slivingdoc-v1.md`](../../architecture/slivingdoc-v1.md).
 Re-verify them after any architecture edit.
@@ -1386,3 +1386,37 @@ The remaining MCP example that referenced the local development binary
 through the npm launcher (`npx -y slivingdoc serve ...`) like the root
 README, the MinIO example, and the v1 specification — all four example
 configurations are now consistent. Docs-only change; no tests affected.
+
+### 2026-08-12 — automatic npm publication on tagged releases (worker session 21)
+
+The npm publish was manual until now. A `publish-npm` job in
+`.github/workflows/release.yml` now runs after the reusable release job
+(`needs: [release]`), so the GitHub release and every asset exist before the
+npm gate runs; the workflow fires only on tag pushes (`if: github.ref_type
+== 'tag'`). The job asserts that `npm/slivingdoc/package.json` reports the
+tag version (a mismatched tag fails with a diagnostic instead of publishing
+the wrong version), then publishes with the `next` dist-tag for a
+prerelease version or the `latest` dist-tag for a stable version, mirroring
+the reusable pipeline's own prerelease classification. The `prepublishOnly`
+gate (`scripts/check-release.mjs`) still runs inside `npm publish` and
+remains the guarantee that npm never precedes a complete GitHub release.
+
+Credentials: the pipeline uses npm trusted publishing (OIDC) instead of a
+token — the answer to the earlier "I am not comfortable storing npm
+credentials" concern. The npm-side trust is configured once on npmjs.com
+for the `slivingdoc` package: owner `baalimago`, repository `slivingdoc`,
+workflow `release.yml`, no environment (decision record: no GitHub
+environment; semver-driven dist-tags). The job runs on a GitHub-hosted
+runner with `permissions: id-token: write` and asserts npm CLI >= 11.5.1.
+No secret is stored in the repository; provenance attestations are
+automatic. `npm/slivingdoc/package.json` gained the public `repository`
+field that npm requires for provenance.
+
+Validation: `actionlint` clean on the modified workflow; `npm test --prefix
+npm/slivingdoc` passes all 35 tests; `node scripts/check-release.mjs` still
+reports all 7 required assets for v0.1.0-rc10; `scripts/check-release-ref.sh`
+passes on the unchanged pipeline SHA; the dist-tag and npm-version
+classifications were exercised with bash (prerelease -> next, stable ->
+latest, build metadata stripped, npm 11.4.0 rejected, 11.5.1+ accepted).
+The human steps remaining: configure the npm-side Trusted Publisher and
+watch the first tag-push end-to-end run.
