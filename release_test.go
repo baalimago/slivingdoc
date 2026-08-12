@@ -139,6 +139,12 @@ func TestReleaseDependencyBaselines(t *testing.T) {
 			[]string{"KERNEL32.dll", "msvcrt.dll", "ucrtbase.dll", "WS2_32.dll", "bcrypt.dll", "CRYPT32.dll", "ADVAPI32.dll"},
 			true,
 		},
+		{
+			"windows ucrt api-set forwarders", "check-deps-windows.sh",
+			[]string{"KERNEL32.dll", "api-ms-win-crt-stdio-l1-1-0.dll", "api-ms-win-crt-heap-l1-1-0.dll", "API-MS-WIN-CRT-MATH-L1-1-0.DLL"},
+			true,
+		},
+		{"windows rejects non-crt api-set", "check-deps-windows.sh", []string{"KERNEL32.dll", "api-ms-win-core-synch-l1-1-0.dll"}, false},
 		{"windows rejects git2", "check-deps-windows.sh", []string{"KERNEL32.dll", "git2.dll"}, false},
 		{"windows rejects libgit2", "check-deps-windows.sh", []string{"KERNEL32.dll", "libgit2.dll"}, false},
 		{"windows rejects mingw runtime", "check-deps-windows.sh", []string{"KERNEL32.dll", "libgcc_s_seh-1.dll"}, false},

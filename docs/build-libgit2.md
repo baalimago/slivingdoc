@@ -112,8 +112,10 @@ Windows' MSYS2 runtime rewrites a leading-slash argument as a POSIX path,
 which would turn the `/dependents` option into `<Git-root>/dependents` and
 make dumpbin fail with LNK1181 before it reads the binary. Its allowlist
 admits the Windows system DLLs the release
-links — `kernel32.dll`, the Go runtime's `msvcrt.dll`, and the Universal CRT
-`ucrtbase.dll` that the mingw-w64 UCRT toolchain links — and rejects
+links — `kernel32.dll`, the Go runtime's `msvcrt.dll`, the Universal CRT's
+`api-ms-win-crt-*` API-set forwarders that the mingw-w64 UCRT toolchain
+links (OS-owned on Windows 10 and later), and `ucrtbase.dll`, the
+implementation those forwarders point at — and rejects
 `git2.dll`, `libgit2.dll`, and the mingw runtime DLLs `libgcc_s_seh-1.dll`
 and `libwinpthread-1.dll`.
 

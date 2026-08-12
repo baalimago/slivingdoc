@@ -1251,3 +1251,51 @@ execution, because no Linux host can run Git for Windows' runtime. The next
 run should print the first real dumpbin dependency list; the allowlist
 already admits the predicted imports (kernel32, ucrtbase, ws2_32, secur32,
 the crypto/net DLLs).
+
+### 2026-08-12 — release workflow windows rc8: mingw-w64 UCRT links api-ms-win-crt-* forwarders (worker session 19 continued)
+
+Run 8 (tag `v0.1.0-rc8`, commit `f90703b` + the rc7 MSYS2 fix) reached the
+first real dumpbin dependency list. The MSYS2 fix held: dumpbin ran, read
+the binary, and the step failed with a loud, actionable diagnostic instead
+of a bare exit code:
+
+```text
+check-deps-windows: unexpected dynamic dependencies:
+  api-ms-win-crt-convert-l1-1-0.dll
+  api-ms-win-crt-environment-l1-1-0.dll
+  api-ms-win-crt-filesystem-l1-1-0.dll
+  api-ms-win-crt-heap-l1-1-0.dll
+  api-ms-win-crt-locale-l1-1-0.dll
+  api-ms-win-crt-math-l1-1-0.dll
+  api-ms-win-crt-private-l1-1-0.dll
+  api-ms-win-crt-runtime-l1-1-0.dll
+  api-ms-win-crt-stdio-l1-1-0.dll
+  api-ms-win-crt-string-l1-1-0.dll
+  api-ms-win-crt-time-l1-1-0.dll
+  api-ms-win-crt-utility-l1-1-0.dll
+```
+
+The mingw-w64 UCRT toolchain links the Universal CRT through its
+`api-ms-win-crt-*` API-set forwarders, not through `ucrtbase.dll` directly.
+Those forwarders are OS-owned components of Windows 10 and later (they live
+in System32 and forward to `ucrtbase.dll`), so they are documented Windows
+system DLLs under the architecture section 21 baseline — the allowlist
+prediction from the rc3 watch items ("no VCRUNTIME/ucrtbase/api-ms-win-crt
+entries") had it exactly right.
+
+Fix (`scripts/check-deps-windows.sh`): the allowlist admits the whole
+UCRT API-set family with the pattern `api-ms-win-crt-[a-z0-9-]+\.dll`
+(the namespace is reserved to Microsoft; the family is a closed, documented
+set), and the comment above the allowlist now states that the UCRT is
+linked through these forwarders with `ucrtbase.dll` admitted as their
+target. `release_test.go` pins the new baseline: a positive case with three
+UCRT api-sets (including an uppercase name, proving case-insensitive
+matching) and a negative case rejecting `api-ms-win-core-synch-l1-1-0.dll`,
+so the boundary stays exact — UCRT api-sets are allowed, other api-sets are
+not. `docs/build-libgit2.md` records the same.
+
+Validation: `bash -n`, the `--check` positive/negative modes, `go test -run
+TestRelease -count=1 .`, `make lint`, `make test` (85.9 % coverage vs the
+70 % floor), and `npm test` all pass. The next run should pass Inspect
+runtime dependencies and reach the smoke test: `./slivingdoc-...exe
+version` must print `slivingdoc 0.1.0-rc9` and exit 0.
