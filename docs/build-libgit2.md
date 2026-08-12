@@ -73,9 +73,10 @@ PKG_CONFIG_PATH="$(pwd)/.build/libgit2/lib/pkgconfig" go build ./...
 
 `internal/git2/native.go` declares `#cgo pkg-config: --static libgit2`, so
 the CGo toolchain links `libgit2.a` and its transitive baseline libraries.
-On Windows the same file adds `#cgo windows LDFLAGS: -static-libgcc
--static-libwinpthread`, which keeps the mingw-w64 compiler runtime out of
-the executable's runtime dependency list.
+On Windows the same file adds `#cgo windows LDFLAGS: -static-libgcc`,
+which keeps the mingw-w64 `libgcc_s_seh-1.dll` out of the executable's
+runtime dependency list. The Go link line never passes `-pthread`, so the
+posix-threads `libwinpthread-1.dll` is not linked at all.
 
 ## Disabled feature rationale
 

@@ -4,8 +4,10 @@ package git2
 #cgo pkg-config: --static libgit2
 // On Windows the link keeps the mingw-w64 compiler runtime static, so the
 // release binary depends only on Windows system DLLs (the dependency
-// baseline enforced by scripts/check-deps-windows.sh).
-#cgo windows LDFLAGS: -static-libgcc -static-libwinpthread
+// baseline enforced by scripts/check-deps-windows.sh). The Go link line
+// never passes -pthread, so winpthread is not linked at all and needs no
+// static-forcing flag (this gcc rejects -static-libwinpthread).
+#cgo windows LDFLAGS: -static-libgcc
 #include <git2.h>
 #include <stdlib.h>
 #include <string.h>

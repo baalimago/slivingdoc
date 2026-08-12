@@ -1171,3 +1171,41 @@ machine; `bash -n`, `make lint`, and `make test` pass on Linux with the
 changed script. The runner-specific outcome (mingw libgit2 build, cgo link
 through pkg-config-lite, dumpbin dependency list) is proven by the next
 release run.
+
+### 2026-08-12 — release workflow windows rc6: gcc rejects -static-libwinpthread (worker session 19 continued)
+
+Run 7 (tag `v0.1.0-rc6`, commit `e817ff1`) finally passed Prepare native
+toolchain on Windows: the pinned pkg-config-lite download, the mingw-w64
+libgit2 build, and the cgo compile of `internal/git2` all succeeded. The
+Build step then failed at the very last stage, the external link:
+
+```text
+C:\mingw64\bin\gcc.exe ... -static-libgcc -static-libwinpthread
+  -LD:/a/slivingdoc/slivingdoc/.build/libgit2/lib -lgit2 -lws2_32 -lsecur32 ...
+gcc: error: unrecognized command-line option '-static-libwinpthread';
+  did you mean '-static-libgfortran'?
+```
+
+The mingw-w64 gcc driver (checked against the gcc 15.2.0 source,
+`config/i386/mingw-w64.h`) does not implement `-static-libwinpthread` — the
+flag does not exist in this toolchain. It is also unnecessary: the same
+source shows winpthread enters a link only through `LIB_SPEC`'s
+`%{pthread:-lpthread}`, and Go's Windows external link line never passes
+`-pthread` (visible in the failing command: no `-pthread`, no `-lpthread`,
+no `-lwinpthread`). The `-mthreads` compile flag maps to `-lmingwthrd`, a
+static mingw-w64 archive, not winpthread. libgit2 on Windows uses Win32
+threads, so no pthread symbol exists in the link at all.
+
+Fix: `native.go`'s Windows directive is now only
+`#cgo windows LDFLAGS: -static-libgcc` (which the driver DOES honor and
+which keeps `libgcc_s_seh-1.dll` out via the `static-libgcc` branch of the
+driver's libgcc selection). The release binary therefore links: the static
+mingw-built `libgit2.a`, static libgcc, Go's own static runtime archives,
+and the system CRT — `ucrtbase.dll` (niXman UCRT default `-mcrtdll=ucrt`),
+which the dependency-check allowlist already admits.
+
+Validation: `make lint` and `make test` pass on Linux with the changed
+directive; the failing link command from the rc6 log was inspected to
+confirm the exact flag set. The next run is expected to reach Inspect
+runtime dependencies for the first time; the dumpbin list is the last
+unknown.
