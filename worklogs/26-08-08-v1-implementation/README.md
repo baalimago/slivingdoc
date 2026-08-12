@@ -1373,3 +1373,16 @@ step is the manual publish: `cd npm/slivingdoc && npm publish --access
 public --tag next`, verified with `npx -y slivingdoc@next version` — this
 closes the open acceptance item `npx -y slivingdoc --version` works from a
 clean environment.
+
+### 2026-08-12 — npm publication succeeded; MCP examples run through npx (worker session 20 continued)
+
+The manual publish succeeded: `npm publish --access public --tag next` from
+`npm/slivingdoc`. The registry dist-tags are `latest` and `next`, both
+`0.1.0-rc10` (npm set `latest` on the first publish), and
+`npx -y slivingdoc@next version` prints `slivingdoc 0.1.0-rc10` with exit 0.
+The remaining MCP example that referenced the local development binary
+(`examples/terraform/README.md`, `"command":
+"/home/imago/Projects/public/slivingdoc/.build/slivingdoc"`) now runs
+through the npm launcher (`npx -y slivingdoc serve ...`) like the root
+README, the MinIO example, and the v1 specification — all four example
+configurations are now consistent. Docs-only change; no tests affected.

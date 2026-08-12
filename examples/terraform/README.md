@@ -3,7 +3,9 @@
 This example provisions the live AWS bucket `slivingdoc` through the
 reusable Terraform module in [`terraform/`](../../terraform/). The debug
 MCP server reads and writes this bucket. The server entry lives in
-`~/.config/.clai/mcpServers/slivingdoc.json` and runs the local binary.
+`~/.config/.clai/mcpServers/slivingdoc.json` and runs the server through the
+npm launcher (`npx -y slivingdoc`), which selects, downloads, verifies, and
+runs the matching release binary.
 
 The example is for manual debugging only. The automated test suites use
 their own MinIO containers through testcontainers and never touch AWS.
@@ -49,8 +51,10 @@ never in Terraform state files that leave this machine:
 
 ```json
 {
-  "command": "/home/imago/Projects/public/slivingdoc/.build/slivingdoc",
+  "command": "npx",
   "args": [
+    "-y",
+    "slivingdoc",
     "serve",
     "--bucket",
     "slivingdoc",
