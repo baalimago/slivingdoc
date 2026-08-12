@@ -20,10 +20,10 @@ for the phase plan.
 
 The server exposes exactly two tools.
 
-| Tool             | Inputs            | Success result |
-| ---------------- | ----------------- | -------------- |
-| `notes_pull`     | `path`            | `OK`           |
-| `notes_commit`   | `path`, `message` | `OK`           |
+| Tool           | Inputs            | Success result |
+| -------------- | ----------------- | -------------- |
+| `notes_pull`   | `path`            | `OK`           |
+| `notes_commit` | `path`, `message` | `OK`           |
 
 The normal workflow is: pull the notebook into `path`, edit UTF-8 text files
 there with ordinary file tools, then commit the changes.
@@ -82,10 +82,10 @@ Neither path requires Git, libgit2, or a C toolchain.
 slivingdoc is a subcommand CLI. The subcommand comes first, before any
 flag.
 
-| Command             | Effect                                                    |
-| ------------------- | --------------------------------------------------------- |
-| `serve` (`s`)       | Serve the notebook over MCP stdio. This is the server.     |
-| `version` (`v`)     | Print `slivingdoc <semver>` and exit, touching nothing else. |
+| Command         | Effect                                                       |
+| --------------- | ------------------------------------------------------------ |
+| `serve` (`s`)   | Serve the notebook over MCP stdio. This is the server.       |
+| `version` (`v`) | Print `slivingdoc <semver>` and exit, touching nothing else. |
 
 ```text
 slivingdoc serve --bucket my-notes --workspace-root /srv/notes
@@ -95,18 +95,18 @@ slivingdoc serve --bucket my-notes --workspace-root /srv/notes
 take precedence; the environment overrides defaults. `--bucket` is
 required.
 
-| Function              | Flag                     | Environment variable              | Default                 |
-| --------------------- | ------------------------ | --------------------------------- | ----------------------- |
-| S3 bucket (required)  | `--bucket`               | `SLIVINGDOC_BUCKET`               | —                       |
-| S3 object prefix      | `--prefix`               | `SLIVINGDOC_PREFIX`               | `slivingdoc`            |
-| S3 region             | `--region`               | `AWS_REGION`                      | `us-east-1`             |
-| S3 endpoint           | `--endpoint`             | `AWS_ENDPOINT_URL_S3`             | empty (AWS resolution)  |
-| S3 path-style access  | `--path-style`           | `SLIVINGDOC_PATH_STYLE`           | `false`                 |
-| Workspace root        | `--workspace-root`       | `SLIVINGDOC_WORKSPACE_ROOT`       | startup working dir     |
+| Function              | Flag                     | Environment variable              | Default                   |
+| --------------------- | ------------------------ | --------------------------------- | ------------------------- |
+| S3 bucket (required)  | `--bucket`               | `SLIVINGDOC_BUCKET`               | —                         |
+| S3 object prefix      | `--prefix`               | `SLIVINGDOC_PREFIX`               | `slivingdoc`              |
+| S3 region             | `--region`               | `AWS_REGION`                      | `us-east-1`               |
+| S3 endpoint           | `--endpoint`             | `AWS_ENDPOINT_URL_S3`             | empty (AWS resolution)    |
+| S3 path-style access  | `--path-style`           | `SLIVINGDOC_PATH_STYLE`           | `false`                   |
+| Workspace root        | `--workspace-root`       | `SLIVINGDOC_WORKSPACE_ROOT`       | startup working dir       |
 | Private state root    | `--private-root`         | `SLIVINGDOC_PRIVATE_ROOT`         | `<user-cache>/slivingdoc` |
-| CAS retry limit       | `--commit-retries`       | `SLIVINGDOC_COMMIT_RETRIES`       | `8` (0..100)            |
-| Checkpoint pack count | `--checkpoint-packs`     | `SLIVINGDOC_CHECKPOINT_PACKS`     | `1024` (minimum 1)      |
-| Retained checkpoints  | `--retained-checkpoints` | `SLIVINGDOC_RETAINED_CHECKPOINTS` | `1` (0..64)             |
+| CAS retry limit       | `--commit-retries`       | `SLIVINGDOC_COMMIT_RETRIES`       | `8` (0..100)              |
+| Checkpoint pack count | `--checkpoint-packs`     | `SLIVINGDOC_CHECKPOINT_PACKS`     | `1024` (minimum 1)        |
+| Retained checkpoints  | `--retained-checkpoints` | `SLIVINGDOC_RETAINED_CHECKPOINTS` | `1` (0..64)               |
 
 `--workspace-root` is the root below which request paths may live. The
 private root holds the internal Git repository, the state record, and the
@@ -147,7 +147,15 @@ over stdio. A typical client configuration is:
   "mcpServers": {
     "slivingdoc": {
       "command": "npx",
-      "args": ["-y", "slivingdoc", "serve", "--bucket", "my-notes", "--workspace-root", "/srv/notes"]
+      "args": [
+        "-y",
+        "slivingdoc",
+        "serve",
+        "--bucket",
+        "my-notes",
+        "--workspace-root",
+        "/srv/notes"
+      ]
     }
   }
 }
@@ -164,10 +172,10 @@ every command and works before flags are parsed. Records are structured
 `key=value` text on stderr, each carrying a timestamp, a level, and the
 module that emitted it.
 
-| Variable    | Effect                                                          |
-| ----------- | --------------------------------------------------------------- |
-| `LOG_LEVEL` | Per-module levels. A bare level is the default.                  |
-| `NO_COLOR`  | Any non-empty value disables the ANSI level colour.              |
+| Variable    | Effect                                              |
+| ----------- | --------------------------------------------------- |
+| `LOG_LEVEL` | Per-module levels. A bare level is the default.     |
+| `NO_COLOR`  | Any non-empty value disables the ANSI level colour. |
 
 `LOG_LEVEL` takes a comma-separated list where `module=level` sets one
 module and a bare `level` sets the default for the rest:
