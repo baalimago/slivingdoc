@@ -96,6 +96,32 @@ test("a release without a checksum entry for the asset fails clearly", async (t)
 	await assert.rejects(() => install({ cacheRoot: cache, baseUrl: fixture.base }), /does not list/);
 });
 
+test("transient network failures retry with backoff until the download succeeds", async (t) => {
+	const cache = await newCache(t);
+	const fixture = await startFixture([
+		{ tag: `v${VERSION}`, name: "SHA256SUMS", body: sumsFile([{ name: NAME, body: BODY }]), failFirst: 2 },
+		{ tag: `v${VERSION}`, name: NAME, body: BODY },
+	]);
+	t.after(() => fixture.close());
+
+	const installed = await install({ cacheRoot: cache, baseUrl: fixture.base });
+	assert.equal(installed, binaryPath(cache));
+	assert.deepEqual(await readFile(installed), BODY);
+	const sumsAttempts = fixture.requests.filter((r) => r.path.endsWith("/SHA256SUMS"));
+	assert.equal(sumsAttempts.length, 3, "two resets must be retried before the third attempt succeeds");
+});
+
+test("a 404 response is reported immediately and never retried", async (t) => {
+	const cache = await newCache(t);
+	const fixture = await startFixture([
+		{ tag: `v${VERSION}`, name: NAME, body: BODY },
+	]);
+	t.after(() => fixture.close());
+
+	await assert.rejects(() => install({ cacheRoot: cache, baseUrl: fixture.base }), /HTTP 404/);
+	assert.equal(fixture.requests.length, 1, "a 404 must not be retried");
+});
+
 test("version-crossed cache entries never reuse each other", async (t) => {
 	const cache = await newCache(t);
 	const otherVersion = "0.1.1";

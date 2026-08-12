@@ -29,9 +29,10 @@ terminating signal) becomes the launcher's.
 Downloads live under the npm cache at a
 `version/os/architecture/asset`-specific path and are verified again on every
 run. A corrupt or partial download is deleted and re-fetched; it is never
-executed. `SLIVINGDOC_CACHE` relocates the cache, and
-`SLIVINGDOC_RELEASE_BASE` points the launcher at a mirror of the GitHub
-release download URLs (tests use both).
+executed. Transient network failures are retried with exponential backoff,
+while a missing asset is reported immediately. `SLIVINGDOC_CACHE` relocates
+the cache, and `SLIVINGDOC_RELEASE_BASE` points the launcher at a mirror of
+the GitHub release download URLs (tests use both).
 
 ## Publication gate
 

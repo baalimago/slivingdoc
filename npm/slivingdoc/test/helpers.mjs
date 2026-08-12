@@ -9,8 +9,10 @@ import { once } from "node:events";
 import { createServer } from "node:http";
 
 // startFixture serves the given assets. Each entry is
-// { tag, name, body, abortAfter? } where abortAfter truncates the body and
-// destroys the connection (an interrupted download).
+// { tag, name, body, abortAfter?, failFirst? } where abortAfter truncates the
+// body and destroys the connection (an interrupted download), and failFirst
+// destroys the connection before writing any response (a transient network
+// failure, as the flaky sandbox egress produces on a redirect hop).
 export async function startFixture(assets) {
 	const routes = new Map();
 	const requests = [];
@@ -23,6 +25,11 @@ export async function startFixture(assets) {
 		const asset = routes.get(path);
 		if (!asset) {
 			res.writeHead(404).end("not found");
+			return;
+		}
+		if (asset.failFirst > 0) {
+			asset.failFirst -= 1;
+			res.destroy(new Error("fixture: connection reset"));
 			return;
 		}
 		const body = Buffer.isBuffer(asset.body) ? asset.body : Buffer.from(asset.body);

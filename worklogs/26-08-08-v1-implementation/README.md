@@ -1339,3 +1339,37 @@ behavior; a controlled `ls * > out` test confirmed the glob order.
 `go test -run TestRelease -count=1 .` passes the script's grammar
 self-test, and `make lint` / `make test` / `npm test` pass. The next run
 should reach Classify release kind and Create release and upload assets.
+
+### 2026-08-12 — npm publication: network retry for the flaky sandbox egress (worker session 20)
+
+The rc10 GitHub release is complete and the launcher works end-to-end
+against it, but `npm publish` was blocked: `check-release.mjs` (the
+`prepublishOnly` gate) died with `socket hang up` on the github.com →
+release-assets.githubusercontent.com redirect hop roughly half the time.
+Direct hits to both hosts were 10/10; the redirect hop was the flake. The
+gate needed retries to ride through it.
+
+Fix (`npm/slivingdoc/lib/download.mjs`): bounded network retry around the
+request chains. `HttpStatusError` marks deterministic outcomes (non-2xx,
+redirect loop) and is never retried, so a missing asset still fails
+immediately. `withNetworkRetry` runs 5 attempts with exponential backoff
+(300 ms base) and wraps both `requestStream` (GET, downloads) and
+`headStatus` (HEAD, the publication gate); a reset on a redirect hop
+restarts the whole chain. The request logic was refactored into
+`requestOnce`/`headOnce` so retries wrap the full chain without nesting.
+
+Tests (`npm/slivingdoc/test/helpers.mjs`, `test/install.test.mjs`): the
+fixture gained a `failFirst` hook that destroys the connection before any
+response is written (a transient failure); the retry test asserts an asset
+with `failFirst: 2` still installs and the SHA256SUMS request log shows 3
+attempts; the 404 test asserts a missing asset produces exactly one request.
+`npm/slivingdoc/README.md` documents the retry contract in the cache
+section.
+
+Validation: `npm test --prefix npm/slivingdoc` passes all 35 tests, and
+`node scripts/check-release.mjs` from `npm/slivingdoc` passed 10/10 runs
+against the real rc10 release (previously roughly 50 % failed). The next
+step is the manual publish: `cd npm/slivingdoc && npm publish --access
+public --tag next`, verified with `npx -y slivingdoc@next version` — this
+closes the open acceptance item `npx -y slivingdoc --version` works from a
+clean environment.

@@ -14,6 +14,39 @@ import https from "node:https";
 const MAX_REDIRECTS = 10;
 const IDLE_TIMEOUT_MS = 30_000;
 const MAX_TEXT_BYTES = 1 << 20; // 1 MiB
+const RETRY_ATTEMPTS = 5;
+const RETRY_BASE_DELAY_MS = 300;
+
+// HttpStatusError marks a deterministic HTTP outcome (a redirect loop or a
+// non-2xx status). Network failures are transient and retryable; these are
+// not, so a missing asset is reported once and retries never mask a 404.
+export class HttpStatusError extends Error {
+	constructor(message) {
+		super(message);
+		this.name = "HttpStatusError";
+	}
+}
+
+function delay(ms) {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// withNetworkRetry re-runs a request chain on transient network failures
+// (connection resets, idle timeouts) with exponential backoff. The chain
+// includes redirect hops: a reset on the final hop restarts the whole
+// request, because only the full chain produces a usable response.
+async function withNetworkRetry(work) {
+	for (let attempt = 0; attempt < RETRY_ATTEMPTS; attempt++) {
+		try {
+			return await work();
+		} catch (err) {
+			if (err instanceof HttpStatusError || attempt + 1 >= RETRY_ATTEMPTS) {
+				throw err;
+			}
+			await delay(RETRY_BASE_DELAY_MS * 2 ** attempt);
+		}
+	}
+}
 
 function clientFor(protocol) {
 	if (protocol === "https:") return https;
@@ -22,9 +55,13 @@ function clientFor(protocol) {
 }
 
 function requestStream(url, redirectsLeft, method) {
+	return withNetworkRetry(() => requestOnce(url, redirectsLeft, method));
+}
+
+function requestOnce(url, redirectsLeft, method) {
 	const parsed = url instanceof URL ? url : new URL(url);
 	if (redirectsLeft < 0) {
-		throw new Error(`too many redirects while downloading ${parsed.pathname}`);
+		throw new HttpStatusError(`too many redirects while downloading ${parsed.pathname}`);
 	}
 	return new Promise((resolve, reject) => {
 		const req = clientFor(parsed.protocol).request(
@@ -35,12 +72,12 @@ function requestStream(url, redirectsLeft, method) {
 				const location = res.headers.location;
 				if (status >= 300 && status < 400 && location) {
 					res.resume();
-					requestStream(new URL(location, parsed), redirectsLeft - 1, method).then(resolve, reject);
+					requestOnce(new URL(location, parsed), redirectsLeft - 1, method).then(resolve, reject);
 					return;
 				}
 				if (status !== 200) {
 					res.resume();
-					reject(new Error(`download of ${parsed.pathname} failed: HTTP ${status}`));
+					reject(new HttpStatusError(`download of ${parsed.pathname} failed: HTTP ${status}`));
 					return;
 				}
 				resolve(res);
@@ -89,9 +126,13 @@ export async function downloadText(url, limit = MAX_TEXT_BYTES) {
 }
 
 export async function headStatus(url, redirectsLeft = MAX_REDIRECTS) {
+	return withNetworkRetry(() => headOnce(url, redirectsLeft));
+}
+
+function headOnce(url, redirectsLeft) {
 	const parsed = url instanceof URL ? url : new URL(url);
 	if (redirectsLeft < 0) {
-		throw new Error(`too many redirects while checking ${parsed.pathname}`);
+		throw new HttpStatusError(`too many redirects while checking ${parsed.pathname}`);
 	}
 	return new Promise((resolve, reject) => {
 		const req = clientFor(parsed.protocol).request(
@@ -102,7 +143,7 @@ export async function headStatus(url, redirectsLeft = MAX_REDIRECTS) {
 				const location = res.headers.location;
 				if (status >= 300 && status < 400 && location) {
 					res.resume();
-					headStatus(new URL(location, parsed), redirectsLeft - 1).then(resolve, reject);
+					headOnce(new URL(location, parsed), redirectsLeft - 1).then(resolve, reject);
 					return;
 				}
 				res.resume();
