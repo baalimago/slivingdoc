@@ -1018,3 +1018,28 @@ implementation converged on and why.
 `internal/integrationtest` goes from **76.0 % (602/792) to 85.0 % (565/665)**,
 and the module total from 84.3 % to **86.0 %**. `make qa` passes in 17 s. The
 suite now has one barrier mechanism instead of two.
+
+### 2026-08-12 — CI gate timeout root cause and fix (worker session 18)
+
+The `qa` workflow and the `readme test coverage` job both failed on master
+with `panic: test timed out after 30s` in the root package: `TestReleaseBinary`
+and `TestReleaseBinaryCommandSurface` were still blocked in
+`release_test.go`'s in-suite `go build` of the release binary at the 30 s
+mark. The gate passes locally only because a warm build cache hides the
+cost; a cold `GOCACHE` reproduces the CI failure exactly (`FAIL
+github.com/baalimago/slivingdoc 30.792s`, `make: *** [Makefile:51: test] Error 1`).
+
+Measured on this machine: the release-style build alone takes about 35-40 s
+from a cold cache (32.9 s on four cores, 40.0 s on eight), against a 30 s
+per-package budget — the in-suite build can never fit the gate on a cold
+runner, and CI starts cold every run. `go vet` does not warm the build
+variant (a vet-warmed cache still builds in 27 s), so the pre-existing
+`make lint` step gave no help.
+
+Fix: `make test` now depends on the shared `$(BIN)` target, so it builds the
+release-style binary first and warms the exact compile cache the in-suite
+build reuses; the in-suite build then costs a link only. `make build`
+delegates to the same target. Cold-cache validation: `make build` then
+`make test` passes with the root package at 4.4 s and the slowest package at
+22.1 s (integrationtest). The race detector, the count, and the timeout are
+unchanged, and `release_test.go` still builds and proves its own binary.

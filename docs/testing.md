@@ -14,13 +14,20 @@ make test
 make npm-test
 ```
 
-`make test` is exactly:
+`make test` first builds the release-style binary (the `build` target),
+then runs exactly:
 
 ```text
 go test -race -count=3 -timeout=30s -coverpkg=./... -coverprofile=.build/cover.out ./...
 ```
 
 followed by a coverage report that fails below the 70 % floor.
+
+The pre-build is not a second gate. It warms the exact compile cache that
+the release layer's in-suite build (`release_test.go`) reuses: on a cold
+runner that build alone takes about 35 s — more than the 30 s per-package
+budget — so without it the gate can only pass on a machine whose cache is
+already warm.
 
 No build tag, environment variable, or flag hides part of the suite. There is
 no short mode, no separate integration target, and no race-only target. Every

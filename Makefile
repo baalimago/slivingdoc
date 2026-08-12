@@ -33,6 +33,17 @@ $(BUILD_DIR)/libgit2/.build-stamp: scripts/build-libgit2.sh
 	./scripts/build-libgit2.sh
 	touch $@
 
+# The release-style binary. build and test share this target: test builds it
+# first so the exact compile cache the release layer's in-suite build
+# (release_test.go) reuses is warm. On a cold runner that in-suite build
+# alone takes about 35 s — more than the strict gate's 30 s per-package
+# budget — so without this prerequisite the gate can only pass on a machine
+# whose cache is already warm.
+$(BIN): $(BUILD_DIR)/libgit2/.build-stamp
+	CGO_ENABLED=1 $(GO) build -trimpath -ldflags "-s -w $(VERSION_LDFLAG)" -o $@ .
+
+build: $(BIN)
+
 # test — every Go test in the repository, against the real libgit2 boundary
 # and real MinIO containers, under the race detector, reporting coverage.
 # Docker and the pinned libgit2 are prerequisites: an unreachable Docker
@@ -47,7 +58,7 @@ $(BUILD_DIR)/libgit2/.build-stamp: scripts/build-libgit2.sh
 # packages other than its own; per-package coverage would understate it badly.
 #
 # Do not weaken -race, -count, or -timeout.
-test: $(BUILD_DIR)/libgit2/.build-stamp
+test: $(BIN)
 	$(GO) test -race -count=3 -timeout=30s -coverpkg=./... -coverprofile=$(COVER_PROFILE) ./...
 	@total=$$($(GO) tool cover -func=$(COVER_PROFILE) | tail -1 | awk '{print $$3}'); \
 	 echo "== coverage: $$total (floor $(COVER_FLOOR)%) =="; \
@@ -81,9 +92,8 @@ fmt:
 
 # build — release-style native binary with libgit2 linked in and the version
 # injected through the linker. The release smoke checks of this wiring live
-# in release_test.go and run as part of `make test`.
-build: $(BUILD_DIR)/libgit2/.build-stamp
-	CGO_ENABLED=1 $(GO) build -trimpath -ldflags "-s -w $(VERSION_LDFLAG)" -o $(BIN) .
+# in release_test.go and run as part of `make test`; the shared $(BIN)
+# target above also warms the compile cache for that in-suite build.
 
 # qa — lint plus both test suites.
 qa: lint test npm-test
