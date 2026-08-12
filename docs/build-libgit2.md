@@ -26,9 +26,10 @@ requires Git Bash, `curl`, `tar`, `cmake`, mingw-w64 gcc, and a working
 `pkg-config`. The Go cgo build drives the same mingw-w64 gcc, so a
 mingw-built archive links without an ABI mismatch. GitHub Windows runners
 provide mingw-w64 gcc at `C:\mingw64\bin` but no usable `pkg-config`
-(Strawberry Perl's `.bat` wrapper fails), so on Windows the script installs
-`pkgconfiglite` through Chocolatey when needed and pins `PKG_CONFIG` to the
-real binary for the later Go build step.
+(Strawberry Perl's `.bat` wrapper fails), so on Windows the script downloads
+the pinned `pkg-config-lite` binary (SHA-256 verified, the same artifact the
+`pkgconfiglite` Chocolatey package installs) into the build tree and pins
+`PKG_CONFIG` to it for the later Go build step.
 
 ## Procedure
 

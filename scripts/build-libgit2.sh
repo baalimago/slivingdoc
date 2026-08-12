@@ -12,9 +12,10 @@
 # the Go cgo build drives the same compiler, so a mingw-built archive links
 # without an ABI mismatch — plus a working pkg-config. GitHub Windows
 # runners provide mingw-w64 gcc at C:\mingw64\bin but no usable pkg-config
-# (Strawberry Perl's .bat wrapper fails), so the script installs the real
-# pkg-config through Chocolatey when one is missing and pins PKG_CONFIG to
-# it for the later Go build step.
+# (Strawberry Perl's .bat wrapper fails), so on Windows the script downloads
+# the pinned pkg-config-lite binary (SHA-256 verified, the same artifact the
+# chocolatey pkgconfiglite package installs) and pins PKG_CONFIG to it for
+# the later Go build step.
 set -euo pipefail
 
 version="1.9.6"
@@ -77,23 +78,39 @@ tar -xzf "$archive" -C "$src" --exclude='*/tests' --exclude='*/tests/*'
 # pkg-config directive by running $PKG_CONFIG (default "pkg-config"). GitHub
 # Windows runners have no working pkg-config: Strawberry Perl's
 # pkg-config.bat is the only match on PATH and it fails, which aborts the
-# cgo compile. Install pkgconfiglite via Chocolatey and pin PKG_CONFIG to
-# the real binary. The variable is written to GITHUB_ENV so the pipeline's
-# Build step (a fresh shell) uses the same binary regardless of PATH order.
+# cgo compile. Download the pinned pkg-config-lite binary (SHA-256 verified)
+# into the build tree and pin PKG_CONFIG to it. The variable is written to
+# GITHUB_ENV so the pipeline's Build step (a fresh shell) uses the same
+# binary regardless of PATH order.
+pkg_config_url="https://sourceforge.net/projects/pkgconfiglite/files/0.28-1/pkg-config-lite-0.28-1_bin-win32.zip/download"
+pkg_config_sha256="2038c49d23b5ca19e2218ca89f06df18fe6d870b4c6b54c0498548ef88771f6f"
+pkg_config_zip="$build_dir/pkg-config-lite-0.28-1_bin-win32.zip"
+pkg_config_dir="$build_dir/tools/pkg-config-lite"
+
 if [[ "$is_windows" -eq 1 ]]; then
 	if ! pkg-config --version >/dev/null 2>&1; then
-		if ! command -v choco >/dev/null 2>&1; then
-			echo "build-libgit2: Windows needs a working pkg-config; install pkgconfiglite (choco install pkgconfiglite) or put one on PATH" >&2
+		if ! command -v unzip >/dev/null 2>&1; then
+			echo "build-libgit2: Windows pkg-config bootstrap needs unzip" >&2
 			exit 1
 		fi
-		echo "build-libgit2: installing pkg-config (pkgconfiglite) via Chocolatey"
-		choco install pkgconfiglite -y --no-progress
-	fi
-	# Prefer the Chocolatey install when present: even after a successful
-	# install, PATH order can still resolve the broken Strawberry Perl
-	# .bat wrapper first.
-	pkg_config_exe="/c/ProgramData/chocolatey/bin/pkg-config.exe"
-	if [[ ! -f "$pkg_config_exe" ]]; then
+		if [[ ! -f "$pkg_config_zip" ]]; then
+			echo "build-libgit2: downloading pkg-config-lite"
+			curl -fsSL --retry 3 -o "$pkg_config_zip" "$pkg_config_url"
+		fi
+		if command -v sha256sum >/dev/null 2>&1; then
+			echo "$pkg_config_sha256  $pkg_config_zip" | sha256sum -c - >/dev/null
+		else
+			got="$(shasum -a 256 "$pkg_config_zip" | awk '{print $1}')"
+			if [[ "$got" != "$pkg_config_sha256" ]]; then
+				echo "build-libgit2: sha256 mismatch for $pkg_config_zip" >&2
+				exit 1
+			fi
+		fi
+		rm -rf "$pkg_config_dir"
+		mkdir -p "$pkg_config_dir"
+		unzip -j -q -o "$pkg_config_zip" -d "$pkg_config_dir"
+		pkg_config_exe="$pkg_config_dir/pkg-config.exe"
+	else
 		pkg_config_exe="$(command -v pkg-config)"
 	fi
 	export PKG_CONFIG="$(cygpath -w "$pkg_config_exe")"

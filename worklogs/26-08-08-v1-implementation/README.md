@@ -1107,13 +1107,18 @@ reported `Could NOT find PkgConfig`).
 Fix (three parts, in `scripts/build-libgit2.sh`, `internal/git2/native.go`,
 and `scripts/check-deps-windows.sh`):
 
-1. On Windows the setup script now installs `pkgconfiglite` through
-   Chocolatey when no working pkg-config is on PATH, pins `PKG_CONFIG` to
-   the installed `C:\ProgramData\chocolatey\bin\pkg-config.exe` (absolute
-   Windows path via `cygpath -w`), and writes `PKG_CONFIG` to `$GITHUB_ENV`
-   so the pipeline's later Build step — a fresh shell — uses the same
-   binary regardless of PATH order. A dev machine that already has a working
-   pkg-config skips the install.
+1. On Windows the setup script downloads the pinned `pkg-config-lite`
+   binary (SHA-256 verified; the same artifact the `pkgconfiglite`
+   Chocolatey package installs) into the build tree when no working
+   pkg-config is on PATH, pins `PKG_CONFIG` to the extracted
+   `pkg-config.exe` (absolute Windows path via `cygpath -w`), and writes
+   `PKG_CONFIG` to `$GITHUB_ENV` so the pipeline's later Build step — a
+   fresh shell — uses the same binary regardless of PATH order. A dev
+   machine that already has a working pkg-config skips the download.
+   (The first attempt installed pkgconfiglite through Chocolatey; the rc5
+   run failed because the community feed answered 504 Gateway Timeout, so
+   the bootstrap was changed to the pinned download with no package
+   manager in the path.)
 2. The Windows libgit2 build switches from the default Visual Studio
    generator to `-G "MinGW Makefiles" -DCMAKE_C_COMPILER=gcc`, so the
    archive is built with the same mingw-w64 gcc that Go's cgo drives. The
@@ -1136,3 +1141,33 @@ Watch item for the next run: the first real Windows link reports its actual
 dumpbin dependency list; if it contains a DLL outside the allowlist (for
 example `vcruntime140.dll`), the fix is extending the allowlist with that
 exact system DLL rather than weakening the check.
+
+### 2026-08-12 — release workflow windows rc5: chocolatey feed failure (worker session 19 continued)
+
+Run 6 (tag `v0.1.0-rc5`) failed earlier than rc4: the Windows job's Prepare
+native toolchain step exited 1 inside the new pkg-config bootstrap. The log:
+
+```text
+Failed to fetch results from V2 feed at
+'https://community.chocolatey.org/api/v2/Packages(Id='pkgconfiglite',Version='0.28.0')'
+with following message : Response status code does not indicate success: 504 (Gateway Timeout).
+```
+
+Chocolatey's community feed is a network dependency the bootstrap cannot
+control, and the fallback then pinned the broken Strawberry Perl bat
+(`build-libgit2: pinned pkg-config does not run: C:\Strawberry\perl\bin\pkg-config`),
+which the verify guard caught. Fix: drop Chocolatey from the bootstrap
+entirely. The script now downloads the pinned `pkg-config-lite`
+`pkg-config-lite-0.28-1_bin-win32.zip` directly from SourceForge
+(SHA-256 `2038c49d23b5ca19e2218ca89f06df18fe6d870b4c6b54c0498548ef88771f6f`,
+verified against the pinned value before extraction — the same artifact the
+chocolatey package installs), extracts `pkg-config.exe` into
+`.build/tools/pkg-config-lite/` with `unzip -j`, and pins `PKG_CONFIG` to
+it. No package manager, no feed, no PATH-order dependence: the same
+deterministic fetch pattern as the libgit2 tarball itself.
+
+Validation: the download, SHA check, and extraction were reproduced on this
+machine; `bash -n`, `make lint`, and `make test` pass on Linux with the
+changed script. The runner-specific outcome (mingw libgit2 build, cgo link
+through pkg-config-lite, dumpbin dependency list) is proven by the next
+release run.
