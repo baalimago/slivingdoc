@@ -1065,3 +1065,11 @@ Run 2 (tag `v0.1.0-rc1`, commit `34dbcce`) passed both Linux targets; `darwin-am
 3. `check-deps-windows.sh` referenced `"${ProgramFiles(x86)}"`, which is a bash bad substitution (parentheses are not a valid parameter name), so find_dumpbin could never locate vswhere and the check would fail with a false "dumpbin not found" on the Windows runner. Fix: the canonical vswhere path is built from `SYSTEMDRIVE` (defaulting to `C:`) and translated with `cygpath`.
 
 Validation: `bash -n` passes on every script; `check-deps-windows.sh --check` still accepts the baseline and rejects `git2.dll`/`libgit2.dll`; the darwin target resolves to `check-deps-macos.sh` and the linux/windows names are unchanged; `go test -run TestRelease -count=1 .` and `make lint` pass.
+
+### 2026-08-12 — release workflow windows extraction failure (worker session 18 continued)
+
+Run 3 (tag `v0.1.0-rc2`, commit `89999be`) passed both Linux and both Darwin targets; only `windows-amd64` failed, again at Prepare native toolchain (exit 2). The job log (fetched with `gh`) showed the real cause: the download and checksum succeeded, then Windows' system `bsdtar` aborted the whole extraction with `tar: libgit2-1.9.6/tests/resources/testrepo-worktree/link_to_new.txt: Cannot create symlink to 'new.txt'` and `tar: Exiting with failure status` (exit 2).
+
+The pinned tarball contains exactly one symlink, a relative link inside the tests resources. Windows' `C:\Windows\System32\tar.exe` (bsdtar) cannot create it and exits 2; the earlier CRLF failure had the same exit code and was fixed first, which is why this one only surfaced on run 3. The tests are never compiled (`BUILD_TESTS=OFF`; the top-level CMakeLists only calls `add_subdirectory(tests)` under `if(BUILD_TESTS)`), so the extraction now skips the whole tests subtree: `tar -xzf "$archive" -C "$src" --exclude='*/tests' --exclude='*/tests/*'`. Both patterns cover the directory entry and its contents on GNU tar and on bsdtar.
+
+Validation: a local extraction with the two excludes reproduces the full tree minus `tests/` (diff shows only that directory missing) and no symlink survives; `./scripts/build-libgit2.sh` re-ran end to end on this machine with the new extraction and rebuilt the pinned libgit2 successfully; `bash -n` and `go test -run TestRelease -count=1 .` pass.

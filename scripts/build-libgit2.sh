@@ -50,7 +50,12 @@ fi
 
 rm -rf "$src"
 mkdir -p "$src"
-tar -xzf "$archive" -C "$src"
+# The tarball's tests resources contain a relative symlink
+# (tests/resources/testrepo-worktree/link_to_new.txt) that Windows' system
+# bsdtar cannot create, so it aborts the whole extraction (exit 2). The
+# tests are never compiled (BUILD_TESTS=OFF), so the subtree is skipped;
+# --exclude works on GNU tar and on bsdtar alike.
+tar -xzf "$archive" -C "$src" --exclude='*/tests' --exclude='*/tests/*'
 
 echo "build-libgit2: configuring static build of libgit2 ${version}"
 cmake -S "$src/libgit2-$version" -B "$src/build" \

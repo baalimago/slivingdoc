@@ -36,7 +36,7 @@ The `scripts/build-libgit2.sh` script performs every step:
 
 1. Download the pinned tarball into `.build/` when it is not present.
 2. Verify `sha256sum` against the pinned value.
-3. Extract into `.build/src/libgit2-1.9.6/`.
+3. Extract into `.build/src/libgit2-1.9.6/`. The tarball's tests subtree is skipped (`--exclude='*/tests'`): its resources contain the only symlink of the archive, which Windows' system bsdtar cannot create, and the tests are never compiled (`BUILD_TESTS=OFF`).
 4. Configure with CMake, static only, transports disabled:
 
    ```text
