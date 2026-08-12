@@ -48,8 +48,10 @@ jobs:
       # artifact directly at the pipeline's expected path ($TARGET_BINARY,
       # the architecture-21 asset name) instead of .build/slivingdoc.
       native-build-command: make build BIN="${TARGET_BINARY}" VERSION="${RELEASE_VERSION#v}"
-      # Each target proves its own runtime dependency baseline.
-      dependency-check-command: ./scripts/check-deps-"${TARGET_OS}".sh "${TARGET_BINARY}"
+      # Each target proves its own runtime dependency baseline. The pipeline
+      # names platforms the way Go does (darwin), while the repo's checkers
+      # use the OS names (macos); the substitution maps the one difference.
+      dependency-check-command: os="${TARGET_OS/darwin/macos}"; ./scripts/check-deps-"${os}".sh "${TARGET_BINARY}"
       # The binary must start and report the injected version. The router has
       # no --version flag: a dash-prefixed argument is a skipped flag and a
       # bare invocation prints usage, so the smoke uses the version

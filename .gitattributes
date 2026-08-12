@@ -1,0 +1,8 @@
+# Every text file is checked out with LF line endings on every platform.
+#
+# GitHub's Windows runners enable core.autocrlf by default, which converts
+# LF to CRLF in the working tree. A CRLF shell script breaks bash: the CR is
+# part of a token, so `then<CR>` and `fi<CR>` are syntax errors and the
+# script exits 2 (the release pipeline's "Prepare native toolchain" step).
+# Pinning eol=lf keeps the POSIX scripts byte-identical on every runner.
+* text=auto eol=lf

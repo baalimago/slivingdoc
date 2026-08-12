@@ -23,7 +23,12 @@ allowed='^(kernel32\.dll|msvcrt\.dll|user32\.dll|advapi32\.dll|shell32\.dll|ws2_
 
 find_dumpbin() {
 	local vswhere install_dir
-	vswhere="${ProgramFiles(x86)}/Microsoft Visual Studio/Installer/vswhere.exe"
+	# MSYS bash cannot reference the environment variable ProgramFiles(x86)
+	# directly: parentheses are not valid in a parameter name, and the
+	# expansion is a "bad substitution". vswhere always installs under the
+	# x86 Program Files directory, so the canonical location is built from
+	# SYSTEMDRIVE and translated to an MSYS path.
+	vswhere="$(cygpath -u "${SYSTEMDRIVE:-C:}\\Program Files (x86)\\Microsoft Visual Studio\\Installer\\vswhere.exe")"
 	[[ -f "$vswhere" ]] || return 1
 	install_dir="$("$vswhere" -latest -products '*' \
 		-requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 \

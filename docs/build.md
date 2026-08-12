@@ -44,6 +44,8 @@ The executable is `.build/slivingdoc`. The Makefile sets `PKG_CONFIG_PATH` to `.
 
 Release pipelines build directly into their artifact name instead of `.build/slivingdoc`. The reusable release workflow exports `TARGET_BINARY` (the architecture-21 asset name, for example `slivingdoc-v0.1.0-rc0-linux-amd64`), and the caller passes it as the Makefile's `BIN` variable: `make build BIN="${TARGET_BINARY}" VERSION="${RELEASE_VERSION#v}"`. The artifact then exists at the exact path the pipeline's dependency inspection, smoke test, and upload steps expect. The pipeline smoke runs the `version` subcommand (`./"${TARGET_BINARY}" version`): the router has no `--version` flag — a dash-prefixed argument is a skipped flag and a bare invocation prints usage — and bash does not search the working directory, so the `./` prefix is required.
 
+The dependency inspection maps the pipeline's Go-style OS name to the checker's script name (`darwin` → `check-deps-macos.sh`); the scripts are named `linux`, `macos`, and `windows`.
+
 There is no pure-Go build. `internal/git2` requires CGo, so `CGO_ENABLED=0 go build ./...` fails to compile rather than producing a binary that starts and then fails every operation.
 
 ## Inspect dependencies
