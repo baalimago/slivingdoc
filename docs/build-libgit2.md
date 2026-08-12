@@ -107,7 +107,11 @@ Each script has a `--check` mode that validates an explicit dependency list.
 `TestReleaseDependencyBaselines` in `release_test.go` drives that mode for
 all three platforms, proving the positive and negative cases without the
 target toolchain. The Windows script locates `dumpbin` through `vswhere` on GitHub
-Windows runners. Its allowlist admits the Windows system DLLs the release
+Windows runners and invokes it with `MSYS2_ARG_CONV_EXCL='*'`: Git for
+Windows' MSYS2 runtime rewrites a leading-slash argument as a POSIX path,
+which would turn the `/dependents` option into `<Git-root>/dependents` and
+make dumpbin fail with LNK1181 before it reads the binary. Its allowlist
+admits the Windows system DLLs the release
 links — `kernel32.dll`, the Go runtime's `msvcrt.dll`, and the Universal CRT
 `ucrtbase.dll` that the mingw-w64 UCRT toolchain links — and rejects
 `git2.dll`, `libgit2.dll`, and the mingw runtime DLLs `libgcc_s_seh-1.dll`

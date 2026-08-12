@@ -1209,3 +1209,45 @@ directive; the failing link command from the rc6 log was inspected to
 confirm the exact flag set. The next run is expected to reach Inspect
 runtime dependencies for the first time; the dumpbin list is the last
 unknown.
+
+### 2026-08-12 — release workflow windows rc7: MSYS2 rewrites dumpbin's /dependents option (worker session 19 continued)
+
+Run 8 (tag `v0.1.0-rc7`, commit `f90703b`) passed every earlier stage on
+Windows for the first time: the toolchain, the cgo compile, and the final
+link with `-static-libgcc`. The Inspect runtime dependencies step then died
+silently with exit code 157 after about five seconds — no script output, no
+dumpbin list. All other platforms passed.
+
+The exit code is the fingerprint: dumpbin is a native MSVC tool (link.exe
+family), and LNK1181 "cannot open input file" is error 1181; bash reports a
+native child's exit code truncated through the wait status, and
+1181 & 0xFF = 157 (`bash -c 'exit 1181'; echo $?` prints 157). dumpbin
+therefore ran and failed to open its input. Its stderr was suppressed by
+`2>/dev/null`, which is why the step showed nothing.
+
+Why could dumpbin not open the input? The script runs under Git for
+Windows' MSYS2 runtime, and the msys2-runtime source
+(`winsup/cygwin/msys2_path_conv.cc`) shows the argument rewrite:
+`find_path_start_and_type` classifies any `/`-prefixed single component as
+ROOTED_PATH, and `rp_convert`/`posix_to_win32_path` rewrites it to
+`<Git-root>/dependents` before the native program sees it. dumpbin then
+treats `C:/Program Files/Git/dependents` as an input file, reports LNK1181,
+and exits before ever reading the real binary — the classic MSYS leading-
+slash option trap, the same family as the earlier `ProgramFiles(x86)` bash
+bad-substitution defect.
+
+Fix (`scripts/check-deps-windows.sh`): the dumpbin invocation now runs with
+`MSYS2_ARG_CONV_EXCL='*'`, the runtime's documented switch to pass every
+argument byte-identical (the `/dependents` option form and the relative
+binary name both need no conversion). The `2>/dev/null` suppression was
+dropped so a real dumpbin failure shows its LNK message instead of a bare
+exit code. The comment block above the invocation records the reasoning.
+
+Validation: `bash -n` passes; `check-deps-windows.sh --check` still accepts
+the baseline and rejects `git2.dll`/`libgit2.dll`/`libgcc_s_seh-1.dll`;
+`go test -run TestRelease -count=1 .` and `make lint` pass. The argument
+rewrite was proven against the pinned msys2-runtime source rather than by
+execution, because no Linux host can run Git for Windows' runtime. The next
+run should print the first real dumpbin dependency list; the allowlist
+already admits the predicted imports (kernel32, ucrtbase, ws2_32, secur32,
+the crypto/net DLLs).

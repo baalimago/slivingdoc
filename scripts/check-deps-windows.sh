@@ -11,6 +11,12 @@
 # validates an explicit dependency list and runs anywhere (used by the
 # self-test and by CI fixture evidence).
 #
+# dumpbin runs under Git for Windows' MSYS2 runtime. That runtime rewrites a
+# leading-slash argument as a POSIX path, so /dependents reaches dumpbin as
+# <Git-root>/dependents and fails with LNK1181 "cannot open input file".
+# MSYS2_ARG_CONV_EXCL='*' keeps every argument byte-identical: the /option
+# form and the relative binary name both need no conversion.
+#
 # Usage:
 #   check-deps-windows.sh <binary>          inspect a binary with dumpbin
 #   check-deps-windows.sh --check <dep...>  check an explicit dependency list
@@ -66,7 +72,7 @@ else
 		echo "check-deps-windows: dumpbin not found; run inside a Visual Studio developer environment" >&2
 		exit 1
 	fi
-	"$dumpbin" /dependents "$binary" 2>/dev/null \
+	MSYS2_ARG_CONV_EXCL='*' "$dumpbin" /dependents "$binary" \
 		| sed -n 's/^    \([A-Za-z0-9_.-]*\.dll\)$/\1/Ip' \
 		| check
 fi
