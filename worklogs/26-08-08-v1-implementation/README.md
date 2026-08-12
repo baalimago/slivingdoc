@@ -1073,3 +1073,13 @@ Run 3 (tag `v0.1.0-rc2`, commit `89999be`) passed both Linux and both Darwin tar
 The pinned tarball contains exactly one symlink, a relative link inside the tests resources. Windows' `C:\Windows\System32\tar.exe` (bsdtar) cannot create it and exits 2; the earlier CRLF failure had the same exit code and was fixed first, which is why this one only surfaced on run 3. The tests are never compiled (`BUILD_TESTS=OFF`; the top-level CMakeLists only calls `add_subdirectory(tests)` under `if(BUILD_TESTS)`), so the extraction now skips the whole tests subtree: `tar -xzf "$archive" -C "$src" --exclude='*/tests' --exclude='*/tests/*'`. Both patterns cover the directory entry and its contents on GNU tar and on bsdtar.
 
 Validation: a local extraction with the two excludes reproduces the full tree minus `tests/` (diff shows only that directory missing) and no symlink survives; `./scripts/build-libgit2.sh` re-ran end to end on this machine with the new extraction and rebuilt the pinned libgit2 successfully; `bash -n` and `go test -run TestRelease -count=1 .` pass.
+
+### 2026-08-12 — release workflow windows compile failure (worker session 18 continued)
+
+Run 4 (tag `v0.1.0-rc3`) passed Linux, Darwin, and the Windows libgit2 build (Prepare native toolchain); `windows-amd64` then failed at Build with the first real Go compile of the Windows code path: `internal/workspace/platform_windows.go:21:32: undefined: windows.EXDEV`.
+
+The release pipeline is the first place the Windows code is ever compiled: the repository cannot cross-compile (CGo), `make test` runs on Linux only, and the Windows build-tagged files were never exercised. `isCrossDevice` in `platform_windows.go` matched `windows.EXDEV`, which `golang.org/x/sys/windows` does not export (the grep over x/sys v0.47.0 finds no EXDEV at all), and the comment's claim that Go maps `ERROR_NOT_SAME_DEVICE` to EXDEV is wrong: `os.rename` on Windows wraps the raw Win32 error in a `*LinkError`. Fix: match only `windows.ERROR_NOT_SAME_DEVICE` (Errno 17).
+
+Validation: `GOOS=windows CGO_ENABLED=0 go build ./internal/workspace/` compiles the fixed file (the package has no CGo dependency); `go vet` for Windows on the package only fails on test files that import the CGo engine, which the release pipeline never builds; `make lint` and `go test -run TestRelease -count=1 .` pass unchanged.
+
+Watch items for the next run (cannot be proven from a Linux host): the Windows Build step compiles the CGo engine with a C compiler and pkg-config on the runner, and the dependency check runs `dumpbin` against the linked binary — the allowlist in `check-deps-windows.sh` has no VCRUNTIME/ucrtbase/api-ms-win-crt entries, so a MSVC-runtime or mingw-w64 dependency would fail it with a real diagnostic.

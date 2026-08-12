@@ -15,8 +15,9 @@ const noFollowFlag = 0
 
 // isCrossDevice reports whether a rename failed because the source and
 // destination live on different volumes, which triggers the copy fallback.
-// Go maps the Win32 ERROR_NOT_SAME_DEVICE to EXDEV; both forms are
-// accepted defensively.
+// os.Rename surfaces the raw Win32 error (ERROR_NOT_SAME_DEVICE); Go does
+// not map it to a POSIX errno on Windows, so there is no EXDEV form to
+// match.
 func isCrossDevice(err error) bool {
-	return errors.Is(err, windows.EXDEV) || errors.Is(err, windows.ERROR_NOT_SAME_DEVICE)
+	return errors.Is(err, windows.ERROR_NOT_SAME_DEVICE)
 }
