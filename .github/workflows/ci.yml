@@ -1,4 +1,4 @@
-name: ci
+name: qa
 
 # Two jobs mirror the two commands a developer runs locally:
 #   go   `make lint` and `make test` — every Go test, no subset, no skips
@@ -22,8 +22,8 @@ env:
   MINIO_IMAGE: "minio/minio:RELEASE.2025-09-07T16-13-09Z"
 
 jobs:
-  go:
-    name: go (libgit2 + MinIO)
+  qa:
+    name: qa
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
@@ -59,3 +59,27 @@ jobs:
       # The launcher is a zero-dependency package: no install step exists.
       - name: npm test
         run: make npm-test
+
+  readme-coverage:
+    # Updates the "Test coverage:" line in README.md on master pushes by
+    # calling the reusable validate workflow (simple-go-pipeline) with the
+    # single gate command. Pinned to the same immutable commit SHA as the
+    # release workflow; bump it deliberately with a reviewed commit.
+    name: readme test coverage
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+    permissions:
+      contents: write
+    uses: baalimago/simple-go-pipeline/.github/workflows/validate.yml@3e130453cd20bc9922901551185c098647592092
+    with:
+      # env context is unavailable in a workflow_call job's with block, so
+      # the pinned Go version is repeated here; keep it in sync with the
+      # GO_VERSION env above.
+      go-version: "1.26.5"
+      staticcheck: false
+      gofumpt: false
+      test: true
+      test-readme-coverage: true
+      build-command: make build
+      prerun-step-cmd: make libgit2 && docker pull minio/minio:RELEASE.2025-09-07T16-13-09Z
+      test-command: make test
+      coverage-command: go tool cover -func=.build/cover.out | tail -1 | awk '{print $3}' | tr -d '%'

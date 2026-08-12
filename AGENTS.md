@@ -101,7 +101,7 @@ slivingdoc/
 |                            make-sha256sums.sh; check-release-ref.sh
 |-- npm/slivingdoc/          zero-dependency launcher: platform mapping,
 |                            verified download, cache, exec forwarding
-|-- .github/workflows/       ci.yml (go, npm);
+|-- .github/workflows/       ci.yml (go, npm, readme-coverage caller);
 |                            release.yml (caller for the reusable pipeline)
 |-- architecture/            slivingdoc-v1.md (the accepted contract)
 |-- docs/                    build.md, build-libgit2.md, testing.md

@@ -1,5 +1,7 @@
 # slivingdoc
 
+Test coverage: 0%
+
 slivingdoc is a standalone notebook synchronization server for agents. It
 exposes two MCP tools over stdio — `notes_pull(path)` and
 `notes_commit(path, message)` — and keeps one caller-controlled visible

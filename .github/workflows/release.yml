@@ -7,12 +7,11 @@ name: release
 # creation, and the asset upload; this file supplies the native inputs.
 #
 # The pipeline is referenced by an immutable commit SHA, never a branch or a
-# moving tag. The SHA below is the documented placeholder: the reusable
-# workflow change is prepared but not yet reviewed and committed in that
-# separately owned repository, so GitHub refuses this workflow at dispatch,
-# which is the intended interlock. scripts/check-release-ref.sh reports the
-# placeholder as a clear diagnostic. Replace it with the reviewed commit SHA
-# and re-run that script; see
+# moving tag. The SHA below is the reviewed commit of the reusable-workflow
+# change in baalimago/simple-go-pipeline (add prerelease support to
+# release.yml and CGo-compatible inputs to validate.yml); scripts/
+# check-release-ref.sh verifies the reference. Bump it deliberately with a
+# reviewed commit; see
 # worklogs/26-08-08-v1-implementation/simple-go-pipeline-release-proposal.md.
 
 on:
@@ -25,11 +24,13 @@ permissions:
 
 jobs:
   release:
-    uses: baalimago/simple-go-pipeline/.github/workflows/release.yml@slivingdoc
+    uses: baalimago/simple-go-pipeline/.github/workflows/release.yml@3e130453cd20bc9922901551185c098647592092
     with:
       go-version: "1.26.5"
-      binary-name: slivingdoc
-      asset-name-template: "slivingdoc-${RELEASE_VERSION}-${TARGET_OS}-${TARGET_ARCH}"
+      # project-name makes the pipeline produce the architecture-21 asset
+      # grammar: slivingdoc-v<version>-<os>-<arch>[.exe].
+      project-name: slivingdoc
+      branch: master
       # The five proven targets of architecture section 21. Windows arm64 is
       # deliberately absent until its native toolchain and runner are proven.
       targets: |
