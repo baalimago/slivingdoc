@@ -42,6 +42,8 @@ make build
 
 The executable is `.build/slivingdoc`. The Makefile sets `PKG_CONFIG_PATH` to `.build/libgit2/lib/pkgconfig`. `internal/git2/native.go` requests static linking with `#cgo pkg-config: --static libgit2`.
 
+Release pipelines build directly into their artifact name instead of `.build/slivingdoc`. The reusable release workflow exports `TARGET_BINARY` (the architecture-21 asset name, for example `slivingdoc-v0.1.0-rc0-linux-amd64`), and the caller passes it as the Makefile's `BIN` variable: `make build BIN="${TARGET_BINARY}" VERSION="${RELEASE_VERSION#v}"`. The artifact then exists at the exact path the pipeline's dependency inspection, smoke test, and upload steps expect. The pipeline smoke runs the `version` subcommand (`./"${TARGET_BINARY}" version`): the router has no `--version` flag — a dash-prefixed argument is a skipped flag and a bare invocation prints usage — and bash does not search the working directory, so the `./` prefix is required.
+
 There is no pure-Go build. `internal/git2` requires CGo, so `CGO_ENABLED=0 go build ./...` fails to compile rather than producing a binary that starts and then fails every operation.
 
 ## Inspect dependencies

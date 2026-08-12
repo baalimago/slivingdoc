@@ -44,11 +44,18 @@ jobs:
       # One script builds the pinned libgit2 on every target runner.
       native-setup-command: ./scripts/build-libgit2.sh
       # The release version is injected by the linker; make build passes it.
-      native-build-command: make build VERSION="${RELEASE_VERSION#v}"
+      # BIN is the Makefile's build destination, so release builds write the
+      # artifact directly at the pipeline's expected path ($TARGET_BINARY,
+      # the architecture-21 asset name) instead of .build/slivingdoc.
+      native-build-command: make build BIN="${TARGET_BINARY}" VERSION="${RELEASE_VERSION#v}"
       # Each target proves its own runtime dependency baseline.
       dependency-check-command: ./scripts/check-deps-"${TARGET_OS}".sh "${TARGET_BINARY}"
-      # The binary must start and report the injected version.
-      smoke-command: '"${TARGET_BINARY}" --version'
+      # The binary must start and report the injected version. The router has
+      # no --version flag: a dash-prefixed argument is a skipped flag and a
+      # bare invocation prints usage, so the smoke uses the version
+      # subcommand. The ./ prefix is required because bash does not search
+      # the working directory for executables.
+      smoke-command: './"${TARGET_BINARY}" version'
       # The strict SHA256SUMS grammar of architecture section 21.
       checksum-command: ./scripts/make-sha256sums.sh dist
       # The repository has no own license file; the libgit2 notices ship with

@@ -1043,3 +1043,15 @@ delegates to the same target. Cold-cache validation: `make build` then
 `make test` passes with the root package at 4.4 s and the slowest package at
 22.1 s (integrationtest). The race detector, the count, and the timeout are
 unchanged, and `release_test.go` still builds and proves its own binary.
+
+### 2026-08-12 — release workflow smoke failure root cause and fix (worker session 18 continued)
+
+The first release attempt (tag `v0.1.0-rc0`, commit `3f13669`) failed in all four started build-matrix targets (`linux-amd64`, `linux-arm64`, `darwin-arm64`, `windows-amd64`); `linux-amd64` failed at the pipeline's Smoke test step with exit 127. Three independent defects in the caller wiring caused it:
+
+1. `native-build-command: make build VERSION=...` wrote the binary to the fixed development path `.build/slivingdoc`, while the reusable pipeline expects the artifact at `$TARGET_BINARY` — the architecture-21 asset name (`slivingdoc-v0.1.0-rc0-linux-amd64`). The dependency-inspection step tolerated the missing file (`readelf` failed silently into an empty list), so the failure surfaced only at the smoke step, and the artifact upload would have failed next (`if-no-files-found: error`).
+2. The smoke command `"${TARGET_BINARY}" --version` invoked a flag the router does not implement: in `go_away_boilerplate/pkg/cmd`, any dash-prefixed argument is a skipped flag, so `--version` leaves no command candidate and the router prints usage and exits 1.
+3. The smoke command omitted the `./` prefix. Bash does not search the working directory, so even a correctly placed binary would not be found (exit 127).
+
+Fix (`.github/workflows/release.yml`): the build now writes the artifact directly at the pipeline's expected path (`make build BIN="${TARGET_BINARY}" VERSION="${RELEASE_VERSION#v}"`, where `BIN` is the Makefile's build destination), and the smoke runs `./"${TARGET_BINARY}" version` — the `version` subcommand the router implements, with the `./` prefix bash requires. The checksum grammar, the pinned pipeline SHA, and the architecture-21 asset grammar are unchanged.
+
+Validation on this machine (linux-amd64 target, `VERSION=0.1.0-rc0`): `make build BIN=slivingdoc-v0.1.0-rc0-linux-amd64` produces the artifact; `./scripts/check-deps-linux.sh slivingdoc-v0.1.0-rc0-linux-amd64` prints `check-deps-linux: ok`; `./slivingdoc-v0.1.0-rc0-linux-amd64 version` prints exactly `slivingdoc 0.1.0-rc0` with exit 0. The default `make build` still produces `.build/slivingdoc`, and `go test -run TestRelease -count=1 .` passes unchanged.
