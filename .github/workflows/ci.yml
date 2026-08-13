@@ -69,7 +69,7 @@ jobs:
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
     permissions:
       contents: write
-    uses: baalimago/simple-go-pipeline/.github/workflows/validate.yml@3e130453cd20bc9922901551185c098647592092
+    uses: baalimago/simple-go-pipeline/.github/workflows/validate.yml@0f3e945a5090
     with:
       # env context is unavailable in a workflow_call job's with block, so
       # the pinned Go version is repeated here; keep it in sync with the
