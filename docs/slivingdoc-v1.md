@@ -1257,8 +1257,12 @@ Windows arm64 can be added after its native toolchain and runner are proven.
 One final release job creates the GitHub release after all target builds pass.
 The npm publish step runs only after every required artifact and checksum is
 available. It runs in the same workflow, after the release assembly, and
-fails unless `npm/slivingdoc/package.json` reports the tag version. A
-prerelease version publishes to the `next` dist-tag; a stable version
+fails unless `npm/slivingdoc/package.json` reports the tag version. The
+repository provides `make release`, an interactive script that prints the
+recent releases, prompts for the new version and a tag description, bumps
+the package version, commits it, and annotates the `v<semver>` tag, so the
+workflow and the package cannot drift. A prerelease version publishes to
+the `next` dist-tag; a stable version
 publishes to `latest`. Publication uses npm trusted publishing (OIDC): the
 repository stores no npm token, the registry accepts publishes only from
 the `release.yml` workflow of `baalimago/slivingdoc`, and provenance

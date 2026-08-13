@@ -22,7 +22,7 @@ export PKG_CONFIG_PATH
 VERSION ?= 0.1.0-dev
 VERSION_LDFLAG := -X github.com/baalimago/slivingdoc/internal/app.Version=$(VERSION)
 
-.PHONY: all libgit2 test cover npm-test lint fmt build qa clean
+.PHONY: all libgit2 test cover npm-test lint fmt build release qa clean
 
 all: qa
 
@@ -94,6 +94,14 @@ fmt:
 # injected through the linker. The release smoke checks of this wiring live
 # in release_test.go and run as part of `make test`; the shared $(BIN)
 # target above also warms the compile cache for that in-suite build.
+
+# release — cut a tagged release interactively. Prints the recent
+# releases, prompts for the new version and the tag description, bumps
+# npm/slivingdoc/package.json, commits the bump, annotates the v<version>
+# tag, and pushes branch and tag; the tag push runs the release workflow
+# (native builds, GitHub release, npm publish).
+release:
+	./scripts/release.go
 
 # qa — lint plus both test suites.
 qa: lint test npm-test

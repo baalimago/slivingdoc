@@ -56,9 +56,9 @@ phase-specific contracts.
 | 6     | 9.2 (L423), 13–16 (L813–998)                                                       |
 | 7     | 2 (L26), 17 (L1040), 18 (L1115)                                                    |
 | 8     | 21 (L1215)                                                                         |
-| 9     | All sections (L9–1362)                                                             |
+| 9     | All sections (L9–1366)                                                             |
 | 10    | 2 (L26), 7 (L186), 10–18 (L603–1115), 20 (L1169)                                   |
-| 11    | 1 (L9), 4 (L116), 10–14 (L603–998), 17 (L1040), 19 (L1144), 20 (L1169), 25 (L1347) |
+| 11    | 1 (L9), 4 (L116), 10–14 (L603–998), 17 (L1040), 19 (L1144), 20 (L1169), 25 (L1351) |
 
 Line numbers refer to [`../../architecture/slivingdoc-v1.md`](../../architecture/slivingdoc-v1.md).
 Re-verify them after any architecture edit.
@@ -1420,3 +1420,91 @@ classifications were exercised with bash (prerelease -> next, stable ->
 latest, build metadata stripped, npm 11.4.0 rejected, 11.5.1+ accepted).
 The human steps remaining: configure the npm-side Trusted Publisher and
 watch the first tag-push end-to-end run.
+
+### 2026-08-12 — first release run failed; make release added (worker session 21 continued)
+
+The first end-to-end run (tag `v0.1.0-rc11`) built all five targets and
+created the GitHub release, then the `publish-npm` job failed with the
+version-sync gate: `package.json version '0.1.0-rc10' does not match tag
+version '0.1.0-rc11'`. The gate did its job — the npm publish was refused
+because the package version had not been bumped to the tag — but the human
+release flow made that mistake easy: nothing reminded the releaser to bump
+`npm/slivingdoc/package.json` before tagging.
+
+Fix: a single release entry point. `scripts/release.sh` (wired as `make
+release VERSION=<semver> MESSAGE=<description>`) validates the version
+against the pipeline's exact semver pattern, refuses an existing tag, an
+unchanged package version, a dirty working tree, or a non-master branch,
+bumps `npm/slivingdoc/package.json` (version line only, indentation
+preserved), runs the npm launcher tests, commits `release: v<version>`,
+creates the annotated tag with the description, and pushes branch and tag.
+The tag push then runs the release workflow with the versions guaranteed in
+sync. `README.md`, the architecture section 21, and the Makefile document
+the command.
+
+Validation: `bash -n` is clean on the script; shellcheck is not installed
+in the sandbox. The semver pattern accepted 8 valid and rejected 8 invalid
+versions; the node bump preserved the file's two-space indentation and
+produced valid JSON with the new version; the script refused an invalid
+semver, an unchanged version, and a dirty tree with exit 1 and clear
+diagnostics. The commit/tag/push sequence itself could not be executed in
+the sandbox (git writes are banned for worker sessions); its commands are
+plain git and were reviewed line by line.
+
+Human follow-up for `v0.1.0-rc11`: either delete the release and tag
+(`gh release delete v0.1.0-rc11 --cleanup-tag`, `git tag -d v0.1.0-rc11`)
+and re-cut it with `make release`, or cut `v0.1.0-rc12` and leave the
+orphan release. The npm-side Trusted Publisher (owner `baalimago`,
+repository `slivingdoc`, workflow `release.yml`, no environment) must be
+configured before the next publish can authenticate.
+
+### 2026-08-12 — make release redesigned as an interactive Go script (worker session 21 continued)
+
+The first real use of the pipeline exposed the workflow gap: tagging
+`v0.1.0-rc11` without first bumping `npm/slivingdoc/package.json` made the
+version-sync gate fail the npm publish (the gate worked; the release flow
+allowed the mistake). The one-shot `make release VERSION=... MESSAGE=...`
+bash wrapper fixed the sync but required remembering two arguments. The
+user then asked for a fully interactive release entry point in Go,
+following the shebang-driven script pattern of
+`sakfraga/scripts/validate_se_municipalities.go`.
+
+`scripts/release.go` (replaces `scripts/release.sh`): the first line
+`/*usr/local/go/bin/go run "$0" "$@"; exit; */` runs the file as a Go
+program from any shell (the kernel's ENOEXEC fallback re-executes it
+through the shell), exactly the sakfraga pattern the user requested. The
+file carries no build tag and no flags: it is a plain `main` package under
+`./scripts`, which the QA gate tolerates (gofumpt, go vet, go fix, and
+staticcheck are clean on it, and the last full coverage run at 85.9 %
+leaves ample margin above the 70 % floor). The script verifies the working
+directory is the repository root, refuses a non-master branch and a dirty
+tree, prints the five most recent release tags (version, tag, date; the
+current package version is marked), prompts for the new version in a
+re-prompt loop (semver validity against the pipeline's exact pattern, not
+the current version, no existing local or remote tag), prompts for the tag
+description (default `Release v<version>`), bumps
+`npm/slivingdoc/package.json` on the version line only, runs the npm
+launcher tests, and then commits, annotates the tag, and pushes branch and
+tag. There is no dry-run and no argument passing: `make release` just runs
+it.
+
+Validation: the shebang trick was proven in /tmp stubs and the script
+executes in the real repository, refusing the dirty tree with a clear
+diagnostic; gofumpt, go vet, go fix, and staticcheck are clean on the
+file; a fixture repository (real history, clean worktree) exercised the
+interactive flow: the recent-releases table renders with real tags, an
+invalid semver, the current version, and an existing tag each re-prompt
+with the correct error, EOF aborts before any mutation, and the version
+bump was verified on the fixture (version line only; indentation and all
+other fields untouched). The abort-after-npm-test-failure path was not
+executed end to end (forcing a failure made the fixture tree dirty, so the
+dirty guard correctly fired first); it is reviewed by inspection, as is
+the commit/tag/push sequence, which is plain git invoked via exec — the
+sandbox cannot execute git writes.
+
+Human follow-up for `v0.1.0-rc11` (unchanged): either delete the release
+and tag (`gh release delete v0.1.0-rc11 --cleanup-tag`, `git tag -d
+v0.1.0-rc11`) and re-cut it with `make release`, or cut `v0.1.0-rc12` and
+leave the orphan release. The npm-side Trusted Publisher (owner
+`baalimago`, repository `slivingdoc`, workflow `release.yml`, no
+environment) must be configured before the next publish can authenticate.
