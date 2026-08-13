@@ -12,10 +12,39 @@ import (
 	"strings"
 )
 
+// Terminal styling. ANSI codes only; the script has no external dependencies.
+// Color is emitted only when stdout is a terminal, so a piped run stays plain.
+const (
+	ansiReset   = "\x1b[0m"
+	ansiBold    = "\x1b[1m"
+	ansiDim     = "\x1b[2m"
+	ansiRed     = "\x1b[31m"
+	ansiGreen   = "\x1b[32m"
+	ansiYellow  = "\x1b[33m"
+	ansiMagenta = "\x1b[35m"
+	ansiCyan    = "\x1b[36m"
+)
+
 const (
 	pkgPath       = "npm/slivingdoc/package.json"
 	releaseBranch = "master"
 )
+
+// colorTerm reports whether stdout is a character device (an interactive
+// terminal), not a pipe or a redirected file.
+var colorTerm = func() bool {
+	fi, err := os.Stdout.Stat()
+	return err == nil && fi.Mode()&os.ModeCharDevice != 0
+}()
+
+// paint wraps s in code and resets it, or returns s unchanged when stdout is
+// not a terminal.
+func paint(code, s string) string {
+	if !colorTerm {
+		return s
+	}
+	return code + s + ansiReset
+}
 
 // semverRE is the exact semver.org pattern the release pipeline applies to
 // release tags (RE2-compatible). The leading v is optional on input; the
@@ -32,7 +61,7 @@ type releaseTag struct {
 
 func main() {
 	if err := run(); err != nil {
-		fmt.Fprintln(os.Stderr, "release:", err)
+		fmt.Fprintln(os.Stderr, paint(ansiRed, "✗ release: "+err.Error()))
 		os.Exit(1)
 	}
 }
@@ -70,34 +99,48 @@ func run() error {
 		return err
 	}
 
-	fmt.Printf("Current npm launcher version: %s\n\n", current)
-	fmt.Println("Recent releases:")
-	fmt.Printf(" %s %-2s  %-16s  %-17s  %s\n", " ", "#", "version", "tag", "date")
+	fmt.Println()
+	fmt.Println(paint(ansiBold+ansiMagenta, "🚀 slivingdoc release forge"))
+	fmt.Println(paint(ansiDim, "   cut a semver tag, bump the launcher, and ship it"))
+	fmt.Println()
+
+	fmt.Printf("%s %s\n\n", paint(ansiBold, "current launcher:"), paint(ansiCyan, current))
+	fmt.Printf("%s\n", paint(ansiBold, "recent releases:"))
+	fmt.Println(paint(ansiDim, fmt.Sprintf(" %s %-2s  %-16s  %-17s  %s", " ", "#", "version", "tag", "date")))
+	if len(tags) == 0 {
+		fmt.Println(paint(ansiDim, "   none yet — you are first 🥇"))
+	}
 	for i, t := range tags {
 		mark := " "
 		if t.version == current {
-			mark = "*"
+			mark = paint(ansiGreen, "*")
 		}
-		fmt.Printf(" %s %-2d  %-16s  %-17s  %s\n", mark, i+1, t.version, t.tag, t.date)
+		row := fmt.Sprintf(" %s %-2d  %-16s  %-17s  %s", mark, i+1, t.version, t.tag, t.date)
+		if t.version == current {
+			row = paint(ansiGreen, row)
+		}
+		fmt.Println(row)
 	}
-	fmt.Println("  * = current package version")
+	fmt.Printf("  %s\n", paint(ansiDim, "* = current launcher version"))
 	fmt.Println()
 
 	reader := bufio.NewReader(os.Stdin)
 
 	var version string
 	for {
-		v, err := prompt(reader, "Enter the new release version: ")
+		v, err := prompt(reader, paint(ansiBold+ansiCyan, "ship which version?")+": ")
 		if err != nil {
 			return err
 		}
 		version = strings.TrimPrefix(v, "v")
 		if !semverRE.MatchString(version) {
-			fmt.Printf("error: '%s' is not a valid semver version (v<major>.<minor>.<patch>[-prerelease]); try again\n", version)
+			fmt.Printf("%s %s; try again\n",
+				paint(ansiYellow, "⚠"),
+				paint(ansiYellow, fmt.Sprintf("'%s' is not a semver version (v<major>.<minor>.<patch>[-prerelease])", version)))
 			continue
 		}
 		if version == current {
-			fmt.Printf("error: package.json is already at '%s'; try again\n", version)
+			fmt.Printf("%s\n", paint(ansiYellow, fmt.Sprintf("⚠ package.json is already at '%s'; try again", version)))
 			continue
 		}
 		tag := "v" + version
@@ -106,27 +149,26 @@ func run() error {
 			return err
 		}
 		if exists {
-			fmt.Printf("error: tag '%s' already exists; try again\n", tag)
+			fmt.Printf("%s\n", paint(ansiYellow, fmt.Sprintf("⚠ tag '%s' already exists; try again", tag)))
 			continue
 		}
 		break
 	}
 
 	tag := "v" + version
-	desc, err := prompt(reader, fmt.Sprintf("Tag description (default: Release %s): ", tag))
+	desc, err := prompt(reader, paint(ansiBold+ansiCyan, "tag description (optional)")+": ")
 	if err != nil {
 		return err
-	}
-	if desc == "" {
-		desc = "Release " + tag
 	}
 
 	if err := bumpVersion(pkgPath, version); err != nil {
 		return err
 	}
-	fmt.Printf("Bumped %s: %s -> %s\n", pkgPath, current, version)
+	fmt.Printf("%s %s: %s -> %s\n",
+		paint(ansiGreen, "✓ bumped"), pkgPath,
+		paint(ansiDim, current), paint(ansiBold+ansiCyan, version))
 
-	fmt.Println("Running npm launcher tests")
+	fmt.Println(paint(ansiBold, "🧪 running npm launcher tests"))
 	cmd := exec.Command("npm", "test", "--prefix", "npm/slivingdoc")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -134,22 +176,29 @@ func run() error {
 		return fmt.Errorf("npm test failed: %w", err)
 	}
 
+	commitArgs := []string{"commit", "-m", "chore: release " + tag}
+	if desc != "" {
+		commitArgs = append(commitArgs, "-m", desc)
+	}
+	tagArgs := []string{"tag", "-a", tag, "-m", desc}
+
 	steps := [][]string{
 		{"add", pkgPath},
-		{"commit", "-m", "release: " + tag, "-m", desc},
-		{"tag", "-a", tag, "-m", desc},
+		commitArgs,
+		tagArgs,
 		{"push", "origin", releaseBranch},
 		{"push", "origin", tag},
 	}
 	for _, args := range steps {
-		fmt.Println("git", strings.Join(args, " "))
+		fmt.Println(paint(ansiDim, "▸ git "+strings.Join(args, " ")))
 		if err := runGit(args...); err != nil {
 			return err
 		}
 	}
 
-	fmt.Println("release:", tag, "is released; the workflow run is at")
-	fmt.Println("  https://github.com/baalimago/slivingdoc/actions")
+	fmt.Println()
+	fmt.Println(paint(ansiBold+ansiGreen, "🎉 "+tag+" is out in the wild!"))
+	fmt.Println(paint(ansiDim, "   workflow run: https://github.com/baalimago/slivingdoc/actions"))
 	return nil
 }
 
