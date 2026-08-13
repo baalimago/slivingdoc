@@ -60,7 +60,7 @@ func TestNewLoggerRecordShape(t *testing.T) {
 
 // TestNewLoggerInvalidLevelIsNotFatal proves a malformed LOG_LEVEL reports
 // the problem but still returns a working Info logger. Refusing to start
-// over a typo in diagnostic plumbing would turn it into an outage.
+// over a typo in diagnostic plumbing turns it into an outage.
 func TestNewLoggerInvalidLevelIsNotFatal(t *testing.T) {
 	t.Parallel()
 	var out strings.Builder
@@ -85,7 +85,7 @@ func TestNewLoggerInvalidLevelIsNotFatal(t *testing.T) {
 }
 
 // TestNewLoggerHonoursNoColor proves any non-empty NO_COLOR removes the ANSI
-// escapes, and that colour is on otherwise.
+// escapes, and that color is on otherwise.
 func TestNewLoggerHonoursNoColor(t *testing.T) {
 	t.Parallel()
 	for _, row := range []struct {
@@ -135,21 +135,5 @@ func TestModuleNilLoggerDiscards(t *testing.T) {
 	got.Error("must not panic")
 	if got.Enabled(t.Context(), slog.LevelError) != true {
 		t.Log("discard logger reports disabled; acceptable, it writes nowhere")
-	}
-}
-
-// TestModulesAreDocumented pins the module list against the names the
-// loggers actually bind, so LOG_LEVEL documentation cannot drift from the
-// modules a user can address.
-func TestModulesAreDocumented(t *testing.T) {
-	t.Parallel()
-	want := map[string]bool{ModuleCLI: true, ModuleApp: true, ModuleMCP: true, ModuleNotebook: true}
-	if len(Modules) != len(want) {
-		t.Fatalf("Modules = %v, want %d entries", Modules, len(want))
-	}
-	for _, name := range Modules {
-		if !want[name] {
-			t.Fatalf("Modules carries %q, which no logger binds", name)
-		}
 	}
 }

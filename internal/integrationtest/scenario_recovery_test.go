@@ -195,7 +195,7 @@ func TestScenarioRecoveryRepairImpossible(t *testing.T) {
 // section 15, L958).
 //
 // The scan and stage boundaries are documented as no-mutation points. If
-// either started reporting a recovery failure, callers would be told to
+// either starts reporting a recovery failure, callers are told to
 // expect a rewritten directory where nothing was ever written.
 func TestScenarioRecoveryNoMutationBoundaries(t *testing.T) {
 	t.Parallel()

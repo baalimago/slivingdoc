@@ -33,7 +33,7 @@ func TestScenarioPathSecurityProcess(t *testing.T) {
 
 	// The FIFO is the only irregular entry of its own directory, beside one
 	// valid note, so the rejection can name no other cause. No writer ever
-	// opens it: a server that tried to read it would block and fail the
+	// opens it: a server that tries to read it blocks and fails the
 	// test by timeout instead of answering.
 	special := filepath.Join(h.workspaceRoot, "special")
 	if err := os.MkdirAll(special, 0o755); err != nil {

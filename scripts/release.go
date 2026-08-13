@@ -12,8 +12,6 @@ import (
 	"strings"
 )
 
-// Terminal styling. ANSI codes only; the script has no external dependencies.
-// Color is emitted only when stdout is a terminal, so a piped run stays plain.
 const (
 	ansiReset   = "\x1b[0m"
 	ansiBold    = "\x1b[1m"

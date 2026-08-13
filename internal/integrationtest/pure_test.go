@@ -250,7 +250,7 @@ func TestRecorderPreservesResults(t *testing.T) {
 }
 
 // TestFaultStoreFailNextIsOneShot proves the injection changes an outcome
-// that would otherwise succeed, does not reach the base store, and applies to
+// that otherwise succeeds, does not reach the base store, and applies to
 // exactly one call.
 func TestFaultStoreFailNextIsOneShot(t *testing.T) {
 	t.Parallel()
@@ -457,7 +457,7 @@ func TestFaultStoreAmbiguousNext(t *testing.T) {
 	if !errors.Is(err, storage.ErrTransport) {
 		t.Fatalf("ambiguous replace = %v, want ErrTransport", err)
 	}
-	// The caller must learn nothing it could use to resolve the ambiguity.
+	// The caller must learn nothing that resolves the ambiguity.
 	if newETag != "" {
 		t.Fatalf("ambiguous replace returned ETag %q, want the empty token", newETag)
 	}
@@ -521,8 +521,8 @@ func TestFaultStoreAmbiguousNextOp(t *testing.T) {
 }
 
 // TestFaultStoreUnprovableNext proves the publication cannot prove its own
-// acceptance: the replace lands but reports transport, and the read that would
-// settle the question fails once (architecture section 11.3).
+// acceptance: the replace lands but reports transport, and the read that
+// settles the question fails once (architecture section 11.3).
 func TestFaultStoreUnprovableNext(t *testing.T) {
 	t.Parallel()
 	base := newPureStore()
@@ -697,7 +697,7 @@ func TestFaultStoreReleaseBeforeStart(t *testing.T) {
 		}
 		errs <- err
 	}()
-	// Below barrierTimeout: a barrier left armed would fail this deadline
+	// Below barrierTimeout: a barrier left armed fails this deadline
 	// instead of quietly succeeding after the bound expires.
 	pureAwait(t, done, 2*time.Second, "get after an early Release")
 	if err := <-errs; err != nil {
@@ -707,7 +707,7 @@ func TestFaultStoreReleaseBeforeStart(t *testing.T) {
 
 // TestFaultStoreReleaseFreesReArmedWaiter proves Release frees an already
 // parked operation even when the barrier was re-armed behind it. Without
-// that, the re-arm would strand the waiter forever.
+// that, the re-arm strands the waiter forever.
 func TestFaultStoreReleaseFreesReArmedWaiter(t *testing.T) {
 	t.Parallel()
 	base := newPureStore()

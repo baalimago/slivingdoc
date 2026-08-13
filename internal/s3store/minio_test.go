@@ -41,7 +41,11 @@ func newMinioStore(t *testing.T, namespace string, opts ...Options) (*Store, *s3
 	t.Helper()
 	suite := testminio.Ensure(t)
 	prefix := suite.FreshPrefix(namespace)
-	st, err := New(suite.Config(), testminio.Bucket, prefix, opts...)
+	mc := suite.StoreConfig()
+	st, err := New(context.Background(), Config{
+		Bucket: testminio.Bucket, Prefix: prefix, Region: mc.Region,
+		Endpoint: mc.Endpoint, AccessKey: mc.AccessKey, SecretKey: mc.SecretKey,
+	}, opts...)
 	if err != nil {
 		t.Fatalf("New(%q): %v", prefix, err)
 	}
@@ -54,7 +58,11 @@ func newMinioStore(t *testing.T, namespace string, opts ...Options) (*Store, *s3
 func TestMinioContractSuite(t *testing.T) {
 	suite := testminio.Ensure(t)
 	contract.Run(t, func(t *testing.T) storage.ObjectStore {
-		st, err := New(suite.Config(), testminio.Bucket, suite.FreshPrefix("contract"))
+		mc := suite.StoreConfig()
+		st, err := New(context.Background(), Config{
+			Bucket: testminio.Bucket, Prefix: suite.FreshPrefix("contract"), Region: mc.Region,
+			Endpoint: mc.Endpoint, AccessKey: mc.AccessKey, SecretKey: mc.SecretKey,
+		})
 		if err != nil {
 			t.Fatalf("New: %v", err)
 		}

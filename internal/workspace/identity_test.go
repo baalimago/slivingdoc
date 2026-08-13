@@ -58,7 +58,7 @@ func TestDerivedKeyDistinguishesInputs(t *testing.T) {
 }
 
 func TestDerivedKeyLengthPrefixed(t *testing.T) {
-	// A naive concatenation would make ("/a", "b") and ("/ab", "") collide.
+	// A naive concatenation makes ("/a", "b") and ("/ab", "") collide.
 	// Length prefixes keep the encodings unambiguous.
 	id := func(endpoint string) Identity {
 		return Identity{Endpoint: endpoint, Region: "r", Bucket: "b", Prefix: "p", ManifestVersion: 1}

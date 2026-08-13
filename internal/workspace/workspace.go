@@ -78,6 +78,7 @@ type Workspace struct {
 	flock      *flock.Flock
 	state      state
 	failpoints *Failpoints
+	rename     func(oldpath, newpath string) error
 	closed     bool
 }
 
@@ -159,6 +160,7 @@ func Open(ctx context.Context, cfg Config) (*Workspace, error) {
 		flock:      fl,
 		sem:        make(chan struct{}, 1),
 		failpoints: cfg.Failpoints,
+		rename:     os.Rename,
 		state:      needsRecovery.state,
 	}
 	if needsRecovery.recovery {

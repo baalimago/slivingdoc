@@ -13,97 +13,94 @@ import (
 
 // Stable error categories of the tool-error shape (architecture section 2
 // and the worklog error taxonomy). The text of an error can change; the
-// code and the structured conflict paths are stable.
+// code and the structured conflict paths are stable. Notebook domain
+// errors carry their own notebook.Code; only the codes this package
+// generates itself are named here.
 const (
-	codeInvalidRequest    = "INVALID_REQUEST"
-	codeContentConflict   = "CONTENT_CONFLICT"
-	codeRemoteBusy        = "REMOTE_BUSY"
-	codeStorageFailure    = "STORAGE_FAILURE"
-	codeStorageIntegrity  = "STORAGE_INTEGRITY"
-	codeRecoveryFailure   = "RECOVERY_FAILURE"
-	codeIncompatibleStore = "INCOMPATIBLE_STORE"
+	codeInvalidRequest = "INVALID_REQUEST"
+	codeStorageFailure = "STORAGE_FAILURE"
 )
 
-// toolError is the structured error object carried in the MCP tool result.
+// ToolError is the structured error object carried in the MCP tool result.
 // Code, retryable, message, and files are always present; recovery appears
 // only for RECOVERY_FAILURE (architecture section 2). Request paths are
 // absolute; every files[].path is relative to the request path and uses
 // the normalized internal slash form.
-type toolError struct {
+type ToolError struct {
 	Code      string        `json:"code"`
 	Retryable bool          `json:"retryable"`
 	Message   string        `json:"message"`
-	Files     []errorFile   `json:"files"`
-	Recovery  *recoveryInfo `json:"recovery,omitempty"`
+	Files     []ErrorFile   `json:"files"`
+	Recovery  *RecoveryInfo `json:"recovery,omitempty"`
 }
 
-type errorFile struct {
+type ErrorFile struct {
 	Path   string       `json:"path"`
-	Ranges []errorRange `json:"ranges"`
+	Ranges []ErrorRange `json:"ranges"`
 }
 
-// errorRange is one conflict-marker block: one-based and inclusive.
-type errorRange struct {
+// ErrorRange is one conflict-marker block: one-based and inclusive.
+type ErrorRange struct {
 	Start int `json:"start"`
 	End   int `json:"end"`
 }
 
-// recoveryInfo is the RECOVERY_FAILURE report: the failed stage, whether
+// RecoveryInfo is the RECOVERY_FAILURE report: the failed stage, whether
 // remote acceptance is known, and whether resynchronization succeeded.
-type recoveryInfo struct {
+type RecoveryInfo struct {
 	Stage          string `json:"stage"`
 	RemoteAccepted string `json:"remoteAccepted"`
 	Resynchronized bool   `json:"resynchronized"`
 }
 
-// mapError converts a service error into the structured tool error. The
+// MapError converts a service error into the structured tool error. The
 // second result reports whether the error is a domain error: false keeps
 // the error a protocol error (request cancellation), so the SDK reports it
 // outside the tool-error envelope.
-func mapError(err error) (*toolError, bool) {
+func MapError(err error) (*ToolError, bool) {
 	var nb *notebook.Error
 	if errors.As(err, &nb) {
 		return mapNotebookError(nb), true
 	}
 	if errors.Is(err, workspace.ErrInvalidPath) || errors.Is(err, workspace.ErrSymlink) {
-		return &toolError{
+		return &ToolError{
 			Code:      codeInvalidRequest,
 			Retryable: false,
 			Message:   Redact(invalidPathMessage(err)),
-			Files:     []errorFile{},
+			Files:     []ErrorFile{},
 		}, true
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return nil, false
 	}
-	return &toolError{
+	return &ToolError{
 		Code:      codeStorageFailure,
 		Retryable: true,
 		Message:   "the notebook service failed unexpectedly; retry the operation",
-		Files:     []errorFile{},
+		Files:     []ErrorFile{},
 	}, true
 }
 
 // mapNotebookError converts one notebook domain error into the stable
 // tool-error shape. Only the notebook's public message reaches the
 // envelope; the wrapped cause stays internal and is never surfaced.
-func mapNotebookError(e *notebook.Error) *toolError {
-	files := make([]errorFile, 0, len(e.Files))
+func mapNotebookError(e *notebook.Error) *ToolError {
+	files := make([]ErrorFile, 0, len(e.Files))
 	for _, f := range e.Files {
-		ranges := make([]errorRange, 0, len(f.Ranges))
+		ranges := make([]ErrorRange, 0, len(f.Ranges))
 		for _, r := range f.Ranges {
-			ranges = append(ranges, errorRange{Start: r.Start, End: r.End})
+			ranges = append(ranges, ErrorRange{Start: r.Start, End: r.End})
 		}
-		files = append(files, errorFile{Path: f.Path, Ranges: ranges})
+		files = append(files, ErrorFile{Path: f.Path, Ranges: ranges})
 	}
-	te := &toolError{
+	te := &ToolError{
 		Code:      string(e.Code),
 		Retryable: retryable(e.Code),
 		Message:   Redact(e.Message),
 		Files:     files,
 	}
 	if e.Code == notebook.CodeRecoveryFailure && e.Recovery != nil {
-		te.Recovery = &recoveryInfo{
+		te.Recovery = &RecoveryInfo{
 			Stage:          e.Recovery.Stage,
 			RemoteAccepted: string(e.Recovery.RemoteAccepted),
 			Resynchronized: e.Recovery.Resynchronized,
@@ -136,13 +133,39 @@ func invalidPathMessage(err error) string {
 
 // invalidRequest builds an INVALID_REQUEST tool error from a strict-decode
 // failure.
-func invalidRequest(cause error) *toolError {
-	return &toolError{
+func invalidRequest(cause error) *ToolError {
+	return &ToolError{
 		Code:      codeInvalidRequest,
 		Retryable: false,
 		Message:   Redact(cause.Error()),
-		Files:     []errorFile{},
+		Files:     []ErrorFile{},
 	}
+}
+
+// Report renders the candid CLI text form of the envelope: the category
+// and message, the retryable verdict, one indented line per conflicted
+// file with its one-based inclusive line ranges, and the recovery report
+// when present. The pull and commit subcommands print it verbatim.
+func (te *ToolError) Report() string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s: %s\n", te.Code, te.Message)
+	fmt.Fprintf(&b, "retryable: %t\n", te.Retryable)
+	for _, f := range te.Files {
+		if len(f.Ranges) == 0 {
+			fmt.Fprintf(&b, "  %s\n", f.Path)
+			continue
+		}
+		parts := make([]string, 0, len(f.Ranges))
+		for _, r := range f.Ranges {
+			parts = append(parts, fmt.Sprintf("%d-%d", r.Start, r.End))
+		}
+		fmt.Fprintf(&b, "  %s: lines %s\n", f.Path, strings.Join(parts, ", "))
+	}
+	if rec := te.Recovery; rec != nil {
+		fmt.Fprintf(&b, "recovery: stage=%s remoteAccepted=%s resynchronized=%t\n",
+			rec.Stage, rec.RemoteAccepted, rec.Resynchronized)
+	}
+	return b.String()
 }
 
 // Redaction patterns. The architecture (section 2) forbids credentials,

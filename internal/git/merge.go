@@ -125,7 +125,7 @@ func materializeConflict(repo Repository, entries []IndexEntry) (content []byte,
 		return nil, nil, err
 	}
 	// libgit2's merge-file wrapper drops the marker label of a side whose
-	// input is empty, so a delete conflict would end in a bare `>>>>>>>`
+	// input is empty, so a delete conflict ends in a bare `>>>>>>>`
 	// line. The marker contract requires exact signatures, so the deleted
 	// side is formatted here with the exact labels, matching Git's own
 	// merge-file output.

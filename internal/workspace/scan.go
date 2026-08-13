@@ -92,7 +92,7 @@ func (w *Workspace) scanWalk(ctx context.Context, dirRel, prefix string, files *
 		norm := norm.NFC.String(raw)
 		path := prefix + norm
 		if err := git.ValidatePath(path); err != nil {
-			return fmt.Errorf("workspace: scan %q: %w: %v", dirRel+"/"+raw, ErrInvalidPath, err)
+			return fmt.Errorf("workspace: scan %q: %w: %w", dirRel+"/"+raw, ErrInvalidPath, err)
 		}
 		info, err := e.Info() // Lstat semantics: a symlink reports itself
 		if err != nil {
@@ -162,7 +162,7 @@ func (w *Workspace) readVisibleFile(ctx context.Context, rawRel, path string) ([
 		return nil, fmt.Errorf("workspace: scan %q: %w", path, err)
 	}
 	if err := git.ValidateContent(data); err != nil {
-		return nil, fmt.Errorf("workspace: scan %q: %w: %v", path, ErrInvalidContent, err)
+		return nil, fmt.Errorf("workspace: scan %q: %w: %w", path, ErrInvalidContent, err)
 	}
 	return data, nil
 }

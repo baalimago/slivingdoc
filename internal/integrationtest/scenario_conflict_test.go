@@ -94,7 +94,7 @@ func TestScenarioConflictResolutionAndRepublish(t *testing.T) {
 
 	// A fresh reader observes exactly the resolved bytes: asserting the
 	// exact content is what rules marker bytes out of the accepted state,
-	// since any marker block would change those bytes.
+	// since any marker block changes those bytes.
 	c.assertOK(t, c.Pull("", pathC))
 	assertVisibleFiles(t, c, pathC, map[string]string{"shared.md": "resolved\n"})
 }

@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/baalimago/slivingdoc/internal/notebook"
 	"github.com/baalimago/slivingdoc/internal/storage"
 	"github.com/baalimago/slivingdoc/internal/workspace"
 )
@@ -67,12 +68,14 @@ func (f *Flags) Bind(fs *flag.FlagSet) {
 }
 
 // The documented numeric bounds and defaults (architecture section 17).
+// The ranges come from the notebook package, which owns them, so the flag
+// validation and the notebook validation cannot drift.
 const (
-	defaultCommitRetries       = 8
-	maxCommitRetries           = 100
-	defaultCheckpointPacks     = 1024
-	defaultRetainedCheckpoints = 1
-	maxRetainedCheckpoints     = 64
+	defaultCommitRetries       = notebook.DefaultRetryLimit
+	maxCommitRetries           = notebook.MaxRetryLimit
+	defaultCheckpointPacks     = notebook.DefaultCheckpointPacks
+	defaultRetainedCheckpoints = notebook.DefaultRetainedCheckpoints
+	maxRetainedCheckpoints     = notebook.MaxRetainedCheckpoints
 )
 
 // loadConfig resolves one validated configuration for the process
@@ -143,10 +146,10 @@ func (cfg config) finish(cwd string) (config, error) {
 	cfg.endpoint = endpoint
 
 	if cfg.workspaceRoot, err = absolute(cwd, cfg.workspaceRoot); err != nil {
-		return config{}, fmt.Errorf("workspace root: %v", err)
+		return config{}, fmt.Errorf("workspace root: %w", err)
 	}
 	if cfg.privateRoot, err = absolute(cwd, cfg.privateRoot); err != nil {
-		return config{}, fmt.Errorf("private root: %v", err)
+		return config{}, fmt.Errorf("private root: %w", err)
 	}
 	if workspace.RootsOverlap(cfg.privateRoot, cfg.workspaceRoot) {
 		return config{}, errors.New("private root must not be at or below the workspace root")
@@ -155,8 +158,8 @@ func (cfg config) finish(cwd string) (config, error) {
 	if cfg.commitRetries > maxCommitRetries {
 		return config{}, fmt.Errorf("commit retries %d is outside 0..%d", cfg.commitRetries, maxCommitRetries)
 	}
-	if cfg.checkpointPacks < 1 {
-		return config{}, fmt.Errorf("checkpoint packs threshold %d must be at least 1", cfg.checkpointPacks)
+	if cfg.checkpointPacks < notebook.MinCheckpointPacks {
+		return config{}, fmt.Errorf("checkpoint packs threshold %d must be at least %d", cfg.checkpointPacks, notebook.MinCheckpointPacks)
 	}
 	if cfg.retainedCheckpoints > maxRetainedCheckpoints {
 		return config{}, fmt.Errorf("retained checkpoints %d is outside 0..%d", cfg.retainedCheckpoints, maxRetainedCheckpoints)
@@ -331,17 +334,10 @@ func parseUnsigned(s string) (int, error) {
 	return int(n), nil
 }
 
-// helpText is the --help output (architecture section 17). It documents
-// every flag, its environment variable, and its default.
-const helpText = `slivingdoc serve - shared UTF-8 text notebook over MCP stdio
-
-Usage:
-  slivingdoc serve [flags]
-
-Flags take precedence over environment variables, which override defaults.
-An explicitly empty flag value does not fall back to an environment value.
-
-  --bucket string               S3 bucket (required)                         SLIVINGDOC_BUCKET
+// FlagReference documents every shared configuration flag, its environment
+// variable, and its default (architecture section 17). serve, pull, and
+// commit embed it in their help output.
+const FlagReference = `  --bucket string               S3 bucket (required)                         SLIVINGDOC_BUCKET
   --prefix string               S3 object prefix (default "slivingdoc")      SLIVINGDOC_PREFIX
   --region string               S3 region (default "us-east-1")              AWS_REGION
   --endpoint string             S3-compatible endpoint URL (empty for AWS)   AWS_ENDPOINT_URL_S3
@@ -359,4 +355,12 @@ An explicitly empty flag value does not fall back to an environment value.
 `
 
 // HelpText is the serve-command help (architecture section 17).
-const HelpText = helpText
+const HelpText = `slivingdoc serve - shared UTF-8 text notebook over MCP stdio
+
+Usage:
+  slivingdoc serve [flags]
+
+Flags take precedence over environment variables, which override defaults.
+An explicitly empty flag value does not fall back to an environment value.
+
+` + FlagReference

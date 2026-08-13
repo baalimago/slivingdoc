@@ -28,10 +28,11 @@ const releaseTestVersion = "0.0.0-release-test"
 
 // startAndWait runs name with args and collects its streams and exit code.
 //
-// os/exec is absent from this repository by contract: the seam scan in
-// internal/git2 rejects it module-wide so the server can never shell out to
-// the Git executable (TestNoGitExecutableOrGit2goImport). Processes
-// therefore start through os.StartProcess, as they do everywhere else here.
+// os/exec is absent from the server by contract: the seam scan in
+// internal/git2 rejects it module-wide (scripts/ excepted) so the server
+// can never shell out to the Git executable
+// (TestNoGitExecutableOrGit2goImport). Processes therefore start through
+// os.StartProcess, as they do everywhere else here.
 func startAndWait(name string, args ...string) (stdout, stderr string, code int, err error) {
 	devNull, err := os.OpenFile(os.DevNull, os.O_RDONLY, 0)
 	if err != nil {
@@ -64,7 +65,7 @@ func startAndWait(name string, args ...string) (stdout, stderr string, code int,
 	}
 
 	// Both pipes drain concurrently: a child that fills one while the parent
-	// blocks on the other would deadlock.
+	// blocks on the other deadlocks.
 	var wg sync.WaitGroup
 	var out, errOut []byte
 	wg.Add(2)
@@ -347,8 +348,8 @@ func TestReleaseBinaryCommandSurface(t *testing.T) {
 	}
 
 	// The serve command without a bucket is a refusal, not a server that
-	// waits on stdin: a hanging process here would be indistinguishable from
-	// a working one until the suite timed out.
+	// waits on stdin: a hanging process here is indistinguishable from
+	// a working one until the suite times out.
 	t.Run("serve without a bucket refuses", func(t *testing.T) {
 		t.Parallel()
 		stdout, stderr, code, err := startAndWait(bin, "serve", "--workspace-root="+t.TempDir())

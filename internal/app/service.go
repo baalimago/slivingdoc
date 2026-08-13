@@ -82,7 +82,7 @@ type openedNotebook struct {
 
 // NewService returns a service bound to the store and the validated
 // configuration. The engine stays owned by the caller; the service closes
-// the workspaces it opens. hooks may be nil.
+// the workspaces it opens. hooks can be nil.
 func NewService(engine git.Engine, store storage.ObjectStore, cfg ServiceConfig, hooks *ServiceHooks) (*Service, error) {
 	if engine == nil {
 		return nil, errors.New("app: engine is required")

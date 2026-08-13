@@ -69,14 +69,8 @@ func TestErrorMessages(t *testing.T) {
 	}
 }
 
-func TestErrUnavailable(t *testing.T) {
-	if !errors.Is(ErrUnavailable, ErrUnavailable) {
-		t.Fatal("ErrUnavailable must identify itself")
-	}
-	if ErrUnavailable.Error() == "" {
-		t.Fatal("ErrUnavailable must carry a message")
-	}
-}
+// errNoRepo is the sentinel the fake engine returns for repository calls.
+var errNoRepo = errors.New("git test: fake engine has no repositories")
 
 // fakeEngine proves that the seam compiles and records calls without any
 // native code. Higher packages mirror this mock per the duplication policy.
@@ -106,9 +100,9 @@ func (f *fakeEngine) Version() (string, error) { return f.version, nil }
 
 func (f *fakeEngine) Features() (Features, error) { return f.features, nil }
 
-func (f *fakeEngine) CreateRepo(string) (Repository, error) { return nil, ErrUnavailable }
+func (f *fakeEngine) CreateRepo(string) (Repository, error) { return nil, errNoRepo }
 
-func (f *fakeEngine) OpenRepo(string) (Repository, error) { return nil, ErrUnavailable }
+func (f *fakeEngine) OpenRepo(string) (Repository, error) { return nil, errNoRepo }
 
 func TestFakeEngineSatisfiesSeam(t *testing.T) {
 	var _ Engine = (*fakeEngine)(nil)

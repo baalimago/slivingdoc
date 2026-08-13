@@ -10,10 +10,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"strconv"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/smithy-go"
@@ -68,13 +70,41 @@ type Store struct {
 	options Options
 }
 
+// Config binds a store to one bucket and prefix with plain values only.
+// The adapter owns AWS configuration loading, so no SDK type crosses this
+// boundary (the AGENTS invariant).
+type Config struct {
+	// Bucket is the S3 bucket; required.
+	Bucket string
+	// Prefix is the object prefix below the bucket; validated.
+	Prefix string
+	// Region is the S3 region; empty keeps the SDK resolution.
+	Region string
+	// Endpoint is a custom S3-compatible base endpoint URL. Empty means
+	// normal AWS resolution; a custom endpoint always uses path style.
+	Endpoint string
+	// AccessKey and SecretKey bypass the default credential chain when
+	// both are set. The MinIO suites inject the container credentials;
+	// production leaves them empty and uses the chain.
+	AccessKey string
+	SecretKey string
+
+	// Test seams, settable only by same-package tests: a recording HTTP
+	// client and a retry bound prove the addressing mode without any
+	// network.
+	httpClient interface {
+		Do(*http.Request) (*http.Response, error)
+	}
+	retryMaxAttempts int
+}
+
 // New validates the bucket and prefix and returns a store for them. The
 // adapter never creates or configures the bucket; deployment owns it.
-func New(cfg aws.Config, bucket, prefix string, opts ...Options) (*Store, error) {
-	if bucket == "" {
+func New(ctx context.Context, cfg Config, opts ...Options) (*Store, error) {
+	if cfg.Bucket == "" {
 		return nil, errors.New("s3store: bucket is required")
 	}
-	if err := storage.ValidatePrefix(prefix); err != nil {
+	if err := storage.ValidatePrefix(cfg.Prefix); err != nil {
 		return nil, err
 	}
 	var options Options
@@ -84,15 +114,39 @@ func New(cfg aws.Config, bucket, prefix string, opts ...Options) (*Store, error)
 	if _, _, err := options.withDefaults(); err != nil {
 		return nil, err
 	}
-	client := s3.NewFromConfig(cfg, func(o *s3.Options) {
-		if cfg.BaseEndpoint != nil || options.ForcePathStyle {
+	var loadOpts []func(*awsconfig.LoadOptions) error
+	if cfg.Region != "" {
+		loadOpts = append(loadOpts, awsconfig.WithRegion(cfg.Region))
+	}
+	if cfg.Endpoint != "" {
+		loadOpts = append(loadOpts, awsconfig.WithBaseEndpoint(cfg.Endpoint))
+	}
+	if cfg.AccessKey != "" && cfg.SecretKey != "" {
+		access, secret := cfg.AccessKey, cfg.SecretKey
+		loadOpts = append(loadOpts, awsconfig.WithCredentialsProvider(
+			aws.CredentialsProviderFunc(func(context.Context) (aws.Credentials, error) {
+				return aws.Credentials{AccessKeyID: access, SecretAccessKey: secret}, nil
+			})))
+	}
+	if cfg.httpClient != nil {
+		loadOpts = append(loadOpts, awsconfig.WithHTTPClient(cfg.httpClient))
+	}
+	if cfg.retryMaxAttempts > 0 {
+		loadOpts = append(loadOpts, awsconfig.WithRetryMaxAttempts(cfg.retryMaxAttempts))
+	}
+	awsCfg, err := awsconfig.LoadDefaultConfig(ctx, loadOpts...)
+	if err != nil {
+		return nil, fmt.Errorf("s3store: load AWS configuration: %w", err)
+	}
+	client := s3.NewFromConfig(awsCfg, func(o *s3.Options) {
+		if cfg.Endpoint != "" || options.ForcePathStyle {
 			// S3-compatible endpoints (MinIO and similar) resolve
 			// bucket names only in path style; --path-style requests the
 			// same addressing for the default AWS endpoint.
 			o.UsePathStyle = true
 		}
 	})
-	return &Store{client: client, bucket: bucket, prefix: prefix, options: options}, nil
+	return &Store{client: client, bucket: cfg.Bucket, prefix: cfg.Prefix, options: options}, nil
 }
 
 var _ storage.ObjectStore = (*Store)(nil)
@@ -110,7 +164,7 @@ func (s *Store) ReadObject(ctx context.Context, key string) (io.ReadCloser, stor
 	meta, err := decodeMeta(out.Metadata)
 	if err != nil {
 		out.Body.Close()
-		return nil, storage.ObjectInfo{}, fmt.Errorf("s3store: get %s: %w", key, storage.ErrIntegrity)
+		return nil, storage.ObjectInfo{}, fmt.Errorf("s3store: get %s: %w: %w", key, storage.ErrIntegrity, err)
 	}
 	return out.Body, storage.ObjectInfo{
 		Size: aws.ToInt64(out.ContentLength),

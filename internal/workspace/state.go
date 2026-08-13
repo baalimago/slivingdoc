@@ -49,7 +49,7 @@ const (
 // state and calls Recover with the reconstructed baseline.
 var ErrRecoveryRequired = errors.New("workspace: private state requires recovery")
 
-// ErrPartial reports a mutation that started but could not be completed:
+// ErrPartial reports a mutation that started but did not complete:
 // the visible directory or the private state is partially mutated and the
 // workspace must be recovered before normal work.
 var ErrPartial = errors.New("workspace: partial mutation; recovery required")

@@ -144,8 +144,8 @@ func TestServeHelpExitsCleanly(t *testing.T) {
 func TestCommandsCoverTheDocumentedSurface(t *testing.T) {
 	t.Parallel()
 	commands := Commands(&stubEngine{}, app.ProcessOptions{})
-	if len(commands) != 2 {
-		t.Fatalf("commands = %d, want serve and version only", len(commands))
+	if len(commands) != 4 {
+		t.Fatalf("commands = %d, want serve, pull, commit, and version only", len(commands))
 	}
 	for name, command := range commands {
 		if command.Flagset() == nil {
@@ -158,7 +158,7 @@ func TestCommandsCoverTheDocumentedSurface(t *testing.T) {
 			t.Fatalf("%s: empty help", name)
 		}
 	}
-	for _, want := range []string{"serve|s", "version|v"} {
+	for _, want := range []string{"serve|s", "pull|p", "commit|c", "version|v"} {
 		if _, ok := commands[want]; !ok {
 			t.Fatalf("command %q is missing; its shortcut is part of the CLI surface", want)
 		}

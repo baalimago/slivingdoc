@@ -77,13 +77,24 @@ const DefaultCheckpointPacks = 1024
 // active generation.
 const DefaultRetainedCheckpoints = 1
 
+// MaxRetryLimit, MinCheckpointPacks, and MaxRetainedCheckpoints are the
+// documented operational ranges (architecture section 17). The application
+// package validates its flags against the same values, so the two range
+// checks cannot drift.
 const (
-	minRetryLimit       = 0
-	maxRetryLimit       = 100
-	minCheckpointPacks  = 1
-	maxRetainedCheckpts = 64
-	defaultBackoffMin   = 25 * time.Millisecond
-	defaultBackoffMax   = 2 * time.Second
+	MaxRetryLimit          = 100
+	MinCheckpointPacks     = 1
+	MaxRetainedCheckpoints = 64
+)
+
+// MaxMessageBytes is the notes_commit message byte bound (architecture
+// section 2). The MCP schema advertises the same value.
+const MaxMessageBytes = 16384
+
+const (
+	minRetryLimit     = 0
+	defaultBackoffMin = 25 * time.Millisecond
+	defaultBackoffMax = 2 * time.Second
 )
 
 // Notebook executes pull and commit against one workspace and one store.
@@ -111,14 +122,14 @@ func New(cfg Config) (*Notebook, error) {
 	if cfg.Store == nil {
 		return nil, errors.New("notebook: store is required")
 	}
-	if cfg.RetryLimit < minRetryLimit || cfg.RetryLimit > maxRetryLimit {
-		return nil, fmt.Errorf("notebook: retry limit %d is outside %d..%d", cfg.RetryLimit, minRetryLimit, maxRetryLimit)
+	if cfg.RetryLimit < minRetryLimit || cfg.RetryLimit > MaxRetryLimit {
+		return nil, fmt.Errorf("notebook: retry limit %d is outside %d..%d", cfg.RetryLimit, minRetryLimit, MaxRetryLimit)
 	}
-	if cfg.CheckpointPacks < minCheckpointPacks {
-		return nil, fmt.Errorf("notebook: checkpoint packs threshold %d must be at least %d", cfg.CheckpointPacks, minCheckpointPacks)
+	if cfg.CheckpointPacks < MinCheckpointPacks {
+		return nil, fmt.Errorf("notebook: checkpoint packs threshold %d must be at least %d", cfg.CheckpointPacks, MinCheckpointPacks)
 	}
-	if cfg.RetainedCheckpoints < 0 || cfg.RetainedCheckpoints > maxRetainedCheckpts {
-		return nil, fmt.Errorf("notebook: retained checkpoints %d is outside %d..%d", cfg.RetainedCheckpoints, 0, maxRetainedCheckpts)
+	if cfg.RetainedCheckpoints < 0 || cfg.RetainedCheckpoints > MaxRetainedCheckpoints {
+		return nil, fmt.Errorf("notebook: retained checkpoints %d is outside %d..%d", cfg.RetainedCheckpoints, 0, MaxRetainedCheckpoints)
 	}
 	newID := cfg.NewID
 	if newID == nil {
@@ -156,7 +167,6 @@ const (
 	stageCommit   = "commit.accept"
 	stageCAS      = "commit.cas"
 	stageConflict = "merge.materialize"
-	stageRecover  = "recovery.apply"
 )
 
 // entryRecovery runs the authoritative resynchronization the next MCP call
@@ -216,14 +226,14 @@ func (n *Notebook) mapLocalError(err error) error {
 // or S3 access: non-blank (not only Unicode white space), at most 16,384
 // bytes, valid UTF-8 without U+0000.
 func validateMessage(message string) error {
-	if len(message) > 16384 {
-		return invalidRequest("commit message exceeds 16384 bytes")
+	if len(message) > MaxMessageBytes {
+		return invalidRequest("commit message exceeds %d bytes", MaxMessageBytes)
 	}
 	if strings.TrimSpace(message) == "" {
 		return invalidRequest("commit message must not be blank")
 	}
 	if err := git.ValidateCommitMessage(message); err != nil {
-		return invalidRequest("invalid commit message: %v", err)
+		return &Error{Code: CodeInvalidRequest, Message: "invalid commit message", Cause: err}
 	}
 	return nil
 }

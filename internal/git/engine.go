@@ -7,7 +7,6 @@
 package git
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -66,7 +65,7 @@ type Repository interface {
 	// repository object store.
 	ImportPack(data []byte) error
 	// MarkShallow records a commit as a shallow history boundary: its
-	// parents may be absent.
+	// parents can be absent.
 	MarkShallow(oid OID) error
 	Close() error
 }
@@ -149,11 +148,6 @@ func FeaturesFromMask(mask uint32) Features {
 		SHA256:        mask&(1<<11) != 0,
 	}
 }
-
-// ErrUnavailable reports that the native engine cannot open because the
-// binary was built without CGo. The non-CGo stub returns this error; it
-// never emulates Git behavior.
-var ErrUnavailable = errors.New("git: native engine unavailable: binary was built without cgo")
 
 // VersionMismatchError reports a runtime libgit2 release that differs from
 // the pinned release the binary was built and tested against.

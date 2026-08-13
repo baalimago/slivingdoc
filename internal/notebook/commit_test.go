@@ -713,7 +713,7 @@ func TestLookupPublicationSearchesRetained(t *testing.T) {
 // TestCommitAtWorkspaceRoot proves the visible-directory replacement keeps
 // the workspace usable when the requested path IS the workspace root
 // (rel == "."): the first pull renames the root directory away and a new
-// directory into place, which would leave the os.Root handle stale; the
+// directory into place, which leaves the os.Root handle stale. The
 // following commit's snapshot must still scan the new directory. The
 // fresh-environment walkthrough caught this as a STORAGE_FAILURE on the
 // second operation.

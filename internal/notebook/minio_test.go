@@ -35,7 +35,11 @@ func newMinioStore(t *testing.T) *s3store.Store {
 	t.Helper()
 	suite := testminio.Ensure(t)
 	prefix := suite.FreshPrefix("notebook")
-	st, err := s3store.New(suite.Config(), testminio.Bucket, prefix)
+	mc := suite.StoreConfig()
+	st, err := s3store.New(context.Background(), s3store.Config{
+		Bucket: testminio.Bucket, Prefix: prefix, Region: mc.Region,
+		Endpoint: mc.Endpoint, AccessKey: mc.AccessKey, SecretKey: mc.SecretKey,
+	})
 	if err != nil {
 		t.Fatalf("s3store.New(%q) = %v", prefix, err)
 	}

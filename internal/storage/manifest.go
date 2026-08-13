@@ -392,7 +392,7 @@ func requiredSHA256(v strictjson.Value, name, path string) (SHA256, error) {
 }
 
 func integrityErr(err error) error {
-	return fmt.Errorf("storage: manifest: %w: %v", ErrIntegrity, err)
+	return fmt.Errorf("storage: manifest: %w: %w", ErrIntegrity, err)
 }
 
 // validateManifest applies the cross-field rules of architecture section

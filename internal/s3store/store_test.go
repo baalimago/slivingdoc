@@ -9,7 +9,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
 	smithy "github.com/aws/smithy-go"
 
 	"github.com/baalimago/slivingdoc/internal/storage"
@@ -18,7 +17,7 @@ import (
 // TestNewValidatesBucket proves that the bucket is required before any
 // client is built.
 func TestNewValidatesBucket(t *testing.T) {
-	if _, err := New(aws.Config{}, "", ""); err == nil {
+	if _, err := New(context.Background(), Config{}); err == nil {
 		t.Fatal("New with an empty bucket succeeded, want an error")
 	}
 }
@@ -29,12 +28,12 @@ func TestNewValidatesBucket(t *testing.T) {
 func TestNewValidatesPrefix(t *testing.T) {
 	bad := []string{"/leading", "trailing/", "a//b", "a/./b", "a/../b", `a\b`}
 	for _, prefix := range bad {
-		if _, err := New(aws.Config{}, "bucket", prefix); err == nil {
+		if _, err := New(context.Background(), Config{Bucket: "bucket", Prefix: prefix}); err == nil {
 			t.Fatalf("New with prefix %q succeeded, want an error", prefix)
 		}
 	}
 	for _, prefix := range []string{"", "ok", "ok/prefix"} {
-		if _, err := New(aws.Config{}, "bucket", prefix); err != nil {
+		if _, err := New(context.Background(), Config{Bucket: "bucket", Prefix: prefix}); err != nil {
 			t.Fatalf("New with prefix %q: %v", prefix, err)
 		}
 	}
@@ -43,10 +42,10 @@ func TestNewValidatesPrefix(t *testing.T) {
 // TestNewValidatesPartSize proves that a multipart part size below the S3
 // minimum is rejected at construction.
 func TestNewValidatesPartSize(t *testing.T) {
-	if _, err := New(aws.Config{}, "bucket", "", Options{MultipartPartSize: 1 << 20}); err == nil {
+	if _, err := New(context.Background(), Config{Bucket: "bucket"}, Options{MultipartPartSize: 1 << 20}); err == nil {
 		t.Fatal("New with a part size below the S3 minimum succeeded, want an error")
 	}
-	if _, err := New(aws.Config{}, "bucket", "", Options{MultipartPartSize: 5 << 20}); err != nil {
+	if _, err := New(context.Background(), Config{Bucket: "bucket"}, Options{MultipartPartSize: 5 << 20}); err != nil {
 		t.Fatalf("New with the S3 minimum part size: %v", err)
 	}
 }
@@ -194,15 +193,13 @@ func TestAddressingProvesPathStyle(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			rec := &recordingTransport{}
-			cfg := aws.Config{
-				Region:           "us-east-1",
-				HTTPClient:       &http.Client{Transport: rec},
-				RetryMaxAttempts: 1, // the recording transport fails; one attempt proves the URL
-				Credentials: aws.CredentialsProviderFunc(func(context.Context) (aws.Credentials, error) {
-					return aws.Credentials{AccessKeyID: "AKIAIOSFODNN7EXAMPLE", SecretAccessKey: "secret"}, nil
-				}),
+			cfg := Config{
+				Bucket: "bucket", Prefix: "prefix", Region: "us-east-1",
+				AccessKey: "AKIAIOSFODNN7EXAMPLE", SecretKey: "secret",
+				httpClient:       &http.Client{Transport: rec},
+				retryMaxAttempts: 1, // the recording transport fails; one attempt proves the URL
 			}
-			st, err := New(cfg, "bucket", "prefix", Options{ForcePathStyle: tt.force})
+			st, err := New(context.Background(), cfg, Options{ForcePathStyle: tt.force})
 			if err != nil {
 				t.Fatalf("New() = %v", err)
 			}

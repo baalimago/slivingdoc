@@ -75,7 +75,7 @@ func TestConcurrentCASOneWinner(t *testing.T) {
 	ctx := context.Background()
 	key := storage.CurrentKey
 	// The seed bytes must differ from every race payload: a winning write
-	// whose bytes hash to the seed ETag would let a second writer win too.
+	// whose bytes hash to the seed ETag lets a second writer win too.
 	if _, err := s.CreateObject(ctx, key, []byte("seed")); err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -483,13 +483,7 @@ func metaFor(t *testing.T, data []byte, key storage.Key) storage.Metadata {
 func waitUntilBlocked(t *testing.T, s *Store, op Op, key string) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
-	for {
-		s.mu.Lock()
-		_, waiting := s.waiting[opKey{op: op, key: key}]
-		s.mu.Unlock()
-		if waiting {
-			return
-		}
+	for !s.Waiting(op, key) {
 		if time.Now().After(deadline) {
 			t.Fatal("operation never blocked on the barrier")
 		}

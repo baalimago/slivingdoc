@@ -90,7 +90,7 @@ func TestScenarioLoggingPerModuleLevels(t *testing.T) {
 	}
 }
 
-// TestScenarioLoggingColor proves the ANSI level colour is on by default and
+// TestScenarioLoggingColor proves the ANSI level color is on by default and
 // that any non-empty NO_COLOR removes it, following the NO_COLOR convention.
 func TestScenarioLoggingColor(t *testing.T) {
 	t.Parallel()

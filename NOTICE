@@ -1,4 +1,8 @@
-slivingdoc — third-party notices
+slivingdoc — license and third-party notices
+
+slivingdoc itself is licensed under the MIT License. The full text is in
+the LICENSE file at the repository root
+(https://github.com/baalimago/slivingdoc/blob/master/LICENSE).
 
 The slivingdoc executable statically links the following third-party
 component:
@@ -13,4 +17,4 @@ libgit2 v1.9.6
 libgit2 is Copyright (C) the libgit2 contributors. It is used under the
 GPL v2 linking exception, which permits linking the compiled library into
 this executable and distributing the combined work. The build procedure in
-docs/build-libgit2.md rebuilds the pinned release from verified source.
+docs/build.md rebuilds the pinned release from verified source.

@@ -19,9 +19,6 @@ const (
 	ModuleNotebook = "notebook" // best-effort checkpoint and cleanup records
 )
 
-// Modules is every module name the process logs under, for diagnostics.
-var Modules = []string{ModuleCLI, ModuleApp, ModuleMCP, ModuleNotebook}
-
 // logEnvLevel and logEnvNoColor are read from the process environment, not
 // from flags: logging is an operator concern that must work before flags are
 // parsed and identically for every command.
@@ -38,7 +35,7 @@ const (
 // the NO_COLOR convention.
 //
 // A malformed LOG_LEVEL is not fatal. Logging is diagnostic plumbing, and
-// refusing to start over it would turn a typo into an outage; the returned
+// refusing to start over it turns a typo into an outage. The returned
 // logger falls back to the Info default and the returned error names the
 // problem so the caller can report it through that same logger.
 func NewLogger(environment []string, w io.Writer) (*slog.Logger, error) {

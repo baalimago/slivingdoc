@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestCanonicalPathAccepts(t *testing.T) {
+func TestCanonicalizeAccepts(t *testing.T) {
 	root := filepath.Join(string(filepath.Separator), "workspace")
 	cases := map[string]string{
 		"below root":    root + string(filepath.Separator) + "notes",
@@ -16,22 +16,22 @@ func TestCanonicalPathAccepts(t *testing.T) {
 	}
 	for name, path := range cases {
 		t.Run(name, func(t *testing.T) {
-			got, err := CanonicalPath(root, path)
+			got, _, err := canonicalize(root, path)
 			if err != nil {
-				t.Fatalf("CanonicalPath() = %v", err)
+				t.Fatalf("canonicalize() = %v", err)
 			}
 			if !filepath.IsAbs(got) {
-				t.Fatalf("CanonicalPath() = %q, want absolute", got)
+				t.Fatalf("canonicalize() = %q, want absolute", got)
 			}
 			rel, err := filepath.Rel(root, got)
 			if err != nil || rel == ".." || len(rel) >= 3 && rel[:3] == ".."+string(filepath.Separator) {
-				t.Fatalf("CanonicalPath() = %q escapes %q", got, root)
+				t.Fatalf("canonicalize() = %q escapes %q", got, root)
 			}
 		})
 	}
 }
 
-func TestCanonicalPathRejects(t *testing.T) {
+func TestCanonicalizeRejects(t *testing.T) {
 	root := filepath.Join(string(filepath.Separator), "workspace")
 	cases := map[string]string{
 		"relative path":  "notes",
@@ -42,8 +42,8 @@ func TestCanonicalPathRejects(t *testing.T) {
 	}
 	for name, path := range cases {
 		t.Run(name, func(t *testing.T) {
-			if _, err := CanonicalPath(root, path); !errors.Is(err, ErrInvalidPath) {
-				t.Fatalf("CanonicalPath(%q) error = %v, want ErrInvalidPath", path, err)
+			if _, _, err := canonicalize(root, path); !errors.Is(err, ErrInvalidPath) {
+				t.Fatalf("canonicalize(%q) error = %v, want ErrInvalidPath", path, err)
 			}
 		})
 	}

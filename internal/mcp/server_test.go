@@ -215,15 +215,15 @@ func TestConflictDataSurvivesSDKEnvelope(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal structured content: %v", err)
 	}
-	var got toolError
+	var got ToolError
 	if err := json.Unmarshal(data, &got); err != nil {
 		t.Fatalf("structured content is not the tool-error shape: %v", err)
 	}
-	if got.Code != codeContentConflict || got.Retryable {
+	if got.Code != "CONTENT_CONFLICT" || got.Retryable {
 		t.Fatalf("structured = %+v, want CONTENT_CONFLICT not retryable", got)
 	}
 	if len(got.Files) != 2 || got.Files[0].Path != "notes/today.md" ||
-		len(got.Files[0].Ranges) != 2 || got.Files[0].Ranges[0] != (errorRange{12, 18}) {
+		len(got.Files[0].Ranges) != 2 || got.Files[0].Ranges[0] != (ErrorRange{12, 18}) {
 		t.Fatalf("structured files = %+v, want the exact conflict data", got.Files)
 	}
 }
@@ -247,11 +247,11 @@ func TestRecoveryFailureSurvivesSDKEnvelope(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal structured content: %v", err)
 	}
-	var got toolError
+	var got ToolError
 	if err := json.Unmarshal(data, &got); err != nil {
 		t.Fatalf("structured content: %v", err)
 	}
-	if got.Code != codeRecoveryFailure || !got.Retryable || got.Recovery == nil {
+	if got.Code != "RECOVERY_FAILURE" || !got.Retryable || got.Recovery == nil {
 		t.Fatalf("structured = %+v, want a retryable RECOVERY_FAILURE with recovery", got)
 	}
 	if got.Recovery.Stage != "commit.cas" || got.Recovery.RemoteAccepted != "yes" || !got.Recovery.Resynchronized {
@@ -415,7 +415,7 @@ func assertErrorCode(t *testing.T, res *sdk.CallToolResult, wantCode string, wan
 	if err != nil {
 		t.Fatalf("marshal structured content: %v", err)
 	}
-	var got toolError
+	var got ToolError
 	if err := json.Unmarshal(data, &got); err != nil {
 		t.Fatalf("structured content: %v", err)
 	}

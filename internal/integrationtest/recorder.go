@@ -9,20 +9,22 @@ import (
 	"sync"
 
 	"github.com/baalimago/slivingdoc/internal/storage"
+	"github.com/baalimago/slivingdoc/internal/storage/fake"
 )
 
 // Op identifies one ObjectStore operation kind, mirroring the storage
-// boundary methods. The recorder and the fault wrappers share the enum so
-// scenarios can assert and inject on the same names.
-type Op string
+// boundary methods. It aliases the fake store's enum so the recorder, the
+// fault wrappers, and the fake share one definition and scenarios can
+// assert and inject on the same names.
+type Op = fake.Op
 
 const (
-	OpPut     Op = "put"
-	OpGet     Op = "get"
-	OpCreate  Op = "create"
-	OpReplace Op = "replace"
-	OpList    Op = "list"
-	OpDelete  Op = "delete"
+	OpPut     = fake.OpPut
+	OpGet     = fake.OpGet
+	OpCreate  = fake.OpCreate
+	OpReplace = fake.OpReplace
+	OpList    = fake.OpList
+	OpDelete  = fake.OpDelete
 )
 
 // AllOps lists every operation kind in a stable order, for zero-count

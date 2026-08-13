@@ -89,7 +89,7 @@ func TestScenarioConfigPrecedence(t *testing.T) {
 
 // TestScenarioConfigInvalidAndEarlyExit proves invalid configuration is a
 // redacted one-line startup failure, while the version command and the
-// serve help exit before the incompatible-store probe could refuse the
+// serve help exit before the incompatible-store probe can refuse the
 // process (architecture section 17, L1040).
 func TestScenarioConfigInvalidAndEarlyExit(t *testing.T) {
 	t.Parallel()

@@ -12,7 +12,7 @@ import (
 // section 17, L1040; section 18.2, L1131).
 //
 // The two roots must stay disjoint because P is server-owned state that a
-// caller may never observe or edit through L. The check therefore belongs
+// caller must never observe or edit through L. The check therefore belongs
 // to configuration, not to a request path, and the process must refuse to
 // start rather than serve calls over an unsafe layout.
 func TestScenarioPathSecurityOverlappingRoots(t *testing.T) {

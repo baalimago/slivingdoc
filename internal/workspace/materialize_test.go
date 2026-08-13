@@ -11,18 +11,16 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// withExdevRename forces the copy fallback by making every rename fail
-// with EXDEV, as a private root on a different device would.
-func withExdevRename(t *testing.T) {
+// forceExdevRename forces the copy fallback by making every rename of one
+// workspace fail with EXDEV, as a private root on a different device does.
+func forceExdevRename(t *testing.T, w *Workspace) {
 	t.Helper()
-	orig := renameFn
-	renameFn = func(_, _ string) error { return &os.LinkError{Op: "rename", Err: unix.EXDEV} }
-	t.Cleanup(func() { renameFn = orig })
+	w.rename = func(_, _ string) error { return &os.LinkError{Op: "rename", Err: unix.EXDEV} }
 }
 
 func TestCopyFallbackMaterializesTree(t *testing.T) {
-	withExdevRename(t)
 	w := openWorkspace(t, testConfig(t, newFakeEngine(), "notes"))
+	forceExdevRename(t, w)
 	// Seed obsolete state through the rename path first.
 	first := buildTree(t, w, map[string]string{"old.md": "old", "gone/sub/x.md": "x", "dirswap/f.md": "file"})
 	if err := w.Accept(context.Background(), Baseline{RemoteGeneration: 1, Head: oidTest("c"), Tree: first}); err != nil {
@@ -56,8 +54,8 @@ func TestCopyFallbackBreaksHardLinks(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("hard-link creation needs privileges on Windows")
 	}
-	withExdevRename(t)
 	w := openWorkspace(t, testConfig(t, newFakeEngine(), "notes"))
+	forceExdevRename(t, w)
 	a := filepath.Join(w.Path(), "a.md")
 	if err := os.WriteFile(a, []byte("shared"), 0o644); err != nil {
 		t.Fatalf("write a.md: %v", err)

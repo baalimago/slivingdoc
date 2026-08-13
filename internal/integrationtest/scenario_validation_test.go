@@ -42,8 +42,8 @@ func TestScenarioToolListing(t *testing.T) {
 // section 2, L26).
 //
 // The path is pulled first, so it is a managed notebook for the rest of the
-// test. Without that, every notes_commit row would also be a
-// commit-without-pull request and the rejection could not be attributed to
+// test. Without that, every notes_commit row is also a
+// commit-without-pull request, and the rejection cannot be attributed to
 // the message rule under test. The store counters are compared against the
 // post-pull snapshot, which is the "no further access" evidence.
 func TestScenarioStrictSchema(t *testing.T) {
@@ -94,7 +94,7 @@ func TestScenarioStrictSchema(t *testing.T) {
 }
 
 // TestScenarioContentRules proves the notebook content rule through the
-// public API: the visible directory may hold valid UTF-8 text without
+// public API: the visible directory can hold valid UTF-8 text without
 // U+0000 only, and a file that breaks the rule is refused as
 // INVALID_REQUEST without publishing anything (architecture section 7.1,
 // L188).

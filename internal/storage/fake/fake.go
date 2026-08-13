@@ -1,8 +1,9 @@
 // Package fake provides a concurrency-safe in-memory ObjectStore with real
-// conditional-write semantics for deterministic protocol tests. It supports
+// conditional-write semantics for deterministic protocol tests, plus the
+// Injector fault engine it shares with the integration harness. It supports
 // barriers, injected failures, ambiguous accepted writes, and ETag changes,
-// so the storage contract suite and later fault-injection scenarios can
-// exercise races and rare failure paths without Docker or network access.
+// so the storage contract suite and fault-injection scenarios can exercise
+// races and rare failure paths without Docker or network access.
 package fake
 
 import (
@@ -14,6 +15,7 @@ import (
 	"io"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/baalimago/slivingdoc/internal/storage"
 )
@@ -31,21 +33,22 @@ const (
 	OpDelete  Op = "delete"
 )
 
+// barrierTimeout bounds every barrier wait in the in-memory store. A test
+// that fails before Unblock would otherwise strand the blocked operation
+// until the package deadline.
+const barrierTimeout = 10 * time.Second
+
 // Store is an in-memory ObjectStore. All methods are safe for concurrent
 // use. Prefix is the configured S3 prefix the store joins to protocol keys,
 // exactly like the real adapter.
 type Store struct {
+	faults *Injector
+
 	mu      sync.Mutex
 	prefix  string
 	objects map[string]*object
 	seq     uint64
-
-	failAny   map[Op]error
-	failKey   map[opKey]error
-	ambiguous map[opKey]bool
-	block     map[opKey]chan struct{}
-	waiting   map[opKey]chan struct{}
-	calls     map[Op]int
+	calls   map[Op]int
 }
 
 type object struct {
@@ -63,14 +66,10 @@ type opKey struct {
 // satisfy storage.ValidatePrefix.
 func New(prefix string) *Store {
 	return &Store{
-		prefix:    prefix,
-		objects:   map[string]*object{},
-		failAny:   map[Op]error{},
-		failKey:   map[opKey]error{},
-		ambiguous: map[opKey]bool{},
-		block:     map[opKey]chan struct{}{},
-		waiting:   map[opKey]chan struct{}{},
-		calls:     map[Op]int{},
+		faults:  NewInjector(barrierTimeout),
+		prefix:  prefix,
+		objects: map[string]*object{},
+		calls:   map[Op]int{},
 	}
 }
 
@@ -78,60 +77,35 @@ var _ storage.ObjectStore = (*Store)(nil)
 
 // FailNext makes the next operation of the given kind fail with err,
 // regardless of key.
-func (s *Store) FailNext(op Op, err error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.failAny[op] = err
-}
+func (s *Store) FailNext(op Op, err error) { s.faults.FailNextPrefix(op, "", err) }
 
 // FailNextKey makes the next operation of the given kind on key fail with
 // err.
-func (s *Store) FailNextKey(op Op, key string, err error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.failKey[opKey{op: op, key: key}] = err
-}
+func (s *Store) FailNextKey(op Op, key string, err error) { s.faults.FailNext(op, key, err) }
 
 // AmbiguousNext makes the next operation of the given kind on key store
 // its bytes but report a transport error, as a response lost after
-// acceptance would. For PutObject, CreateObject, and ReplaceObject the
+// acceptance does. For PutObject, CreateObject, and ReplaceObject the
 // mutation lands and the caller must resolve the ambiguity by reading
 // state back.
-func (s *Store) AmbiguousNext(op Op, key string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.ambiguous[opKey{op: op, key: key}] = true
-}
+func (s *Store) AmbiguousNext(op Op, key string) { s.faults.AmbiguousNext(op, key) }
 
 // BlockNext makes the next operation of the given kind on key block until
 // Unblock. The barrier is one-shot: it applies to exactly one operation.
-func (s *Store) BlockNext(op Op, key string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.block[opKey{op: op, key: key}] = make(chan struct{})
-}
+func (s *Store) BlockNext(op Op, key string) { s.faults.BlockNext(op, key) }
 
 // Unblock releases the barrier for the operation on key, if one is set.
 // It works whether the operation already consumed the barrier and is
 // waiting on it, or has not started yet.
-func (s *Store) Unblock(op Op, key string) {
-	k := opKey{op: op, key: key}
-	s.mu.Lock()
-	ch, ok := s.block[k]
-	if ok {
-		delete(s.block, k)
-	} else {
-		ch, ok = s.waiting[k]
-		delete(s.waiting, k)
-	}
-	s.mu.Unlock()
-	if ok {
-		close(ch)
-	}
-}
+func (s *Store) Unblock(op Op, key string) { s.faults.Release(op, key) }
+
+// Waiting reports whether an operation on key has consumed a barrier and
+// is waiting for Unblock. Tests use it to sequence deterministic races
+// without sleeping.
+func (s *Store) Waiting(op Op, key string) bool { return s.faults.Waiting(op, key) }
 
 // Bump changes the ETag of an object without touching its bytes, as a
-// concurrent accepted writer would after our read.
+// concurrent accepted writer does after our read.
 func (s *Store) Bump(key string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -139,16 +113,6 @@ func (s *Store) Bump(key string) {
 		s.seq++
 		o.etag = storage.ETag(fmt.Sprintf(`"bump-%d"`, s.seq))
 	}
-}
-
-// Waiting reports whether an operation on key has consumed a barrier and
-// is waiting for Unblock. Tests use it to sequence deterministic races
-// without sleeping.
-func (s *Store) Waiting(op Op, key string) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	_, ok := s.waiting[opKey{op: op, key: key}]
-	return ok
 }
 
 // Calls returns how many times operations of the given kind have completed
@@ -168,59 +132,14 @@ func (s *Store) ObjectCount() int {
 
 func (s *Store) full(key string) string { return storage.JoinKey(s.prefix, key) }
 
-// waitForBarrier blocks until the matching barrier is released. When an
-// operation consumes a pending barrier, the barrier moves to the waiting
-// registry so Unblock can release it; after the release the operation
-// counts and executes. Unblocking before the operation starts leaves a
-// closed barrier that the operation passes immediately.
-func (s *Store) waitForBarrier(op Op, key string) {
-	k := opKey{op: op, key: key}
-	s.mu.Lock()
-	ch, ok := s.block[k]
-	if ok {
-		delete(s.block, k)
-		s.waiting[k] = ch
-	}
-	s.mu.Unlock()
-	if ok {
-		<-ch
-		s.mu.Lock()
-		delete(s.waiting, k)
-		s.mu.Unlock()
-	}
-}
-
-// consumeFail reports and consumes a one-shot injected failure for the
-// operation. It must be called with s.mu held.
-func (s *Store) consumeFail(op Op, key string) error {
-	if err, ok := s.failKey[opKey{op: op, key: key}]; ok {
-		delete(s.failKey, opKey{op: op, key: key})
-		return err
-	}
-	if err, ok := s.failAny[op]; ok {
-		delete(s.failAny, op)
-		return err
-	}
-	return nil
-}
-
-// consumeAmbiguous reports and consumes a one-shot response-loss injection
-// for the operation. It must be called with s.mu held.
-func (s *Store) consumeAmbiguous(op Op, key string) bool {
-	k := opKey{op: op, key: key}
-	if s.ambiguous[k] {
-		delete(s.ambiguous, k)
-		return true
-	}
-	return false
-}
-
 func (s *Store) ReadObject(ctx context.Context, key string) (io.ReadCloser, storage.ObjectInfo, error) {
-	s.waitForBarrier(OpGet, key)
+	if err := s.faults.WaitForBarrier(ctx, OpGet, key); err != nil {
+		return nil, storage.ObjectInfo{}, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.calls[OpGet]++
-	if err := s.consumeFail(OpGet, key); err != nil {
+	if err := s.faults.ConsumeFail(OpGet, key); err != nil {
 		return nil, storage.ObjectInfo{}, err
 	}
 	o, ok := s.objects[s.full(key)]
@@ -232,31 +151,34 @@ func (s *Store) ReadObject(ctx context.Context, key string) (io.ReadCloser, stor
 }
 
 func (s *Store) PutObject(ctx context.Context, key string, r io.Reader, meta storage.Metadata) error {
-	s.waitForBarrier(OpPut, key)
+	if err := s.faults.WaitForBarrier(ctx, OpPut, key); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.calls[OpPut]++
-	if err := s.consumeFail(OpPut, key); err != nil {
+	if err := s.faults.ConsumeFail(OpPut, key); err != nil {
 		return err
 	}
 	data, err := io.ReadAll(r)
 	if err != nil {
 		return fmt.Errorf("fake: put %s: source read failed: %w", key, storage.ErrTransport)
 	}
-	if s.consumeAmbiguous(OpPut, key) {
-		s.objects[s.full(key)] = &object{data: data, etag: etagFor(data), meta: meta}
+	s.objects[s.full(key)] = &object{data: data, etag: etagFor(data), meta: meta}
+	if s.faults.ConsumeAmbiguous(OpPut, key) {
 		return fmt.Errorf("fake: put %s: response lost: %w", key, storage.ErrTransport)
 	}
-	s.objects[s.full(key)] = &object{data: data, etag: etagFor(data), meta: meta}
 	return nil
 }
 
 func (s *Store) CreateObject(ctx context.Context, key string, data []byte) (storage.ETag, error) {
-	s.waitForBarrier(OpCreate, key)
+	if err := s.faults.WaitForBarrier(ctx, OpCreate, key); err != nil {
+		return "", err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.calls[OpCreate]++
-	if err := s.consumeFail(OpCreate, key); err != nil {
+	if err := s.faults.ConsumeFail(OpCreate, key); err != nil {
 		return "", err
 	}
 	if _, exists := s.objects[s.full(key)]; exists {
@@ -264,18 +186,20 @@ func (s *Store) CreateObject(ctx context.Context, key string, data []byte) (stor
 	}
 	o := &object{data: append([]byte(nil), data...), etag: etagFor(data)}
 	s.objects[s.full(key)] = o
-	if s.consumeAmbiguous(OpCreate, key) {
+	if s.faults.ConsumeAmbiguous(OpCreate, key) {
 		return o.etag, fmt.Errorf("fake: create %s: response lost: %w", key, storage.ErrTransport)
 	}
 	return o.etag, nil
 }
 
 func (s *Store) ReplaceObject(ctx context.Context, key string, etag storage.ETag, data []byte) (storage.ETag, error) {
-	s.waitForBarrier(OpReplace, key)
+	if err := s.faults.WaitForBarrier(ctx, OpReplace, key); err != nil {
+		return "", err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.calls[OpReplace]++
-	if err := s.consumeFail(OpReplace, key); err != nil {
+	if err := s.faults.ConsumeFail(OpReplace, key); err != nil {
 		return "", err
 	}
 	o, ok := s.objects[s.full(key)]
@@ -284,18 +208,20 @@ func (s *Store) ReplaceObject(ctx context.Context, key string, etag storage.ETag
 	}
 	o.data = append([]byte(nil), data...)
 	o.etag = etagFor(data)
-	if s.consumeAmbiguous(OpReplace, key) {
+	if s.faults.ConsumeAmbiguous(OpReplace, key) {
 		return o.etag, fmt.Errorf("fake: replace %s: response lost: %w", key, storage.ErrTransport)
 	}
 	return o.etag, nil
 }
 
 func (s *Store) ListObjects(ctx context.Context, prefix string, fn func(key string) error) error {
-	s.waitForBarrier(OpList, prefix)
+	if err := s.faults.WaitForBarrier(ctx, OpList, prefix); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.calls[OpList]++
-	if err := s.consumeFail(OpList, prefix); err != nil {
+	if err := s.faults.ConsumeFail(OpList, prefix); err != nil {
 		return err
 	}
 	full := s.full(prefix)
@@ -319,11 +245,13 @@ func (s *Store) ListObjects(ctx context.Context, prefix string, fn func(key stri
 }
 
 func (s *Store) DeleteObjects(ctx context.Context, keys []string) error {
-	s.waitForBarrier(OpDelete, "")
+	if err := s.faults.WaitForBarrier(ctx, OpDelete, ""); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.calls[OpDelete]++
-	if err := s.consumeFail(OpDelete, ""); err != nil {
+	if err := s.faults.ConsumeFail(OpDelete, ""); err != nil {
 		return err
 	}
 	for _, key := range keys {

@@ -12,16 +12,10 @@ type BackoffWaiter interface {
 	Wait(ctx context.Context, attempt int) error
 }
 
-// WaiterFunc adapts a function to the BackoffWaiter interface.
-type WaiterFunc func(ctx context.Context, attempt int) error
-
-// Wait implements BackoffWaiter.
-func (f WaiterFunc) Wait(ctx context.Context, attempt int) error { return f(ctx, attempt) }
-
 // exponentialBackoff is the bounded full-jitter backoff of architecture
 // section 11.2: the wait ceiling doubles each retry from base up to max,
-// and each wait is uniform in [0, ceiling). The zero wait is never
-// returned, so a retry loop always yields the scheduler.
+// and each wait is uniform in [0, ceiling), so a zero wait is possible and
+// valid.
 type exponentialBackoff struct {
 	base time.Duration
 	max  time.Duration

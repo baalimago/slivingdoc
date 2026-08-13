@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/baalimago/slivingdoc/internal/git"
 	"github.com/baalimago/slivingdoc/internal/storage"
@@ -120,17 +121,10 @@ func (n *Notebook) runCheckpoint(ctx context.Context, observed storage.Manifest)
 		switch {
 		case err == nil:
 			if err := git.MarkShallow(n.ws.Repo(), plan.head); err != nil {
-				n.failCheckpoint(logger, "mark checkpoint head shallow", err)
+				n.failCheckpoint(logger, "record checkpoint boundary", err)
 				return
 			}
-			// The authoritative tail after a successful compaction is the
-			// compacted manifest's tail: the pre-checkpoint observation
-			// recorded by the triggering commit is stale (architecture
-			// section 13.1).
-			n.recordTail(next)
-			n.metrics.CheckpointSize.Store(uint64(len(pack.Data)))
-			n.metrics.CheckpointDurationNanos.Store(int64(n.now().Sub(start)))
-			n.cleanup(ctx, plan.cutoff)
+			n.acceptCheckpoint(ctx, next, pack, start, plan.cutoff)
 			return
 		case errors.Is(err, storage.ErrPreconditionFailed):
 			if attempt > n.retryLimit {
@@ -143,10 +137,7 @@ func (n *Notebook) runCheckpoint(ctx context.Context, observed storage.Manifest)
 			}
 		case errors.Is(err, storage.ErrTransport):
 			if n.checkpointAccepted(ctx, cpID) {
-				n.recordTail(next)
-				n.metrics.CheckpointSize.Store(uint64(len(pack.Data)))
-				n.metrics.CheckpointDurationNanos.Store(int64(n.now().Sub(start)))
-				n.cleanup(ctx, plan.cutoff)
+				n.acceptCheckpoint(ctx, next, pack, start, plan.cutoff)
 			} else {
 				n.failCheckpoint(logger, "checkpoint acceptance unprovable", err)
 			}
@@ -156,6 +147,18 @@ func (n *Notebook) runCheckpoint(ctx context.Context, observed storage.Manifest)
 			return
 		}
 	}
+}
+
+// acceptCheckpoint records one accepted compaction. The authoritative tail
+// after a successful compaction is the compacted manifest's tail: the
+// pre-checkpoint observation recorded by the triggering commit is stale
+// (architecture section 13.1). It also stores the checkpoint size and
+// duration metrics and runs the best-effort cleanup.
+func (n *Notebook) acceptCheckpoint(ctx context.Context, next storage.Manifest, pack git.Pack, start time.Time, cutoff uint64) {
+	n.recordTail(next)
+	n.metrics.CheckpointSize.Store(uint64(len(pack.Data)))
+	n.metrics.CheckpointDurationNanos.Store(int64(n.now().Sub(start)))
+	n.cleanup(ctx, cutoff)
 }
 
 // failCheckpoint records one failed checkpoint effort in metrics and as a
@@ -243,7 +246,7 @@ func (n *Notebook) cleanup(ctx context.Context, cutoff uint64) {
 			if err != nil {
 				return nil // malformed keys are not cleanup candidates
 			}
-			if k.Generation <= cutoff && key != storage.CurrentKey {
+			if k.Generation <= cutoff {
 				candidates = append(candidates, key)
 			}
 			return nil

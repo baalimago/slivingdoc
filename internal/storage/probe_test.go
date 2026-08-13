@@ -1,6 +1,6 @@
 // The probe tests live in the external test package: they wrap the fake
-// store, and the fake imports storage, so a same-package test file would
-// create an import cycle. The tests exercise only the exported surface.
+// store, and the fake imports storage, so a same-package test file
+// creates an import cycle. The tests exercise only the exported surface.
 package storage_test
 
 import (

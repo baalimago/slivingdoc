@@ -195,39 +195,53 @@ func TestMaterializeTreeTextConflictKeepsMarkersAndResolved(t *testing.T) {
 	}
 }
 
-func TestMaterializeTreeFileDirectoryKeepsLocalFileSide(t *testing.T) {
-	repo := newFakeRepository()
-	file, _ := repo.WriteBlob([]byte("local file"))
-	dirFile, _ := repo.WriteBlob([]byte("remote dir file"))
-	// Local keeps the file p; remote replaced it with a directory p/.
-	res := MergeResult{Conflicts: []Conflict{{Path: "p"}}, Index: MergeIndex{Entries: []IndexEntry{
-		{Path: "p", Mode: ModeBlob, ID: file, Stage: 2},
-		{Path: "p/q.txt", Mode: ModeBlob, ID: dirFile, Stage: 0},
-	}}}
-	snap, err := MaterializeTree(repo, res)
-	if err != nil {
-		t.Fatalf("MaterializeTree() = %v", err)
+// TestMaterializeTreeFileDirectoryKeepsLocalSide proves a file/directory
+// conflict keeps the local side in both directions: the local file when
+// the remote replaced it with a directory, and the local subtree when the
+// local side replaced the file.
+func TestMaterializeTreeFileDirectoryKeepsLocalSide(t *testing.T) {
+	tests := []struct {
+		name     string
+		entries  func(local, remote OID) []IndexEntry
+		wantPath string
+	}{
+		{
+			// Local keeps the file p; remote replaced it with a directory p/.
+			name: "local file remote directory",
+			entries: func(local, remote OID) []IndexEntry {
+				return []IndexEntry{
+					{Path: "p", Mode: ModeBlob, ID: local, Stage: 2},
+					{Path: "p/q.txt", Mode: ModeBlob, ID: remote, Stage: 0},
+				}
+			},
+			wantPath: "p",
+		},
+		{
+			// Local replaced p with a directory; remote keeps the file p.
+			name: "local directory remote file",
+			entries: func(local, remote OID) []IndexEntry {
+				return []IndexEntry{
+					{Path: "p", Mode: ModeBlob, ID: remote, Stage: 3},
+					{Path: "p/q.txt", Mode: ModeBlob, ID: local, Stage: 2},
+				}
+			},
+			wantPath: "p/q.txt",
+		},
 	}
-	if len(snap.Files) != 1 || snap.Files[0].Path != "p" || string(snap.Files[0].Data) != "local file" {
-		t.Fatalf("MaterializeTree() = %+v, want the local file p only", snap.Files)
-	}
-}
-
-func TestMaterializeTreeFileDirectoryKeepsLocalSubtree(t *testing.T) {
-	repo := newFakeRepository()
-	remoteFile, _ := repo.WriteBlob([]byte("remote file"))
-	localDirFile, _ := repo.WriteBlob([]byte("local dir file"))
-	// Local replaced p with a directory; remote keeps the file p.
-	res := MergeResult{Conflicts: []Conflict{{Path: "p"}}, Index: MergeIndex{Entries: []IndexEntry{
-		{Path: "p", Mode: ModeBlob, ID: remoteFile, Stage: 3},
-		{Path: "p/q.txt", Mode: ModeBlob, ID: localDirFile, Stage: 2},
-	}}}
-	snap, err := MaterializeTree(repo, res)
-	if err != nil {
-		t.Fatalf("MaterializeTree() = %v", err)
-	}
-	if len(snap.Files) != 1 || snap.Files[0].Path != "p/q.txt" || string(snap.Files[0].Data) != "local dir file" {
-		t.Fatalf("MaterializeTree() = %+v, want the local directory subtree only", snap.Files)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := newFakeRepository()
+			local, _ := repo.WriteBlob([]byte("local side"))
+			remote, _ := repo.WriteBlob([]byte("remote side"))
+			res := MergeResult{Conflicts: []Conflict{{Path: "p"}}, Index: MergeIndex{Entries: tt.entries(local, remote)}}
+			snap, err := MaterializeTree(repo, res)
+			if err != nil {
+				t.Fatalf("MaterializeTree() = %v", err)
+			}
+			if len(snap.Files) != 1 || snap.Files[0].Path != tt.wantPath || string(snap.Files[0].Data) != "local side" {
+				t.Fatalf("MaterializeTree() = %+v, want only the local side at %s", snap.Files, tt.wantPath)
+			}
+		})
 	}
 }
 
@@ -235,7 +249,7 @@ func TestMaterializeTreeRejectsUnexpectedIndexShape(t *testing.T) {
 	repo := newFakeRepository()
 	blob, _ := repo.WriteBlob([]byte("x"))
 	// An index entry that no conflict describes is an inconsistent result:
-	// the policy cannot decide what the caller should see.
+	// the policy cannot decide what the caller must see.
 	res := MergeResult{Conflicts: []Conflict{{Path: "other"}}, Index: MergeIndex{Entries: []IndexEntry{
 		{Path: "p", Mode: ModeBlob, ID: blob, Stage: 2},
 		{Path: "p", Mode: ModeBlob, ID: blob, Stage: 3},

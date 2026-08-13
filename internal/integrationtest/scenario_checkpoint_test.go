@@ -37,7 +37,7 @@ func TestScenarioCheckpointThresholdTrigger(t *testing.T) {
 		t.Fatalf("manifest increments = %d, want the compacted empty tail", len(m.Increments))
 	}
 	// The pack the manifest names is present, and it was uploaded before
-	// the manifest that references it could be read back.
+	// any read of the manifest that references it.
 	if !h.ObjectExists(m.Checkpoint.Key.String()) {
 		t.Fatalf("the cutoff checkpoint pack %s is absent", m.Checkpoint.Key)
 	}
@@ -148,7 +148,7 @@ func TestScenarioCheckpointCompetingWorkers(t *testing.T) {
 	// Both workers are now parked in the checkpoint upload, which means each
 	// has already published its own increment: B's next manifest CAS is its
 	// checkpoint CAS. Blocking it here makes A the compaction winner on
-	// every run. Without it B could win and run its cleanup while A was
+	// every run. Without it, B can win and run its cleanup while A is
 	// still blocked in the upload, leaving A's proposal unreferenced with no
 	// later checkpoint to collect it. Cleanup is best-effort and generation
 	// fenced, so that outcome is permitted by the contract; the scenario has
@@ -391,7 +391,7 @@ func TestScenarioCheckpointCleanupFence(t *testing.T) {
 //
 // A well-formed unreferenced pre-cutoff pack is seeded beside the malformed
 // keys as a positive control: without it, a run in which cleanup never
-// happened at all would satisfy the "untouched" assertion vacuously.
+// happened at all satisfies the "untouched" assertion vacuously.
 func TestScenarioCheckpointMalformedKeys(t *testing.T) {
 	t.Parallel()
 	h := newFakeHarness(t, HarnessConfig{CheckpointPacks: new(2)})
@@ -456,7 +456,7 @@ func TestScenarioCheckpointCleanupFailure(t *testing.T) {
 	assertWarning(t, h, "cleanup failed", "reason", "delete cleanup batch")
 
 	// The commit result stands: the compaction is accepted and the
-	// uncollected candidate simply waits for a later cleanup.
+	// uncollected candidate waits for a later cleanup.
 	m := h.Manifest()
 	if m.Generation != 4 || len(m.Increments) != 0 {
 		t.Fatalf("accepted state = gen %d with %d increments, want the compaction at 4/0", m.Generation, len(m.Increments))
@@ -522,7 +522,7 @@ func TestScenarioCheckpointCASExhaustion(t *testing.T) {
 	commitFirst(t, h, path, "f1.md", "v1", "c1")
 	commitNext(t, h, path, "f2.md", "v2", "c2")
 
-	// Only the checkpoint's CAS may lose; the commit's own publication must
+	// Only the checkpoint's CAS can lose. The commit's own publication must
 	// succeed first. Blocking the checkpoint pack upload gives an exact
 	// point after the publication and before the checkpoint CAS at which to
 	// arm the permanent precondition failure.

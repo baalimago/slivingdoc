@@ -55,7 +55,7 @@ test("a verified cache entry is reused without any download", async (t) => {
 	await install({ cacheRoot: cache, baseUrl: fixture.base });
 
 	const requestCount = fixture.requests.length;
-	await fixture.close(); // any further download would fail
+	await fixture.close(); // any further download fails
 	const again = await install({ cacheRoot: cache, baseUrl: fixture.base });
 	assert.equal(again, binaryPath(cache));
 	assert.equal(fixture.requests.length, requestCount, "no request may leave the cache");

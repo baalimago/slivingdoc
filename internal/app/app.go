@@ -17,11 +17,11 @@ import (
 	"sync"
 	"time"
 
-	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/baalimago/slivingdoc/internal/git"
 	"github.com/baalimago/slivingdoc/internal/mcp"
+	"github.com/baalimago/slivingdoc/internal/notebook"
 	"github.com/baalimago/slivingdoc/internal/s3store"
 	"github.com/baalimago/slivingdoc/internal/storage"
 )
@@ -62,8 +62,8 @@ type ProcessOptions struct {
 	Logger *slog.Logger
 }
 
-// process is the resolved environment of the process body. RunProcess
-// fills every field from the options and the operating system; tests
+// process is the resolved environment of the process body. Setup fills
+// every field from the options and the operating system; tests
 // substitute fields directly through run.
 type process struct {
 	args     []string
@@ -85,23 +85,6 @@ type process struct {
 	storeFactory     func(ctx context.Context, cfg config) (storage.ObjectStore, error)
 	hooks            *ServiceHooks
 	shutdownDeadline time.Duration
-}
-
-// RunProcess executes the slivingdoc process body over an injectable
-// environment (architecture sections 17 and 18): it resolves the
-// configuration, opens the pinned native engine, proves the S3
-// compatibility probe, and serves the two MCP tools over stdio until the
-// client disconnects or a termination signal starts the bounded shutdown.
-// Nil options fields substitute the production defaults: the process
-// argument list, the environment, the working directory, the user cache
-// directory, OS termination signals, and the real S3 store factory.
-func RunProcess(engine git.Engine, opts ProcessOptions) error {
-	rt, err := Setup(engine, nil, opts)
-	if err != nil {
-		return err
-	}
-	defer rt.Close()
-	return rt.Serve(context.Background())
 }
 
 // Setup resolves the configuration, opens the pinned native engine, builds
@@ -182,19 +165,36 @@ func Setup(engine git.Engine, flags *Flags, opts ProcessOptions) (*Runtime, erro
 	})
 }
 
-// Runtime is a constructed server: the configuration is validated, the
-// native engine is open, and the object store has passed the compatibility
-// probe. Serve runs it; Close releases the service and the engine.
+// Runtime is a constructed process body: the configuration is validated,
+// the native engine is open, and the object store has passed the
+// compatibility probe. Serve runs the MCP server over it; Pull and Commit
+// run the same notebook operations directly for the CLI subcommands. Close
+// releases the service and the engine.
 type Runtime struct {
 	p      process
-	srv    *mcp.Server
 	svc    *Service
+	cfg    config
+	base   *slog.Logger // process logger; module loggers derive from it
 	logger *slog.Logger
 }
 
 // Serve runs the MCP server until the client disconnects, ctx is cancelled,
 // or a termination signal starts the bounded shutdown.
-func (r *Runtime) Serve(ctx context.Context) error { return serve(ctx, r.p, r.srv, r.logger) }
+func (r *Runtime) Serve(ctx context.Context) error {
+	r.logger.Info("serving", "bucket", r.cfg.bucket, "workspaceRoot", r.cfg.workspaceRoot)
+	srv := mcp.NewServer(r.svc, Version, Module(r.base, ModuleMCP))
+	return serve(ctx, r.p, srv, r.logger)
+}
+
+// Pull writes the current notebook into path for one CLI invocation.
+func (r *Runtime) Pull(ctx context.Context, path string) error {
+	return r.svc.Pull(notebook.WithLogger(ctx, Module(r.base, ModuleNotebook)), path)
+}
+
+// Commit publishes the caller's changes at path for one CLI invocation.
+func (r *Runtime) Commit(ctx context.Context, path, message string) error {
+	return r.svc.Commit(notebook.WithLogger(ctx, Module(r.base, ModuleNotebook)), path, message)
+}
 
 // Close releases the notebook service and the native engine. It is safe to
 // call once per successful Setup.
@@ -204,8 +204,8 @@ func (r *Runtime) Close() error {
 }
 
 // setup is the startup half of the process body: validate the
-// configuration, open the native engine (the pinned-version check), build
-// the store and prove the compatibility probe, then wire the MCP server.
+// configuration, open the native engine (the pinned-version check), then
+// build the store, prove the compatibility probe, and wire the service.
 func setup(p process) (*Runtime, error) {
 	base := p.logger
 	if base == nil {
@@ -225,13 +225,12 @@ func setup(p process) (*Runtime, error) {
 		return nil, fmt.Errorf("app: open native engine: %w", err)
 	}
 	logger.Debug("native engine open", "pinned", true)
-	srv, svc, err := buildServer(p, Module(base, ModuleMCP), cfg)
+	svc, err := buildService(p, cfg)
 	if err != nil {
 		p.engine.Close()
 		return nil, err
 	}
-	logger.Info("serving", "bucket", cfg.bucket, "workspaceRoot", cfg.workspaceRoot)
-	return &Runtime{p: p, srv: srv, svc: svc, logger: logger}, nil
+	return &Runtime{p: p, svc: svc, cfg: cfg, base: base, logger: logger}, nil
 }
 
 // run is the whole process body in one call, used where the caller does not
@@ -245,30 +244,26 @@ func run(p process) error {
 	return rt.Serve(context.Background())
 }
 
-// buildServer constructs the S3 store, proves the compatibility probe, and
-// wires the notebook service and the MCP server. Any failure is a startup
-// refusal: no transport runs and no tool call is accepted.
-func buildServer(p process, logger *slog.Logger, cfg config) (*mcp.Server, *Service, error) {
+// buildService constructs the S3 store, proves the compatibility probe,
+// and wires the notebook service. Any failure is a startup refusal: no
+// transport runs and no operation is accepted.
+func buildService(p process, cfg config) (*Service, error) {
 	storeFactory := p.storeFactory
 	if storeFactory == nil {
 		storeFactory = realStoreFactory
 	}
 	store, err := storeFactory(context.Background(), cfg)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	probeCtx, cancel := context.WithTimeout(context.Background(), probeTimeout)
 	defer cancel()
 	if err := storage.Probe(probeCtx, store); err != nil {
 		// The probe names its disposable protocol key; the startup
 		// diagnostic never echoes it.
-		return nil, nil, fmt.Errorf("app: INCOMPATIBLE_STORE: S3 compatibility probe failed: %s", mcp.Redact(err.Error()))
+		return nil, fmt.Errorf("app: INCOMPATIBLE_STORE: S3 compatibility probe failed: %s", mcp.Redact(err.Error()))
 	}
-	svc, err := NewService(p.engine, store, cfg.serviceConfig(), p.hooks)
-	if err != nil {
-		return nil, nil, err
-	}
-	return mcp.NewServer(svc, Version, logger), svc, nil
+	return NewService(p.engine, store, cfg.serviceConfig(), p.hooks)
 }
 
 // serve runs the MCP server until the transport ends, the caller's context
@@ -358,20 +353,17 @@ func (t *closeTransport) Close() error {
 	return conn.Close()
 }
 
-// realStoreFactory builds the AWS SDK object store from the resolved
+// realStoreFactory builds the object store from the resolved
 // configuration: region and base endpoint from the configuration,
 // path-style addressing per --path-style, and the bucket and prefix join
-// owned by the adapter.
+// owned by the adapter. The AWS SDK stays inside internal/s3store.
 func realStoreFactory(ctx context.Context, cfg config) (storage.ObjectStore, error) {
-	opts := []func(*awsconfig.LoadOptions) error{awsconfig.WithRegion(cfg.region)}
-	if cfg.endpoint != "" {
-		opts = append(opts, awsconfig.WithBaseEndpoint(cfg.endpoint))
-	}
-	awsCfg, err := awsconfig.LoadDefaultConfig(ctx, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("app: load AWS configuration: %w", err)
-	}
-	store, err := s3store.New(awsCfg, cfg.bucket, cfg.prefix, s3store.Options{ForcePathStyle: cfg.pathStyle})
+	store, err := s3store.New(ctx, s3store.Config{
+		Bucket:   cfg.bucket,
+		Prefix:   cfg.prefix,
+		Region:   cfg.region,
+		Endpoint: cfg.endpoint,
+	}, s3store.Options{ForcePathStyle: cfg.pathStyle})
 	if err != nil {
 		return nil, fmt.Errorf("app: create object store: %w", err)
 	}

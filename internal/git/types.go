@@ -32,7 +32,7 @@ type Commit struct {
 	Message string
 }
 
-// CommitSpec describes a commit the engine should create. Author and
+// CommitSpec describes a commit for the engine to create. Author and
 // committer are the fixed slivingdoc identity; Time is the operation-attempt
 // start time and is stored in UTC with one-second precision and offset zero.
 type CommitSpec struct {

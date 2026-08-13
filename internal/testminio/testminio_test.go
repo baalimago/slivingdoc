@@ -45,7 +45,7 @@ func TestRequireFailsWhenDockerIsUnavailable(t *testing.T) {
 	}
 }
 
-// TestRequireReturnsTheAvailableSuite proves the policy is not simply
+// TestRequireReturnsTheAvailableSuite proves the policy is more than
 // always-fail: a started suite passes through untouched.
 func TestRequireReturnsTheAvailableSuite(t *testing.T) {
 	t.Parallel()

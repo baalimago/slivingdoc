@@ -118,6 +118,13 @@ func EmptyTree(repo Repository) (OID, error) {
 	return id, nil
 }
 
+// SortTreeEntries sorts entries in place into canonical Git tree order.
+// Test fakes in higher packages use it so their tree ordering can never
+// drift from BuildTree's.
+func SortTreeEntries(entries []TreeEntry) {
+	sort.SliceStable(entries, func(a, b int) bool { return treeEntryLess(entries[a], entries[b]) })
+}
+
 // treeEntryLess orders tree entries in Git tree order: byte-wise by name,
 // with a tree entry comparing as if its name carried a trailing slash. This
 // matches git_tree_entry_cmp in the pinned libgit2, so BuildTree output is

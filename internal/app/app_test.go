@@ -43,9 +43,12 @@ func (f *fakeEngine) Version() (string, error) { return f.version, nil }
 
 func (f *fakeEngine) Features() (git.Features, error) { return f.features, nil }
 
-func (f *fakeEngine) CreateRepo(string) (git.Repository, error) { return nil, git.ErrUnavailable }
+// errEngineFailed is the sentinel the fake engine returns for failures.
+var errEngineFailed = errors.New("app test: fake engine failed")
 
-func (f *fakeEngine) OpenRepo(string) (git.Repository, error) { return nil, git.ErrUnavailable }
+func (f *fakeEngine) CreateRepo(string) (git.Repository, error) { return nil, errEngineFailed }
+
+func (f *fakeEngine) OpenRepo(string) (git.Repository, error) { return nil, errEngineFailed }
 
 // fakeService records calls and returns nil, so serve tests exercise the
 // transport lifecycle without a notebook.
@@ -111,12 +114,12 @@ func TestRunPropagatesInvalidConfiguration(t *testing.T) {
 // TestRunPropagatesEngineOpenError proves that an engine failure is a
 // startup refusal before the store or the transport runs.
 func TestRunPropagatesEngineOpenError(t *testing.T) {
-	engine := &fakeEngine{openErr: git.ErrUnavailable}
+	engine := &fakeEngine{openErr: errEngineFailed}
 	p := testProcess([]string{"SLIVINGDOC_BUCKET=bucket"})
 	p.engine = engine
 	err := run(p)
-	if !errors.Is(err, git.ErrUnavailable) {
-		t.Fatalf("run() error = %v, want git.ErrUnavailable", err)
+	if !errors.Is(err, errEngineFailed) {
+		t.Fatalf("run() error = %v, want errEngineFailed", err)
 	}
 	if engine.closed {
 		t.Fatal("run() must not close an engine it could not open")

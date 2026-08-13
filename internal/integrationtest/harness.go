@@ -49,7 +49,7 @@ type HarnessConfig struct {
 	// RetryLimit, CheckpointPacks, and RetainedCheckpoints override the
 	// documented defaults (8, 1024, 1). They are pointers because zero is a
 	// documented value of two of them (no retries, no retained generation),
-	// which a plain int could not distinguish from "unset".
+	// which a plain int cannot distinguish from "unset".
 	RetryLimit       *int
 	CheckpointPacks  *int
 	RetainedCheckpts *int
@@ -117,7 +117,11 @@ func NewHarness(t *testing.T, cfg HarnessConfig) *Harness {
 		if endpoint == "" {
 			endpoint = suite.Endpoint
 		}
-		st, err := s3store.New(suite.Config(), bucket, prefix)
+		mc := suite.StoreConfig()
+		st, err := s3store.New(context.Background(), s3store.Config{
+			Bucket: bucket, Prefix: prefix, Region: mc.Region,
+			Endpoint: mc.Endpoint, AccessKey: mc.AccessKey, SecretKey: mc.SecretKey,
+		})
 		if err != nil {
 			t.Fatalf("s3store.New(%q) = %v", prefix, err)
 		}
@@ -309,9 +313,9 @@ func (h *Harness) RemoveFile(path string) {
 
 // FSSnapshot returns every file under dir with its exact bytes, keyed by
 // slash-form path relative to dir. A walk failure fails the test: an empty
-// snapshot must mean "the directory is empty", never "the directory could
-// not be read", or an assertion of the form "no file was imported" would
-// pass on a missing directory.
+// snapshot must mean "the directory is empty", never "the directory was
+// not readable". Otherwise an assertion of the form "no file was
+// imported" passes on a missing directory.
 func (h *Harness) FSSnapshot(dir string) map[string]string {
 	h.t.Helper()
 	out := map[string]string{}

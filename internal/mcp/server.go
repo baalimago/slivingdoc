@@ -71,17 +71,10 @@ func NewServer(svc Service, version string, logger *slog.Logger) *Server {
 	return &Server{sdk: s}
 }
 
-// Run serves one session over the process stdio (stdin/stdout) until the
-// client terminates the connection or ctx is canceled. Stdout carries only
-// protocol messages; the server never writes logs to it.
-func (s *Server) Run(ctx context.Context) error {
-	return s.sdk.Run(ctx, &sdk.StdioTransport{})
-}
-
 // Serve runs one session over an explicit transport until the client
-// terminates the connection or ctx is canceled. Run serves over the
-// process stdio; the process body and tests inject transports through
-// Serve.
+// terminates the connection or ctx is canceled. The process body serves
+// over stdio and tests inject in-memory transports. Stdout carries only
+// protocol messages; the server never writes logs to it.
 func (s *Server) Serve(ctx context.Context, transport sdk.Transport) error {
 	return s.sdk.Run(ctx, transport)
 }
@@ -165,7 +158,7 @@ func newRequestID() string {
 // structured object; any other error (request cancellation) stays a
 // protocol error.
 func resultFor(err error) (*sdk.CallToolResult, error) {
-	te, domain := mapError(err)
+	te, domain := MapError(err)
 	if !domain {
 		return nil, err
 	}
@@ -182,7 +175,7 @@ func okResult() *sdk.CallToolResult {
 
 // errorResult is the domain-error envelope: isError, one candid text item,
 // and the exact structured error object.
-func errorResult(te *toolError) *sdk.CallToolResult {
+func errorResult(te *ToolError) *sdk.CallToolResult {
 	return &sdk.CallToolResult{
 		IsError:           true,
 		Content:           []sdk.Content{&sdk.TextContent{Text: te.Message}},
@@ -230,13 +223,13 @@ var (
 		"type":        "string",
 		"description": "Absolute UTF-8 host path of the notebook directory, 1 through 4,096 bytes.",
 		"minLength":   1,
-		"maxLength":   4096,
+		"maxLength":   maxPathBytes,
 	}
 
 	messageProperty = map[string]any{
 		"type":        "string",
 		"description": "Commit message: non-blank UTF-8 without U+0000, at most 16,384 bytes.",
 		"minLength":   1,
-		"maxLength":   16384,
+		"maxLength":   maxMessageBytes,
 	}
 )

@@ -45,10 +45,6 @@ type Failpoints struct {
 	Recover func() error
 }
 
-// renameFn is the filesystem seam for the replacement renames. Tests
-// substitute it to prove the copy fallback on cross-device errors.
-var renameFn = os.Rename
-
 // applyLocked rewrites the visible directory to the target tree. When
 // newBaseline is nil the accepted baseline is kept (conflict
 // materialization); otherwise it is durably recorded together with
@@ -91,12 +87,12 @@ func (w *Workspace) applyLocked(ctx context.Context, targetTree git.OID, newBase
 	// When the visible directory is the workspace root itself (rel == "."),
 	// the replacement renamed the root directory away and a new directory
 	// into place; the os.Root handle opened at Open still refers to the
-	// removed inode, so every later relative operation would fail.
+	// removed inode, so every later relative operation fails.
 	// Reopening w.path restores a live handle. For a visible path below the
 	// root the reopen resolves the same inode and is a harmless no-op. The
 	// operation lock is held, so no other root user can observe the swap.
 	if err := w.refreshRoot(); err != nil {
-		return fmt.Errorf("workspace: reopen workspace root: %w: %v", ErrPartial, err)
+		return fmt.Errorf("workspace: reopen workspace root: %w: %w", ErrPartial, err)
 	}
 
 	w.mu.Lock()
@@ -160,7 +156,7 @@ func (w *Workspace) writeStage(ctx context.Context, stageDir string, snap git.Sn
 	}
 	for _, f := range snap.Files {
 		if err := ctx.Err(); err != nil {
-			return ctx.Err()
+			return err
 		}
 		host := filepath.Join(stageDir, filepath.FromSlash(f.Path))
 		if err := os.MkdirAll(filepath.Dir(host), 0o755); err != nil {
@@ -182,24 +178,24 @@ func (w *Workspace) writeStage(ctx context.Context, stageDir string, snap git.Sn
 func (w *Workspace) replaceVisible(ctx context.Context, stageDir, backupDir string, target git.Snapshot) error {
 	moved := false
 	if _, err := os.Lstat(w.path); err == nil {
-		if err := renameFn(w.path, backupDir); err != nil {
+		if err := w.rename(w.path, backupDir); err != nil {
 			if isCrossDevice(err) {
 				return w.copyIntoPlace(ctx, stageDir, target)
 			}
-			return fmt.Errorf("workspace: move visible directory aside: %w: %v", ErrPartial, err)
+			return fmt.Errorf("workspace: move visible directory aside: %w: %w", ErrPartial, err)
 		}
 		moved = true
 	} else if !errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("workspace: inspect visible directory: %w: %v", ErrPartial, err)
+		return fmt.Errorf("workspace: inspect visible directory: %w: %w", ErrPartial, err)
 	}
-	if err := renameFn(stageDir, w.path); err != nil {
+	if err := w.rename(stageDir, w.path); err != nil {
 		if isCrossDevice(err) && !moved {
 			return w.copyIntoPlace(ctx, stageDir, target)
 		}
-		return fmt.Errorf("workspace: rename staged tree into place: %w: %v", ErrPartial, err)
+		return fmt.Errorf("workspace: rename staged tree into place: %w: %w", ErrPartial, err)
 	}
 	if err := os.RemoveAll(backupDir); err != nil {
-		return fmt.Errorf("workspace: remove replaced directory: %w: %v", ErrPartial, err)
+		return fmt.Errorf("workspace: remove replaced directory: %w: %w", ErrPartial, err)
 	}
 	return nil
 }
@@ -208,8 +204,8 @@ func (w *Workspace) replaceVisible(ctx context.Context, stageDir, backupDir stri
 // replacement. When the visible directory is the workspace root itself
 // (rel == "."), the replacement renamed the root directory away and a new
 // directory into place, so the os.Root handle opened at Open still refers
-// to the removed inode and every later relative operation would fail;
-// reopening at the configured workspace root restores a live handle. For a
+// to the removed inode and every later relative operation fails.
+// Reopening at the configured workspace root restores a live handle. For a
 // visible path below the root the reopen resolves the same inode and is a
 // harmless no-op. The operation lock is held, so no other root user can
 // observe the swap.
@@ -244,7 +240,7 @@ func (w *Workspace) copyIntoPlace(ctx context.Context, stageDir string, target g
 	for _, p := range existingDirs {
 		if targetFiles[p] {
 			if err := w.root.RemoveAll(joinRel(w.rel, p)); err != nil {
-				return fmt.Errorf("workspace: clear replaced directory %q: %w: %v", p, ErrPartial, err)
+				return fmt.Errorf("workspace: clear replaced directory %q: %w: %w", p, ErrPartial, err)
 			}
 		}
 	}
@@ -252,7 +248,7 @@ func (w *Workspace) copyIntoPlace(ctx context.Context, stageDir string, target g
 	for _, p := range existingFiles {
 		if targetDirs[p] {
 			if err := w.root.Remove(joinRel(w.rel, p)); err != nil {
-				return fmt.Errorf("workspace: clear replaced file %q: %w: %v", p, ErrPartial, err)
+				return fmt.Errorf("workspace: clear replaced file %q: %w: %w", p, ErrPartial, err)
 			}
 		}
 	}
@@ -270,24 +266,24 @@ func (w *Workspace) copyIntoPlace(ctx context.Context, stageDir string, target g
 		tmpRel := targetRel + tempSuffix()
 		fh, err := w.root.OpenFile(tmpRel, os.O_WRONLY|os.O_CREATE|os.O_EXCL|noFollowFlag, 0o644)
 		if err != nil {
-			return fmt.Errorf("workspace: create temporary file for %q: %w: %v", f.Path, ErrPartial, err)
+			return fmt.Errorf("workspace: create temporary file for %q: %w: %w", f.Path, ErrPartial, err)
 		}
 		if _, err := fh.Write(f.Data); err != nil {
 			fh.Close()
-			return fmt.Errorf("workspace: write %q: %w: %v", f.Path, ErrPartial, err)
+			return fmt.Errorf("workspace: write %q: %w: %w", f.Path, ErrPartial, err)
 		}
 		if err := fh.Close(); err != nil {
-			return fmt.Errorf("workspace: close %q: %w: %v", f.Path, ErrPartial, err)
+			return fmt.Errorf("workspace: close %q: %w: %w", f.Path, ErrPartial, err)
 		}
 		if err := w.root.Rename(tmpRel, targetRel); err != nil {
-			return fmt.Errorf("workspace: place %q: %w: %v", f.Path, ErrPartial, err)
+			return fmt.Errorf("workspace: place %q: %w: %w", f.Path, ErrPartial, err)
 		}
 	}
 
 	for _, p := range existingFiles {
 		if !targetFiles[p] && !targetDirs[p] {
 			if err := w.root.Remove(joinRel(w.rel, p)); err != nil {
-				return fmt.Errorf("workspace: remove obsolete file %q: %w: %v", p, ErrPartial, err)
+				return fmt.Errorf("workspace: remove obsolete file %q: %w: %w", p, ErrPartial, err)
 			}
 		}
 	}
@@ -298,7 +294,7 @@ func (w *Workspace) copyIntoPlace(ctx context.Context, stageDir string, target g
 	for _, p := range sorted {
 		if !targetDirs[p] {
 			if err := w.root.RemoveAll(joinRel(w.rel, p)); err != nil {
-				return fmt.Errorf("workspace: remove obsolete directory %q: %w: %v", p, ErrPartial, err)
+				return fmt.Errorf("workspace: remove obsolete directory %q: %w: %w", p, ErrPartial, err)
 			}
 		}
 	}

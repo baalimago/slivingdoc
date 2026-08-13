@@ -1,4 +1,7 @@
-slivingdoc npm package — third-party notices
+slivingdoc npm package — license and third-party notices
+
+slivingdoc is licensed under the MIT License. The full text is in the
+LICENSE file included in this package.
 
 The slivingdoc executable that this package downloads and runs statically
 links the following third-party component:
@@ -13,5 +16,5 @@ libgit2 v1.9.6
 libgit2 is Copyright (C) the libgit2 contributors. It is used under the
 GPL v2 linking exception, which permits linking the compiled library into
 the executable and distributing the combined work. The build procedure in
-the repository (docs/build-libgit2.md) rebuilds the pinned release from
+the repository (docs/build.md) rebuilds the pinned release from
 verified source.

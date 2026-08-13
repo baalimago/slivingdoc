@@ -56,7 +56,7 @@ func (n *Notebook) readRemote(ctx context.Context) (remoteState, error) {
 		}
 		m, err := storage.DecodeManifest(data)
 		if err != nil {
-			return remoteState{}, storageIntegrity("current is not a valid manifest: %v", err)
+			return remoteState{}, storageIntegrity(err, "current is not a valid manifest")
 		}
 
 		if err := n.importRemote(ctx, m); err != nil {
@@ -64,7 +64,7 @@ func (n *Notebook) readRemote(ctx context.Context) (remoteState, error) {
 				return remoteState{}, err
 			}
 			if restart >= n.retryLimit {
-				return remoteState{}, storageIntegrity("manifest did not stabilize after %d stale reads", restart)
+				return remoteState{}, storageIntegrity(nil, "manifest did not stabilize after %d stale reads", restart)
 			}
 			// The referenced pack disappeared during cleanup: re-read
 			// current and restart only when the manifest actually moved.
@@ -73,21 +73,21 @@ func (n *Notebook) readRemote(ctx context.Context) (remoteState, error) {
 				return remoteState{}, rerr
 			}
 			if !newPresent || newETag == etag {
-				return remoteState{}, storageIntegrity("manifest references a pack that is missing and unchanged after re-read")
+				return remoteState{}, storageIntegrity(nil, "manifest references a pack that is missing and unchanged after re-read")
 			}
 			continue
 		}
 
 		st := remoteState{manifest: m, etag: etag, present: true, generation: m.Generation, head: m.Head}
 		if err := git.ValidateHistory(n.ws.Repo(), m.Head, m.Checkpoint.Head); err != nil {
-			return remoteState{}, storageIntegrity("accepted history is incomplete: %v", err)
+			return remoteState{}, storageIntegrity(err, "accepted state is incomplete")
 		}
 		commit, err := n.ws.Repo().ReadCommit(m.Head)
 		if err != nil {
-			return remoteState{}, storageIntegrity("accepted head %s is unreadable: %v", m.Head, err)
+			return remoteState{}, storageIntegrity(err, "accepted state %s is unreadable", m.Head)
 		}
 		if _, err := git.ReadSnapshot(n.ws.Repo(), commit.Tree); err != nil {
-			return remoteState{}, storageIntegrity("accepted tree is not valid notebook text: %v", err)
+			return remoteState{}, storageIntegrity(err, "accepted state is not valid notebook text")
 		}
 		n.recordTail(m)
 		st.tree = commit.Tree
@@ -123,10 +123,10 @@ func (n *Notebook) importRemote(ctx context.Context, m storage.Manifest) error {
 		return err
 	}
 	if err := git.ImportPack(n.ws.Repo(), data); err != nil {
-		return storageIntegrity("import checkpoint pack %s: %v", m.Checkpoint.Key, err)
+		return storageIntegrity(err, "import checkpoint pack %s", m.Checkpoint.Key)
 	}
 	if err := git.MarkShallow(n.ws.Repo(), m.Checkpoint.Head); err != nil {
-		return storageIntegrity("mark checkpoint head %s shallow: %v", m.Checkpoint.Head, err)
+		return storageIntegrity(err, "record checkpoint boundary %s", m.Checkpoint.Head)
 	}
 	for _, inc := range m.Increments {
 		data, err := n.ensurePack(ctx, packSpec{key: inc.Key.String(), sha: inc.SHA256, size: inc.Size})
@@ -134,7 +134,7 @@ func (n *Notebook) importRemote(ctx context.Context, m storage.Manifest) error {
 			return err
 		}
 		if err := git.ImportPack(n.ws.Repo(), data); err != nil {
-			return storageIntegrity("import increment pack %s: %v", inc.Key, err)
+			return storageIntegrity(err, "import increment pack %s", inc.Key)
 		}
 	}
 	return nil
@@ -171,7 +171,7 @@ func (n *Notebook) ensurePack(ctx context.Context, spec packSpec) ([]byte, error
 		return nil, storageFailure(err, "download pack %s", spec.key)
 	}
 	if uint64(len(data)) != spec.size || sha256.Sum256(data) != spec.sha {
-		return nil, storageIntegrity("pack %s does not match its descriptor checksum and size", spec.key)
+		return nil, storageIntegrity(nil, "pack %s does not match its descriptor checksum and size", spec.key)
 	}
 	if err := n.cacheWrite(spec.sha, data); err != nil {
 		return nil, &Error{Code: CodeStorageFailure, Message: "write pack cache", Cause: err}
@@ -242,7 +242,7 @@ func (n *Notebook) lookupPublication(ctx context.Context, id storage.UUID) (bool
 	}
 	m, err := storage.DecodeManifest(data)
 	if err != nil {
-		return false, storageIntegrity("current is not a valid manifest: %v", err)
+		return false, storageIntegrity(err, "current is not a valid manifest")
 	}
 	if m.Checkpoint.Publication == id {
 		return true, nil

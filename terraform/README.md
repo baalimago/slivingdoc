@@ -1,8 +1,8 @@
 # slivingdoc S3 bucket module
 
-This module provisions the private S3 bucket a slivingdoc server needs,
-together with the least-privilege IAM user whose access keys the server
-uses. It is the reusable form of the original AWS example.
+This module provisions the private S3 bucket that a slivingdoc server
+needs, together with the least-privilege IAM user whose access keys the
+server uses. It is the reusable form of the original AWS example.
 
 The bucket is reachable from the public internet, so the module makes
 anonymous access impossible and limits bucket access to exactly one IAM
@@ -36,7 +36,7 @@ output "secret_access_key" {
 }
 ```
 
-Configure the `aws` provider in the root module; the module does not set a
+Configure the `aws` provider in the root module. The module does not set a
 region. The access keys come from the sensitive outputs:
 
 ```text
@@ -71,7 +71,7 @@ uploads blocked. The public access block sets all four blocks to true.
 A bucket policy denies every S3 action to every principal except the
 created IAM user and the account root. This is defense in depth on top of
 the public access block: no anonymous access, no other IAM principal, and
-no AWS service can touch the bucket. The root exemption is deliberate — it
+no AWS service can touch the bucket. The root exemption is deliberate. It
 is the recovery path and the only way `terraform destroy` can complete.
 
 The IAM user carries one inline policy scoped to this bucket only: object
@@ -83,11 +83,11 @@ AWS resource.
 
 - The account root is not denied, so it can always delete the bucket
   policy and the bucket. A stricter "sealed bucket" variant is possible
-  but is deliberately not used: a lost access key pair would then lock the
-  bucket until AWS Support intervenes.
+  but is deliberately not used. With that variant, a lost access key pair
+  locks the bucket until AWS Support intervenes.
 - `force_destroy` is required to delete a bucket that still contains
-  notebook state; without it the destroy fails while objects exist.
+  notebook state. Without it, the destroy fails while objects exist.
 - The bucket policy is replaced before the IAM user on destroy, so teardown
   never hits the deny.
-- The automated slivingdoc test suites never touch AWS; they use their own
+- The automated slivingdoc test suites never touch AWS. They use their own
   MinIO containers.

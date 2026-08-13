@@ -3,7 +3,6 @@ package notebook
 import (
 	"bytes"
 	"context"
-	"crypto/sha1"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -20,6 +19,7 @@ import (
 	"time"
 
 	"github.com/baalimago/slivingdoc/internal/git"
+	"github.com/baalimago/slivingdoc/internal/git/gittest"
 	"github.com/baalimago/slivingdoc/internal/storage"
 	"github.com/baalimago/slivingdoc/internal/storage/fake"
 	"github.com/baalimago/slivingdoc/internal/workspace"
@@ -93,7 +93,7 @@ func (f *fakeRepository) WriteBlob(data []byte) (git.OID, error) {
 	if f.closed {
 		return git.OID{}, errors.New("fake: repository closed")
 	}
-	oid := fakeObjectID("blob", data)
+	oid := gittest.ObjectID("blob", data)
 	f.data.blobs[oid] = append([]byte(nil), data...)
 	f.data.raw[oid] = append([]byte(nil), data...)
 	return oid, nil
@@ -112,9 +112,9 @@ func (f *fakeRepository) WriteTree(entries []git.TreeEntry) (git.OID, error) {
 		return git.OID{}, errors.New("fake: repository closed")
 	}
 	sorted := append([]git.TreeEntry(nil), entries...)
-	sort.SliceStable(sorted, func(i, j int) bool { return treeEntryLess(sorted[i], sorted[j]) })
+	git.SortTreeEntries(sorted)
 	raw := serializeTreeEntries(sorted)
-	oid := fakeObjectID("tree", raw)
+	oid := gittest.ObjectID("tree", raw)
 	f.data.trees[oid] = sorted
 	f.data.raw[oid] = raw
 	return oid, nil
@@ -133,7 +133,7 @@ func (f *fakeRepository) CreateCommit(spec git.CommitSpec) (git.OID, error) {
 		return git.OID{}, errors.New("fake: repository closed")
 	}
 	raw := serializeCommit(spec)
-	oid := fakeObjectID("commit", raw)
+	oid := gittest.ObjectID("commit", raw)
 	f.data.commits[oid] = git.Commit{
 		Tree:    spec.Tree,
 		Parents: append([]git.OID(nil), spec.Parents...),
@@ -383,7 +383,7 @@ func (f *fakeRepository) ImportPack(data []byte) error {
 		if !ok {
 			return fmt.Errorf("fake: unknown pack object kind %d", kind)
 		}
-		if want := fakeObjectID(kindName, body); want != oid {
+		if want := gittest.ObjectID(kindName, body); want != oid {
 			return fmt.Errorf("fake: pack object %s does not match its content (%s)", oid, want)
 		}
 		raw[oid] = append([]byte(nil), body...)
@@ -590,40 +590,6 @@ func belowDirFileConflict(path string, dfPaths map[string]bool) bool {
 	return false
 }
 
-// fakeObjectID hashes object content to a deterministic OID, matching the
-// deterministic fakes of internal/git and internal/workspace.
-func fakeObjectID(kind string, data []byte) git.OID {
-	h := sha1.New()
-	fmt.Fprintf(h, "%s %d\x00", kind, len(data))
-	h.Write(data)
-	var id git.OID
-	copy(id[:], h.Sum(nil))
-	return id
-}
-
-// treeEntryLess orders entries in Git tree order, matching internal/git.
-func treeEntryLess(a, b git.TreeEntry) bool {
-	min := len(a.Name)
-	if len(b.Name) < min {
-		min = len(b.Name)
-	}
-	if cmp := strings.Compare(a.Name[:min], b.Name[:min]); cmp != 0 {
-		return cmp < 0
-	}
-	var ca, cb byte
-	if len(a.Name) > min {
-		ca = a.Name[min]
-	} else if a.Mode == git.ModeTree {
-		ca = '/'
-	}
-	if len(b.Name) > min {
-		cb = b.Name[min]
-	} else if b.Mode == git.ModeTree {
-		cb = '/'
-	}
-	return ca < cb
-}
-
 // testIDSource is a concurrency-safe deterministic source of UUIDv7
 // protocol IDs. The values are unique per call within one test and valid
 // version-7 RFC 4122 UUIDs, so manifest round trips succeed.
@@ -657,8 +623,13 @@ func testUUIDv7(n uint64) storage.UUID {
 // testNow is the deterministic attempt clock of the notebook tests.
 var testNow = time.Date(2026, 8, 10, 0, 0, 0, 0, time.UTC)
 
+// waiterFunc adapts a function to the BackoffWaiter interface.
+type waiterFunc func(ctx context.Context, attempt int) error
+
+func (f waiterFunc) Wait(ctx context.Context, attempt int) error { return f(ctx, attempt) }
+
 // noSleepWaiter makes CAS retries instant so bounds are exact.
-func noSleepWaiter() WaiterFunc {
+func noSleepWaiter() waiterFunc {
 	return func(context.Context, int) error { return nil }
 }
 

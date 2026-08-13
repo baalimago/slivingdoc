@@ -47,6 +47,24 @@ notes_commit(path, message)
 `notes_pull` writes the current notebook into `path`. `notes_commit` publishes
 the caller's changes and incorporates concurrent, non-conflicting changes.
 
+The same two operations are also public as one-shot process subcommands, so
+a human shares the directory with the agents without an MCP host:
+
+```text
+slivingdoc pull <path>
+slivingdoc commit <path> -m <message>
+```
+
+A subcommand `path` can be relative. It resolves against the working
+directory, and the resolved path must stay at or below the workspace root.
+A successful subcommand writes exactly `OK` and one LF to stdout and exits
+zero. A domain error writes the structured envelope below as a candid text
+report to stdout and exits nonzero. The report contains the category and
+message, the retryable verdict, one line per conflicted file with its
+one-based inclusive line ranges, and the recovery report when present. The
+report carries the same categories, the same relative file paths, and the
+same redaction guarantees as the MCP envelope.
+
 The caller never receives a Git object ID, pack name, S3 key, or local checkout
 path. These values are internal implementation details.
 
@@ -92,6 +110,7 @@ request path and uses the normalized internal slash form.
 V1 includes:
 
 - stdio MCP transport
+- direct `pull` and `commit` subcommands for humans
 - one shared notebook per configured server
 - UTF-8 text files and directories
 - text merges with visible conflict markers
@@ -488,11 +507,10 @@ it contains at most approximately 1,024 active increments during normal use.
 
 `generation` and every generation or cutoff field are unquoted JSON integers
 decoded as Go `uint64`. An absent `current` is the implicit remote-empty state
-at generation 0. The first successful conditional creation writes generation
-
-1. Every successful replacement of `current`, including a checkpoint
-   replacement, increments the observed generation by exactly one. Generation
-   values never reset; overflow rejects the operation.
+at generation 0. The first successful conditional creation writes
+generation 1. Every successful replacement of `current`, including a
+checkpoint replacement, increments the observed generation by exactly one.
+Generation values never reset. Overflow rejects the operation.
 
 Manifest version 1 rejects an unknown field, a duplicate field name, a missing
 required field, and explicit JSON `null` at every object level. Validation of
@@ -815,7 +833,7 @@ ordinary text.
 ### 13.1 Purpose
 
 Incremental packs make normal commits small. An unlimited incremental chain
-would make cold startup slow and request-heavy.
+makes cold startup slow and request-heavy.
 
 A checkpoint contains the complete file state at one accepted head. A new
 server needs one checkpoint plus only the increments after it.
@@ -1043,15 +1061,24 @@ The process is a subcommand CLI. The subcommand precedes every flag.
 
 | Command         | Effect                                                       |
 | --------------- | ------------------------------------------------------------ |
-| `serve` (`s`)   | Serve the two MCP tools over stdio. Owns every flag below.    |
+| `serve` (`s`)   | Serve the two MCP tools over stdio.                           |
+| `pull` (`p`)    | Write the current notebook into one directory, print the candid result, and exit. |
+| `commit` (`c`)  | Publish the changes at one directory with `-m <message>`, print the candid result, and exit. |
 | `version` (`v`) | Write the version line and exit zero, resolving no configuration. |
 
 A missing or unknown command writes the command listing and exits nonzero;
 no server starts.
 
-Flags and environment variables configure the `serve` command. Flags take
-precedence over environment variables. The application package owns exact
-parsing.
+Flags and environment variables configure the `serve`, `pull`, and
+`commit` commands identically. `commit` adds the required `-m`/`--message`
+flag. The two subcommands take exactly one positional notebook path, which
+can follow or precede the flags. Flags take precedence over environment
+variables. The application package owns exact parsing.
+
+`pull` and `commit` run the same startup sequence as `serve`: the pinned
+engine check and the S3 compatibility probe. They perform one operation and
+exit. An argument refusal (a missing path or message) exits nonzero before
+any native or network dependency is touched.
 
 | Function              | Flag                     | Environment variable              |
 | --------------------- | ------------------------ | --------------------------------- |
@@ -1101,16 +1128,16 @@ default, for example `cli=warn,mcp=debug,info`. The modules are `cli`,
 `app`, `mcp`, and `notebook`; the levels are debug, info, warn, and error.
 A malformed value is reported and falls back to the info default rather
 than refusing startup. `NO_COLOR` set to any non-empty value disables the
-level colour.
+level color.
 SIGINT and SIGTERM stop new requests and cancel in-flight request contexts.
 Shutdown waits at most 30 seconds, closes native and lock resources, and exits
 nonzero if the deadline expires.
 
 `slivingdoc version` writes `slivingdoc <semver>` and one LF to stdout, then
 exits zero without loading configuration or native and S3 dependencies.
-`slivingdoc serve -h` follows the same startup rule and writes flag help to
-stdout. Invalid configuration writes one redacted diagnostic to stderr and
-exits nonzero.
+`slivingdoc serve -h`, `slivingdoc pull -h`, and `slivingdoc commit -h`
+follow the same startup rule and write flag help to stdout. Invalid
+configuration writes one redacted diagnostic to stderr and exits nonzero.
 
 ## 18. Transport and security
 
@@ -1163,8 +1190,9 @@ npm/
 Packages own invariants or system boundaries. They do not exist only to rename
 or forward functions.
 
-All Go packages are internal. The MCP tools, process flags, release artifacts,
-and npm launcher are the supported interfaces.
+All Go packages are internal. The MCP tools, the pull and commit
+subcommands, process flags, release artifacts, and npm launcher are the
+supported interfaces.
 
 ## 20. Test architecture
 
@@ -1209,8 +1237,9 @@ release boundary    native artifact startup and dependency inspection
 npm boundary        platform selection, checksum, streams, and exit status
 ```
 
-Docker-backed tests can skip with a clear reason when Docker is unavailable.
-CI must run them in a required job, so a local skip cannot hide a regression.
+Docker-backed tests fail with an actionable diagnostic when Docker is
+unavailable. They never skip, so a stopped local daemon cannot hide a
+regression. CI runs them in a required job.
 
 ## 21. Distribution and native builds
 
@@ -1258,14 +1287,14 @@ One final release job creates the GitHub release after all target builds pass.
 The npm publish step runs only after every required artifact and checksum is
 available. It runs in the same workflow, after the release assembly, and
 fails unless `npm/slivingdoc/package.json` reports the tag version. The
-repository provides `make release`, an interactive script that prints the
-recent releases, prompts for the new version and a tag description, bumps
-the package version, commits it, and annotates the `v<semver>` tag, so the
-workflow and the package cannot drift. A prerelease version publishes to
-the `next` dist-tag; a stable version
-publishes to `latest`. Publication uses npm trusted publishing (OIDC): the
-repository stores no npm token, the registry accepts publishes only from
-the `release.yml` workflow of `baalimago/slivingdoc`, and provenance
+repository provides `make release`, an interactive script. The script
+prints the recent releases, prompts for the new version and a tag
+description, bumps the package version, commits it, and annotates the
+`v<semver>` tag. Thus the workflow and the package cannot drift. A
+prerelease version publishes to the `next` dist-tag. A stable version
+publishes to `latest`. Publication uses npm trusted publishing (OIDC). The
+repository stores no npm token, and the registry accepts publishes only
+from the `release.yml` workflow of `baalimago/slivingdoc`. Provenance
 attestations are generated automatically for the public repository.
 
 ## 22. Operational responsibility
@@ -1311,7 +1340,7 @@ depend on the internal representation.
 
 ## 24. Decisions recorded
 
-1. The MCP server is the product and the only public API.
+1. The MCP server is the product and the only programmatic protocol.
 2. The server exposes `notes_pull(path)` and `notes_commit(path, message)`.
 3. Users do not install Git or libgit2.
 4. A narrow internal CGo package calls a pinned libgit2 release.
@@ -1347,6 +1376,9 @@ depend on the internal representation.
 34. Cleanup uses the successful checkpoint cutoff as its candidate fence.
 35. Retained generations contain complete reconstructable descriptor chains.
 36. Unexpected partial local mutation uses one generic recovery path.
+37. The `pull` and `commit` subcommands expose the same two operations to
+    humans; they reuse the serve startup surface and print the envelope as a
+    candid text report.
 
 ## 25. Architecture acceptance
 

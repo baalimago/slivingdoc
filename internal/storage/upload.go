@@ -20,8 +20,9 @@ import (
 //   - the key is absent: the upload never landed, report a transport failure;
 //   - bytes differ: report a storage-integrity error and never overwrite.
 //
-// A matching existing unique key is reused only after a streamed GET proves
-// its bytes; metadata alone is not proof (architecture section 9.1).
+// Existing bytes at the unique key are reused only through that read-back.
+// The streamed GET proves the size and SHA-256. Metadata alone is never
+// proof (architecture section 9.1).
 func UploadUnique(ctx context.Context, s ObjectStore, key Key, r io.Reader, meta Metadata) error {
 	if !key.Kind.Valid() {
 		return fmt.Errorf("%w: upload key has invalid kind %q", ErrIntegrity, key.Kind)

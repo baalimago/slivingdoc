@@ -2,11 +2,10 @@
 # check-release-ref.sh — the release workflow must reference the reusable
 # pipeline by immutable commit SHA, never by a branch or a moving tag.
 #
-# Phase 8 is not complete while the external simple-go-pipeline change is
-# only a proposal: the reference in .github/workflows/release.yml stays a
-# 40-hex placeholder until the reviewed commit exists. This check turns the
-# placeholder (and any branch or tag reference) into a clear diagnostic for
-# humans; the workflow itself fails at dispatch on an unresolvable SHA.
+# The reference in .github/workflows/release.yml must be a real 40-hex
+# commit SHA of the reusable simple-go-pipeline workflow. This check turns
+# a placeholder (and any branch or tag reference) into a clear diagnostic
+# for humans; the workflow itself fails at dispatch on an unresolvable SHA.
 #
 # Usage: check-release-ref.sh <workflow-file>
 set -euo pipefail

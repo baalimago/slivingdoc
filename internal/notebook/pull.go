@@ -26,7 +26,7 @@ func (n *Notebook) Pull(ctx context.Context) error {
 	}
 	localTree, err := git.BuildTree(n.ws.Repo(), local)
 	if err != nil {
-		return &Error{Code: CodeInvalidRequest, Message: "visible files cannot be represented as a tree", Cause: err}
+		return &Error{Code: CodeInvalidRequest, Message: "visible files cannot be represented as notebook state", Cause: err}
 	}
 
 	remote, err := n.readRemote(ctx)

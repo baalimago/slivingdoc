@@ -51,7 +51,7 @@ func TestScenarioTransportStdioProcess(t *testing.T) {
 	assertProtocolOnlyStdout(t, h.record.Bytes())
 	// Logs go to stderr only (architecture section 17, L1040): stdout was proven
 	// protocol-only above, so the tool-call records must be on stderr. A
-	// non-empty stderr would also be satisfied by an unrelated line, so
+	// non-empty stderr is also satisfied by an unrelated line, so
 	// assert the correlated records of the calls that were actually made.
 	stderr := h.stderrText(t)
 	assertToolCallLogged(t, stderr, toolPull)

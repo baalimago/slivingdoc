@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 320" role="img" aria-label="slivingdoc — agents' S3 living documents">
+  <!-- Tokens mirror slivingdoc-web/styles.css: bg #f6f8fc, ink #0e1726,
+       muted #7385a3, blue #1a5cff, glow #5aa2ff, radius 16, the sans
+       Inter stack, and h1 weight 800 with -0.02em tracking. -->
+  <defs>
+    <radialGradient id="glowA" cx="85%" cy="-10%" r="70%">
+      <stop offset="0%" stop-color="#1a5cff" stop-opacity="0.10"/>
+      <stop offset="60%" stop-color="#1a5cff" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glowB" cx="-10%" cy="30%" r="65%">
+      <stop offset="0%" stop-color="#5aa2ff" stop-opacity="0.08"/>
+      <stop offset="55%" stop-color="#5aa2ff" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="1200" height="320" rx="16" fill="#f6f8fc"/>
+  <rect width="1200" height="320" rx="16" fill="url(#glowA)"/>
+  <rect width="1200" height="320" rx="16" fill="url(#glowB)"/>
+  <!-- The intro lockup: the favicon glyph beside the wordmark. -->
+  <g transform="translate(268, 84) scale(4.4)">
+    <path d="M6 8.5 Q13 0.5 20 8.5" fill="none" stroke="#1a5cff" stroke-width="2" stroke-linecap="round"/>
+    <path d="M3.5 8.5 L22.5 8.5 L20 23.5 Q19.6 25.5 17 25.5 L9 25.5 Q6.4 25.5 6 23.5 Z"
+          fill="#1a5cff" stroke="#1a5cff" stroke-width="1.5" stroke-linejoin="round"/>
+    <path d="M8.8 12.8h8.4M9.2 16.8h7.6M9.6 20.8h6.8" stroke="#fff" stroke-width="1.8" stroke-linecap="round"/>
+  </g>
+  <text x="408" y="188"
+        font-family="Inter, 'SF Pro Text', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+        font-size="96" font-weight="800" letter-spacing="-0.02em"
+        fill="#0e1726">slivingdoc</text>
+  <text x="412" y="244"
+        font-family="Inter, 'SF Pro Text', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+        font-size="30" fill="#7385a3">agents <tspan fill="#1a5cff" font-weight="700">s</tspan>3 <tspan fill="#1a5cff" font-weight="700">living</tspan> <tspan fill="#1a5cff" font-weight="700">doc</tspan>uments</text>
+</svg>

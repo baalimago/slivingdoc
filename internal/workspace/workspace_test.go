@@ -362,7 +362,7 @@ func TestRecoveryRequiredRefusesNormalWork(t *testing.T) {
 	if err := w.Accept(context.Background(), Baseline{RemoteGeneration: 1, Head: oidTest("c"), Tree: tree}); err != nil {
 		t.Fatalf("Accept() = %v", err)
 	}
-	// Force the recovery flag durably, as a crashed replacement would.
+	// Force the recovery flag durably, as a crashed replacement does.
 	st := w.state
 	st.RecoveryRequired = true
 	if _, err := persistState(w.privDir, w.derivedKey, st); err != nil {
@@ -472,7 +472,7 @@ func TestOpenInterruptedStateWriteForcesRecovery(t *testing.T) {
 		t.Fatalf("Close() = %v", err)
 	}
 	// A leftover temporary file means a previous state write never
-	// landed; the durable record may predate a replacement.
+	// landed: the durable record can predate a replacement.
 	if err := os.WriteFile(filepath.Join(w.privDir, stateTmpName), []byte("x"), 0o600); err != nil {
 		t.Fatalf("write tmp: %v", err)
 	}
@@ -494,7 +494,7 @@ func TestOpenMissingRepoForcesRecovery(t *testing.T) {
 		t.Fatalf("Close() = %v", err)
 	}
 	// Remove the repository from the engine store, as deleting the private
-	// repository directory would on a real filesystem.
+	// repository directory does on a real filesystem.
 	delete(engine.data, filepath.Join(w.privDir, repoDirName))
 	reopened, err := Open(context.Background(), cfg)
 	if err != nil {
@@ -599,7 +599,7 @@ func TestFailpointsEveryBoundary(t *testing.T) {
 }
 
 // TestSamePathOperationsSerialize proves that two operations on one path
-// never overlap, even when the failpoint barrier would allow it.
+// never overlap, even when the failpoint barrier allows it.
 func TestSamePathOperationsSerialize(t *testing.T) {
 	w := openWorkspace(t, testConfig(t, newFakeEngine(), "notes"))
 	tree := buildTree(t, w, map[string]string{"a.md": "a"})

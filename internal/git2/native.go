@@ -509,7 +509,7 @@ func libgit2ImportPack(odb *odbHandle, data []byte) error {
 }
 
 // libgit2MarkShallow records a commit as a shallow history boundary: its
-// parents may be absent because the checkpoint pack omits pre-checkpoint
+// parents can be absent because the checkpoint pack omits pre-checkpoint
 // history. The shallow file lives in the repository git directory, exactly
 // where libgit2 and Git read it; a subsequent read refreshes the in-memory
 // graft table so the current session agrees with a freshly opened repository.

@@ -26,17 +26,17 @@ func TestMapErrorEveryCategory(t *testing.T) {
 		wantReco  bool
 	}{
 		{name: "invalid request", err: &notebook.Error{Code: notebook.CodeInvalidRequest, Message: "commit message must not be blank"}, wantCode: codeInvalidRequest, wantRetry: false},
-		{name: "content conflict", err: conflictError(), wantCode: codeContentConflict, wantRetry: false, wantFiles: true},
-		{name: "remote busy", err: &notebook.Error{Code: notebook.CodeRemoteBusy, Message: "another writer kept winning"}, wantCode: codeRemoteBusy, wantRetry: true},
+		{name: "content conflict", err: conflictError(), wantCode: "CONTENT_CONFLICT", wantRetry: false, wantFiles: true},
+		{name: "remote busy", err: &notebook.Error{Code: notebook.CodeRemoteBusy, Message: "another writer kept winning"}, wantCode: "REMOTE_BUSY", wantRetry: true},
 		{name: "storage failure", err: &notebook.Error{Code: notebook.CodeStorageFailure, Message: "pack upload failed"}, wantCode: codeStorageFailure, wantRetry: true},
-		{name: "storage integrity", err: &notebook.Error{Code: notebook.CodeStorageIntegrity, Message: "corrupt pack"}, wantCode: codeStorageIntegrity, wantRetry: false},
-		{name: "recovery failure", err: recoveryError(), wantCode: codeRecoveryFailure, wantRetry: true, wantReco: true},
+		{name: "storage integrity", err: &notebook.Error{Code: notebook.CodeStorageIntegrity, Message: "corrupt pack"}, wantCode: "STORAGE_INTEGRITY", wantRetry: false},
+		{name: "recovery failure", err: recoveryError(), wantCode: "RECOVERY_FAILURE", wantRetry: true, wantReco: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			te, domain := mapError(tt.err)
+			te, domain := MapError(tt.err)
 			if !domain {
-				t.Fatal("mapError() reported a non-domain error")
+				t.Fatal("MapError() reported a non-domain error")
 			}
 			if te.Code != tt.wantCode {
 				t.Fatalf("code = %q, want %q", te.Code, tt.wantCode)
@@ -67,7 +67,7 @@ func TestMapErrorEveryCategory(t *testing.T) {
 // normalized relative path and the one-based inclusive ranges survive the
 // mapping unchanged.
 func TestMapErrorConflictShape(t *testing.T) {
-	te, _ := mapError(conflictError())
+	te, _ := MapError(conflictError())
 	if len(te.Files) != 2 {
 		t.Fatalf("files = %d, want 2", len(te.Files))
 	}
@@ -75,7 +75,7 @@ func TestMapErrorConflictShape(t *testing.T) {
 	if first.Path != "notes/today.md" {
 		t.Fatalf("path = %q, want the normalized relative path", first.Path)
 	}
-	if len(first.Ranges) != 2 || first.Ranges[0] != (errorRange{12, 18}) || first.Ranges[1] != (errorRange{25, 25}) {
+	if len(first.Ranges) != 2 || first.Ranges[0] != (ErrorRange{12, 18}) || first.Ranges[1] != (ErrorRange{25, 25}) {
 		t.Fatalf("ranges = %+v, want [{12 18} {25 25}]", first.Ranges)
 	}
 	second := te.Files[1]
@@ -87,7 +87,7 @@ func TestMapErrorConflictShape(t *testing.T) {
 // TestMapErrorRecoveryShape proves the recovery report: stage, the
 // remoteAccepted enum, and the resynchronized flag.
 func TestMapErrorRecoveryShape(t *testing.T) {
-	te, _ := mapError(recoveryError())
+	te, _ := MapError(recoveryError())
 	if te.Recovery.Stage != "commit.cas" {
 		t.Fatalf("stage = %q", te.Recovery.Stage)
 	}
@@ -103,12 +103,12 @@ func TestMapErrorRecoveryShape(t *testing.T) {
 // returns before any notebook work.
 func TestMapErrorServicePath(t *testing.T) {
 	for _, err := range []error{workspace.ErrInvalidPath, workspace.ErrSymlink} {
-		te, domain := mapError(err)
+		te, domain := MapError(err)
 		if !domain {
-			t.Fatalf("mapError(%v) is not a domain error", err)
+			t.Fatalf("MapError(%v) is not a domain error", err)
 		}
 		if te.Code != codeInvalidRequest || te.Retryable {
-			t.Fatalf("mapError(%v) = %+v, want INVALID_REQUEST not retryable", err, te)
+			t.Fatalf("MapError(%v) = %+v, want INVALID_REQUEST not retryable", err, te)
 		}
 	}
 }
@@ -121,9 +121,9 @@ func TestMapErrorEscapeNamesRoot(t *testing.T) {
 	root := "/srv/notes"
 	rejected := "/srv/elsewhere"
 	err := &workspace.PathEscapeError{Path: rejected, Root: root}
-	te, domain := mapError(err)
+	te, domain := MapError(err)
 	if !domain || te.Code != codeInvalidRequest || te.Retryable {
-		t.Fatalf("mapError(%v) = %+v, %v; want non-retryable INVALID_REQUEST", err, te, domain)
+		t.Fatalf("MapError(%v) = %+v, %v; want non-retryable INVALID_REQUEST", err, te, domain)
 	}
 	if !strings.Contains(te.Message, root) {
 		t.Fatalf("message = %q, want it to name the workspace root %q", te.Message, root)
@@ -137,8 +137,8 @@ func TestMapErrorEscapeNamesRoot(t *testing.T) {
 // request is not wrapped into the tool-error envelope.
 func TestMapErrorCancellationKeepsProtocolError(t *testing.T) {
 	for _, err := range []error{context.Canceled, context.DeadlineExceeded} {
-		if te, domain := mapError(fmt.Errorf("wrap: %w", err)); domain || te != nil {
-			t.Fatalf("mapError(%v) = %+v, %v; want a protocol error", err, te, domain)
+		if te, domain := MapError(fmt.Errorf("wrap: %w", err)); domain || te != nil {
+			t.Fatalf("MapError(%v) = %+v, %v; want a protocol error", err, te, domain)
 		}
 	}
 }
@@ -146,9 +146,9 @@ func TestMapErrorCancellationKeepsProtocolError(t *testing.T) {
 // TestMapErrorFallback maps an unknown service failure to the stable
 // retryable storage category.
 func TestMapErrorFallback(t *testing.T) {
-	te, domain := mapError(errors.New("unexpected internal failure"))
+	te, domain := MapError(errors.New("unexpected internal failure"))
 	if !domain || te.Code != codeStorageFailure || !te.Retryable {
-		t.Fatalf("mapError() = %+v, %v; want a retryable storage failure", te, domain)
+		t.Fatalf("MapError() = %+v, %v; want a retryable storage failure", te, domain)
 	}
 }
 
@@ -205,5 +205,52 @@ func TestRedactPreservesConflictPaths(t *testing.T) {
 	got := Redact("Resolve notes/today.md before continuing")
 	if !strings.Contains(got, "notes/today.md") {
 		t.Fatalf("Redact() changed a conflict path: %q", got)
+	}
+}
+
+// TestToolErrorReport pins the candid CLI text form of the envelope: the
+// category and message, the retryable verdict, one indented line per
+// conflicted file, and the recovery report only when present.
+func TestToolErrorReport(t *testing.T) {
+	for _, row := range []struct {
+		name string
+		te   *ToolError
+		want string
+	}{
+		{
+			name: "conflict with ranges and a rangeless file",
+			te: &ToolError{
+				Code: "CONTENT_CONFLICT", Retryable: false,
+				Message: "resolve the conflict blocks",
+				Files: []ErrorFile{
+					{Path: "a.md", Ranges: []ErrorRange{{Start: 1, End: 5}, {Start: 7, End: 11}}},
+					{Path: "dir/b.md", Ranges: []ErrorRange{}},
+				},
+			},
+			want: "CONTENT_CONFLICT: resolve the conflict blocks\n" +
+				"retryable: false\n" +
+				"  a.md: lines 1-5, 7-11\n" +
+				"  dir/b.md\n",
+		},
+		{
+			name: "recovery failure carries the recovery line",
+			te: &ToolError{
+				Code: "RECOVERY_FAILURE", Retryable: true,
+				Message: "recovery ran",
+				Files:   []ErrorFile{},
+				Recovery: &RecoveryInfo{
+					Stage: "publish", RemoteAccepted: "unknown", Resynchronized: true,
+				},
+			},
+			want: "RECOVERY_FAILURE: recovery ran\n" +
+				"retryable: true\n" +
+				"recovery: stage=publish remoteAccepted=unknown resynchronized=true\n",
+		},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			if got := row.te.Report(); got != row.want {
+				t.Fatalf("Report() = %q, want %q", got, row.want)
+			}
+		})
 	}
 }

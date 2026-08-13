@@ -117,9 +117,10 @@ func contentConflict(message string, files []ConflictFile) error {
 	return &Error{Code: CodeContentConflict, Message: message, Files: files}
 }
 
-// storageIntegrity builds a STORAGE_INTEGRITY error.
-func storageIntegrity(format string, args ...any) error {
-	return &Error{Code: CodeStorageIntegrity, Message: fmt.Sprintf(format, args...)}
+// storageIntegrity builds a STORAGE_INTEGRITY error wrapping cause. A nil
+// cause is valid for a validation verdict with no underlying error.
+func storageIntegrity(cause error, format string, args ...any) error {
+	return &Error{Code: CodeStorageIntegrity, Message: fmt.Sprintf(format, args...), Cause: cause}
 }
 
 // storageFailure builds a STORAGE_FAILURE error wrapping cause.

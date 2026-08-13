@@ -136,8 +136,8 @@ func TestScenarioCommitWithoutPull(t *testing.T) {
 // outlive the acceptance (architecture section 11.1, L650).
 //
 // B's L is genuinely stale at commit time: A advances the remote AFTER B
-// pulled, so the accepted merged tree is a strict superset of what B could
-// observe locally.
+// pulled, so the accepted merged tree is a strict superset of B's
+// possible local view.
 func TestScenarioCommitLRewriteAfterCommit(t *testing.T) {
 	t.Parallel()
 	h := newFakeHarness(t, HarnessConfig{})
@@ -307,8 +307,8 @@ func TestScenarioCommitCASLossRetry(t *testing.T) {
 
 	// The retry is a fresh proposal, not a republication: two DISTINCT
 	// gen-2 pack keys were uploaded, each exactly once, and the accepted
-	// manifest references exactly one of them. Counting calls alone could
-	// not tell a new publication ID from the same key written twice.
+	// manifest references exactly one of them. Counting calls alone cannot
+	// tell a new publication ID from the same key written twice.
 	uploaded := rec.KeysWithPrefix(OpPut, "packs/increments/2-")
 	if len(uploaded) != 2 {
 		t.Fatalf("distinct gen-2 increment keys = %v, want the losing and the retried publication", uploaded)

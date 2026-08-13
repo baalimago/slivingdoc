@@ -1,4 +1,4 @@
-# AGENTS.md — S(3)livingdoc
+# AGENTS.md — slivingdoc
 
 ## Architecture
 
@@ -6,20 +6,21 @@ slivingdoc is a standalone MCP server that gives many agents one shared
 directory of UTF-8 text notes, stored durably in S3-compatible object storage.
 It uses Git data structures and merge behavior internally but never invokes a
 Git executable and never exposes a Git repository. The full contract is
-[`architecture/slivingdoc-v1.md`](architecture/slivingdoc-v1.md). Three states
-shape every operation: **L** is the caller-controlled visible directory,
-**P** is the server-owned private state (repository, baseline, locks), and
+[`docs/slivingdoc-v1.md`](docs/slivingdoc-v1.md). Three states
+shape every operation. **L** is the caller-controlled visible directory.
+**P** is the server-owned private state (repository, baseline, locks).
 **R** is the accepted remote state indexed by the S3 object `current`.
 
 ```text
-               MCP client (agent)
-           notes_pull / notes_commit
-                       |
-                       |  stdio JSON-RPC
-                       v
+     MCP client (agent)              human shell
+ notes_pull / notes_commit      pull <path> / commit <path> -m <msg>
+                       |         |
+                       |  stdio JSON-RPC / one-shot argv
+                       v         v
 +----------------------------------------------+
 |  main.go -> internal/cli                     |
-|  command router: serve | version             |
+|  command router: serve | pull | commit |     |
+|  version                                     |
 +----------------------+-----------------------+
                        |
                        v
@@ -79,11 +80,12 @@ R  <bucket>/<prefix>/      current                manifest v1, strict; the only
                            packs/increments/<gen>-<id>.pack    one publication
 ```
 
-Supporting packages sit beside the main path: `internal/strictjson` supplies
-the strict JSON value tree shared by the manifest and `state.json`;
-`internal/storage/fake` and `internal/storage/contract` provide the
-deterministic object store and the one contract suite run against both the
-fake and MinIO; `internal/testminio` starts the pinned testcontainers MinIO.
+Supporting packages sit beside the main path. `internal/strictjson`
+supplies the strict JSON value tree shared by the manifest and
+`state.json`. `internal/storage/fake` and `internal/storage/contract`
+provide the deterministic object store and the one contract suite run
+against both the fake and MinIO. `internal/testminio` starts the pinned
+testcontainers MinIO.
 
 ### Package Map
 
@@ -92,25 +94,30 @@ slivingdoc/
 |-- main.go                  entry point: cli.Run over os.Args
 |-- cmd/                     the CLI commands (go_away_boilerplate/pkg/cmd)
 |   |-- serve/               serve|s: the MCP stdio server over internal/app
+|   |-- pull/                pull|p: one-shot notes_pull for humans
+|   |-- commit/              commit|c: one-shot notes_commit for humans
 |   `-- version/             version|v: the exact "slivingdoc <semver>" line
 |-- release_test.go          release layer: dependency baselines, checksum
 |                            grammar, release reference, built binary
 |-- Makefile                 libgit2 build stamp; test / npm-test / lint /
-|                            fmt / build / qa targets
+|                            fmt / cover / build / qa / release / clean
 |-- scripts/                 build-libgit2.sh; per-platform check-deps-*.sh;
-|                            make-sha256sums.sh; check-release-ref.sh
+|                            make-sha256sums.sh; check-release-ref.sh;
+|                            release.go (the `make release` prompt flow)
 |-- npm/slivingdoc/          zero-dependency launcher: platform mapping,
 |                            verified download, cache, exec forwarding
-|-- .github/workflows/       ci.yml (go, npm, readme-coverage caller);
+|-- .github/workflows/       ci.yml (qa, npm, readme-coverage caller);
 |                            release.yml (caller for the reusable pipeline)
-|-- architecture/            slivingdoc-v1.md (the accepted contract)
-|-- docs/                    build.md, build-libgit2.md, testing.md
+|-- docs/                    slivingdoc-v1.md (the accepted contract),
+|                            build.md, testing.md
+|-- terraform/               reusable AWS module: bucket, IAM user, keys
 |-- examples/minio/          isolated local MinIO walkthrough
+|-- examples/terraform/      debug configuration calling the module
 |-- worklogs/                phased worklog: the implementation record
 `-- internal/
     |-- app/                 process body: Flags, Setup -> Runtime, Serve;
     |                        engine open / version / features / close
-    |-- cli/                  the command map, usage text, and router entry;
+    |-- cli/                 the command map, usage text, and router entry;
     |                        one definition shared by main and the scenarios
     |-- git/                 Go-facing engine seam and policy: BuildTree,
     |                        ReadSnapshot, Merge, MaterializeTree,
@@ -146,17 +153,18 @@ slivingdoc/
                              behavioral contract of the whole server
 ```
 
-Interfaces belong to the package that consumes them: `internal/git` owns the
-engine seam, `internal/workspace` its narrow `Engine` view, `internal/notebook`
-its `Workspace` view, and `internal/storage` the `ObjectStore` boundary. No
-package exists only to forward a function.
+Interfaces belong to the package that consumes them. `internal/git` owns
+the engine seam. `internal/workspace` owns its narrow `Engine` view.
+`internal/notebook` owns its `Workspace` view. `internal/storage` owns the
+`ObjectStore` boundary. No package exists only to forward a function.
 
 ### Event Flow
 
 ```text
 Public API:   notes_pull(path) / notes_commit(path, message)
+              CLI mirror: slivingdoc pull <path> / commit <path> -m <message>
                                          |
-                                         |  MCP stdio JSON-RPC
+                                         |  MCP stdio JSON-RPC or one-shot argv
                                          v
 Implemented orchestration:  Notebook.Pull / Notebook.Commit  (internal/notebook)
 
@@ -198,10 +206,20 @@ Background efforts (same call path, best-effort)
 ## Startup Wiring (`main.go`)
 
 `main.go` is one call: `os.Exit(cli.Run(ctx, os.Args, git2.New(), opts))`.
-`internal/cli` holds the command map (`serve|s`, `version|v`) and routes
-through `go_away_boilerplate/pkg/cmd`; `cmd/serve` and `cmd/version`
-implement `cmd.Command`. The router parses the selected command's flag set,
-then calls `Setup` and `Run`.
+`internal/cli` holds the command map (`serve|s`, `pull|p`, `commit|c`,
+`version|v`) and routes through `go_away_boilerplate/pkg/cmd`. Each `cmd/`
+package implements `cmd.Command`. The router parses the selected command's
+flag set, then calls `Setup` and `Run`.
+
+`cmd/pull` and `cmd/commit` are one-shot human invocations of the same two
+notebook operations. They share the serve flag set (`app.Flags`) and take
+one positional notebook path. A relative path resolves against the working
+directory, and flags can follow the path. Both commands run the same
+startup refusal surface through `app.Setup` and call `Runtime.Pull` /
+`Runtime.Commit`. `app.Report` prints the candid result: exactly `OK` on
+stdout, or the structured `mcp.ToolError.Report` text (category, retryable,
+files with line ranges) with a nonzero exit. `commit` requires
+`-m`/`--message`.
 
 `cmd/serve` maps straight onto `internal/app`: `Setup` is `app.Setup`
 (returning a `*app.Runtime`) and `Run` is `Runtime.Serve`. In order:
@@ -225,29 +243,21 @@ then calls `Setup` and `Run`.
    `notes_commit` and runs over stdio. Stdout carries protocol messages only;
    logs go to stderr.
 7. **Shut down.** A signal closes the live transport connection, which
-   unwinds in-flight handlers; a bounded deadline (30 s) forces a nonzero
+   unwinds in-flight handlers. A bounded deadline (30 s) forces a nonzero
    exit for a handler that ignores cancellation. Client EOF is a clean exit.
 
 ### Key Flags
 
-Flags beat environment variables, which beat defaults. Verified against
-`slivingdoc serve -h`.
+Flags beat environment variables, which beat defaults. The full table
+lives in [`docs/running.md`](docs/running.md) and in the `helpText` of
+`internal/app/config.go`, which `slivingdoc serve -h` prints — that code
+copy is the authoritative one. Behavior worth remembering: `--bucket` is
+required, `--private-root` must not be at or below the workspace root,
+and `--commit-retries` exhaustion is `REMOTE_BUSY`.
 
-| Flag | Default | Environment | Effect |
-| ---- | ------- | ----------- | ------ |
-| `--bucket` | *(required)* | `SLIVINGDOC_BUCKET` | S3 bucket holding the notebook state. |
-| `--prefix` | `slivingdoc` | `SLIVINGDOC_PREFIX` | Object prefix below the bucket. |
-| `--region` | `us-east-1` | `AWS_REGION` | S3 region. |
-| `--endpoint` | *(empty: AWS)* | `AWS_ENDPOINT_URL_S3` | S3-compatible endpoint URL. |
-| `--path-style` | `false` | `SLIVINGDOC_PATH_STYLE` | Force path-style addressing. |
-| `--workspace-root` | startup working directory | `SLIVINGDOC_WORKSPACE_ROOT` | Root that every request path must live below. |
-| `--private-root` | `<user-cache-dir>/slivingdoc` | `SLIVINGDOC_PRIVATE_ROOT` | Root of server-owned state (P). Must not be at or below the workspace root. |
-| `--commit-retries` | `8` (range 0..100) | `SLIVINGDOC_COMMIT_RETRIES` | CAS retries after the first attempt; exhaustion is `REMOTE_BUSY`. |
-| `--checkpoint-packs` | `1024` (minimum 1) | `SLIVINGDOC_CHECKPOINT_PACKS` | Active tail length that schedules one checkpoint. |
-| `--retained-checkpoints` | `1` (range 0..64) | `SLIVINGDOC_RETAINED_CHECKPOINTS` | Previous checkpoint generations kept readable. |
-
-Every flag belongs to `serve`; the subcommand comes first. `slivingdoc
-version` and `slivingdoc serve -h` exit zero before loading dependencies.
+The `serve`, `pull`, and `commit` commands share every flag. The
+subcommand comes first. `slivingdoc version` and `-h` on any command exit
+zero before loading dependencies.
 
 ### Logging
 
@@ -259,35 +269,35 @@ only be resolved from a bound attribute.
 
 | Variable | Effect |
 | -------- | ------ |
-| `LOG_LEVEL` | Per-module levels, e.g. `cli=warn,mcp=debug,info`. A bare level is the default. Malformed values fall back to info and are reported, never fatal. |
-| `NO_COLOR` | Any non-empty value disables the ANSI level colour. |
+| `LOG_LEVEL` | Per-module levels, for example `cli=warn,mcp=debug,info`. A bare level is the default. A malformed value falls back to info and is reported, never fatal. |
+| `NO_COLOR` | Any non-empty value disables the ANSI level color. |
 
-Modules are `app.ModuleCLI`, `ModuleApp`, `ModuleMCP`, and `ModuleNotebook`;
-`app.Modules` lists them and a test pins the list against the constants.
+Modules are `app.ModuleCLI`, `ModuleApp`, `ModuleMCP`, and
+`ModuleNotebook`.
 
 ---
 
 ## Integration Tests
 
 Any new feature or behavior change starts by wrapping it in black-box
-integration scenarios in `internal/integrationtest/` — the scenarios ARE the
-feature's behavioral contract, written before or alongside the
+integration scenarios in `internal/integrationtest/`. The scenarios ARE
+the feature's behavioral contract. Write them before or alongside the
 implementation, never after.
 
 - **Black-box means events in → events out.**
-- **Scenarios carry the spec so prose doesn't have to.** e worklog phase can
-  describe intent and touchpoints; the guaranteed behavior lives in the
-  scenario assertions. Where prose and a passing scenario disagree, the
-  scenario is the spec.
-- **Unit tests cover what scenarios can't reach cheaply** — pure functions,
-  defensive branches, handler routing edge cases. Don't duplicate full
-  event chains at both levels.
+- **Scenarios carry the spec so prose does not have to.** The worklog
+  phase can describe intent and touchpoints. The guaranteed behavior lives
+  in the scenario assertions. Where prose and a passing scenario disagree,
+  the scenario is the spec.
+- **Unit tests cover what scenarios cannot reach cheaply** — pure
+  functions, defensive branches, handler routing edge cases. Do not
+  duplicate full event chains at both levels.
 - **When a feature breaks existing integration tests, update the tests to
   match the feature.** Scenarios encode current intended behavior, not
-  frozen history — a feature that legitimately changes retry semantics,
+  frozen history. A feature that legitimately changes retry semantics,
   event fields, or terminal states rewrites the affected assertions in the
-  same commit. Before rewriting, understand what the old assertion
-  protected: if the breakage is a side effect rather than the feature's
+  same commit. Before you rewrite an assertion, understand what it
+  protected. If the breakage is a side effect rather than the feature's
   purpose, it is a regression finding, not a test to silence.
 
 ## Function Shape
@@ -295,17 +305,20 @@ implementation, never after.
 Prefer many small single-purpose functions sequenced by a thin orchestrator over
 one function that does several things. Two smells drive most refactors here:
 
-- **`and` in a name is a split point.** `fooAndBar` is two functions wearing one
-  name. Name each helper for the single verb it performs and let a caller sequence
-  them; the orchestrator reads as the outline of the operation.
-- **A growing return tuple wants to be a struct. Or it doesnt want to be at all**
-  When a function returns three or more values — or you are tempted to add "just one more"
-  to carry new data - this is a code smell. Its likely that the callsign should be normalized.
+- **`and` in a name is a split point.** `fooAndBar` is two functions
+  wearing one name. Name each helper for the single verb it performs and
+  let a caller sequence them. The orchestrator then reads as the outline of
+  the operation.
+- **A growing return tuple wants to be a struct — or wants to not exist at
+  all.** When a function returns three or more values, or when you are
+  tempted to add one more value to carry new data, that is a code smell.
+  Normalize the signature, or remove the extra values.
 
-Example below: Populate that struct incrementally, capturing each value at its source. A value set
-early (timing, telemetry, the raw upstream result) then survives a later step's
-failure and is available on both the success and error paths, so the caller reads
-one field regardless of outcome — no per-branch plumbing.
+The example below populates that struct incrementally and captures each
+value at its source. A value set early (timing, telemetry, the raw
+upstream result) survives a later step's failure. It is available on both
+the success and error paths, so the caller reads one field regardless of
+outcome — no per-branch plumbing.
 
 ```go
 // Smell: one function, two jobs, a four-value return that only ever grows.
@@ -344,55 +357,58 @@ func (p *P) Resolve(ctx context.Context, req Req) (*outcome, error) {
 }
 ```
 
-Returning a non-nil `out` alongside a non-nil error is deliberate here: the failure
-path still carries what was gathered before it (the `Usage` telemetry). Reserve that
-for structs whose job is to carry diagnostics across the outcome boundary; keep the
-usual "nil result on error" everywhere else.
+Returning a non-nil `out` alongside a non-nil error is deliberate here:
+the failure path still carries what was gathered before it (the `Usage`
+telemetry). Reserve that shape for structs whose job is to carry
+diagnostics across the outcome boundary. Keep the usual "nil result on
+error" everywhere else.
 
 ## Conventions
 
 **Error wrapping.** `fmt.Errorf("package: what failed: %w", err)`. The
-package name leads, the operation follows, the cause is wrapped, never
-formatted with `%v` when a caller may need `errors.Is`.
+package name leads, and the operation follows. Wrap the cause with `%w`,
+not `%v`, so callers can use `errors.Is`.
 
-**Logging.** Every tool-call record carries `mcpReqID`, a 16-hex correlation
-ID the MCP handler generates per call, plus `tool`; completion records add
-`duration` and `outcome`. `internal/notebook` takes the same request-scoped
+**Logging.** Every tool-call record carries `mcpReqID` and `tool`.
+`mcpReqID` is a 16-hex correlation ID that the MCP handler generates per
+call. Completion records add `duration` and `outcome`. `internal/notebook` takes the same request-scoped
 logger from the context (`notebook.WithLogger` / `LoggerFrom`), so a
 checkpoint or cleanup warning shares the request's ID. Logs go to stderr;
 stdout is protocol-only.
 
 **Invariants that a change must not break.** These come from the accepted
 architecture, and a change that touches one of them updates
-`architecture/slivingdoc-v1.md` in the same commit:
+`docs/slivingdoc-v1.md` in the same commit:
 
-- MCP is the only public API. The process never invokes Git and never
-  imports `git2go`.
-- All CGo and libgit2 types stay inside `internal/git2`; all AWS SDK use
+- MCP and the one-shot `pull`/`commit` subcommands are the only public
+  APIs, and both expose exactly the same two operations. The process never
+  invokes Git and never imports `git2go`.
+- All CGo and libgit2 types stay inside `internal/git2`. All AWS SDK use
   stays inside `internal/s3store`.
 - `current` is the only accepted-state authority. State is never inferred
   from object names, and `LIST` is a cleanup tool, not a read path.
 - Pack objects are immutable, and a pack's bytes exist before any manifest
   references it.
-- Publication is conditional ETag replacement with no writer lock; a
+- Publication is conditional ETag replacement with no writer lock. A
   precondition failure is normal contention and drives a bounded
   merge-and-retry cycle.
-- The notebook accepts valid UTF-8 text without U+0000 only; no symlinks and
-  no special files.
+- The notebook accepts valid UTF-8 text without U+0000 only: no symlinks
+  and no special files.
 - Commit rejects a complete conflict-marker block, so no accepted state can
   contain an unresolved conflict.
-- Checkpoint and cleanup are best-effort background efforts: neither may
-  change the result of the commit that scheduled it.
+- Checkpoint and cleanup are best-effort background efforts. They must not
+  change the result of the commit that scheduled them.
 - A failure after local mutation began returns `RECOVERY_FAILURE`, attempts
   an authoritative resync, and never returns `OK` for that call.
 
 **Error taxonomy.** The categories are stable API: `INVALID_REQUEST`,
 `CONTENT_CONFLICT`, `REMOTE_BUSY`, `STORAGE_FAILURE`, `STORAGE_INTEGRITY`,
-`RECOVERY_FAILURE`, `INCOMPATIBLE_STORE`. Error text may change; the
-category, the retryable flag, and the structured conflict paths may not.
+`RECOVERY_FAILURE`, `INCOMPATIBLE_STORE`. Error text can change. The
+category, the retryable flag, and the structured conflict paths must not
+change.
 An unrecognized internal error maps to retryable `STORAGE_FAILURE` rather
-than leaking. No caller-facing text may contain a credential, an S3 key, a
-private path, a Git object ID, or Git vocabulary.
+than leaking. Caller-facing text must never contain a credential, an S3
+key, a private path, a Git object ID, or Git vocabulary.
 
 ## Duplication policy
 
@@ -403,14 +419,14 @@ Use these principles to decide whether a reported clone needs fixing.
 
 - **Interface + fake mirroring.** A fake that mirrors an interface's method set is the proof that the contract is satisfiable. Examples: `internal/storage/fake` against the `ObjectStore` boundary, and the fake repositories in `internal/notebook` and `internal/workspace` against the `internal/git` engine seam. `dupl` reports the two fakes as clones; they belong to independent packages and must stay independent.
 - **Thin wrappers over a shared helper.** Several small functions that differ only in a key kind or namespace and all delegate to one implementation are the abstraction, not a clone.
-- **Cross‑package contract assertions.** `assertProcessOK` in `internal/app` and `Harness.assertOK` in `internal/integrationtest` assert the same success envelope. The duplication is deliberate: merging them would make the black‑box suite depend on a test helper of the package it observes from outside.
-- **Test‑setup boilerplate.** The per‑test harness preamble (temp roots, store, engine, cleanup) is structural, not logical, duplication.
-- **Table‑driven test loops.** `for _, tt := range tests { t.Run(tt.name, …` is the idiom, not a clone.
+- **Cross-package contract assertions.** `assertProcessOK` in `internal/app` and `Harness.assertOK` in `internal/integrationtest` assert the same success envelope. The duplication is deliberate: merging them makes the black-box suite depend on a test helper of the package that it observes from outside.
+- **Test-setup boilerplate.** The per-test harness preamble (temp roots, store, engine, cleanup) is structural, not logical, duplication.
+- **Table-driven test loops.** `for _, tt := range tests { t.Run(tt.name, …` is the idiom, not a clone.
 
 ### Actionable duplication (fix these)
 
-- **Two or more functions or tests whose bodies differ only in parameterised values** (URLs, error sentinels, input payloads, expected strings). Merge them into a table‑driven test or extract a parameterised helper.
-- **Production code where the same sequence of operations appears verbatim** with different call‑site constants. Extract a function.
+- **Two or more functions or tests whose bodies differ only in parameterised values** (URLs, error sentinels, input payloads, expected strings). Merge them into a table-driven test or extract a parameterised helper.
+- **Production code where the same sequence of operations appears verbatim** with different call-site constants. Extract a function.
 - **Identical setup + teardown across >3 tests in the same file.** Extract a test helper (`newTestXxx`) local to that file.
 
 ## QA validation
@@ -447,21 +463,14 @@ is intentional to produce a highly testable, efficient system which follows stri
 Do not modify the timeout, count, or race. Do not add test skips, false-positive tests or any other cheat.
 Instead, start testing early and ensure that test passes for each new modification.
 
-Packages run concurrently; there is no `-p` bound. The timeout is per package,
-and on a four-core runner the slowest package sits near 20 s whether packages
-run one at a time or all at once, so bounding parallelism bought no headroom
-and cost roughly 3x wall clock. If a package approaches the budget, fix the
-test or the implementation rather than serializing the suite.
-
 A `testing.Short()` guard, a Docker-conditional skip, or a second "full gate"
 command is the same cheat wearing a different hat: it advertises a fast path
 that hides coverage. The only legitimate skip is a genuine platform
-capability the host cannot provide (symlinks, FIFOs, hard links, Unicode
-normalization forms), and it must name that capability.
+capability the host cannot provide, and it must name that capability.
 
 **Important:** 70+% test coverage is a must. 90+% test coverage is preferred.
-`make test` measures it with `-coverpkg=./...` — the black-box suite exercises
-packages other than its own, so per-package coverage understates it — and
-fails below the 70 % floor. `make cover` opens the profile from the last run.
+`make test` fails below the 70 % floor. `make cover` opens the profile from
+the last run.
 
-Run `make qa` to run all at once.
+[`docs/testing.md`](docs/testing.md) records the test layers, the
+concurrency and timeout rationale, and the coverage measurement details.

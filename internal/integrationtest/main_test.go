@@ -42,7 +42,7 @@ func helperMain(mode string) int {
 		Env: os.Environ(),
 		Cwd: mustGetwd(),
 		// The cache dir is the default private root, so it must be private to
-		// this helper: a shared fixed path would carry private state across
+		// this helper: a shared fixed path carries private state across
 		// tests, across -count reruns, and across concurrent go test
 		// invocations. spawnHelper supplies a per-helper temporary directory.
 		CacheDir: os.Getenv(helperCacheEnv),
@@ -55,6 +55,10 @@ func helperMain(mode string) int {
 		opts.StoreFactory = func(ctx context.Context, cfg app.ServiceConfig) (storage.ObjectStore, error) {
 			return fake.New(cfg.Prefix), nil
 		}
+	case "real":
+		// The real S3 adapter against the environment-configured endpoint:
+		// the CLI scenarios point it at the shared MinIO suite, so state
+		// survives across one-shot pull and commit processes.
 	case "bad-store":
 		opts.StoreFactory = func(ctx context.Context, cfg app.ServiceConfig) (storage.ObjectStore, error) {
 			store := fake.New(cfg.Prefix)
@@ -109,6 +113,14 @@ type helperProc struct {
 // parent's ends of the pipes.
 func spawnHelper(t *testing.T, mode string, extraEnv []string, args ...string) *helperProc {
 	t.Helper()
+	return spawnHelperIn(t, "", mode, extraEnv, args...)
+}
+
+// spawnHelperIn is spawnHelper with an explicit working directory, so the
+// CLI scenarios can prove relative-path resolution against it. The empty
+// dir inherits the test process working directory.
+func spawnHelperIn(t *testing.T, dir, mode string, extraEnv []string, args ...string) *helperProc {
+	t.Helper()
 	workspaceRoot := t.TempDir()
 	privateRoot := t.TempDir()
 	cacheDir := t.TempDir()
@@ -137,6 +149,7 @@ func spawnHelper(t *testing.T, mode string, extraEnv []string, args ...string) *
 	env = overrideEnv(env, extraEnv)
 	argv := append([]string{os.Args[0]}, args...)
 	proc, err := os.StartProcess(os.Args[0], argv, &os.ProcAttr{
+		Dir:   dir,
 		Env:   env,
 		Files: []*os.File{childIn, childOut, stderr},
 	})
@@ -167,7 +180,7 @@ func spawnHelper(t *testing.T, mode string, extraEnv []string, args ...string) *
 // overrideEnv applies caller-provided variables as real environment
 // overrides, replacing an inherited name instead of passing duplicate
 // NAME=value entries to exec. Some platforms resolve duplicate entries
-// before os.Environ reaches the process, which would make configuration
+// before os.Environ reaches the process, which makes configuration
 // precedence scenarios test the host's implementation detail rather than
 // slivingdoc's documented flag/env/default order.
 func overrideEnv(env, overrides []string) []string {
@@ -210,7 +223,7 @@ func sanitizedEnv() []string {
 
 // reap waits for the helper exactly once and returns the recorded outcome
 // on every later call. Both waitExit and the spawn cleanup reap, and the
-// second os.Process.Wait would otherwise fail with "waitid: no child
+// second os.Process.Wait otherwise fails with "waitid: no child
 // processes" and silently discard the exit status.
 func (h *helperProc) reap() (int, error) {
 	h.waitOnce.Do(func() {
@@ -275,7 +288,7 @@ func (h *helperProc) connectClient(t *testing.T) *sdk.ClientSession {
 
 // syncBuffer is a mutex-guarded byte sink. recordingReadCloser fills it
 // from the SDK receive goroutine while the test goroutine reads it back, so
-// a plain bytes.Buffer would be a data race even after the session closed.
+// a plain bytes.Buffer is a data race even after the session closes.
 type syncBuffer struct {
 	mu sync.Mutex
 	b  bytes.Buffer
@@ -325,8 +338,8 @@ func (h *helperProc) runStdioProcess(t *testing.T, stdin []byte) (int, string, s
 	}()
 	// Drain concurrently with the wait: the pipe buffer is 64 KiB, so a
 	// helper writing more than that (--help output plus protocol traffic)
-	// would block in write until the 30s waitExit deadline if the read only
-	// started after exit. ReadAll returns when the child's write end closes.
+	// blocks in write until the 30s waitExit deadline if the read only
+	// starts after exit. ReadAll returns when the child's write end closes.
 	type readResult struct {
 		data []byte
 		err  error
@@ -346,7 +359,7 @@ func (h *helperProc) runStdioProcess(t *testing.T, stdin []byte) (int, string, s
 
 // assertProtocolOnlyStdout proves that every stdout line is a complete
 // JSON-RPC 2.0 message object. "Protocol-only" is stricter than "valid
-// JSON": a bare scalar or null line would be valid JSON and still prove
+// JSON": a bare scalar or null line is valid JSON and still proves
 // that something other than the transport wrote to stdout.
 func assertProtocolOnlyStdout(t *testing.T, data []byte) {
 	t.Helper()

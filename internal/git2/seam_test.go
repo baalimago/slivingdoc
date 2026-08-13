@@ -17,7 +17,9 @@ const git2goImport = "github.com/libgit2/" + "git2go"
 // native engine contract: no code in the repository invokes the Git
 // executable (the process must never shell out to git) and no code imports
 // the git2go binding (internal/git2 is the only libgit2 boundary). The scan
-// covers every Go file below the module root except build artifacts.
+// covers every Go file below the module root except build artifacts and
+// scripts/: maintainer tooling there runs on developer machines, is never
+// part of the shipped binary, and cuts releases by invoking git and npm.
 func TestNoGitExecutableOrGit2goImport(t *testing.T) {
 	root := moduleRoot(t)
 	var files []string
@@ -26,7 +28,12 @@ func TestNoGitExecutableOrGit2goImport(t *testing.T) {
 			return err
 		}
 		if d.IsDir() {
-			if d.Name() == ".build" || d.Name() == ".git" {
+			// Dot directories are tool state, not source: .build, .git,
+			// and .claude (whose worktrees carry whole checkout copies).
+			if strings.HasPrefix(d.Name(), ".") && path != root {
+				return filepath.SkipDir
+			}
+			if d.Name() == "scripts" && filepath.Dir(path) == root {
 				return filepath.SkipDir
 			}
 			return nil

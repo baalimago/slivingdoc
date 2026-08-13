@@ -30,6 +30,7 @@ const (
 	User   = "slivingdoc"
 	Pass   = "slivingdoc-secret"
 	Bucket = "slivingdoc"
+	Region = "us-east-1"
 )
 
 var (
@@ -43,8 +44,17 @@ var (
 type Suite struct {
 	Endpoint string
 	Raw      *s3.Client
-	cfg      aws.Config
 	ctr      testcontainers.Container
+}
+
+// StoreConfig is the plain connection description of the suite's MinIO
+// endpoint. It exposes no AWS SDK type, so store adapters build their own
+// configuration from these values.
+type StoreConfig struct {
+	Endpoint  string
+	Region    string
+	AccessKey string
+	SecretKey string
 }
 
 // Ensure returns the shared suite, starting the pinned container once per
@@ -71,7 +81,7 @@ type fataler interface {
 
 // require applies the availability policy: Docker is a hard prerequisite of
 // the suite, so an unreachable daemon fails the test instead of skipping it.
-// A skip here would let a run report success while silently omitting the
+// A skip here lets a run report success while it silently omits the
 // entire storage protocol.
 func require(t fataler, s *Suite, err error) *Suite {
 	t.Helper()
@@ -93,11 +103,12 @@ func Terminate() {
 	}
 }
 
-// Config returns the AWS config for the local MinIO endpoint. The static
-// credential provider stays inside the pinned AWS core module; the store
-// adapter switches to path style whenever a custom base endpoint is
-// configured, and the raw test client does the same explicitly.
-func (s *Suite) Config() aws.Config { return s.cfg }
+// StoreConfig returns the plain connection values of the local MinIO
+// endpoint: the container credentials ride as plain strings, so no AWS SDK
+// type crosses this boundary.
+func (s *Suite) StoreConfig() StoreConfig {
+	return StoreConfig{Endpoint: s.Endpoint, Region: Region, AccessKey: User, SecretKey: Pass}
+}
 
 // FreshPrefix returns a new per-test protocol prefix below namespace. Each
 // call yields a unique prefix, so parallel tests never share objects.
@@ -160,7 +171,7 @@ func start() (*Suite, error) {
 	}
 	endpoint := fmt.Sprintf("http://%s:%s", host, port.Port())
 	cfg := aws.Config{
-		Region:       "us-east-1",
+		Region:       Region,
 		BaseEndpoint: aws.String(endpoint),
 		Credentials: aws.CredentialsProviderFunc(func(context.Context) (aws.Credentials, error) {
 			return aws.Credentials{AccessKeyID: User, SecretAccessKey: Pass}, nil
@@ -171,5 +182,5 @@ func start() (*Suite, error) {
 		_ = c.Terminate(ctx)
 		return nil, fmt.Errorf("create bucket: %w", err)
 	}
-	return &Suite{Endpoint: endpoint, Raw: raw, cfg: cfg, ctr: c}, nil
+	return &Suite{Endpoint: endpoint, Raw: raw, ctr: c}, nil
 }

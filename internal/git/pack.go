@@ -65,7 +65,7 @@ func ImportPack(repo Repository, data []byte) error {
 }
 
 // MarkShallow records a commit as a shallow history boundary: its parent
-// commits may be absent. A checkpoint pack imports into an empty repository
+// commits can be absent. A checkpoint pack imports into an empty repository
 // because it intentionally omits pre-checkpoint history; MarkShallow declares
 // exactly that gap.
 func MarkShallow(repo Repository, head OID) error {
@@ -80,8 +80,8 @@ func MarkShallow(repo Repository, head OID) error {
 
 // ValidateHistory walks every commit reachable from head and verifies that
 // the commit chain and the complete tree closure resolve. The single
-// permitted gap is the declared shallow boundary: the parents of shallow may
-// be missing because the checkpoint pack omits them intentionally. Any other
+// permitted gap is the declared shallow boundary: the parents of shallow
+// can be missing because the checkpoint pack omits them intentionally. Any other
 // missing commit, tree, or blob fails the walk.
 func ValidateHistory(repo Repository, head, shallow OID) error {
 	queue := []OID{head}
@@ -103,7 +103,7 @@ func ValidateHistory(repo Repository, head, shallow OID) error {
 		for _, parent := range commit.Parents {
 			if _, err := repo.ReadCommit(parent); err != nil {
 				if id == shallow {
-					continue // the declared boundary may name missing history
+					continue // the declared boundary can name missing history
 				}
 				return fmt.Errorf("git: validate history: parent %s of %s unavailable: %w", parent, id, err)
 			}

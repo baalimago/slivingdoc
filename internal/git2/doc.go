@@ -4,11 +4,11 @@
 // linked libgit2 release. No C pointer or libgit2 type crosses this package
 // boundary: the exported API uses only internal/git types.
 //
-// Native implementation files carry the standard cgo build constraint. When
-// the binary is built without CGo (CGO_ENABLED=0), New returns a stub that
-// reports git.ErrUnavailable; the stub never emulates Git behavior.
+// There is no pure-Go build: this package requires CGo, so
+// CGO_ENABLED=0 fails to compile instead of producing a binary that
+// starts and then fails every operation.
 //
 // The pinned libgit2 release and its source checksum are recorded in
-// PinnedVersion and scripts/build-libgit2.sh. See docs/build-libgit2.md for
+// PinnedVersion and scripts/build-libgit2.sh. See docs/build.md for
 // the build procedure and NOTICE for the license notice.
 package git2

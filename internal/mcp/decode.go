@@ -8,6 +8,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/baalimago/slivingdoc/internal/notebook"
 	"github.com/baalimago/slivingdoc/internal/strictjson"
 )
 
@@ -15,7 +16,7 @@ import (
 // path holds 1 through 4,096 bytes; message holds at most 16,384 bytes.
 const (
 	maxPathBytes    = 4096
-	maxMessageBytes = 16384
+	maxMessageBytes = notebook.MaxMessageBytes
 )
 
 // decodePull strictly decodes the raw notes_pull arguments: a JSON object

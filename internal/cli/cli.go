@@ -1,7 +1,7 @@
 // Package cli is the slivingdoc command surface: the command map, the
 // usage text, and the router entry point. It exists so the process body and
 // the black-box process scenarios route through exactly the same commands;
-// a second copy of the map in either place could drift from the other.
+// a second copy of the map in either place can drift from the other.
 package cli
 
 import (
@@ -14,6 +14,8 @@ import (
 	"github.com/baalimago/go_away_boilerplate/pkg/ancli"
 	"github.com/baalimago/go_away_boilerplate/pkg/cmd"
 
+	"github.com/baalimago/slivingdoc/cmd/commit"
+	"github.com/baalimago/slivingdoc/cmd/pull"
 	"github.com/baalimago/slivingdoc/cmd/serve"
 	"github.com/baalimago/slivingdoc/cmd/version"
 	"github.com/baalimago/slivingdoc/internal/app"
@@ -31,6 +33,9 @@ Commands:
 %v
 Run 'slivingdoc serve -h' for the full flag and environment reference.
 
+Humans sync the shared directory directly with 'slivingdoc pull <path>'
+and 'slivingdoc commit <path> -m <message>'.
+
 Logging is configured by the environment, not by flags:
   LOG_LEVEL   per-module levels, for example "cli=warn,mcp=debug,info".
               A bare level is the default; modules are cli, app, mcp, notebook.
@@ -43,13 +48,15 @@ Logging is configured by the environment, not by flags:
 func Commands(engine git.Engine, opts app.ProcessOptions) map[string]cmd.Command {
 	return map[string]cmd.Command{
 		"serve|s":   serve.Command(engine, opts),
+		"pull|p":    pull.Command(engine, opts),
+		"commit|c":  commit.Command(engine, opts),
 		"version|v": version.Command(opts.Stdout),
 	}
 }
 
 // consoleOnce configures the shared console state of the router exactly
 // once. ancli keeps its presentation in package variables, so repeated
-// writes would be a data race between concurrently routed commands.
+// writes are a data race between concurrently routed commands.
 var consoleOnce sync.Once
 
 // Run routes args to a command and returns the process exit code.
@@ -81,7 +88,7 @@ func Run(ctx context.Context, args []string, engine git.Engine, opts app.Process
 }
 
 // setupConsole makes the router's own diagnostics readable: one line each,
-// timestamped, and coloured unless NO_COLOR asks otherwise.
+// timestamped, and colored unless NO_COLOR asks otherwise.
 //
 // ancli routes through slog once SetupSlog runs, which is what supplies the
 // timestamp and the trailing newline; without it a startup refusal prints an
@@ -94,7 +101,7 @@ func setupConsole(environment []string) {
 }
 
 // noColor reads NO_COLOR from the injected environment. Any non-empty value
-// disables colour, which is the NO_COLOR convention; ancli's own default
+// disables color, which is the NO_COLOR convention. ancli's own default
 // only recognizes the literal "true".
 func noColor(environment []string) string {
 	for _, kv := range environment {

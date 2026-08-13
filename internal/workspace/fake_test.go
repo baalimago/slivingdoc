@@ -1,14 +1,12 @@
 package workspace
 
 import (
-	"crypto/sha1"
 	"fmt"
 	"io"
 	"os"
-	"sort"
-	"strings"
 
 	"github.com/baalimago/slivingdoc/internal/git"
+	"github.com/baalimago/slivingdoc/internal/git/gittest"
 )
 
 // fakeEngine is an in-memory Engine for pure workspace tests: it keeps one
@@ -65,7 +63,7 @@ func (f *fakeRepository) WriteBlob(data []byte) (git.OID, error) {
 	if f.closed {
 		return git.OID{}, fmt.Errorf("fake: repository closed")
 	}
-	id := fakeObjectID("blob", data)
+	id := gittest.ObjectID("blob", data)
 	f.data.blobs[id] = append([]byte(nil), data...)
 	return id, nil
 }
@@ -83,7 +81,7 @@ func (f *fakeRepository) WriteTree(entries []git.TreeEntry) (git.OID, error) {
 		return git.OID{}, fmt.Errorf("fake: repository closed")
 	}
 	sorted := append([]git.TreeEntry(nil), entries...)
-	sort.SliceStable(sorted, func(i, j int) bool { return treeEntryLess(sorted[i], sorted[j]) })
+	git.SortTreeEntries(sorted)
 	id := fakeTreeID(sorted)
 	f.data.trees[id] = sorted
 	return id, nil
@@ -140,37 +138,5 @@ func fakeTreeID(entries []git.TreeEntry) git.OID {
 		b = fmt.Appendf(b, "%o %s\x00", e.Mode, e.Name)
 		b = append(b, e.ID[:]...)
 	}
-	return fakeObjectID("tree", b)
-}
-
-func fakeObjectID(kind string, data []byte) git.OID {
-	h := sha1.New()
-	fmt.Fprintf(h, "%s %d\x00", kind, len(data))
-	h.Write(data)
-	var id git.OID
-	copy(id[:], h.Sum(nil))
-	return id
-}
-
-// treeEntryLess orders entries in Git tree order, matching internal/git.
-func treeEntryLess(a, b git.TreeEntry) bool {
-	min := len(a.Name)
-	if len(b.Name) < min {
-		min = len(b.Name)
-	}
-	if cmp := strings.Compare(a.Name[:min], b.Name[:min]); cmp != 0 {
-		return cmp < 0
-	}
-	var ca, cb byte
-	if len(a.Name) > min {
-		ca = a.Name[min]
-	} else if a.Mode == git.ModeTree {
-		ca = '/'
-	}
-	if len(b.Name) > min {
-		cb = b.Name[min]
-	} else if b.Mode == git.ModeTree {
-		cb = '/'
-	}
-	return ca < cb
+	return gittest.ObjectID("tree", b)
 }
