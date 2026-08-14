@@ -1,6 +1,6 @@
 {
   "name": "slivingdoc",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Launcher for the slivingdoc MCP notebook server: selects, downloads, verifies, and runs the native slivingdoc binary for this platform.",
   "license": "MIT",
   "repository": {
