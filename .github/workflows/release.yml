@@ -47,13 +47,17 @@ jobs:
           {"os": "darwin",  "arch": "arm64", "runner": "macos-15"},
           {"os": "windows", "arch": "amd64", "runner": "windows-2025"}
         ]
-      # One script builds the pinned libgit2 on every target runner.
-      native-setup-command: ./scripts/build-libgit2.sh
+      # One script builds the pinned libgit2 on every target runner. Linux
+      # targets build with musl-gcc so the shipped binary is fully static and
+      # runs on both glibc and musl (alpine); musl-tools supplies the native
+      # musl-gcc wrapper on the ubuntu runners. Non-linux targets keep their
+      # native toolchains.
+      native-setup-command: 'if [ "${TARGET_OS}" = linux ]; then sudo apt-get update -qq && sudo apt-get install -y -qq musl-tools && CC=musl-gcc ./scripts/build-libgit2.sh; else ./scripts/build-libgit2.sh; fi'
       # The release version is injected by the linker; make build passes it.
       # BIN is the Makefile's build destination, so release builds write the
       # artifact directly at the pipeline's expected path ($TARGET_BINARY,
       # the architecture-21 asset name) instead of .build/slivingdoc.
-      native-build-command: make build BIN="${TARGET_BINARY}" VERSION="${RELEASE_VERSION#v}"
+      native-build-command: 'if [ "${TARGET_OS}" = linux ]; then CC=musl-gcc make build BIN="${TARGET_BINARY}" VERSION="${RELEASE_VERSION#v}" STATIC=1; else make build BIN="${TARGET_BINARY}" VERSION="${RELEASE_VERSION#v}"; fi'
       # Each target proves its own runtime dependency baseline. The pipeline
       # names platforms the way Go does (darwin), while the repo's checkers
       # use the OS names (macos); the substitution maps the one difference.

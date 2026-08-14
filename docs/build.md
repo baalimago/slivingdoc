@@ -98,6 +98,10 @@ release workflow exports `TARGET_BINARY` (for example
 Makefile's `BIN` variable:
 
 ```text
+# Linux targets build with musl-gcc + STATIC=1 so the binary is fully static
+# and runs on both glibc and musl (alpine).
+CC=musl-gcc make build BIN="${TARGET_BINARY}" VERSION="${RELEASE_VERSION#v}" STATIC=1
+# macOS and Windows targets keep their native toolchains.
 make build BIN="${TARGET_BINARY}" VERSION="${RELEASE_VERSION#v}"
 ```
 
@@ -115,7 +119,7 @@ section 21:
 
 | Script                          | Allowed dependencies                     |
 | ------------------------------- | ---------------------------------------- |
-| `scripts/check-deps-linux.sh`   | C runtime, loader, pthread, dl, rt, math |
+| `scripts/check-deps-linux.sh`   | fully static (no dynamic dependencies)   |
 | `scripts/check-deps-macos.sh`   | `/usr/lib` and `/System/Library` only    |
 | `scripts/check-deps-windows.sh` | documented Windows system DLL allowlist  |
 

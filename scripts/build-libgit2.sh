@@ -139,6 +139,16 @@ cmake_args=(
 	-DREGEX_BACKEND=builtin
 )
 
+# The C compiler for the static archive must match the one cgo links with.
+# A musl release build sets CC=musl-gcc so libgit2 is built against musl
+# libc headers; the later Go link then binds the same musl runtime statically
+# (STATIC=1 in the Makefile). When CC is unset, cmake picks the native
+# default (clang on macOS, gcc elsewhere), and Windows pins the mingw-w64 gcc
+# below.
+if [[ -n "${CC:-}" ]]; then
+	cmake_args+=(-DCMAKE_C_COMPILER="$CC")
+fi
+
 # On Windows, build with the same mingw-w64 gcc that Go's cgo uses. The
 # default generator (Visual Studio) produces an MSVC archive whose ABI does
 # not match the gcc-driven cgo link.

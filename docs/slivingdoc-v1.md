@@ -1264,8 +1264,9 @@ The release executable includes the pinned libgit2 library. It must not require
 `libgit2.so`, `libgit2.dylib`, `git2.dll`, or a Git executable on the target
 machine.
 
-Dependency inspection checks the complete runtime dependency list. Linux can
-use the target baseline C runtime, loader, pthread, dl, rt, and math libraries.
+Dependency inspection checks the complete runtime dependency list. Linux
+binaries are fully static — built with musl-gcc and `-extldflags "-static"` —
+so they carry no dynamic dependency and run on both glibc and musl (alpine).
 macOS can use libraries in `/usr/lib` and `/System/Library`. Windows can use
 documented Windows system DLLs. All other native dependencies must be linked
 into the artifact or cause the target job to fail.

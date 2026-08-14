@@ -22,6 +22,17 @@ export PKG_CONFIG_PATH
 VERSION ?= 0.1.0-dev
 VERSION_LDFLAG := -X github.com/baalimago/slivingdoc/internal/app.Version=$(VERSION)
 
+# STATIC=1 builds a fully static binary (the musl linux release targets).
+# The static libc link needs -extldflags "-static"; it is quoted because
+# Go's -ldflags value is space-split, so -extldflags must receive "-static"
+# as one token. The libgit2 archive must be built with the same musl-gcc
+# compiler (see build-libgit2.sh) or the link aborts on the ABI mismatch.
+STATIC ?=
+LDFLAGS := -s -w $(VERSION_LDFLAG)
+ifeq ($(STATIC),1)
+LDFLAGS += -extldflags "-static"
+endif
+
 .PHONY: all libgit2 test cover npm-test lint fmt build release qa clean
 
 all: qa
@@ -40,7 +51,7 @@ $(BUILD_DIR)/libgit2/.build-stamp: scripts/build-libgit2.sh
 # budget — so without this prerequisite the gate can only pass on a machine
 # whose cache is already warm.
 $(BIN): $(BUILD_DIR)/libgit2/.build-stamp
-	CGO_ENABLED=1 $(GO) build -trimpath -ldflags "-s -w $(VERSION_LDFLAG)" -o $@ .
+	CGO_ENABLED=1 $(GO) build -trimpath -ldflags '$(LDFLAGS)' -o $@ .
 
 build: $(BIN)
 

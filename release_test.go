@@ -103,6 +103,7 @@ func TestReleaseDependencyBaselines(t *testing.T) {
 		deps   []string
 		accept bool
 	}{
+		{"linux static (no dynamic deps)", "check-deps-linux.sh", nil, true},
 		{"linux libc alone", "check-deps-linux.sh", []string{"libc.so.6"}, true},
 		{
 			"linux complete baseline", "check-deps-linux.sh",
