@@ -23,7 +23,9 @@ permissions:
   contents: write
 
 env:
-  # setup-node pin for the publish job; keep in sync with ci.yml.
+  # setup-node pin for the publish job. Publish needs npm >= 11.5.1
+  # (trusted publishing); Node 22 bundles npm 10.x, so pin Node 24 here.
+  # The runtime floor is 22, tested in ci.yml.
   NODE_VERSION: "24.19.0"
 
 jobs:

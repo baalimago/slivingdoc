@@ -7,7 +7,7 @@ and downloads it from the matching GitHub release. It verifies the
 published SHA-256 and caches the verified bytes under the npm cache. It
 then executes the binary with your arguments and standard streams.
 
-Requirements: Node.js 24 or newer and one of the supported targets
+Requirements: Node.js 22 or newer and one of the supported targets
 (`linux/amd64`, `linux/arm64`, `darwin/amd64`, `darwin/arm64`,
 `windows/amd64`). An unsupported platform fails before any download with
 an actionable error.

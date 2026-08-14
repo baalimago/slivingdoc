@@ -5,7 +5,7 @@ every command from the repository root.
 
 ## Requirements
 
-All platforms need Go `1.26.5`, Node.js `24.19.0`, `curl`, `tar`, and
+All platforms need Go `1.26.5`, Node.js `22.23.2`, `curl`, `tar`, and
 `cmake`.
 
 | Platform | Additional requirements                                         |
