@@ -8,9 +8,9 @@ published SHA-256 and caches the verified bytes under the npm cache. It
 then executes the binary with your arguments and standard streams.
 
 Requirements: Node.js 22 or newer and one of the supported targets
-(`linux/amd64`, `linux/arm64`, `darwin/amd64`, `darwin/arm64`,
-`windows/amd64`). An unsupported platform fails before any download with
-an actionable error.
+(`linux/amd64`, `linux/arm` for 32-bit ARMv7/Raspberry Pi OS armhf,
+`linux/arm64`, `darwin/amd64`, `darwin/arm64`, `windows/amd64`). An
+unsupported platform fails before any download with an actionable error.
 
 An MCP host starts the server as a child process, or you can run it directly:
 

@@ -6,6 +6,7 @@ import { artifactFor, assetName, SUPPORTED_TARGETS, UnsupportedPlatformError } f
 test("maps every supported platform to the release grammar", () => {
 	const cases = [
 		["linux", "x64", "linux", "amd64", false],
+		["linux", "arm", "linux", "arm", false],
 		["linux", "arm64", "linux", "arm64", false],
 		["darwin", "x64", "darwin", "amd64", false],
 		["darwin", "arm64", "darwin", "arm64", false],
@@ -23,6 +24,7 @@ test("the supported matrix is exactly the architecture section 21 targets", () =
 		SUPPORTED_TARGETS,
 		[
 			{ os: "linux", arch: "amd64" },
+			{ os: "linux", arch: "arm" },
 			{ os: "linux", arch: "arm64" },
 			{ os: "darwin", arch: "amd64" },
 			{ os: "darwin", arch: "arm64" },
@@ -35,8 +37,8 @@ test("rejects unsupported platforms before any download", () => {
 	const cases = [
 		["freebsd", "x64"],
 		["linux", "ia32"],
-		["linux", "arm"],
 		["darwin", "ia32"],
+		["darwin", "arm"],
 		["win32", "arm64"], // windows arm64 is deferred
 		["win32", "ia32"],
 		["android", "arm64"],

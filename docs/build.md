@@ -98,9 +98,15 @@ release workflow exports `TARGET_BINARY` (for example
 Makefile's `BIN` variable:
 
 ```text
-# Linux targets build with musl-gcc + STATIC=1 so the binary is fully static
-# and runs on both glibc and musl (alpine).
+# Linux amd64 and arm64 targets build with musl-gcc + STATIC=1 so the binary
+# is fully static and runs on both glibc and musl (alpine).
 CC=musl-gcc make build BIN="${TARGET_BINARY}" VERSION="${RELEASE_VERSION#v}" STATIC=1
+# The 32-bit ARMv7 target cross-builds with Debian's hard-float compiler.
+# GOARM=7 matches Raspberry Pi OS armhf. netgo and osusergo prevent the
+# statically linked glibc build from loading runtime NSS modules; qemu-arm
+# can smoke-test the binary on the amd64 release runner.
+GOFLAGS="-tags=netgo,osusergo" GOOS=linux GOARCH=arm GOARM=7 CC=arm-linux-gnueabihf-gcc \
+  make build BIN="${TARGET_BINARY}" VERSION="${RELEASE_VERSION#v}" STATIC=1
 # macOS and Windows targets keep their native toolchains.
 make build BIN="${TARGET_BINARY}" VERSION="${RELEASE_VERSION#v}"
 ```

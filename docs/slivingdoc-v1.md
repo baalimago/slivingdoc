@@ -1289,7 +1289,9 @@ checksum before execution.
 
 Release tags use `v<semver>`. Assets use
 `slivingdoc-v<semver>-<os>-<arch>` and add `.exe` on Windows. OS values are
-`linux`, `darwin`, and `windows`. Architecture values are `amd64` and `arm64`.
+`linux`, `darwin`, and `windows`. Architecture values are `amd64`, `arm`, and
+`arm64`. The `linux/arm` artifact is a 32-bit ARMv7 hard-float build for
+Raspberry Pi OS armhf.
 The release contains one `SHA256SUMS` file with lowercase SHA-256, two spaces,
 and the asset name on each LF-terminated line. Entries are sorted by asset name.
 
@@ -1305,8 +1307,11 @@ The release executable includes the pinned libgit2 library. It must not require
 machine.
 
 Dependency inspection checks the complete runtime dependency list. Linux
-binaries are fully static — built with musl-gcc and `-extldflags "-static"` —
-so they carry no dynamic dependency and run on both glibc and musl (alpine).
+binaries are fully static: amd64 and arm64 use musl-gcc, while the 32-bit
+ARMv7 build uses Debian's `arm-linux-gnueabihf-gcc`; all use `-extldflags
+"-static"`. The ARMv7 build also uses Go's `netgo` and `osusergo` tags, so it
+does not depend on glibc NSS modules at runtime. They carry no dynamic
+dependency; the musl targets run on both glibc and musl (alpine).
 macOS can use libraries in `/usr/lib` and `/System/Library`. Windows can use
 documented Windows system DLLs. All other native dependencies must be linked
 into the artifact or cause the target job to fail.
@@ -1318,7 +1323,7 @@ release with its checksum file and notice.
 
 The first supported targets are:
 
-- Linux amd64 and arm64
+- Linux amd64, ARMv7 armhf (`arm`), and arm64
 - macOS amd64 and arm64
 - Windows amd64
 
