@@ -133,7 +133,15 @@ The release-style artifact was verified before any release was created. It is
 an ELF32 little-endian ARM EABI5 hard-float executable, static, with no dynamic
 `NEEDED` entries; `check-deps-linux.sh` passed and `qemu-arm <binary> version`
 reported `slivingdoc 0.0.0-arm-test`. The npm launcher suite passed all 35
-tests. Physical Raspberry Pi validation follows after the branch is pushed.
+tests.
+
+After the branch was pushed, the same source built natively on the 32-bit
+Raspberry Pi OS armv7l host. The exact release-style flags
+`GOFLAGS="-tags=netgo,osusergo"` and `STATIC=1` produced a static ELF32 ARM
+EABI5 executable; its `version` command reported `slivingdoc 0.1.0-dev` and
+`check-deps-linux.sh` reported `ok`. The ordinary developer build was also
+able to start on the Pi, but it retains the host's dynamic `libresolv.so.2`
+dependency, so only the static release-style artifact is release evidence.
 
 ### Session 2026-08-10 (imago, worker session 16) — pipeline moved into `simple-go-pipeline`
 
