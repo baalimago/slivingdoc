@@ -99,20 +99,23 @@ func NewService(engine git.Engine, store storage.ObjectStore, cfg ServiceConfig,
 	}, nil
 }
 
-// Pull resolves path to its notebook and pulls it.
-func (s *Service) Pull(ctx context.Context, path string) error {
+// Pull resolves path to its notebook, pulls it, and returns the operation
+// result: the accepted generation and the pull delta diffstat.
+func (s *Service) Pull(ctx context.Context, path string) (notebook.Result, error) {
 	nb, err := s.notebookFor(ctx, path)
 	if err != nil {
-		return err
+		return notebook.Result{}, err
 	}
 	return nb.Pull(ctx)
 }
 
-// Commit resolves path to its notebook and commits message.
-func (s *Service) Commit(ctx context.Context, path, message string) error {
+// Commit resolves path to its notebook, commits message, and returns the
+// operation result: the accepted generation and the published-increment
+// diffstat.
+func (s *Service) Commit(ctx context.Context, path, message string) (notebook.Result, error) {
 	nb, err := s.notebookFor(ctx, path)
 	if err != nil {
-		return err
+		return notebook.Result{}, err
 	}
 	return nb.Commit(ctx, message)
 }

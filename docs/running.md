@@ -35,17 +35,40 @@ follow the flags. A relative path resolves against the working
 directory. The resolved path must stay at or below the workspace root.
 `commit` requires `-m`/`--message`.
 
-On success a subcommand writes exactly `OK` to stdout and exits zero. A
-domain error prints a structured report to stdout and exits nonzero:
-the error category and message, whether a retry can help, every
-conflicted file with its one-based inclusive line ranges, and the
-recovery report when present:
+On success a subcommand writes the unified result report to stdout and
+exits zero: the `OK` status token, the accepted remote generation, one
+line per changed file with its insertion and deletion counts (a
+zero-count side is omitted), and the totals trailer:
 
 ```text
-CONTENT_CONFLICT: resolve the conflict blocks, then commit again
-retryable: false
-  shared.md: lines 1-5
+OK  generation 18
+  archive/old.md  -3
+  notes/a.md  +1 -1
+  notes/c.md  +2
+3 files changed, 3 insertions(+), 4 deletions(-)
 ```
+
+The diffstat answers "what is new to check out": `pull` reports the
+delta between the visible directory before the pull and the materialized
+result, and `commit` reports the increment the publication added over the
+remote state it observed. A no-op synchronization reports an empty
+stat.
+
+A domain error prints the same status/detail/trailer skeleton to stdout
+and exits nonzero: the error category and message, whether a retry can
+help, every conflicted file with its one-based inclusive line ranges, and
+the recovery report when present:
+
+```text
+CONTENT_CONFLICT  resolve the conflict blocks, then commit again
+  shared.md: lines 1-5
+retryable: false
+```
+
+Colour is presentation-only. The status tokens, the generation summary,
+the per-file counts, and the conflict paths are coloured only when stdout
+is a real terminal; piped or redirected output stays plain text. Any
+non-empty `NO_COLOR` disables the colour even on a terminal.
 
 A missing path or message exits nonzero before any native or network
 dependency is touched.
@@ -203,7 +226,7 @@ a level, and the module that emitted it.
 | Variable    | Effect                                              |
 | ----------- | --------------------------------------------------- |
 | `LOG_LEVEL` | Per-module levels. A bare level is the default.     |
-| `NO_COLOR`  | Any non-empty value disables the ANSI level color. |
+| `NO_COLOR`  | Any non-empty value disables ANSI colour: log levels and the CLI report. |
 
 `LOG_LEVEL` takes a comma-separated list. `module=level` sets one
 module; a bare `level` sets the default for the rest:

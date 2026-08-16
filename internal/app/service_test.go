@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"testing"
 
+	"github.com/baalimago/slivingdoc/internal/git"
 	"github.com/baalimago/slivingdoc/internal/git2"
 	"github.com/baalimago/slivingdoc/internal/mcp"
 	"github.com/baalimago/slivingdoc/internal/storage/fake"
@@ -193,8 +195,41 @@ func TestServiceCloseIsIdempotent(t *testing.T) {
 	if err := svc.Close(); err != nil {
 		t.Fatalf("second Close() = %v", err)
 	}
-	if err := svc.Pull(context.Background(), filepath.Join(cfg.workspaceRoot, "notes")); err == nil {
+	if _, err := svc.Pull(context.Background(), filepath.Join(cfg.workspaceRoot, "notes")); err == nil {
 		t.Fatal("Pull() on a closed service = nil, want a refusal")
+	}
+}
+
+// TestServiceForwardsResult proves that the service returns the notebook
+// result of each operation unchanged: the accepted generation and the
+// operation diffstat.
+func TestServiceForwardsResult(t *testing.T) {
+	cfg := testServiceConfig(t)
+	svc, _ := newTestService(t, cfg)
+	path := filepath.Join(cfg.workspaceRoot, "notes")
+
+	writeNote(t, path, "a.md", "hello\n")
+	pullRes, err := svc.Pull(context.Background(), path)
+	if err != nil {
+		t.Fatalf("Pull() = %v", err)
+	}
+	if pullRes.Generation != 0 || len(pullRes.Stat.Files) != 0 || pullRes.Stat.Insertions != 0 || pullRes.Stat.Deletions != 0 {
+		t.Fatalf("pull result = %+v, want generation 0 with an empty stat", pullRes)
+	}
+
+	writeNote(t, path, "a.md", "world\n")
+	commitRes, err := svc.Commit(context.Background(), path, "update")
+	if err != nil {
+		t.Fatalf("Commit() = %v", err)
+	}
+	// The first publication increments from the implicit empty remote, so
+	// the whole file is the published addition.
+	want := git.DiffStat{
+		Files:      []git.FileStat{{Path: "a.md", Insertions: 1, Deletions: 0}},
+		Insertions: 1,
+	}
+	if commitRes.Generation != 1 || !reflect.DeepEqual(commitRes.Stat, want) {
+		t.Fatalf("commit result = %+v, want generation 1 with the increment %+v", commitRes, want)
 	}
 }
 
@@ -239,13 +274,29 @@ func writeNote(t *testing.T, path, name, data string) {
 	}
 }
 
-// resultOK asserts the exact success envelope of a tool result.
+// resultOK asserts the success envelope of a tool result: one text item
+// exactly OK and a structured SuccessInfo whose code is OK with the files
+// key always present.
 func resultOK(res *sdk.CallToolResult) error {
 	if res.IsError {
 		return fmt.Errorf("result is an error: %v", res.StructuredContent)
 	}
-	if res.StructuredContent != nil {
-		return fmt.Errorf("result carries structured content: %v", res.StructuredContent)
+	if res.StructuredContent == nil {
+		return fmt.Errorf("result carries no structured content")
+	}
+	data, err := json.Marshal(res.StructuredContent)
+	if err != nil {
+		return fmt.Errorf("marshal structured content: %w", err)
+	}
+	var got mcp.SuccessInfo
+	if err := json.Unmarshal(data, &got); err != nil {
+		return fmt.Errorf("structured content = %s: %w", data, err)
+	}
+	if got.Code != "OK" {
+		return fmt.Errorf("structured code = %q, want OK", got.Code)
+	}
+	if got.Files == nil {
+		return fmt.Errorf("files must always be present")
 	}
 	if len(res.Content) != 1 {
 		return fmt.Errorf("content items = %d, want exactly one", len(res.Content))

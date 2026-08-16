@@ -44,10 +44,12 @@ func configArgs(t *testing.T, workspaceRoot string) []string {
 	}
 }
 
-// TestPullPrintsOK proves the command contract end to end in process: a
-// relative path resolves against the working directory, the pull
-// materializes the notebook directory, and stdout is exactly the OK line.
-func TestPullPrintsOK(t *testing.T) {
+// TestPullPrintsReport proves the command contract end to end in process:
+// a relative path resolves against the working directory, the pull
+// materializes the notebook directory, and stdout is the OK-prefixed
+// result report. The captured writer is not a terminal, so the report is
+// plain text.
+func TestPullPrintsReport(t *testing.T) {
 	t.Parallel()
 	opts, out, root := testOptions(t, fake.New("p"))
 	c := Command(git2.New(), opts)
@@ -60,8 +62,8 @@ func TestPullPrintsOK(t *testing.T) {
 	if err := c.Run(context.Background()); err != nil {
 		t.Fatalf("Run() = %v", err)
 	}
-	if out.String() != "OK\n" {
-		t.Fatalf("stdout = %q, want exactly the OK line", out.String())
+	if got := out.String(); !strings.HasPrefix(got, "OK  generation ") || !strings.Contains(got, "files changed") {
+		t.Fatalf("stdout = %q, want the OK-prefixed result report", got)
 	}
 	if fi, err := os.Stat(filepath.Join(root, "notes")); err != nil || !fi.IsDir() {
 		t.Fatalf("notebook directory was not materialized: %v", err)

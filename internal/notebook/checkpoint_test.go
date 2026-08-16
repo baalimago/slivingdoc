@@ -291,7 +291,7 @@ func TestCheckpointPreservesIncrementsAcceptedDuringBuild(t *testing.T) {
 	cpKey := "packs/checkpoints/3-" + testUUIDv7(5).String() + ".pack"
 	store.BlockNext(fake.OpPut, cpKey)
 	done := make(chan error, 1)
-	go func() { done <- a.Commit(context.Background(), "third") }()
+	go func() { done <- errOnly(a.Commit(context.Background(), "third")) }()
 	waitBlocked(t, store, fake.OpPut, cpKey)
 
 	writeLocal(t, bw, map[string]string{"b.md": "B"})
@@ -409,7 +409,7 @@ func TestCheckpointDiscardsWhenCompetingWorkerCompactsFirst(t *testing.T) {
 	cpA := "packs/checkpoints/3-" + testUUIDv7(5).String() + ".pack"
 	store.BlockNext(fake.OpPut, cpA)
 	done := make(chan error, 1)
-	go func() { done <- a.Commit(context.Background(), "third") }()
+	go func() { done <- errOnly(a.Commit(context.Background(), "third")) }()
 	waitBlocked(t, store, fake.OpPut, cpA)
 
 	writeLocal(t, bw, map[string]string{"b.md": "B"})
@@ -814,10 +814,10 @@ func TestStaleReaderRestartsAfterCheckpointCleanup(t *testing.T) {
 	// checkpoint cleanup is about to delete.
 	writeLocal(t, aw, map[string]string{"a.md": "A3"})
 	done := make(chan error, 1)
-	go func() { done <- a.Commit(context.Background(), "third") }()
+	go func() { done <- errOnly(a.Commit(context.Background(), "third")) }()
 	waitBlocked(t, store, fake.OpPut, cp3Key)
 	pullDone := make(chan error, 1)
-	go func() { pullDone <- b.Pull(context.Background()) }()
+	go func() { pullDone <- errOnly(b.Pull(context.Background())) }()
 	waitBlocked(t, store, fake.OpGet, inc3Key)
 
 	// A's checkpoint replaces the prefix and cleanup (retention 0) deletes
@@ -1018,7 +1018,7 @@ func TestCheckpointCorruptPackRejected(t *testing.T) {
 	// and refuse it; the old index stays authoritative and L is untouched.
 	c, cw, _ := newNotebook(t, nbConfig{store: store, ids: ids})
 	baselineBefore := cw.Baseline()
-	assertErrorCode(t, c.Pull(context.Background()), CodeStorageIntegrity)
+	assertErrorCode(t, errOnly(c.Pull(context.Background())), CodeStorageIntegrity)
 	if got := cw.Baseline(); got != baselineBefore {
 		t.Fatalf("baseline changed by the corrupt pack: %+v -> %+v", baselineBefore, got)
 	}

@@ -57,6 +57,64 @@ func (e *fakeEngine) OpenRepo(path string) (git.Repository, error) {
 
 var _ workspace.Engine = (*fakeEngine)(nil)
 
+// readFailEngine wraps the fake engine and installs a read-failure wrapper
+// on every repository it hands out, so tests can inject a snapshot-read
+// failure at an exact tree. The wrapped engine keeps the same per-path
+// fakeData, so object persistence is unchanged.
+type readFailEngine struct {
+	*fakeEngine
+	failTree git.OID
+}
+
+func (e *readFailEngine) CreateRepo(path string) (git.Repository, error) {
+	repo, err := e.fakeEngine.CreateRepo(path)
+	if err != nil {
+		return nil, err
+	}
+	return &readFailRepo{Repository: repo, failTree: e.failTree}, nil
+}
+
+func (e *readFailEngine) OpenRepo(path string) (git.Repository, error) {
+	repo, err := e.fakeEngine.OpenRepo(path)
+	if err != nil {
+		return nil, err
+	}
+	return &readFailRepo{Repository: repo, failTree: e.failTree}, nil
+}
+
+var _ workspace.Engine = (*readFailEngine)(nil)
+
+// readFailRepo wraps a repository and fails ReadTree for one target tree,
+// so a test can break a snapshot read at a precise point without touching
+// any other repository operation.
+type readFailRepo struct {
+	git.Repository
+	failTree git.OID
+}
+
+func (r *readFailRepo) ReadTree(id git.OID) ([]git.TreeEntry, error) {
+	if id == r.failTree {
+		return nil, errors.New("injected snapshot read failure")
+	}
+	return r.Repository.ReadTree(id)
+}
+
+// mergedTreeOf builds the deterministic tree OID of a snapshot, matching
+// the tree the fake repository merge produces for the same content. Tests
+// use it to arm a readFailEngine at exactly the merged result tree.
+func mergedTreeOf(tb testing.TB, files map[string]string) git.OID {
+	tb.Helper()
+	snap := git.Snapshot{}
+	for path, data := range files {
+		snap.Files = append(snap.Files, git.File{Path: path, Data: []byte(data)})
+	}
+	tree, err := git.BuildTree(&fakeRepository{data: newFakeData()}, snap)
+	if err != nil {
+		tb.Fatalf("BuildTree() = %v", err)
+	}
+	return tree
+}
+
 // fakeData is the object store shared by every handle of one repository:
 // parsed objects for reads plus the raw serialized bytes packs export.
 type fakeData struct {
@@ -800,18 +858,38 @@ func assertErrorCode(t *testing.T, err error, code Code) *Error {
 	return ne
 }
 
-// pullOK and commitOK run the notebook operations and fail on error.
-func pullOK(tb testing.TB, nb *Notebook) {
+// pullOK and commitOK run the notebook operations and fail on error. They
+// return the success result so tests can assert the generation and the
+// diffstat.
+func pullOK(tb testing.TB, nb *Notebook) Result {
 	tb.Helper()
-	if err := nb.Pull(context.Background()); err != nil {
+	res, err := nb.Pull(context.Background())
+	if err != nil {
 		tb.Fatalf("Pull() = %v", err)
 	}
+	return res
 }
 
-func commitOK(tb testing.TB, nb *Notebook, message string) {
+func commitOK(tb testing.TB, nb *Notebook, message string) Result {
 	tb.Helper()
-	if err := nb.Commit(context.Background(), message); err != nil {
+	res, err := nb.Commit(context.Background(), message)
+	if err != nil {
 		tb.Fatalf("Commit(%q) = %v", message, err)
+	}
+	return res
+}
+
+// errOnly returns the error of a notebook operation and discards the
+// success result, so failure assertions keep their one-line shape.
+func errOnly(_ Result, err error) error { return err }
+
+// assertZeroResult fails the test when the operation returned a non-zero
+// result: a conflict or error must pair the zero Result with a non-nil
+// error.
+func assertZeroResult(t *testing.T, res Result) {
+	t.Helper()
+	if res.Generation != 0 || len(res.Stat.Files) != 0 || res.Stat.Insertions != 0 || res.Stat.Deletions != 0 {
+		t.Fatalf("result = %+v, want the zero value", res)
 	}
 }
 

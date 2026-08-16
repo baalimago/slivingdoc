@@ -15,6 +15,7 @@ import (
 
 	"github.com/baalimago/slivingdoc/internal/git"
 	"github.com/baalimago/slivingdoc/internal/git2"
+	"github.com/baalimago/slivingdoc/internal/mcp"
 	"github.com/baalimago/slivingdoc/internal/storage"
 	"github.com/baalimago/slivingdoc/internal/storage/fake"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -304,15 +305,30 @@ func (r *recordingReadCloser) Read(p []byte) (int, error) {
 
 func (r *recordingReadCloser) Close() error { return nil }
 
-// assertProcessOK asserts the exact success envelope: one text item with
-// exactly OK and no structured content.
+// assertProcessOK asserts the success envelope of a process-level tool
+// result: one text item with exactly OK and a structured SuccessInfo
+// whose code is OK with the files key always present.
 func assertProcessOK(t *testing.T, res *sdk.CallToolResult) {
 	t.Helper()
 	if res.IsError {
 		t.Fatalf("result is an error: %v", res.StructuredContent)
 	}
-	if res.StructuredContent != nil {
-		t.Fatalf("result carries structured content: %v", res.StructuredContent)
+	if res.StructuredContent == nil {
+		t.Fatal("result carries no structured content")
+	}
+	data, err := json.Marshal(res.StructuredContent)
+	if err != nil {
+		t.Fatalf("marshal structured content: %v", err)
+	}
+	var got mcp.SuccessInfo
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("structured content = %s: %v", data, err)
+	}
+	if got.Code != "OK" {
+		t.Fatalf("structured code = %q, want OK", got.Code)
+	}
+	if got.Files == nil {
+		t.Fatal("files must always be present")
 	}
 	if len(res.Content) != 1 {
 		t.Fatalf("content items = %d, want exactly one", len(res.Content))

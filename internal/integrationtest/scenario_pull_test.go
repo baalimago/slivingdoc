@@ -14,16 +14,25 @@ import (
 const emptyTreeID = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
 // TestScenarioPullFirstPull proves the first pull into a nonempty visible
-// directory against an empty remote: OK, local additions retained, the
-// empty-tree generation-0 baseline recorded, and no remote state created
-// (architecture section 10, L603).
+// directory against an empty remote: OK with an empty success stat (the
+// local additions are retained unchanged, so nothing changed on disk),
+// local additions retained, the empty-tree generation-0 baseline recorded,
+// and no remote state created (architecture section 10, L603).
 func TestScenarioPullFirstPull(t *testing.T) {
 	t.Parallel()
 	h := newFakeHarness(t, HarnessConfig{})
 	path := h.Path("notes")
 	h.WriteFile(path+"/local.md", "keep me")
 
-	h.assertOK(t, h.Pull("", path))
+	h.assertEnvelope(t, ToolCall{
+		Tool: toolPull, Path: path,
+		Expect: CallExpectation{
+			OK: true,
+			Success: &SuccessExpectation{
+				Generation: 0, FilesChanged: 0, Insertions: 0, Deletions: 0, Files: []FileStatExpectation{},
+			},
+		},
+	}, h.Pull("", path))
 	assertPulledMarker(t, h, path)
 	assertRemoteGeneration(t, h, path, 0)
 	rec := h.StateRecord(t, path)

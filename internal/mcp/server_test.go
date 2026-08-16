@@ -3,22 +3,27 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/baalimago/slivingdoc/internal/git"
 	"github.com/baalimago/slivingdoc/internal/notebook"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // fakeService records tool calls and returns canned outcomes. It is the
 // interface-plus-mock mirror: the tests prove the mcp package consumes
-// only the Service seam, with no S3, Docker, or native engine.
+// only the Service seam, with no S3, Docker, or native engine. result is
+// the success summary returned on a clean call; the zero value stands for
+// a no-op synchronization.
 type fakeService struct {
 	mu        sync.Mutex
 	pulls     []string
 	commits   []commitCall
+	result    notebook.Result
 	pullErr   error
 	commitErr error
 	block     chan struct{}
@@ -29,9 +34,10 @@ type commitCall struct {
 	message string
 }
 
-func (f *fakeService) Pull(ctx context.Context, path string) error {
+func (f *fakeService) Pull(ctx context.Context, path string) (notebook.Result, error) {
 	f.mu.Lock()
 	f.pulls = append(f.pulls, path)
+	result := f.result
 	err := f.pullErr
 	block := f.block
 	f.mu.Unlock()
@@ -39,18 +45,19 @@ func (f *fakeService) Pull(ctx context.Context, path string) error {
 		select {
 		case <-block:
 		case <-ctx.Done():
-			return ctx.Err()
+			return notebook.Result{}, ctx.Err()
 		}
 	}
-	return err
+	return result, err
 }
 
-func (f *fakeService) Commit(ctx context.Context, path, message string) error {
+func (f *fakeService) Commit(ctx context.Context, path, message string) (notebook.Result, error) {
 	f.mu.Lock()
 	f.commits = append(f.commits, commitCall{path: path, message: message})
+	result := f.result
 	err := f.commitErr
 	f.mu.Unlock()
-	return err
+	return result, err
 }
 
 // newTestPair wires a server and a client over in-memory transports. The
@@ -123,9 +130,9 @@ func TestListToolsExactlyTwo(t *testing.T) {
 	}
 }
 
-// TestPullSuccessReturnsOK proves the success envelope: one text item with
-// exactly OK, no structured content, no error, and the exact request path
-// reaching the service.
+// TestPullSuccessReturnsOK proves the success envelope of a clean pull:
+// one text item with exactly OK, a structured SuccessInfo with code OK, no
+// error, and the exact request path reaching the service.
 func TestPullSuccessReturnsOK(t *testing.T) {
 	client, svc := newTestPair(t, nil)
 	res, err := client.CallTool(context.Background(), &sdk.CallToolParams{
@@ -143,9 +150,9 @@ func TestPullSuccessReturnsOK(t *testing.T) {
 	}
 }
 
-// TestCommitSuccessReturnsOK proves the success envelope and that the
-// exact message reaches the service; the response never contains a commit
-// ID.
+// TestCommitSuccessReturnsOK proves the success envelope of a clean
+// commit and that the exact message reaches the service; the response
+// never contains a commit ID.
 func TestCommitSuccessReturnsOK(t *testing.T) {
 	client, svc := newTestPair(t, nil)
 	res, err := client.CallTool(context.Background(), &sdk.CallToolParams{
@@ -161,6 +168,108 @@ func TestCommitSuccessReturnsOK(t *testing.T) {
 	if len(svc.commits) != 1 || svc.commits[0] != (commitCall{path: "/abs/notes", message: "update notes"}) {
 		t.Fatalf("service commits = %v, want the exact path and message", svc.commits)
 	}
+}
+
+// TestPullSuccessEnvelope proves the structured success object of a clean
+// pull: the accepted generation, the per-file change stat with normalized
+// relative paths, and the totals all survive the SDK envelope exactly.
+func TestPullSuccessEnvelope(t *testing.T) {
+	svc := &fakeService{result: sampleResult()}
+	client, _ := newTestPair(t, svc)
+	res, err := client.CallTool(context.Background(), &sdk.CallToolParams{
+		Name:      toolPull,
+		Arguments: map[string]any{"path": "/abs/notes"},
+	})
+	if err != nil {
+		t.Fatalf("CallTool() = %v", err)
+	}
+	assertSuccessInfo(t, res, &SuccessInfo{
+		Code:         "OK",
+		Generation:   18,
+		FilesChanged: 3,
+		Insertions:   3,
+		Deletions:    4,
+		Files: []ChangeFile{
+			{Path: "notes/a.md", Insertions: 1, Deletions: 1},
+			{Path: "notes/c.md", Insertions: 2, Deletions: 0},
+			{Path: "archive/old.md", Insertions: 0, Deletions: 3},
+		},
+	})
+}
+
+// TestCommitSuccessEnvelope proves the same structured success envelope
+// for a clean commit, and that no Git ID, pack key, or credential appears
+// anywhere in the result.
+func TestCommitSuccessEnvelope(t *testing.T) {
+	svc := &fakeService{result: sampleResult()}
+	client, _ := newTestPair(t, svc)
+	res, err := client.CallTool(context.Background(), &sdk.CallToolParams{
+		Name:      toolCommit,
+		Arguments: map[string]any{"path": "/abs/notes", "message": "update notes"},
+	})
+	if err != nil {
+		t.Fatalf("CallTool() = %v", err)
+	}
+	assertSuccessInfo(t, res, &SuccessInfo{
+		Code:         "OK",
+		Generation:   18,
+		FilesChanged: 3,
+		Insertions:   3,
+		Deletions:    4,
+		Files: []ChangeFile{
+			{Path: "notes/a.md", Insertions: 1, Deletions: 1},
+			{Path: "notes/c.md", Insertions: 2, Deletions: 0},
+			{Path: "archive/old.md", Insertions: 0, Deletions: 3},
+		},
+	})
+	data, err := json.Marshal(res.StructuredContent)
+	if err != nil {
+		t.Fatalf("marshal structured content: %v", err)
+	}
+	for _, leaked := range []string{"packs/", "probe/", "AKIA"} {
+		if strings.Contains(string(data), leaked) {
+			t.Fatalf("success envelope leaked %q: %s", leaked, data)
+		}
+	}
+	if gitIDRE.MatchString(string(data)) {
+		t.Fatalf("success envelope leaked a Git object ID: %s", data)
+	}
+}
+
+// TestNoOpCommitReturnsEmptyStatEnvelope proves that a no-op
+// synchronization returns code OK with the remote generation and an empty
+// stat: filesChanged 0 and an empty (non-nil) files array.
+func TestNoOpCommitReturnsEmptyStatEnvelope(t *testing.T) {
+	svc := &fakeService{result: notebook.Result{Generation: 7}}
+	client, _ := newTestPair(t, svc)
+	res, err := client.CallTool(context.Background(), &sdk.CallToolParams{
+		Name:      toolCommit,
+		Arguments: map[string]any{"path": "/abs/notes", "message": "no changes"},
+	})
+	if err != nil {
+		t.Fatalf("CallTool() = %v", err)
+	}
+	assertSuccessInfo(t, res, &SuccessInfo{
+		Code: "OK", Generation: 7, FilesChanged: 0, Insertions: 0, Deletions: 0, Files: []ChangeFile{},
+	})
+}
+
+// TestZeroResultWithNoErrorNeverPanics proves the contract-bug guard: a
+// zero result paired with nil error (which the notebook never produces)
+// maps to code OK with a zero generation and an empty stat instead of a
+// panic or a protocol error.
+func TestZeroResultWithNoErrorNeverPanics(t *testing.T) {
+	client, _ := newTestPair(t, nil) // the fake returns the zero result
+	res, err := client.CallTool(context.Background(), &sdk.CallToolParams{
+		Name:      toolPull,
+		Arguments: map[string]any{"path": "/abs/notes"},
+	})
+	if err != nil {
+		t.Fatalf("CallTool() = %v", err)
+	}
+	assertSuccessInfo(t, res, &SuccessInfo{
+		Code: "OK", Generation: 0, FilesChanged: 0, Insertions: 0, Deletions: 0, Files: []ChangeFile{},
+	})
 }
 
 // TestPullBlankCommitMessageMapsToInvalidRequest proves that a blank
@@ -187,7 +296,8 @@ func TestPullBlankCommitMessageMapsToInvalidRequest(t *testing.T) {
 
 // TestConflictDataSurvivesSDKEnvelope proves that the exact structured
 // conflict paths and one-based inclusive ranges survive the SDK error
-// envelope, with isError set and one candid text item.
+// envelope, with isError set, one candid text item, and no success-only
+// field anywhere in the error object.
 func TestConflictDataSurvivesSDKEnvelope(t *testing.T) {
 	svc := &fakeService{commitErr: conflictError()}
 	client, _ := newTestPair(t, svc)
@@ -214,6 +324,11 @@ func TestConflictDataSurvivesSDKEnvelope(t *testing.T) {
 	data, err := json.Marshal(res.StructuredContent)
 	if err != nil {
 		t.Fatalf("marshal structured content: %v", err)
+	}
+	for _, successOnly := range []string{"generation", "filesChanged", "insertions", "deletions"} {
+		if strings.Contains(string(data), successOnly) {
+			t.Fatalf("error envelope carries the success-only field %q: %s", successOnly, data)
+		}
 	}
 	var got ToolError
 	if err := json.Unmarshal(data, &got); err != nil {
@@ -377,14 +492,30 @@ func TestCancellationPropagatesToService(t *testing.T) {
 }
 
 // assertOKResult proves the exact success envelope: one text item with
-// exactly OK, no structured content, no isError.
+// exactly OK, no isError, and a structured SuccessInfo whose code is OK.
+// The full structured values are asserted per test with
+// assertSuccessInfo.
 func assertOKResult(t *testing.T, res *sdk.CallToolResult) {
 	t.Helper()
 	if res.IsError {
 		t.Fatal("success result must not set isError")
 	}
-	if res.StructuredContent != nil {
-		t.Fatalf("success result has structured content: %v", res.StructuredContent)
+	if res.StructuredContent == nil {
+		t.Fatal("success result carries no structured content")
+	}
+	data, err := json.Marshal(res.StructuredContent)
+	if err != nil {
+		t.Fatalf("marshal structured content: %v", err)
+	}
+	var got SuccessInfo
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("structured content is not the success shape: %v", err)
+	}
+	if got.Code != "OK" {
+		t.Fatalf("structured code = %q, want OK", got.Code)
+	}
+	if got.Files == nil {
+		t.Fatal("files must always be present")
 	}
 	if len(res.Content) != 1 {
 		t.Fatalf("content items = %d, want exactly one", len(res.Content))
@@ -392,6 +523,41 @@ func assertOKResult(t *testing.T, res *sdk.CallToolResult) {
 	text, ok := res.Content[0].(*sdk.TextContent)
 	if !ok || text.Text != "OK" {
 		t.Fatalf("text item = %#v, want exactly OK", res.Content[0])
+	}
+}
+
+// assertSuccessInfo proves the exact structured success object after its
+// round trip through the SDK envelope.
+func assertSuccessInfo(t *testing.T, res *sdk.CallToolResult, want *SuccessInfo) {
+	t.Helper()
+	assertOKResult(t, res)
+	data, err := json.Marshal(res.StructuredContent)
+	if err != nil {
+		t.Fatalf("marshal structured content: %v", err)
+	}
+	var got SuccessInfo
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("structured content: %v", err)
+	}
+	if !reflect.DeepEqual(&got, want) {
+		t.Fatalf("structured = %+v, want %+v", &got, want)
+	}
+}
+
+// sampleResult is the canonical success summary shared by the envelope
+// tests: generation 18 and the three-file stat of the documented example.
+func sampleResult() notebook.Result {
+	return notebook.Result{
+		Generation: 18,
+		Stat: git.DiffStat{
+			Files: []git.FileStat{
+				{Path: "notes/a.md", Insertions: 1, Deletions: 1},
+				{Path: "notes/c.md", Insertions: 2, Deletions: 0},
+				{Path: "archive/old.md", Insertions: 0, Deletions: 3},
+			},
+			Insertions: 3,
+			Deletions:  4,
+		},
 	}
 }
 

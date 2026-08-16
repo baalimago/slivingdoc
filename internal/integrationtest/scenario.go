@@ -22,9 +22,13 @@ type ToolCall struct {
 // CallExpectation is the tool-result envelope expectation. Exactly one of
 // OK and ErrorCode must be set.
 type CallExpectation struct {
-	// OK requires the success envelope: one text item exactly "OK" and no
-	// structured content.
+	// OK requires the success envelope: one text item exactly "OK" and a
+	// structured SuccessInfo whose code is OK.
 	OK bool
+	// Success pins the exact structured success envelope (generation,
+	// totals, and the ordered per-file stat) when non-nil; nil asserts the
+	// shape only. Meaningful only when OK is set.
+	Success *SuccessExpectation
 	// ErrorCode requires the error envelope with this stable category.
 	ErrorCode string
 	// Retryable asserts the exact retryable flag when non-nil.
@@ -50,6 +54,25 @@ type FileExpectation struct {
 type RangeExpectation struct {
 	Start int
 	End   int
+}
+
+// SuccessExpectation is the structured success-envelope expectation: the
+// accepted remote generation after the operation, the total counts, and
+// the exact ordered per-file change stat.
+type SuccessExpectation struct {
+	Generation   uint64
+	FilesChanged int
+	Insertions   int
+	Deletions    int
+	Files        []FileStatExpectation
+}
+
+// FileStatExpectation is one structured success file: the normalized
+// relative path and its exact insertion and deletion counts.
+type FileStatExpectation struct {
+	Path       string
+	Insertions int
+	Deletions  int
 }
 
 // RecoveryExpectation is the RECOVERY_FAILURE report expectation: the

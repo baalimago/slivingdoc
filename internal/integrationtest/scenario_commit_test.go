@@ -93,7 +93,8 @@ func TestScenarioCommitNormalCommit(t *testing.T) {
 
 // TestScenarioCommitNoChange proves that a commit whose local tree equals
 // the remote state synchronizes L and P without any publication ID, pack,
-// commit, or CAS request (architecture section 11.3, L733).
+// commit, or CAS request (architecture section 11.3, L733), and returns
+// the accepted generation with an empty success stat.
 func TestScenarioCommitNoChange(t *testing.T) {
 	t.Parallel()
 	h := newFakeHarness(t, HarnessConfig{})
@@ -101,7 +102,15 @@ func TestScenarioCommitNoChange(t *testing.T) {
 	commitFirst(t, h, path, "a.md", "alpha", "c1")
 
 	before := h.Recorder().Snapshot()
-	h.assertOK(t, h.Commit("", path, "no changes here"))
+	h.assertEnvelope(t, ToolCall{
+		Tool: toolCommit, Path: path, Message: "no changes here",
+		Expect: CallExpectation{
+			OK: true,
+			Success: &SuccessExpectation{
+				Generation: 1, FilesChanged: 0, Insertions: 0, Deletions: 0, Files: []FileStatExpectation{},
+			},
+		},
+	}, h.Commit("", path, "no changes here"))
 	after := h.Recorder().Snapshot()
 	for _, op := range []Op{OpPut, OpCreate, OpReplace, OpDelete} {
 		if after[op] != before[op] {

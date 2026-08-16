@@ -142,32 +142,6 @@ func invalidRequest(cause error) *ToolError {
 	}
 }
 
-// Report renders the candid CLI text form of the envelope: the category
-// and message, the retryable verdict, one indented line per conflicted
-// file with its one-based inclusive line ranges, and the recovery report
-// when present. The pull and commit subcommands print it verbatim.
-func (te *ToolError) Report() string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "%s: %s\n", te.Code, te.Message)
-	fmt.Fprintf(&b, "retryable: %t\n", te.Retryable)
-	for _, f := range te.Files {
-		if len(f.Ranges) == 0 {
-			fmt.Fprintf(&b, "  %s\n", f.Path)
-			continue
-		}
-		parts := make([]string, 0, len(f.Ranges))
-		for _, r := range f.Ranges {
-			parts = append(parts, fmt.Sprintf("%d-%d", r.Start, r.End))
-		}
-		fmt.Fprintf(&b, "  %s: lines %s\n", f.Path, strings.Join(parts, ", "))
-	}
-	if rec := te.Recovery; rec != nil {
-		fmt.Fprintf(&b, "recovery: stage=%s remoteAccepted=%s resynchronized=%t\n",
-			rec.Stage, rec.RemoteAccepted, rec.Resynchronized)
-	}
-	return b.String()
-}
-
 // Redaction patterns. The architecture (section 2) forbids credentials,
 // S3 keys, private paths, and Git IDs in any error text or data. The
 // notebook messages never contain credentials, but pack keys (for example

@@ -142,19 +142,19 @@ func TestScenarioContentRules(t *testing.T) {
 }
 
 // TestScenarioResultShape proves the success envelope of both tools: one
-// text item exactly OK, no structured content, and no commit ID, pack key,
-// or internal value anywhere in the result (architecture section 2, L26).
+// text item exactly OK plus a structured SuccessInfo, with no commit ID,
+// pack key, or internal value anywhere in the result (architecture
+// section 2, L26).
 func TestScenarioResultShape(t *testing.T) {
 	t.Parallel()
 	h := newFakeHarness(t, HarnessConfig{})
 	path := h.Path("notes")
 	commitFirst(t, h, path, "a.md", "alpha", "first commit")
 
-	// The success envelope is exactly one text item "OK" with no structured
-	// content, which assertOK enforces. That alone rules out a commit ID or
-	// pack key in the result: there is nowhere for one to be. The scan below
-	// is the belt-and-braces check that the single text item is the literal
-	// OK and carries no Git object ID or key.
+	// The success envelope is one text item "OK" plus the structured
+	// SuccessInfo, which assertOK enforces. The scan below is the
+	// belt-and-braces check that neither the text item nor the structured
+	// content carries a Git object ID, pack key, or other internal value.
 	h.WriteFile(path+"/b.md", "beta")
 	for _, res := range []*sdk.CallToolResult{
 		h.Pull("", path),
@@ -167,6 +167,13 @@ func TestScenarioResultShape(t *testing.T) {
 		}
 		if gitObjectID.MatchString(text) || strings.Contains(text, "packs/") {
 			t.Fatalf("success text leaks an internal value: %q", text)
+		}
+		data, err := json.Marshal(res.StructuredContent)
+		if err != nil {
+			t.Fatalf("marshal structured content: %v", err)
+		}
+		if gitObjectID.MatchString(string(data)) || strings.Contains(string(data), "packs/") {
+			t.Fatalf("structured success content leaks an internal value: %s", data)
 		}
 	}
 	// The accepted state really advanced, so the bare OK is not the result

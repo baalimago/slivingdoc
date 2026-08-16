@@ -23,7 +23,7 @@ func TestCASFailpointTriggersRecovery(t *testing.T) {
 
 	writeLocal(t, w, map[string]string{"a.md": "v1"})
 	pullOK(t, nb)
-	ne := assertErrorCode(t, nb.Commit(context.Background(), "first"), CodeRecoveryFailure)
+	ne := assertErrorCode(t, errOnly(nb.Commit(context.Background(), "first")), CodeRecoveryFailure)
 	if ne.Recovery == nil {
 		t.Fatal("RECOVERY_FAILURE carries no recovery report")
 	}
@@ -66,7 +66,7 @@ func TestRecoverFailpointReportsFailedResync(t *testing.T) {
 
 	writeLocal(t, w, map[string]string{"a.md": "v1"})
 	pullOK(t, nb)
-	ne := assertErrorCode(t, nb.Commit(context.Background(), "first"), CodeRecoveryFailure)
+	ne := assertErrorCode(t, errOnly(nb.Commit(context.Background(), "first")), CodeRecoveryFailure)
 	if ne.Recovery == nil || ne.Recovery.Stage != stageCAS || ne.Recovery.RemoteAccepted != RemoteAcceptedYes || ne.Recovery.Resynchronized {
 		t.Fatalf("recovery report = %+v, want commit.cas / yes / resynchronized=false", ne.Recovery)
 	}
@@ -77,7 +77,7 @@ func TestRecoverFailpointReportsFailedResync(t *testing.T) {
 	// A later call retries the resynchronization first: while the repair
 	// still fails, every call keeps reporting RECOVERY_FAILURE and never
 	// starts new work.
-	again := assertErrorCode(t, nb.Pull(context.Background()), CodeRecoveryFailure)
+	again := assertErrorCode(t, errOnly(nb.Pull(context.Background())), CodeRecoveryFailure)
 	if again.Recovery == nil || again.Recovery.Resynchronized {
 		t.Fatalf("recovery report = %+v, want an unresolved resynchronization", again.Recovery)
 	}

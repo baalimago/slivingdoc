@@ -27,13 +27,15 @@ const (
 )
 
 // Service is the notebook view consumed by the tools: one requested
-// visible path resolves to one notebook inside the implementation.
+// visible path resolves to one notebook inside the implementation. Each
+// method returns the operation result, which the handler maps into the
+// structured success envelope.
 type Service interface {
 	// Pull writes the current notebook into the resolved path.
-	Pull(ctx context.Context, path string) error
+	Pull(ctx context.Context, path string) (notebook.Result, error)
 	// Commit publishes the caller's changes at the resolved path with the
 	// given message.
-	Commit(ctx context.Context, path, message string) error
+	Commit(ctx context.Context, path, message string) (notebook.Result, error)
 }
 
 // Server is the slivingdoc MCP server. It registers exactly two tools and
@@ -106,12 +108,13 @@ func (h *handler) pull(ctx context.Context, req *sdk.CallToolRequest) (*sdk.Call
 		logger.Warn("tool call completed", "outcome", "invalid_request", "duration", time.Since(start))
 		return errorResult(invalidRequest(err)), nil
 	}
-	if err := h.svc.Pull(ctx, path); err != nil {
+	result, err := h.svc.Pull(ctx, path)
+	if err != nil {
 		logger.Warn("tool call completed", "outcome", "error", "duration", time.Since(start))
 		return resultFor(err)
 	}
 	logger.Info("tool call completed", "outcome", "ok", "duration", time.Since(start))
-	return okResult(), nil
+	return successResult(result), nil
 }
 
 func (h *handler) commit(ctx context.Context, req *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
@@ -123,12 +126,13 @@ func (h *handler) commit(ctx context.Context, req *sdk.CallToolRequest) (*sdk.Ca
 		logger.Warn("tool call completed", "outcome", "invalid_request", "duration", time.Since(start))
 		return errorResult(invalidRequest(err)), nil
 	}
-	if err := h.svc.Commit(ctx, path, message); err != nil {
+	result, err := h.svc.Commit(ctx, path, message)
+	if err != nil {
 		logger.Warn("tool call completed", "outcome", "error", "duration", time.Since(start))
 		return resultFor(err)
 	}
 	logger.Info("tool call completed", "outcome", "ok", "duration", time.Since(start))
-	return okResult(), nil
+	return successResult(result), nil
 }
 
 // requestLogger derives the request-scoped logger from the server logger:
@@ -165,11 +169,12 @@ func resultFor(err error) (*sdk.CallToolResult, error) {
 	return errorResult(te), nil
 }
 
-// okResult is the success envelope: one text item with exactly "OK" and no
-// structured content.
-func okResult() *sdk.CallToolResult {
+// successResult is the success envelope: one text item with exactly "OK"
+// and the structured SuccessInfo object (architecture section 2).
+func successResult(result notebook.Result) *sdk.CallToolResult {
 	return &sdk.CallToolResult{
-		Content: []sdk.Content{&sdk.TextContent{Text: "OK"}},
+		Content:           []sdk.Content{&sdk.TextContent{Text: "OK"}},
+		StructuredContent: MapSuccess(result),
 	}
 }
 

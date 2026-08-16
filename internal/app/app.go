@@ -186,13 +186,15 @@ func (r *Runtime) Serve(ctx context.Context) error {
 	return serve(ctx, r.p, srv, r.logger)
 }
 
-// Pull writes the current notebook into path for one CLI invocation.
-func (r *Runtime) Pull(ctx context.Context, path string) error {
+// Pull writes the current notebook into path for one CLI invocation and
+// returns the operation result.
+func (r *Runtime) Pull(ctx context.Context, path string) (notebook.Result, error) {
 	return r.svc.Pull(notebook.WithLogger(ctx, Module(r.base, ModuleNotebook)), path)
 }
 
-// Commit publishes the caller's changes at path for one CLI invocation.
-func (r *Runtime) Commit(ctx context.Context, path, message string) error {
+// Commit publishes the caller's changes at path for one CLI invocation and
+// returns the operation result.
+func (r *Runtime) Commit(ctx context.Context, path, message string) (notebook.Result, error) {
 	return r.svc.Commit(notebook.WithLogger(ctx, Module(r.base, ModuleNotebook)), path, message)
 }
 

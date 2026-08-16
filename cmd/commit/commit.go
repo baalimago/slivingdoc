@@ -76,15 +76,17 @@ func (c *command) Setup(context.Context) error {
 	return nil
 }
 
-// Run commits the notebook once and prints the candid result: the OK line
-// on success, the structured domain report otherwise. A domain error
-// returns its terse category, so the router exits nonzero.
+// Run commits the notebook once and prints the unified result report: the
+// OK-prefixed success report with the generation and the published-increment
+// diffstat on success, the coloured category report otherwise. A domain
+// error returns its terse category, so the router exits nonzero.
 func (c *command) Run(ctx context.Context) error {
 	if c.runtime == nil {
 		return errors.New("commit: Setup must run before Run")
 	}
 	defer c.runtime.Close()
-	return app.Report(c.opts.Out(), c.runtime.Commit(ctx, c.path, c.message))
+	result, err := c.runtime.Commit(ctx, c.path, c.message)
+	return app.Report(c.opts.Out(), result, err, c.opts.Env)
 }
 
 const helpText = `slivingdoc commit - publish the changes at a notebook directory
@@ -101,9 +103,13 @@ markers and reports every conflicted range.
   -m, --message string          commit message (required): non-blank UTF-8
                                 without U+0000, at most 16,384 bytes
 
-Prints exactly OK on success. A domain error prints a structured report
-(category, retryable verdict, conflicted files with one-based inclusive
-line ranges) and exits nonzero.
+Prints the unified result report on stdout. Success shows the OK status
+token, the accepted remote generation, one line per changed file with its
+insertion and deletion counts, and the totals trailer, and exits zero. A
+domain error shows the category and message, the conflicted files with
+their one-based inclusive line ranges, and the retryable verdict, and
+exits nonzero. Colour is presentation-only: it appears only on a real
+terminal, and any non-empty NO_COLOR disables it.
 
 Flags take precedence over environment variables, which override defaults.
 An explicitly empty flag value does not fall back to an environment value.

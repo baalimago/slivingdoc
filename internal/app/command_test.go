@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"context"
 	"flag"
+	"io"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/baalimago/slivingdoc/internal/git"
+	"github.com/baalimago/slivingdoc/internal/mcp"
 	"github.com/baalimago/slivingdoc/internal/notebook"
 )
 
@@ -81,50 +84,169 @@ func TestOperationPathParsesTrailingFlags(t *testing.T) {
 	}
 }
 
-// TestReport proves the candid CLI result contract: the exact OK line on
-// success, the structured report plus the terse category for a domain
-// error, and the unchanged error for a non-domain failure.
+// successResult is the documented success summary of the worklog envelope
+// example: generation 18 and the three-file diffstat, in the sorted-by-path
+// order DiffSnapshots produces.
+func successResult() notebook.Result {
+	return notebook.Result{
+		Generation: 18,
+		Stat: git.DiffStat{
+			Files: []git.FileStat{
+				{Path: "archive/old.md", Insertions: 0, Deletions: 3},
+				{Path: "notes/a.md", Insertions: 1, Deletions: 1},
+				{Path: "notes/c.md", Insertions: 2, Deletions: 0},
+			},
+			Insertions: 3,
+			Deletions:  4,
+		},
+	}
+}
+
+// TestReport proves the CLI result contract: success writes the unified
+// OK-prefixed report and returns nil, a domain error writes the unified
+// category report and returns the terse category, and a non-domain error
+// passes through unprinted. The captured writers are not terminals, so
+// every output here is plain text.
 func TestReport(t *testing.T) {
 	t.Parallel()
-	t.Run("success is exactly OK", func(t *testing.T) {
+
+	t.Run("success writes the OK-prefixed report", func(t *testing.T) {
 		t.Parallel()
 		var out bytes.Buffer
-		if err := Report(&out, nil); err != nil {
+		if err := Report(&out, successResult(), nil, nil); err != nil {
 			t.Fatalf("Report(nil) = %v", err)
 		}
-		if out.String() != "OK\n" {
-			t.Fatalf("output = %q, want exactly the OK line", out.String())
+		want := "OK  generation 18\n" +
+			"  archive/old.md  -3\n" +
+			"  notes/a.md  +1 -1\n" +
+			"  notes/c.md  +2\n" +
+			"3 files changed, 3 insertions(+), 4 deletions(-)\n"
+		if out.String() != want {
+			t.Fatalf("output = %q, want %q", out.String(), want)
 		}
 	})
 
-	t.Run("domain error prints the report and returns the category", func(t *testing.T) {
+	t.Run("domain error writes the category report and returns the terse category", func(t *testing.T) {
 		t.Parallel()
 		var out bytes.Buffer
-		err := Report(&out, &notebook.Error{
+		err := Report(&out, notebook.Result{}, &notebook.Error{
 			Code:    notebook.CodeContentConflict,
 			Message: "resolve the conflict blocks",
 			Files: []notebook.ConflictFile{
 				{Path: "a.md", Ranges: []git.MarkerRange{{Start: 1, End: 5}}},
+				{Path: "dir/b.md", Ranges: nil},
 			},
-		})
+		}, nil)
 		if err == nil || err.Error() != "CONTENT_CONFLICT" {
 			t.Fatalf("Report() = %v, want the terse category", err)
 		}
-		for _, want := range []string{"CONTENT_CONFLICT: resolve the conflict blocks", "retryable: false", "a.md: lines 1-5"} {
-			if !strings.Contains(out.String(), want) {
-				t.Fatalf("report %q does not contain %q", out.String(), want)
-			}
+		want := "CONTENT_CONFLICT  resolve the conflict blocks\n" +
+			"  a.md: lines 1-5\n" +
+			"  dir/b.md\n" +
+			"retryable: false\n"
+		if out.String() != want {
+			t.Fatalf("output = %q, want %q", out.String(), want)
 		}
 	})
 
 	t.Run("non-domain error passes through unprinted", func(t *testing.T) {
 		t.Parallel()
 		var out bytes.Buffer
-		if err := Report(&out, context.Canceled); err != context.Canceled {
+		if err := Report(&out, notebook.Result{}, context.Canceled, nil); err != context.Canceled {
 			t.Fatalf("Report(context.Canceled) = %v, want the unchanged error", err)
 		}
 		if out.Len() != 0 {
 			t.Fatalf("output = %q, want none for a non-domain error", out.String())
 		}
 	})
+
+	t.Run("piped output stays plain", func(t *testing.T) {
+		t.Parallel()
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatalf("Pipe() = %v", err)
+		}
+		defer r.Close()
+		defer w.Close()
+		got := make(chan string, 1)
+		go func() {
+			var b bytes.Buffer
+			_, _ = io.Copy(&b, r)
+			got <- b.String()
+		}()
+		if err := Report(w, successResult(), nil, nil); err != nil {
+			t.Fatalf("Report() = %v", err)
+		}
+		w.Close()
+		if out := <-got; strings.Contains(out, "\x1b[") || !strings.HasPrefix(out, "OK  generation ") {
+			t.Fatalf("piped output = %q, want a plain OK-prefixed report", out)
+		}
+	})
+
+	t.Run("NO_COLOR keeps the report plain", func(t *testing.T) {
+		t.Parallel()
+		var out bytes.Buffer
+		if err := Report(&out, successResult(), nil, []string{"NO_COLOR=1"}); err != nil {
+			t.Fatalf("Report() = %v", err)
+		}
+		if strings.Contains(out.String(), "\x1b[") {
+			t.Fatalf("NO_COLOR output %q contains ANSI escapes", out.String())
+		}
+	})
+}
+
+// TestWriteSuccessColoured proves the success report's colour placement:
+// the OK token green, the generation summary cyan, insertions green,
+// deletions red, and a zero-count side omitted.
+func TestWriteSuccessColoured(t *testing.T) {
+	t.Parallel()
+	var out bytes.Buffer
+	writeSuccess(&out, successResult(), painter{on: true})
+	want := "\x1b[32mOK\x1b[0m  \x1b[36mgeneration 18\x1b[0m\n" +
+		"  archive/old.md  \x1b[31m-3\x1b[0m\n" +
+		"  notes/a.md  \x1b[32m+1\x1b[0m \x1b[31m-1\x1b[0m\n" +
+		"  notes/c.md  \x1b[32m+2\x1b[0m\n" +
+		"3 files changed, 3 insertions(+), 4 deletions(-)\n"
+	if out.String() != want {
+		t.Fatalf("output = %q, want %q", out.String(), want)
+	}
+}
+
+// TestWriteSuccessEmptyStat proves the no-op synchronization report: an
+// empty diffstat renders only the status line and the zero totals trailer.
+func TestWriteSuccessEmptyStat(t *testing.T) {
+	t.Parallel()
+	var out bytes.Buffer
+	writeSuccess(&out, notebook.Result{Generation: 7}, painter{})
+	want := "OK  generation 7\n" +
+		"0 files changed, 0 insertions(+), 0 deletions(-)\n"
+	if out.String() != want {
+		t.Fatalf("output = %q, want %q", out.String(), want)
+	}
+}
+
+// TestWriteErrorColoured proves the error report's colour placement: the
+// category token red, conflict paths yellow, and the recovery trailer
+// when present.
+func TestWriteErrorColoured(t *testing.T) {
+	t.Parallel()
+	var out bytes.Buffer
+	te := &mcp.ToolError{
+		Code: "RECOVERY_FAILURE", Retryable: true,
+		Message: "unexpected failure after local mutation started; recovery ran",
+		Files: []mcp.ErrorFile{
+			{Path: "a.md", Ranges: []mcp.ErrorRange{{Start: 1, End: 5}}},
+			{Path: "dir/b.md", Ranges: []mcp.ErrorRange{}},
+		},
+		Recovery: &mcp.RecoveryInfo{Stage: "publish", RemoteAccepted: "unknown", Resynchronized: true},
+	}
+	writeError(&out, te, painter{on: true})
+	want := "\x1b[31mRECOVERY_FAILURE\x1b[0m  unexpected failure after local mutation started; recovery ran\n" +
+		"  \x1b[33ma.md\x1b[0m: lines 1-5\n" +
+		"  \x1b[33mdir/b.md\x1b[0m\n" +
+		"retryable: true\n" +
+		"recovery: stage=publish remoteAccepted=unknown resynchronized=true\n"
+	if out.String() != want {
+		t.Fatalf("output = %q, want %q", out.String(), want)
+	}
 }

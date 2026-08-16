@@ -148,14 +148,14 @@ func runWriterLoad(tb testing.TB, cfg loadConfig) loadResult {
 				stagger := cfg.distributedWindow / time.Duration(cfg.writers)
 				time.Sleep(time.Duration(i) * stagger)
 			}
-			if err := wk.nb.Pull(context.Background()); err != nil {
+			if _, err := wk.nb.Pull(context.Background()); err != nil {
 				results <- commitOutcome{err: err}
 				return
 			}
 			path := fmt.Sprintf("agent-%03d.md", i)
 			writeLocal(tb, wk.w, map[string]string{path: noteBody(i)})
 			commitStart := time.Now()
-			err := wk.nb.Commit(context.Background(), "load commit")
+			_, err := wk.nb.Commit(context.Background(), "load commit")
 			results <- commitOutcome{err: err, duration: time.Since(commitStart)}
 		})
 	}

@@ -62,15 +62,17 @@ func (c *command) Setup(context.Context) error {
 	return nil
 }
 
-// Run pulls the notebook once and prints the candid result: the OK line on
-// success, the structured domain report otherwise. A domain error returns
-// its terse category, so the router exits nonzero.
+// Run pulls the notebook once and prints the unified result report: the
+// OK-prefixed success report with the generation and the per-file diffstat
+// on success, the coloured category report otherwise. A domain error
+// returns its terse category, so the router exits nonzero.
 func (c *command) Run(ctx context.Context) error {
 	if c.runtime == nil {
 		return errors.New("pull: Setup must run before Run")
 	}
 	defer c.runtime.Close()
-	return app.Report(c.opts.Out(), c.runtime.Pull(ctx, c.path))
+	result, err := c.runtime.Pull(ctx, c.path)
+	return app.Report(c.opts.Out(), result, err, c.opts.Env)
 }
 
 const helpText = `slivingdoc pull - write the current notebook into a directory
@@ -83,9 +85,13 @@ working directory; the resolved path must stay at or below the workspace
 root. Edit UTF-8 text files there, then publish with
 'slivingdoc commit <path> -m <message>'.
 
-Prints exactly OK on success. A domain error prints a structured report
-(category, retryable verdict, conflicted files with one-based inclusive
-line ranges) and exits nonzero.
+Prints the unified result report on stdout. Success shows the OK status
+token, the accepted remote generation, one line per changed file with its
+insertion and deletion counts, and the totals trailer, and exits zero. A
+domain error shows the category and message, the conflicted files with
+their one-based inclusive line ranges, and the retryable verdict, and
+exits nonzero. Colour is presentation-only: it appears only on a real
+terminal, and any non-empty NO_COLOR disables it.
 
 Flags take precedence over environment variables, which override defaults.
 An explicitly empty flag value does not fall back to an environment value.

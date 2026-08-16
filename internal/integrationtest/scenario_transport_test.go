@@ -2,12 +2,14 @@ package integrationtest
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
 
+	"github.com/baalimago/slivingdoc/internal/mcp"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -91,6 +93,9 @@ func assertToolCallLogged(t *testing.T, stderr, tool string) {
 	t.Fatalf("stderr carries no correlated start/ok record pair for %s; stderr: %s", tool, stderr)
 }
 
+// assertProcessCallOK asserts the success envelope of one process-level
+// tool call: no error, one text item exactly OK, and a structured
+// SuccessInfo whose code is OK.
 func assertProcessCallOK(t *testing.T, cs *sdk.ClientSession, tool, path, message string) {
 	t.Helper()
 	args := map[string]any{"path": path}
@@ -101,8 +106,19 @@ func assertProcessCallOK(t *testing.T, cs *sdk.ClientSession, tool, path, messag
 	if err != nil {
 		t.Fatalf("%s(%s) = %v", tool, path, err)
 	}
-	if res.IsError || res.StructuredContent != nil || len(res.Content) != 1 {
-		t.Fatalf("%s(%s) result = %#v, want unstructured OK", tool, path, res)
+	if res.IsError || res.StructuredContent == nil || len(res.Content) != 1 {
+		t.Fatalf("%s(%s) result = %#v, want the structured OK envelope", tool, path, res)
+	}
+	data, err := json.Marshal(res.StructuredContent)
+	if err != nil {
+		t.Fatalf("%s(%s) marshal structured content: %v", tool, path, err)
+	}
+	var got mcp.SuccessInfo
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("%s(%s) structured content = %s: %v", tool, path, data, err)
+	}
+	if got.Code != "OK" {
+		t.Fatalf("%s(%s) structured code = %q, want OK", tool, path, got.Code)
 	}
 	text, ok := res.Content[0].(*sdk.TextContent)
 	if !ok || text.Text != "OK" {

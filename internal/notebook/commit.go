@@ -22,47 +22,53 @@ import (
 // the new remote tail, merges again, and retries with a new publication ID,
 // generation, key, commit, and pack up to the configured bound. A
 // no-change result synchronizes L and P to R without any remote mutation.
-func (n *Notebook) Commit(ctx context.Context, message string) error {
+//
+// The returned Result reports the accepted generation and the diffstat of
+// the published increment: the observed remote parent tree versus the
+// accepted merged tree. A no-op commit returns the remote generation with
+// an empty stat. A conflict or any error returns the zero Result with the
+// existing error.
+func (n *Notebook) Commit(ctx context.Context, message string) (Result, error) {
 	if n.ws.RecoveryRequired() {
 		if err := n.entryRecovery(ctx); err != nil {
-			return err
+			return Result{}, err
 		}
 	}
 	if err := validateMessage(message); err != nil {
-		return err
+		return Result{}, err
 	}
 	if !n.ws.Pulled() {
-		return invalidRequest("commit requires a successful or conflicting pull first")
+		return Result{}, invalidRequest("commit requires a successful or conflicting pull first")
 	}
 
 	local, err := n.ws.Snapshot(ctx)
 	if err != nil {
-		return n.mapLocalError(err)
+		return Result{}, n.mapLocalError(err)
 	}
 	if files := rejectMarkers(local); len(files) > 0 {
-		return contentConflict("Resolve the conflict blocks before notes_commit.", files)
+		return Result{}, contentConflict("Resolve the conflict blocks before notes_commit.", files)
 	}
 	localTree, err := git.BuildTree(n.ws.Repo(), local)
 	if err != nil {
-		return &Error{Code: CodeInvalidRequest, Message: "visible files cannot be represented as notebook state", Cause: err}
+		return Result{}, &Error{Code: CodeInvalidRequest, Message: "visible files cannot be represented as notebook state", Cause: err}
 	}
 
 	baseTree := n.ws.Baseline().Tree
 	attemptStart := n.now()
 
 	for attempt := 1; ; attempt++ {
-		casLost, err := n.attemptPublication(ctx, message, baseTree, localTree, attemptStart)
+		casLost, result, err := n.attemptPublication(ctx, message, baseTree, localTree, attemptStart)
 		if err != nil {
-			return err
+			return Result{}, err
 		}
 		if !casLost {
-			return nil
+			return result, nil
 		}
 		if attempt > n.retryLimit {
-			return remoteBusy("another writer kept winning the publication race for %d attempts", attempt)
+			return Result{}, remoteBusy("another writer kept winning the publication race for %d attempts", attempt)
 		}
 		if err := n.waiter.Wait(ctx, attempt); err != nil {
-			return err
+			return Result{}, err
 		}
 	}
 }
@@ -71,67 +77,77 @@ func (n *Notebook) Commit(ctx context.Context, message string) error {
 // remote observation: read, merge, build, upload, CAS, local acceptance,
 // opportunistic checkpoint. casLost is true only when the manifest CAS lost
 // the race and the caller owns the bounded retry; every other outcome is
-// terminal.
-func (n *Notebook) attemptPublication(ctx context.Context, message string, baseTree, localTree git.OID, attemptStart time.Time) (casLost bool, err error) {
+// terminal. result carries the winning attempt's change summary and is
+// meaningful only when casLost is false and err is nil; a lost attempt's
+// summary is discarded with the attempt.
+func (n *Notebook) attemptPublication(ctx context.Context, message string, baseTree, localTree git.OID, attemptStart time.Time) (casLost bool, result Result, err error) {
 	remote, err := n.readRemote(ctx)
 	if err != nil {
-		return false, err
+		return false, Result{}, err
 	}
 
 	merged, err := git.Merge(n.ws.Repo(), baseTree, localTree, remote.tree)
 	if err != nil {
-		return false, &Error{Code: CodeStorageIntegrity, Message: "merge failed", Cause: err}
+		return false, Result{}, &Error{Code: CodeStorageIntegrity, Message: "merge failed", Cause: err}
 	}
 	if len(merged.Conflicts) > 0 {
 		tree, err := n.materializeTree(merged)
 		if err != nil {
-			return false, &Error{Code: CodeStorageIntegrity, Message: "materialize conflict result", Cause: err}
+			return false, Result{}, &Error{Code: CodeStorageIntegrity, Message: "materialize conflict result", Cause: err}
 		}
 		if err := n.applyLocal(ctx, stageConflict, RemoteAcceptedNo, func() error {
 			return n.ws.Materialize(ctx, remote.baseline(), tree)
 		}); err != nil {
-			return false, err
+			return false, Result{}, err
 		}
-		return false, contentConflict("Resolve the conflict blocks before notes_commit.",
+		return false, Result{}, contentConflict("Resolve the conflict blocks before notes_commit.",
 			contentConflictFiles(merged.Conflicts))
 	}
 
 	if merged.Tree == remote.tree {
 		// No local change survives the merge: synchronize L and P to R
 		// without a publication ID, commit, pack, or CAS request.
-		return false, n.applyLocal(ctx, stageCommit, RemoteAcceptedNo, func() error {
+		return false, Result{Generation: remote.generation}, n.applyLocal(ctx, stageCommit, RemoteAcceptedNo, func() error {
 			return n.ws.Accept(ctx, remote.baseline())
 		})
 	}
 
+	// The change summary is presentation-only: compute it against the
+	// observed remote tree before any publication, so a read failure
+	// aborts with no remote or local mutation.
+	stat, err := n.diffStat(remote.tree, merged.Tree)
+	if err != nil {
+		return false, Result{}, err
+	}
+
 	proposal, err := n.buildProposal(ctx, remote, merged.Tree, message, attemptStart)
 	if err != nil {
-		return false, err
+		return false, Result{}, err
 	}
 	if err := n.uploadProposal(ctx, proposal); err != nil {
-		return false, err
+		return false, Result{}, err
 	}
 
 	// The manifest CAS is the atomic acceptance action. Uploading the
 	// pack alone is only a proposal.
 	err = n.publish(ctx, remote, proposal)
 	if errors.Is(err, errCASLost) {
-		return true, nil
+		return true, Result{}, nil
 	}
 	if err != nil {
-		return false, err
+		return false, Result{}, err
 	}
 
 	if fp := n.failpoints; fp != nil && fp.CAS != nil {
 		if err := fp.CAS(); err != nil {
-			return false, n.failAfterAccept(ctx, stageCAS, err)
+			return false, Result{}, n.failAfterAccept(ctx, stageCAS, err)
 		}
 	}
 
 	if err := n.applyLocal(ctx, stageCommit, RemoteAcceptedYes, func() error {
 		return n.ws.Accept(ctx, proposal.baseline)
 	}); err != nil {
-		return false, err
+		return false, Result{}, err
 	}
 
 	// The commit is accepted. Checkpoint scheduling is opportunistic:
@@ -142,7 +158,7 @@ func (n *Notebook) attemptPublication(ctx context.Context, message string, baseT
 	if len(proposal.manifest.Increments) >= n.checkpointPacks {
 		n.runCheckpoint(ctx, proposal.manifest)
 	}
-	return false, nil
+	return false, Result{Generation: proposal.baseline.RemoteGeneration, Stat: stat}, nil
 }
 
 // uploadProposal writes the proposal's immutable pack to its unique key

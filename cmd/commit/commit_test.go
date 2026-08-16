@@ -59,15 +59,16 @@ func pullFirst(t *testing.T, store storage.ObjectStore, workspaceRoot, privateRo
 		t.Fatalf("app.Setup() = %v", err)
 	}
 	defer rt.Close()
-	if err := rt.Pull(context.Background(), path); err != nil {
+	if _, err := rt.Pull(context.Background(), path); err != nil {
 		t.Fatalf("Pull(%s) = %v", path, err)
 	}
 }
 
-// TestCommitPublishesAndPrintsOK proves the command contract end to end in
-// process: after a managed pull, commit publishes the edit over the shared
-// fake store and stdout is exactly the OK line.
-func TestCommitPublishesAndPrintsOK(t *testing.T) {
+// TestCommitPublishesAndPrintsReport proves the command contract end to
+// end in process: after a managed pull, commit publishes the edit over the
+// shared fake store and stdout is the OK-prefixed result report. The
+// captured writer is not a terminal, so the report is plain text.
+func TestCommitPublishesAndPrintsReport(t *testing.T) {
 	t.Parallel()
 	store := fake.New("p")
 	workspaceRoot, privateRoot := t.TempDir(), t.TempDir()
@@ -89,8 +90,8 @@ func TestCommitPublishesAndPrintsOK(t *testing.T) {
 	if err := c.Run(context.Background()); err != nil {
 		t.Fatalf("Run() = %v", err)
 	}
-	if out.String() != "OK\n" {
-		t.Fatalf("stdout = %q, want exactly the OK line", out.String())
+	if got := out.String(); !strings.HasPrefix(got, "OK  generation ") || !strings.Contains(got, "files changed") {
+		t.Fatalf("stdout = %q, want the OK-prefixed result report", got)
 	}
 }
 

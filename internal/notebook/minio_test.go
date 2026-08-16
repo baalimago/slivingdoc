@@ -107,8 +107,8 @@ func TestMinioNotebookTwoWriterRace(t *testing.T) {
 	errs := make(chan error, 2)
 	var wg sync.WaitGroup
 	for _, commit := range []func() error{
-		func() error { return a.Commit(context.Background(), "A change") },
-		func() error { return b.Commit(context.Background(), "B change") },
+		func() error { return errOnly(a.Commit(context.Background(), "A change")) },
+		func() error { return errOnly(b.Commit(context.Background(), "B change")) },
 	} {
 		wg.Add(1)
 		go func(fn func() error) {
@@ -183,7 +183,7 @@ func TestMinioNotebookCheckpointCleansAndReaderRestarts(t *testing.T) {
 	gate := &gatedStore{ObjectStore: store, key: inc2, entered: make(chan struct{}), release: make(chan struct{})}
 	c, cw, _ := newMinioNotebook(t, gate, ids, nbConfig{})
 	pullDone := make(chan error, 1)
-	go func() { pullDone <- c.Pull(context.Background()) }()
+	go func() { pullDone <- errOnly(c.Pull(context.Background())) }()
 	<-gate.entered
 
 	// A's third commit publishes gen 3, compacts the two increments into a

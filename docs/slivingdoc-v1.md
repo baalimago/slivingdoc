@@ -57,13 +57,18 @@ slivingdoc commit <path> -m <message>
 
 A subcommand `path` can be relative. It resolves against the working
 directory, and the resolved path must stay at or below the workspace root.
-A successful subcommand writes exactly `OK` and one LF to stdout and exits
-zero. A domain error writes the structured envelope below as a candid text
-report to stdout and exits nonzero. The report contains the category and
-message, the retryable verdict, one line per conflicted file with its
-one-based inclusive line ranges, and the recovery report when present. The
-report carries the same categories, the same relative file paths, and the
-same redaction guarantees as the MCP envelope.
+A successful subcommand writes the unified result report to stdout and
+exits zero: the `OK` status token, the accepted remote generation, one
+line per changed file with its insertion and deletion counts, and the
+totals trailer. A domain error writes the same status/detail/trailer
+skeleton as a candid text report to stdout and exits nonzero. The report
+contains the category and message, the retryable verdict, one line per
+conflicted file with its one-based inclusive line ranges, and the recovery
+report when present. Colour is presentation-only: the status tokens, the
+generation summary, and the per-file counts are coloured only when stdout
+is a real terminal, and any non-empty `NO_COLOR` disables the colour even
+there. The report carries the same categories, the same relative file
+paths, and the same redaction guarantees as the MCP envelope.
 
 The caller never receives a Git object ID, pack name, S3 key, or local checkout
 path. These values are internal implementation details.
@@ -78,9 +83,44 @@ null values are invalid. `path` is an absolute UTF-8 host path with 1 through
 The service rejects a message that contains only Unicode white space. It
 preserves every byte of any other message.
 
-A successful tool result contains one MCP text item with exactly `OK`. It has
-no structured content. A domain error returns an MCP tool result with
-`isError=true`, one candid text item, and this structured object:
+A successful tool result contains one MCP text item with exactly `OK` and
+this structured object:
+
+```json
+{
+  "code": "OK",
+  "generation": 18,
+  "filesChanged": 3,
+  "insertions": 3,
+  "deletions": 4,
+  "files": [
+    { "path": "notes/a.md", "insertions": 1, "deletions": 1 },
+    { "path": "notes/c.md", "insertions": 2, "deletions": 0 },
+    { "path": "archive/old.md", "insertions": 0, "deletions": 3 }
+  ]
+}
+```
+
+`code` is always `OK`; `generation` is the accepted remote generation
+after the operation; `filesChanged`, `insertions`, and `deletions` are the
+totals of the per-file change stat; `files` is always present, empty for a
+no-op synchronization. The pull diffstat is the on-disk delta between the
+visible state before the pull and the materialized result; the commit
+diffstat is the increment the publication added over the observed remote
+parent tree, empty for a no-op synchronization. Paths are the same
+normalized internal slash form used by error files, and no success data
+contains credentials, S3 keys, private paths, or Git IDs.
+
+A diffstat line is an LF-terminated run of bytes with one trailing CR
+stripped for comparison and counting. A final run without a trailing LF
+still counts as one line; content ending in LF has no phantom empty final
+line; empty content has zero lines. A file present only after the change
+counts every line as an insertion; a file present only before the change
+counts every line as a deletion; a modified file uses a deterministic
+line diff.
+
+A domain error returns an MCP tool result with `isError=true`, one candid
+text item, and this structured object:
 
 ```json
 {

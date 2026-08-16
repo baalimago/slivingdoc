@@ -79,9 +79,12 @@ slivingdoc pull notes
 slivingdoc commit notes -m "meeting summary"
 ```
 
-Success prints exactly `OK`. A domain error exits nonzero and prints
-a candid report: the error category, the retryable verdict, and every
-conflicted file with its line ranges.
+Success prints the unified result report: the `OK` status, the accepted
+remote generation, per-file insertion and deletion counts, and a totals
+trailer. A domain error exits nonzero and prints a candid report: the
+error category, the retryable verdict, and every conflicted file with its
+line ranges. Colour appears only on a real terminal and is disabled by
+any non-empty `NO_COLOR`.
 
 ### The git part
 

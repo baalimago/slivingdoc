@@ -1,6 +1,7 @@
 package integrationtest
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -422,15 +423,18 @@ func (h *Harness) eventually(t *testing.T, timeout time.Duration, fn func() erro
 	}
 }
 
-// assertOK asserts the exact success envelope: one text item exactly OK
-// and no structured content.
+// assertOK asserts the success envelope: one text item exactly OK and a
+// structured SuccessInfo whose code is OK with the files key always
+// present. The exact generation and diffstat values of each scenario are
+// asserted by the Success expectation of CallExpectation.
 func (h *Harness) assertOK(t *testing.T, res *sdk.CallToolResult) {
 	t.Helper()
-	if res.IsError {
-		t.Fatalf("result is an error: %v", res.StructuredContent)
+	got := h.successInfo(t, res)
+	if got.Code != "OK" {
+		t.Fatalf("success code = %q, want OK", got.Code)
 	}
-	if res.StructuredContent != nil {
-		t.Fatalf("result carries structured content: %v", res.StructuredContent)
+	if got.Files == nil {
+		t.Fatal("files must always be present")
 	}
 	if len(res.Content) != 1 {
 		t.Fatalf("content items = %d, want exactly one", len(res.Content))
@@ -438,6 +442,57 @@ func (h *Harness) assertOK(t *testing.T, res *sdk.CallToolResult) {
 	text, ok := res.Content[0].(*sdk.TextContent)
 	if !ok || text.Text != "OK" {
 		t.Fatalf("text item = %#v, want exactly OK", res.Content[0])
+	}
+}
+
+// successInfo decodes the structured content of a success result into the
+// SuccessInfo shape, failing the test when the result is an error, carries
+// no structured content, or is not the success shape.
+func (h *Harness) successInfo(t *testing.T, res *sdk.CallToolResult) mcp.SuccessInfo {
+	t.Helper()
+	if res.IsError {
+		t.Fatalf("result is an error: %v", res.StructuredContent)
+	}
+	if res.StructuredContent == nil {
+		t.Fatal("success result carries no structured content")
+	}
+	data, err := json.Marshal(res.StructuredContent)
+	if err != nil {
+		t.Fatalf("marshal structured content: %v", err)
+	}
+	var got mcp.SuccessInfo
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("structured content is not the success shape: %v", err)
+	}
+	return got
+}
+
+// assertSuccessStat asserts the exact structured success envelope of one
+// call result: the accepted generation, the total counts, and the ordered
+// per-file change stat.
+func (h *Harness) assertSuccessStat(t *testing.T, call ToolCall, res *sdk.CallToolResult, exp SuccessExpectation) {
+	t.Helper()
+	got := h.successInfo(t, res)
+	if got.Generation != exp.Generation {
+		t.Fatalf("call %s(%s) generation = %d, want %d", call.Tool, call.Path, got.Generation, exp.Generation)
+	}
+	if got.FilesChanged != exp.FilesChanged {
+		t.Fatalf("call %s(%s) filesChanged = %d, want %d", call.Tool, call.Path, got.FilesChanged, exp.FilesChanged)
+	}
+	if got.Insertions != exp.Insertions {
+		t.Fatalf("call %s(%s) insertions = %d, want %d", call.Tool, call.Path, got.Insertions, exp.Insertions)
+	}
+	if got.Deletions != exp.Deletions {
+		t.Fatalf("call %s(%s) deletions = %d, want %d", call.Tool, call.Path, got.Deletions, exp.Deletions)
+	}
+	if len(got.Files) != len(exp.Files) {
+		t.Fatalf("call %s(%s) stat files = %v, want %v", call.Tool, call.Path, got.Files, exp.Files)
+	}
+	for i := range exp.Files {
+		g, w := got.Files[i], exp.Files[i]
+		if g.Path != w.Path || g.Insertions != w.Insertions || g.Deletions != w.Deletions {
+			t.Fatalf("call %s(%s) stat file %d = %+v, want %+v", call.Tool, call.Path, i, g, w)
+		}
 	}
 }
 
@@ -450,6 +505,9 @@ func (h *Harness) assertEnvelope(t *testing.T, call ToolCall, res *sdk.CallToolR
 	exp := call.Expect
 	if exp.OK {
 		h.assertOK(t, res)
+		if exp.Success != nil {
+			h.assertSuccessStat(t, call, res, *exp.Success)
+		}
 		for _, sub := range exp.NoText {
 			text, ok := res.Content[0].(*sdk.TextContent)
 			if !ok || strings.Contains(text.Text, sub) {
@@ -560,6 +618,18 @@ func decodeEnvelope(t *testing.T, call ToolCall, res *sdk.CallToolResult) envelo
 	}
 	if env.Code != codeRecoveryFailure && env.Recovery != nil {
 		t.Fatalf("call %s(%s) carries a recovery report for %s", call.Tool, call.Path, env.Code)
+	}
+	// The error envelope never carries the success shape: the success-only
+	// field names are absent from the raw structured content, so the two
+	// envelopes cannot be confused (architecture section 2).
+	raw, err := json.Marshal(res.StructuredContent)
+	if err != nil {
+		t.Fatalf("marshal structured content: %v", err)
+	}
+	for _, key := range []string{"\"generation\":", "\"filesChanged\":", "\"insertions\":", "\"deletions\":"} {
+		if bytes.Contains(raw, []byte(key)) {
+			t.Fatalf("call %s(%s) error envelope carries the success-only field %s in %s", call.Tool, call.Path, key, raw)
+		}
 	}
 	return env
 }

@@ -3,6 +3,7 @@ package integrationtest
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -41,31 +42,61 @@ func runCLI(t *testing.T, mode string, env []string, args ...string) (int, strin
 }
 
 // runCLIOK runs one one-shot CLI process and asserts the success
-// contract: exit zero and exactly the OK line on stdout.
+// contract: exit zero and the plain OK-prefixed result report on stdout —
+// the status token and generation summary, one indented line per changed
+// file with its insertion and deletion counts, and the totals trailer as
+// the final line — with no ANSI escapes, because the spawned process
+// writes to a pipe.
 func runCLIOK(t *testing.T, mode string, env []string, args ...string) {
 	t.Helper()
 	code, stdout, stderr := runCLI(t, mode, env, args...)
 	if code != 0 {
 		t.Fatalf("%v = exit %d, want 0; stdout: %q stderr: %s", args, code, stdout, stderr)
 	}
-	if stdout != "OK\n" {
-		t.Fatalf("%v stdout = %q, want exactly the OK line", args, stdout)
+	if !strings.HasPrefix(stdout, "OK  generation ") {
+		t.Fatalf("%v stdout = %q, want the OK-prefixed result report", args, stdout)
+	}
+	trailer := regexp.MustCompile(`\n\d+ files changed, \d+ insertions\(\+\), \d+ deletions\(-\)\n$`)
+	if !trailer.MatchString(stdout) {
+		t.Fatalf("%v stdout = %q, want the totals trailer as the final line", args, stdout)
+	}
+	if strings.Contains(stdout, "\x1b[") {
+		t.Fatalf("%v stdout = %q, want no ANSI escapes on a pipe", args, stdout)
+	}
+}
+
+// runCLIExact runs one one-shot CLI process and asserts the exact success
+// report on stdout: exit zero and stdout equal to want, the documented
+// plain form of the unified report on a pipe.
+func runCLIExact(t *testing.T, mode string, env []string, want string, args ...string) {
+	t.Helper()
+	code, stdout, stderr := runCLI(t, mode, env, args...)
+	if code != 0 {
+		t.Fatalf("%v = exit %d, want 0; stdout: %q stderr: %s", args, code, stdout, stderr)
+	}
+	if stdout != want {
+		t.Fatalf("%v stdout = %q, want exactly %q", args, stdout, want)
 	}
 }
 
 // TestScenarioCLIPullCommitRoundTrip proves the direct human workflow over
 // separate one-shot processes: pull materializes the notebook and records
 // the pulled state in P, so a later commit process publishes the edit and
-// both print exactly OK with exit zero.
+// both print the exact plain OK-prefixed report — the first pull has no
+// on-disk delta, the first commit reports the new file — with exit zero.
 func TestScenarioCLIPullCommitRoundTrip(t *testing.T) {
 	t.Parallel()
 	env, root := cliRoots(t)
 	notes := filepath.Join(root, "notes")
 
-	runCLIOK(t, "fake", env, "pull", notes)
+	runCLIExact(t, "fake", env,
+		"OK  generation 0\n0 files changed, 0 insertions(+), 0 deletions(-)\n",
+		"pull", notes)
 
 	writeCLIFile(t, filepath.Join(notes, "a.md"), "cli notes\n")
-	runCLIOK(t, "fake", env, "commit", notes, "-m", "cli commit")
+	runCLIExact(t, "fake", env,
+		"OK  generation 1\n  a.md  +1\n1 files changed, 1 insertions(+), 0 deletions(-)\n",
+		"commit", notes, "-m", "cli commit")
 }
 
 // TestScenarioCLIRelativePathResolvesAgainstCwd proves a relative notebook
@@ -76,8 +107,8 @@ func TestScenarioCLIRelativePathResolvesAgainstCwd(t *testing.T) {
 	env, root := cliRoots(t)
 	h := spawnHelperIn(t, root, "fake", env, "pull", "notes")
 	code, stdout, stderr := h.runStdioProcess(t, nil)
-	if code != 0 || stdout != "OK\n" {
-		t.Fatalf("pull notes = exit %d stdout %q, want the OK line; stderr: %s", code, stdout, stderr)
+	if code != 0 || !strings.HasPrefix(stdout, "OK  generation ") {
+		t.Fatalf("pull notes = exit %d stdout %q, want the OK-prefixed report; stderr: %s", code, stdout, stderr)
 	}
 	if fi, err := os.Stat(filepath.Join(root, "notes")); err != nil || !fi.IsDir() {
 		t.Fatalf("pull did not materialize the notebook directory: %v", err)
@@ -103,6 +134,9 @@ func TestScenarioCLIMarkerConflictReport(t *testing.T) {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("report %q does not contain %q", stdout, want)
 		}
+	}
+	if strings.Contains(stdout, "\x1b[") {
+		t.Fatalf("conflict report %q carries ANSI escapes on a pipe", stdout)
 	}
 	if strings.Contains(stdout, root) {
 		t.Fatalf("report %q echoes the absolute workspace root; paths are relative", stdout)

@@ -196,7 +196,7 @@ func TestPullReachabilityFailureLeavesLUntouched(t *testing.T) {
 	writeLocal(t, w, map[string]string{"local.md": "mine"})
 	baselineBefore := w.Baseline()
 	before := localSnapshot(t, w)
-	assertErrorCode(t, nb.Pull(context.Background()), CodeStorageIntegrity)
+	assertErrorCode(t, errOnly(nb.Pull(context.Background())), CodeStorageIntegrity)
 	if got := localSnapshot(t, w); !reflect.DeepEqual(got, before) {
 		t.Fatalf("L changed by the failed pull: %v -> %v", before, got)
 	}
@@ -223,7 +223,9 @@ func TestPullConflictWritesMarkersAndKeepsL(t *testing.T) {
 	commitOK(t, a, "base")
 
 	writeLocal(t, bw, map[string]string{"a.md": "local v1", "local-only.md": "local only"})
-	ne := assertErrorCode(t, b.Pull(context.Background()), CodeContentConflict)
+	res, err := b.Pull(context.Background())
+	ne := assertErrorCode(t, err, CodeContentConflict)
+	assertZeroResult(t, res)
 	if len(ne.Files) != 1 || ne.Files[0].Path != "a.md" {
 		t.Fatalf("conflict files = %+v, want a.md", ne.Files)
 	}
@@ -274,7 +276,7 @@ func TestPullPackGetFailureLeavesBaselineUnchanged(t *testing.T) {
 	baselineBefore := w.Baseline()
 	before := localSnapshot(t, w)
 
-	assertErrorCode(t, nb.Pull(context.Background()), CodeStorageIntegrity)
+	assertErrorCode(t, errOnly(nb.Pull(context.Background())), CodeStorageIntegrity)
 	if got := localSnapshot(t, w); !reflect.DeepEqual(got, before) {
 		t.Fatalf("L changed by the failed pull: %v -> %v", before, got)
 	}
@@ -300,7 +302,7 @@ func TestPullCorruptPackRejected(t *testing.T) {
 	}
 	baselineBefore := w.Baseline()
 
-	assertErrorCode(t, nb.Pull(context.Background()), CodeStorageIntegrity)
+	assertErrorCode(t, errOnly(nb.Pull(context.Background())), CodeStorageIntegrity)
 	if got := w.Baseline(); got != baselineBefore {
 		t.Fatalf("baseline changed by the corrupt pack: %+v -> %+v", baselineBefore, got)
 	}
@@ -354,7 +356,7 @@ func TestPullInvalidContentMapsToInvalidRequest(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(w.Path(), "bad.md"), []byte{0xff, 0xfe}, 0o644); err != nil {
 		t.Fatalf("write invalid file: %v", err)
 	}
-	assertErrorCode(t, nb.Pull(context.Background()), CodeInvalidRequest)
+	assertErrorCode(t, errOnly(nb.Pull(context.Background())), CodeInvalidRequest)
 	if got := store.Calls(fake.OpGet); got != 0 {
 		t.Fatalf("pull with invalid content made %d GET calls, want none", got)
 	}
@@ -391,7 +393,7 @@ func TestPullEntryRecoveryRunsBeforeWork(t *testing.T) {
 
 	writeLocal(t, w, map[string]string{"a.md": "v1"})
 	pullOK(t, nb)
-	ne := assertErrorCode(t, nb.Commit(context.Background(), "first"), CodeRecoveryFailure)
+	ne := assertErrorCode(t, errOnly(nb.Commit(context.Background(), "first")), CodeRecoveryFailure)
 	if ne.Recovery == nil {
 		t.Fatal("RECOVERY_FAILURE carries no recovery report")
 	}
@@ -433,5 +435,89 @@ func TestPullEntryRecoveryRunsBeforeWork(t *testing.T) {
 	}
 	if got := readLocal(t, reopened, "a.md"); got != "v1" {
 		t.Fatalf("L after entry recovery = %q, want the accepted content", got)
+	}
+}
+
+// TestPullResultStat proves the pull result: the accepted remote
+// generation and the diffstat of the on-disk delta between the visible
+// state the pull observed and the materialized result.
+func TestPullResultStat(t *testing.T) {
+	store := fake.New("")
+	ids := &testIDSource{}
+	a, aw, _ := newNotebook(t, nbConfig{store: store, ids: ids})
+	b, bw, _ := newNotebook(t, nbConfig{store: store, ids: ids})
+
+	writeLocal(t, aw, map[string]string{"a.md": "a1\n", "b.md": "b1\n", "d.md": "d1\n"})
+	pullOK(t, a)
+	commitOK(t, a, "base")
+	pullOK(t, b) // B at gen 1: L = {a1,b1,d1}
+
+	writeLocal(t, aw, map[string]string{"a.md": "a2\n", "c.md": "c1\n"})
+	removeLocal(t, aw, "d.md")
+	commitOK(t, a, "remote advance")
+
+	// B's pull of the advanced remote with no local edits: L before is
+	// {a1,b1,d1}, L after is {a2,b1,c1}.
+	res, err := b.Pull(context.Background())
+	if err != nil {
+		t.Fatalf("Pull() = %v", err)
+	}
+	if res.Generation != 2 {
+		t.Fatalf("result generation = %d, want 2", res.Generation)
+	}
+	want := git.DiffStat{
+		Files: []git.FileStat{
+			{Path: "a.md", Insertions: 1, Deletions: 1},
+			{Path: "c.md", Insertions: 1, Deletions: 0},
+			{Path: "d.md", Insertions: 0, Deletions: 1},
+		},
+		Insertions: 2,
+		Deletions:  2,
+	}
+	if !reflect.DeepEqual(res.Stat, want) {
+		t.Fatalf("result stat = %+v, want %+v", res.Stat, want)
+	}
+	got := localSnapshot(t, bw)
+	if wantL := map[string]string{"a.md": "a2\n", "b.md": "b1\n", "c.md": "c1\n"}; !reflect.DeepEqual(got, wantL) {
+		t.Fatalf("L after pull = %v, want the materialized result %v", got, wantL)
+	}
+}
+
+// TestPullDiffStatReadFailureMapsToIntegrity proves that a snapshot read
+// failure while computing the pull change summary returns the zero result
+// with the existing STORAGE_INTEGRITY path, before L or P changes: the
+// summary is presentation-only and never mutates state.
+func TestPullDiffStatReadFailureMapsToIntegrity(t *testing.T) {
+	store := fake.New("")
+	ids := &testIDSource{}
+	a, aw, _ := newNotebook(t, nbConfig{store: store, ids: ids})
+
+	writeLocal(t, aw, map[string]string{"a.md": "a1\n", "b.md": "b1\n", "d.md": "d1\n"})
+	pullOK(t, a)
+	commitOK(t, a, "base")
+	writeLocal(t, aw, map[string]string{"a.md": "a2\n", "c.md": "c1\n"})
+	removeLocal(t, aw, "d.md")
+	commitOK(t, a, "remote advance")
+
+	// The pull's merge of base {a1,b1,d1}, local {a1,b-local,d1}, and
+	// remote {a2,b1,c1} produces the brand-new tree {a2,b-local,c1}, which
+	// nothing reads before the change summary. Failing its read therefore
+	// fails exactly the summary read.
+	merged := mergedTreeOf(t, map[string]string{"a.md": "a2\n", "b.md": "b-local\n", "c.md": "c1\n"})
+	fail := &readFailEngine{fakeEngine: newFakeEngine(), failTree: merged}
+	b, bw, _ := newNotebook(t, nbConfig{store: store, ids: ids, engine: fail})
+	pullOK(t, b) // gen 1: the merged tree equals the remote tree, so the fail target is never read
+	writeLocal(t, bw, map[string]string{"b.md": "b-local\n"})
+
+	baselineBefore := bw.Baseline()
+	before := localSnapshot(t, bw)
+	res, err := b.Pull(context.Background())
+	assertErrorCode(t, err, CodeStorageIntegrity)
+	assertZeroResult(t, res)
+	if got := localSnapshot(t, bw); !reflect.DeepEqual(got, before) {
+		t.Fatalf("L changed by the failed pull: %v -> %v", before, got)
+	}
+	if got := bw.Baseline(); got != baselineBefore {
+		t.Fatalf("baseline changed by the failed pull: %+v -> %+v", baselineBefore, got)
 	}
 }

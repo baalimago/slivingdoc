@@ -120,7 +120,7 @@ func TestNativePackBeforeCAS(t *testing.T) {
 	writeLocal(t, w, map[string]string{"a.md": "v1"})
 	pullOK(t, nb)
 	done := make(chan error, 1)
-	go func() { done <- nb.Commit(context.Background(), "first") }()
+	go func() { done <- errOnly(nb.Commit(context.Background(), "first")) }()
 	<-gate.entered
 
 	cpKey := "packs/checkpoints/1-" + testUUIDv7(2).String() + ".pack"

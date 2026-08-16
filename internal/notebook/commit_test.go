@@ -78,7 +78,7 @@ func TestCommitWithoutPull(t *testing.T) {
 	nb, w, _ := newNotebook(t, nbConfig{store: store, ids: ids})
 	writeLocal(t, w, map[string]string{"a.md": "x"})
 
-	assertErrorCode(t, nb.Commit(context.Background(), "msg"), CodeInvalidRequest)
+	assertErrorCode(t, errOnly(nb.Commit(context.Background(), "msg")), CodeInvalidRequest)
 	for _, op := range []fake.Op{fake.OpGet, fake.OpPut, fake.OpCreate, fake.OpReplace} {
 		if got := store.Calls(op); got != 0 {
 			t.Fatalf("commit without pull made %d %s calls, want none", got, op)
@@ -105,7 +105,7 @@ func TestCommitBlankMessage(t *testing.T) {
 			writeLocal(t, w, map[string]string{"a.md": "x"})
 			pullOK(t, nb)
 			getsBefore := store.Calls(fake.OpGet)
-			assertErrorCode(t, nb.Commit(context.Background(), message), CodeInvalidRequest)
+			assertErrorCode(t, errOnly(nb.Commit(context.Background(), message)), CodeInvalidRequest)
 			if got := store.Calls(fake.OpGet) - getsBefore; got != 0 {
 				t.Fatalf("invalid message made %d GET calls, want none", got)
 			}
@@ -165,7 +165,7 @@ func TestCommitRejectsMarkerBlockBeforeS3(t *testing.T) {
 		"other.md":    "fine",
 	})
 
-	ne := assertErrorCode(t, nb.Commit(context.Background(), "msg"), CodeContentConflict)
+	ne := assertErrorCode(t, errOnly(nb.Commit(context.Background(), "msg")), CodeContentConflict)
 	if len(ne.Files) != 1 || ne.Files[0].Path != "conflict.md" {
 		t.Fatalf("conflict files = %+v, want conflict.md", ne.Files)
 	}
@@ -210,7 +210,7 @@ func TestCommitRejectsInvalidContent(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(w.Path(), "bad.md"), data, 0o644); err != nil {
 				t.Fatalf("write invalid file: %v", err)
 			}
-			assertErrorCode(t, nb.Commit(context.Background(), "msg"), CodeInvalidRequest)
+			assertErrorCode(t, errOnly(nb.Commit(context.Background(), "msg")), CodeInvalidRequest)
 			if got := store.Calls(fake.OpGet); got != 1 {
 				t.Fatalf("invalid content made %d GET calls, want only the pull's read", got)
 			}
@@ -292,7 +292,10 @@ func TestCommitNoChangeSynchronizes(t *testing.T) {
 	pullOK(t, nb)
 
 	// No local files at all: the merged result equals R, so no publication.
-	commitOK(t, nb, "no change")
+	res := commitOK(t, nb, "no change")
+	if res.Generation != 0 || !reflect.DeepEqual(res.Stat, git.DiffStat{}) {
+		t.Fatalf("no-change result = %+v, want generation 0 with an empty stat", res)
+	}
 	if store.ObjectCount() != 0 {
 		t.Fatalf("no-change commit created %d remote objects, want none", store.ObjectCount())
 	}
@@ -304,7 +307,10 @@ func TestCommitNoChangeSynchronizes(t *testing.T) {
 	writeLocal(t, w, map[string]string{"a.md": "v1"})
 	commitOK(t, nb, "first")
 	afterFirst := store.ObjectCount()
-	commitOK(t, nb, "no change again")
+	res = commitOK(t, nb, "no change again")
+	if res.Generation != 1 || !reflect.DeepEqual(res.Stat, git.DiffStat{}) {
+		t.Fatalf("second no-change result = %+v, want generation 1 with an empty stat", res)
+	}
 	if got := store.ObjectCount(); got != afterFirst {
 		t.Fatalf("no-change commit after a publication created objects: %d -> %d", afterFirst, got)
 	}
@@ -364,7 +370,7 @@ func TestCommitUploadsPackBeforeManifestCAS(t *testing.T) {
 	pullOK(t, nb)
 
 	done := make(chan error, 1)
-	go func() { done <- nb.Commit(context.Background(), "first") }()
+	go func() { done <- errOnly(nb.Commit(context.Background(), "first")) }()
 	<-gate.entered // the manifest CAS is in flight and blocked
 
 	cpKey := "packs/checkpoints/1-" + testUUIDv7(2).String() + ".pack"
@@ -410,7 +416,19 @@ func TestCommitCASRaceOneWinnerOneRetry(t *testing.T) {
 
 	writeLocal(t, bw, map[string]string{"b.md": "B"})
 	store.FailNextKey(fake.OpReplace, storage.CurrentKey, storage.ErrPreconditionFailed)
-	commitOK(t, b, "B change")
+	res := commitOK(t, b, "B change")
+	// The result reflects the winning retry only: the lost attempt's
+	// generation and summary are discarded with the attempt.
+	if res.Generation != 3 {
+		t.Fatalf("result generation = %d, want the winning attempt's 3", res.Generation)
+	}
+	wantStat := git.DiffStat{
+		Files:      []git.FileStat{{Path: "b.md", Insertions: 1, Deletions: 0}},
+		Insertions: 1,
+	}
+	if !reflect.DeepEqual(res.Stat, wantStat) {
+		t.Fatalf("result stat = %+v, want the winning attempt's increment %+v", res.Stat, wantStat)
+	}
 
 	m := readManifest(t, store)
 	if m.Generation != 3 {
@@ -468,7 +486,9 @@ func TestCommitOverlappingConflictWritesMarkers(t *testing.T) {
 
 	writeLocal(t, bw, map[string]string{"f.txt": "B\n"})
 	store.FailNextKey(fake.OpReplace, storage.CurrentKey, storage.ErrPreconditionFailed)
-	ne := assertErrorCode(t, b.Commit(context.Background(), "B"), CodeContentConflict)
+	res, err := b.Commit(context.Background(), "B")
+	ne := assertErrorCode(t, err, CodeContentConflict)
+	assertZeroResult(t, res)
 	if len(ne.Files) != 1 || ne.Files[0].Path != "f.txt" {
 		t.Fatalf("conflict files = %+v, want f.txt", ne.Files)
 	}
@@ -511,7 +531,7 @@ func TestCommitRemoteBusyPreservesFiles(t *testing.T) {
 	nbB, bw, _ := newNotebook(t, nbConfig{store: flaky, ids: ids, retryLimit: 2})
 	pullOK(t, nbB)
 	writeLocal(t, bw, map[string]string{"b.md": "B"})
-	assertErrorCode(t, nbB.Commit(context.Background(), "B"), CodeRemoteBusy)
+	assertErrorCode(t, errOnly(nbB.Commit(context.Background(), "B")), CodeRemoteBusy)
 	if got := flaky.replaceCalls; got != 3 {
 		t.Fatalf("ReplaceObject attempts = %d, want retryLimit+1 = 3", got)
 	}
@@ -571,7 +591,7 @@ func TestCommitAmbiguousRejectedCAS(t *testing.T) {
 	writeLocal(t, bw, map[string]string{"b.md": "B"})
 
 	store.FailNext(fake.OpReplace, storage.ErrTransport)
-	assertErrorCode(t, b.Commit(context.Background(), "B"), CodeStorageFailure)
+	assertErrorCode(t, errOnly(b.Commit(context.Background(), "B")), CodeStorageFailure)
 
 	m := readManifest(t, store)
 	if m.Generation != 1 {
@@ -601,7 +621,7 @@ func TestCommitPackUploadFailure(t *testing.T) {
 	writeLocal(t, bw, map[string]string{"b.md": "B"})
 
 	store.FailNext(fake.OpPut, storage.ErrTransport)
-	assertErrorCode(t, b.Commit(context.Background(), "B"), CodeStorageFailure)
+	assertErrorCode(t, errOnly(b.Commit(context.Background(), "B")), CodeStorageFailure)
 
 	m := readManifest(t, store)
 	if m.Generation != 1 {
@@ -760,5 +780,86 @@ func TestCommitAtWorkspaceRoot(t *testing.T) {
 	m := readManifest(t, store)
 	if m.Generation != 2 || len(m.Increments) != 1 {
 		t.Fatalf("manifest = %+v, want generation 2 with one increment", m)
+	}
+}
+
+// TestCommitResultStat proves the commit result: the accepted generation
+// and the diffstat of the published increment, the observed remote parent
+// tree versus the accepted merged tree.
+func TestCommitResultStat(t *testing.T) {
+	store := fake.New("")
+	ids := &testIDSource{}
+	a, aw, _ := newNotebook(t, nbConfig{store: store, ids: ids})
+	b, bw, _ := newNotebook(t, nbConfig{store: store, ids: ids})
+
+	writeLocal(t, aw, map[string]string{"a.md": "a1\n", "b.md": "b1\n"})
+	pullOK(t, a)
+	commitOK(t, a, "base")
+	pullOK(t, b)
+
+	// A publishes a.md and c.md; B publishes b.md on top, so the
+	// increment B accepts is exactly B's b.md change.
+	writeLocal(t, aw, map[string]string{"a.md": "a2\n", "c.md": "c1\n"})
+	commitOK(t, a, "A change")
+	writeLocal(t, bw, map[string]string{"b.md": "b-local\n"})
+
+	res, err := b.Commit(context.Background(), "B change")
+	if err != nil {
+		t.Fatalf("Commit() = %v", err)
+	}
+	if res.Generation != 3 {
+		t.Fatalf("result generation = %d, want 3", res.Generation)
+	}
+	want := git.DiffStat{
+		Files:      []git.FileStat{{Path: "b.md", Insertions: 1, Deletions: 1}},
+		Insertions: 1,
+		Deletions:  1,
+	}
+	if !reflect.DeepEqual(res.Stat, want) {
+		t.Fatalf("result stat = %+v, want the published increment %+v", res.Stat, want)
+	}
+	if got := localSnapshot(t, bw); got["b.md"] != "b-local\n" {
+		t.Fatalf("L = %v, want the accepted merged state", got)
+	}
+}
+
+// TestCommitDiffStatReadFailureMapsToIntegrity proves that a snapshot read
+// failure while computing the commit change summary returns the zero
+// result with the existing STORAGE_INTEGRITY path and publishes nothing:
+// the summary is presentation-only and never changes the publication
+// protocol.
+func TestCommitDiffStatReadFailureMapsToIntegrity(t *testing.T) {
+	store := fake.New("")
+	ids := &testIDSource{}
+	a, aw, _ := newNotebook(t, nbConfig{store: store, ids: ids})
+
+	writeLocal(t, aw, map[string]string{"a.md": "a1\n"})
+	pullOK(t, a)
+	commitOK(t, a, "base")
+
+	// The commit's merge of base {a1}, local {a2}, and remote {a1}
+	// produces the brand-new tree {a2}, which nothing reads before the
+	// change summary. Failing its read therefore fails exactly the
+	// summary read.
+	merged := mergedTreeOf(t, map[string]string{"a.md": "a2\n"})
+	fail := &readFailEngine{fakeEngine: newFakeEngine(), failTree: merged}
+	b, bw, _ := newNotebook(t, nbConfig{store: store, ids: ids, engine: fail})
+	pullOK(t, b)
+	writeLocal(t, bw, map[string]string{"a.md": "a2\n"})
+
+	objectsBefore := store.ObjectCount()
+	baselineBefore := bw.Baseline()
+	before := localSnapshot(t, bw)
+	res, err := b.Commit(context.Background(), "local change")
+	assertErrorCode(t, err, CodeStorageIntegrity)
+	assertZeroResult(t, res)
+	if got := localSnapshot(t, bw); !reflect.DeepEqual(got, before) {
+		t.Fatalf("L changed by the failed commit: %v -> %v", before, got)
+	}
+	if got := bw.Baseline(); got != baselineBefore {
+		t.Fatalf("baseline changed by the failed commit: %+v -> %+v", baselineBefore, got)
+	}
+	if got := store.ObjectCount(); got != objectsBefore {
+		t.Fatalf("failed commit created %d remote objects, want none", got-objectsBefore)
 	}
 }

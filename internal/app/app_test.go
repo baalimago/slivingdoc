@@ -12,6 +12,7 @@ import (
 
 	"github.com/baalimago/slivingdoc/internal/git"
 	"github.com/baalimago/slivingdoc/internal/mcp"
+	"github.com/baalimago/slivingdoc/internal/notebook"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -54,9 +55,13 @@ func (f *fakeEngine) OpenRepo(string) (git.Repository, error) { return nil, errE
 // transport lifecycle without a notebook.
 type fakeService struct{}
 
-func (fakeService) Pull(context.Context, string) error { return nil }
+func (fakeService) Pull(context.Context, string) (notebook.Result, error) {
+	return notebook.Result{}, nil
+}
 
-func (fakeService) Commit(context.Context, string, string) error { return nil }
+func (fakeService) Commit(context.Context, string, string) (notebook.Result, error) {
+	return notebook.Result{}, nil
+}
 
 // blockingService blocks every call until the release channel closes and
 // ignores the request context, so shutdown tests can force the deadline.
@@ -66,16 +71,16 @@ type blockingService struct {
 	release chan struct{}
 }
 
-func (b *blockingService) Pull(context.Context, string) error {
+func (b *blockingService) Pull(context.Context, string) (notebook.Result, error) {
 	close(b.started)
 	<-b.release
-	return nil
+	return notebook.Result{}, nil
 }
 
-func (b *blockingService) Commit(context.Context, string, string) error {
+func (b *blockingService) Commit(context.Context, string, string) (notebook.Result, error) {
 	close(b.started)
 	<-b.release
-	return nil
+	return notebook.Result{}, nil
 }
 
 // cancelingService blocks each call until the request context ends, so
@@ -84,16 +89,16 @@ type cancelingService struct {
 	started chan struct{}
 }
 
-func (c *cancelingService) Pull(ctx context.Context, _ string) error {
+func (c *cancelingService) Pull(ctx context.Context, _ string) (notebook.Result, error) {
 	close(c.started)
 	<-ctx.Done()
-	return ctx.Err()
+	return notebook.Result{}, ctx.Err()
 }
 
-func (c *cancelingService) Commit(ctx context.Context, _, _ string) error {
+func (c *cancelingService) Commit(ctx context.Context, _, _ string) (notebook.Result, error) {
 	close(c.started)
 	<-ctx.Done()
-	return ctx.Err()
+	return notebook.Result{}, ctx.Err()
 }
 
 // TestRunPropagatesInvalidConfiguration proves that invalid configuration
