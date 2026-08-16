@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/baalimago/slivingdoc/internal/storage"
+	"github.com/baalimago/slivingdoc/internal/testminio"
 )
 
 // TestScenarioIntegrityCorruptManifest proves that current is strict
@@ -140,5 +141,42 @@ func TestScenarioIntegrityStartupProbeFailure(t *testing.T) {
 	}
 	if strings.Contains(stderr, "probe/") {
 		t.Fatalf("startup diagnostic leaks probe key: %q", stderr)
+	}
+}
+
+// TestScenarioIntegrityStartupProbeAuthReason proves the real S3 reason
+// behind a probe failure reaches the startup diagnostic, redacted of the
+// probe key and the secret: an authentication refusal names its server
+// error code instead of the blanket incompatible-store verdict.
+func TestScenarioIntegrityStartupProbeAuthReason(t *testing.T) {
+	t.Parallel()
+	suite := testminio.Ensure(t)
+	env, _ := cliRoots(t)
+	env = append(env,
+		"AWS_ACCESS_KEY_ID=slivingdoc-bad",
+		"AWS_SECRET_ACCESS_KEY=definitely-not-the-secret",
+		"AWS_ENDPOINT_URL_S3="+suite.Endpoint,
+		"SLIVINGDOC_BUCKET="+testminio.Bucket,
+		"SLIVINGDOC_PREFIX="+suite.FreshPrefix("integrationtest-auth"),
+	)
+	h := spawnHelper(t, "real", env, "serve")
+	code, stdout, stderr := h.runStdioProcess(t, nil)
+	if code != 1 {
+		t.Fatalf("startup exit code = %d, want 1; stderr: %s", code, stderr)
+	}
+	if strings.TrimSpace(stdout) != "" {
+		t.Fatalf("startup auth refusal wrote protocol stdout: %q", stdout)
+	}
+	if !strings.Contains(stderr, "INCOMPATIBLE_STORE") {
+		t.Fatalf("stderr = %q, want the INCOMPATIBLE_STORE category", stderr)
+	}
+	if !strings.Contains(stderr, "InvalidAccessKeyId") {
+		t.Fatalf("stderr = %q, want the S3 InvalidAccessKeyId reason", stderr)
+	}
+	if strings.Contains(stderr, "definitely-not-the-secret") {
+		t.Fatalf("stderr = %q leaks the secret access key", stderr)
+	}
+	if strings.Contains(stderr, "probe/") {
+		t.Fatalf("stderr = %q leaks the probe key", stderr)
 	}
 }

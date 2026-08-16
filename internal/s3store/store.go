@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
 	"strconv"
@@ -19,6 +20,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/smithy-go"
+	smithyhttp "github.com/aws/smithy-go/transport/http"
 
 	"github.com/baalimago/slivingdoc/internal/storage"
 )
@@ -359,7 +361,10 @@ func (s *Store) DeleteObjects(ctx context.Context, keys []string) error {
 // NoSuchKey maps to ErrNotFound, PreconditionFailed maps to
 // ErrPreconditionFailed, and every other failure — including connection
 // errors, timeouts after request bytes were sent, access denials, and
-// server errors — maps to ErrTransport.
+// server errors — maps to ErrTransport. A non-semantic failure keeps its
+// real reason in the text so the startup probe can surface it (for example
+// an S3 error code and message, or a credential-resolution refusal that
+// never reached the server) while the sentinel still classifies it.
 func mapError(op string, err error) error {
 	if err == nil {
 		return nil
@@ -372,8 +377,90 @@ func mapError(op string, err error) error {
 		case "PreconditionFailed":
 			return fmt.Errorf("s3store: %s: %w", op, storage.ErrPreconditionFailed)
 		}
+		return fmt.Errorf("s3store: %s: %s: %w", op, apiDetail(api), storage.ErrTransport)
 	}
-	return fmt.Errorf("s3store: %s: %w", op, storage.ErrTransport)
+	if detail, ok := httpErrorDetail(err); ok {
+		return fmt.Errorf("s3store: %s: %s: %w", op, detail, storage.ErrTransport)
+	}
+	return fmt.Errorf("s3store: %s: %s: %w", op, errDetail(err), storage.ErrTransport)
+}
+
+// apiDetail renders one non-semantic S3 API error as a single-line
+// code-and-message pair, so a transport failure keeps its server-visible
+// reason without leaking request context. An empty message keeps just the
+// code.
+func apiDetail(api smithy.APIError) string {
+	msg := strings.TrimSpace(api.ErrorMessage())
+	if msg == "" {
+		return api.ErrorCode()
+	}
+	return api.ErrorCode() + ": " + msg
+}
+
+// errDetail renders a non-API error as a single line, collapsing any
+// whitespace so a connection or credential-resolution failure keeps its
+// real reason without spilling across diagnostic lines.
+func errDetail(err error) string {
+	return strings.Join(strings.Fields(err.Error()), " ")
+}
+
+// httpErrorDetail renders an HTTP failure the SDK could not deserialize
+// (a non-JSON response, typically an HTML error page) as one concise line:
+// the status code and a short, tag-stripped body fragment. The second
+// result reports whether the error is this case, so the caller falls back
+// to the generic reason for anything else.
+func httpErrorDetail(err error) (string, bool) {
+	var de *smithy.DeserializationError
+	if !errors.As(err, &de) {
+		return "", false
+	}
+	snippet := bodySnippet(de.Snapshot)
+	status := 0
+	var respErr *smithyhttp.ResponseError
+	if errors.As(err, &respErr) {
+		status = respErr.HTTPStatusCode()
+	}
+	switch {
+	case status != 0 && snippet != "":
+		return fmt.Sprintf("service returned a non-JSON HTTP %d response: %q", status, snippet), true
+	case snippet != "":
+		return fmt.Sprintf("service returned a non-JSON response: %q", snippet), true
+	case status != 0:
+		return fmt.Sprintf("service returned a non-JSON HTTP %d response", status), true
+	default:
+		return "service returned a non-JSON response", true
+	}
+}
+
+// bodySnippet reduces an error-page body to a short plain-text fragment:
+// tags are removed, entities decoded, whitespace collapsed, and the result
+// bounded so the diagnostic stays on one readable line.
+func bodySnippet(body []byte) string {
+	const maxRunes = 160
+	text := html.UnescapeString(string(stripTags(body)))
+	text = strings.Join(strings.Fields(text), " ")
+	if r := []rune(text); len(r) > maxRunes {
+		text = string(r[:maxRunes]) + "..."
+	}
+	return text
+}
+
+// stripTags removes angle-bracket tag spans from markup, leaving the text
+// content (titles, headings, and error prose) for a readable fragment.
+func stripTags(b []byte) []byte {
+	var out []byte
+	inTag := false
+	for _, c := range b {
+		switch {
+		case c == '<':
+			inTag = true
+		case c == '>':
+			inTag = false
+		case !inTag:
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // Metadata header names (architecture section 9.1). The AWS SDK exposes

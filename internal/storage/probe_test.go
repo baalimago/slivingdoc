@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"strings"
 	"sync"
 	"testing"
 
@@ -114,6 +115,25 @@ func TestProbeCleansKeyAfterRecoverableFailure(t *testing.T) {
 	s.FailNext(fake.OpCreate, errors.New("fake: create denied"))
 	if err := storage.Probe(context.Background(), s); !errors.Is(err, storage.ErrIncompatible) {
 		t.Fatalf("Probe() error = %v, want ErrIncompatible", err)
+	}
+}
+
+// TestProbeSurfacesCreateFailureCause proves an operational create failure
+// keeps its real reason in the probe error while ErrIncompatible still
+// classifies it (so the startup diagnostic can name the cause).
+func TestProbeSurfacesCreateFailureCause(t *testing.T) {
+	s := fake.New("probe-create-cause")
+	denied := errors.New("fake: AccessDenied: Access Denied.")
+	s.FailNext(fake.OpCreate, denied)
+	err := storage.Probe(context.Background(), s)
+	if !errors.Is(err, storage.ErrIncompatible) {
+		t.Fatalf("Probe() error = %v, want ErrIncompatible", err)
+	}
+	if !errors.Is(err, denied) {
+		t.Fatalf("Probe() error = %v, want it to wrap the create cause %v", err, denied)
+	}
+	if !strings.Contains(err.Error(), "Access Denied") {
+		t.Fatalf("Probe() error = %q, want the real create reason", err)
 	}
 }
 

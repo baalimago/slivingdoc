@@ -12,7 +12,10 @@ import (
 // 9.4). It uses a unique disposable probe/<uuidv7> key below the configured
 // prefix, runs the exact create, stale replace, matching replace, immediate
 // read, and cleanup sequence, and deletes the probe key on success and
-// after any recoverable failure. Any deviation returns ErrIncompatible.
+// after any recoverable failure. Any deviation returns ErrIncompatible; an
+// operational failure (create, read, or replace) also wraps its cause, so
+// the startup diagnostic can name the real reason without weakening
+// errors.Is against ErrIncompatible.
 //
 // The probe verifies If-None-Match: * (a second create fails), If-Match
 // (a wrong ETag fails without mutation), and read-after-write (the
@@ -33,14 +36,14 @@ func Probe(ctx context.Context, s ObjectStore) error {
 	const second = "slivingdoc probe: conditional replace"
 
 	if _, err := s.CreateObject(ctx, key, []byte(first)); err != nil {
-		return fmt.Errorf("storage: probe: conditional create %s: %w", key, ErrIncompatible)
+		return fmt.Errorf("storage: probe: conditional create %s: %w: %w", key, ErrIncompatible, err)
 	}
 	if _, err := s.CreateObject(ctx, key, []byte(second)); !errors.Is(err, ErrPreconditionFailed) {
 		return fmt.Errorf("storage: probe: If-None-Match is not enforced: %w", ErrIncompatible)
 	}
 	rc, info, err := s.ReadObject(ctx, key)
 	if err != nil {
-		return fmt.Errorf("storage: probe: read %s: %w", key, ErrIncompatible)
+		return fmt.Errorf("storage: probe: read %s: %w: %w", key, ErrIncompatible, err)
 	}
 	got, readErr := io.ReadAll(rc)
 	closeErr := rc.Close()
@@ -55,7 +58,7 @@ func Probe(ctx context.Context, s ObjectStore) error {
 	}
 	rc, _, err = s.ReadObject(ctx, key)
 	if err != nil {
-		return fmt.Errorf("storage: probe: read %s after rejected replace: %w", key, ErrIncompatible)
+		return fmt.Errorf("storage: probe: read %s after rejected replace: %w: %w", key, ErrIncompatible, err)
 	}
 	got, readErr = io.ReadAll(rc)
 	closeErr = rc.Close()
@@ -64,14 +67,14 @@ func Probe(ctx context.Context, s ObjectStore) error {
 	}
 	newETag, err := s.ReplaceObject(ctx, key, info.ETag, []byte(second))
 	if err != nil {
-		return fmt.Errorf("storage: probe: matching replace %s: %w", key, ErrIncompatible)
+		return fmt.Errorf("storage: probe: matching replace %s: %w: %w", key, ErrIncompatible, err)
 	}
 	if newETag == "" || newETag == info.ETag {
 		return fmt.Errorf("storage: probe: replace did not produce a new etag: %w", ErrIncompatible)
 	}
 	rc, _, err = s.ReadObject(ctx, key)
 	if err != nil {
-		return fmt.Errorf("storage: probe: immediate read %s: %w", key, ErrIncompatible)
+		return fmt.Errorf("storage: probe: immediate read %s: %w: %w", key, ErrIncompatible, err)
 	}
 	got, readErr = io.ReadAll(rc)
 	closeErr = rc.Close()

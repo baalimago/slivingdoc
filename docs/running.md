@@ -174,7 +174,11 @@ probe below the configured prefix. The probe proves that the store
 enforces `If-None-Match: *` creation, `If-Match` replacement, and
 read-after-write behavior — the three conditional-write guarantees the
 publication protocol requires. A store that fails the probe is refused
-at startup. Bucket versioning is not required.
+at startup with the `INCOMPATIBLE_STORE` category; when the failure is
+an operational error rather than a missing capability, the diagnostic
+names the underlying reason (for example the S3 `AccessDenied` or
+`InvalidAccessKeyId` error) while the probe key and any secret stay
+redacted. Bucket versioning is not required.
 
 ## MCP host configuration
 

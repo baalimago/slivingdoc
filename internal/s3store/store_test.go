@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	smithy "github.com/aws/smithy-go"
+	smithyhttp "github.com/aws/smithy-go/transport/http"
 
 	"github.com/baalimago/slivingdoc/internal/storage"
 )
@@ -92,18 +93,23 @@ func TestFullKeyJoin(t *testing.T) {
 
 // TestMapError proves the semantic error mapping: S3 codes become the
 // stable storage categories and everything else is a transport failure.
+// A non-semantic API error keeps its server code and message in the text
+// so the startup probe can surface the real reason.
 func TestMapError(t *testing.T) {
 	cases := []struct {
-		name string
-		err  error
-		want error
+		name     string
+		err      error
+		want     error
+		wantText string // empty skips the text assertion
 	}{
-		{"NoSuchKey", &smithy.GenericAPIError{Code: "NoSuchKey"}, storage.ErrNotFound},
-		{"NotFound", &smithy.GenericAPIError{Code: "NotFound"}, storage.ErrNotFound},
-		{"PreconditionFailed", &smithy.GenericAPIError{Code: "PreconditionFailed"}, storage.ErrPreconditionFailed},
-		{"AccessDenied", &smithy.GenericAPIError{Code: "AccessDenied"}, storage.ErrTransport},
-		{"InternalError", &smithy.GenericAPIError{Code: "InternalError"}, storage.ErrTransport},
-		{"transport", errors.New("connection reset"), storage.ErrTransport},
+		{"NoSuchKey", &smithy.GenericAPIError{Code: "NoSuchKey"}, storage.ErrNotFound, ""},
+		{"NotFound", &smithy.GenericAPIError{Code: "NotFound"}, storage.ErrNotFound, ""},
+		{"PreconditionFailed", &smithy.GenericAPIError{Code: "PreconditionFailed"}, storage.ErrPreconditionFailed, ""},
+		{"AccessDenied", &smithy.GenericAPIError{Code: "AccessDenied"}, storage.ErrTransport, "AccessDenied"},
+		{"auth code and message", &smithy.GenericAPIError{Code: "InvalidAccessKeyId", Message: "The access key does not exist"}, storage.ErrTransport, "InvalidAccessKeyId: The access key does not exist"},
+		{"InternalError", &smithy.GenericAPIError{Code: "InternalError"}, storage.ErrTransport, "InternalError"},
+		{"transport", errors.New("connection reset"), storage.ErrTransport, "connection reset"},
+		{"credential resolution", errors.New("operation error S3: PutObject, failed to sign request: failed to retrieve credentials"), storage.ErrTransport, "failed to retrieve credentials"},
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
@@ -111,10 +117,39 @@ func TestMapError(t *testing.T) {
 			if !errors.Is(got, tt.want) {
 				t.Fatalf("mapError = %v, want a %v error", got, tt.want)
 			}
+			if tt.wantText != "" && !strings.Contains(got.Error(), tt.wantText) {
+				t.Fatalf("mapError = %q, want it to contain %q", got, tt.wantText)
+			}
 		})
 	}
 	if err := mapError("test", nil); err != nil {
 		t.Fatalf("mapError(nil) = %v, want nil", err)
+	}
+}
+
+// TestMapErrorNonJSONResponse proves that an HTTP response the SDK could
+// not deserialize (an HTML error page, not JSON) surfaces its status code
+// and a short body fragment instead of the raw JSON syntax error.
+func TestMapErrorNonJSONResponse(t *testing.T) {
+	body := []byte("<!DOCTYPE html><html><head><title>Access Denied</title></head><body>no access allowed</body></html>")
+	err := &smithyhttp.ResponseError{
+		Response: &smithyhttp.Response{Response: &http.Response{StatusCode: 400}},
+		Err: &smithy.DeserializationError{
+			Err:      errors.New("failed to decode response body, invalid character '<' looking for beginning of value"),
+			Snapshot: body,
+		},
+	}
+	got := mapError("create key", err)
+	if !errors.Is(got, storage.ErrTransport) {
+		t.Fatalf("mapError = %v, want ErrTransport", got)
+	}
+	for _, want := range []string{"HTTP 400", "Access Denied", "no access allowed"} {
+		if !strings.Contains(got.Error(), want) {
+			t.Fatalf("mapError = %q, want it to contain %q", got, want)
+		}
+	}
+	if strings.Contains(got.Error(), "invalid character") {
+		t.Fatalf("mapError = %q, want the raw JSON error replaced", got)
 	}
 }
 
