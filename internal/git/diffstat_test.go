@@ -182,7 +182,7 @@ func TestDiffStatDeterministic(t *testing.T) {
 	base := fakeSnapshot(map[string]string{"a.md": "one\ntwo\nthree\n"})
 	cur := fakeSnapshot(map[string]string{"a.md": "one\nTWO\nthree\nfour\n"})
 	first := DiffSnapshots(base, cur)
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		if got := DiffSnapshots(base, cur); !reflect.DeepEqual(got, first) {
 			t.Fatalf("DiffSnapshots not deterministic: %+v != %+v", got, first)
 		}
@@ -217,7 +217,7 @@ func TestDiffLinesMatchesLCS(t *testing.T) {
 
 	rng := rand.New(rand.NewSource(1))
 	alphabet := []string{"a", "b", "c", "d"}
-	for i := 0; i < 2000; i++ {
+	for range 2000 {
 		a := randomLines(rng, alphabet, 0, 30)
 		b := randomLines(rng, alphabet, 0, 30)
 		checkDiffLines(t, a, b)
@@ -225,10 +225,10 @@ func TestDiffLinesMatchesLCS(t *testing.T) {
 	// Large random inputs with mostly-unique lines: large edit distances
 	// exercise the middle-snake bisect over many diagonals.
 	big := make([]string, 0, 200)
-	for i := 0; i < 200; i++ {
+	for range 200 {
 		big = append(big, "line-"+string(rune('a'+rng.Intn(26))))
 	}
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		rng.Shuffle(len(big), func(i, j int) { big[i], big[j] = big[j], big[i] })
 		checkDiffLines(t, strings.Join(big, "\n")+"\n", strings.Join(big[:150], "\n")+"\n")
 	}
@@ -236,7 +236,7 @@ func TestDiffLinesMatchesLCS(t *testing.T) {
 
 func TestDiffLinesAllDifferentAndReversed(t *testing.T) {
 	var a, b []string
-	for i := 0; i < 300; i++ {
+	for i := range 300 {
 		a = append(a, "a-"+string(rune('a'+i%26)))
 		b = append(b, "b-"+string(rune('a'+i%26)))
 	}

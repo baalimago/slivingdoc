@@ -33,7 +33,7 @@ ifeq ($(STATIC),1)
 LDFLAGS += -extldflags "-static"
 endif
 
-.PHONY: all libgit2 test cover npm-test lint fmt build release qa clean
+.PHONY: all libgit2 test cover npm-test lint format build release qa clean
 
 all: qa
 
@@ -97,9 +97,12 @@ lint: $(BUILD_DIR)/libgit2/.build-stamp
 	@echo "== go fix =="
 	@out="$$($(GO) fix -diff ./...)"; test -z "$$out" || { echo "go fix: fixes needed:"; echo "$$out"; exit 1; }
 
-# fmt — apply gofumpt to the tree.
-fmt:
+# format — apply the write-side fixes that lint checks in read-only mode:
+# gofumpt -w formats, and go fix applies the modernizations that
+# `go fix -diff` reports.
+format:
 	$(GOFUMPT) -w -l .
+	$(GO) fix ./...
 
 # build — release-style native binary with libgit2 linked in and the version
 # injected through the linker. The release smoke checks of this wiring live
