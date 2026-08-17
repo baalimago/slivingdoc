@@ -80,11 +80,27 @@ make build
 ```
 
 The executable is `.build/slivingdoc`. The Makefile sets
-`PKG_CONFIG_PATH` to `.build/libgit2/lib/pkgconfig`.
-`internal/git2/native.go` declares `#cgo pkg-config: --static libgit2`,
-so the CGo toolchain links `libgit2.a` statically. On Windows the same
-file adds `-static-libgcc`, which keeps the mingw runtime DLLs out of
-the executable's dependency list.
+`PKG_CONFIG_PATH` to `.build/libgit2/lib/pkgconfig` for macOS and Windows.
+On Linux, `internal/git2/native.go` points CGo directly at the pinned
+`.build/libgit2` headers and static archive. On Windows the same file adds
+`-static-libgcc`, which keeps the mingw runtime DLLs out of the executable's
+dependency list.
+
+### Install from a Linux checkout
+
+After building the pinned library once, a Linux developer can use the normal
+Go installation command without setting `PKG_CONFIG_PATH` or invoking Make:
+
+```text
+./scripts/build-libgit2.sh
+go install .
+```
+
+This installs `slivingdoc` into `GOBIN`, or `$(go env GOPATH)/bin` when
+`GOBIN` is unset. The command must run from this checkout: it links the
+verified archive at `.build/libgit2`, rather than an arbitrary system libgit2.
+For a release artifact, continue to use `make build`; it injects the version,
+chooses the target compiler, and can request a fully static executable.
 
 There is no pure-Go build. `internal/git2` requires CGo, so
 `CGO_ENABLED=0 go build ./...` fails to compile instead of producing a

@@ -1,7 +1,15 @@
 package git2
 
 /*
-#cgo pkg-config: --static libgit2
+// Linux developers install from a checkout with `go install .`. Point CGo at
+// the pinned archive that scripts/build-libgit2.sh writes into the checkout
+// so the command does not rely on the Makefile exporting PKG_CONFIG_PATH.
+#cgo linux CFLAGS: -I${SRCDIR}/../../.build/libgit2/include
+#cgo linux LDFLAGS: -L${SRCDIR}/../../.build/libgit2/lib -lgit2 -lrt -lpthread
+// macOS and Windows keep the libgit2-generated pkg-config metadata: their
+// platform-specific system-library closure is owned by that native build.
+#cgo darwin pkg-config: --static libgit2
+#cgo windows pkg-config: --static libgit2
 // On Windows the link keeps the mingw-w64 compiler runtime static, so the
 // release binary depends only on Windows system DLLs (the dependency
 // baseline enforced by scripts/check-deps-windows.sh). The Go link line

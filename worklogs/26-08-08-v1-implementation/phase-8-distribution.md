@@ -143,6 +143,13 @@ EABI5 executable; its `version` command reported `slivingdoc 0.1.0-dev` and
 able to start on the Pi, but it retains the host's dynamic `libresolv.so.2`
 dependency, so only the static release-style artifact is release evidence.
 
+Linux CGo now resolves the pinned headers and archive beneath this checkout
+directly. After `scripts/build-libgit2.sh` has built that one native
+dependency, `go install .` installs the developer binary without inheriting
+the Makefile-only `PKG_CONFIG_PATH` setup. Release builds continue to use the
+Makefile because they inject a version and, where needed, request static
+linking and a target compiler.
+
 ### Session 2026-08-10 (imago, worker session 16) — pipeline moved into `simple-go-pipeline`
 
 Moved and adapted the reusable-workflow change into the separately owned
