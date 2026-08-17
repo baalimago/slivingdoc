@@ -1,5 +1,5 @@
 // Package contract hosts the single storage contract suite that runs
-// against both the in-memory fake and the MinIO-backed adapter. The suite
+// against both the in-memory fake and the real S3 backend. The suite
 // is the behavioral contract of the ObjectStore boundary: the same
 // assertions must pass on any compliant implementation.
 package contract

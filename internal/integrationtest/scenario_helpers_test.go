@@ -16,8 +16,8 @@ import (
 // newFakeHarness wires a harness over a fresh deterministic fake store. The
 // catalog runs most scenarios over the fake; the rows whose observable
 // behavior depends on real HTTP conditional writes (CAS races, the stale
-// reader, checkpoint contention) pass an explicit MinIO configuration
-// instead.
+// reader, checkpoint contention) pass an explicit real-backend
+// configuration instead.
 func newFakeHarness(t *testing.T, cfg HarnessConfig) *Harness {
 	t.Helper()
 	if cfg.Store == nil {

@@ -20,7 +20,7 @@ import (
 	"github.com/baalimago/slivingdoc/internal/notebook"
 	"github.com/baalimago/slivingdoc/internal/s3store"
 	"github.com/baalimago/slivingdoc/internal/storage"
-	"github.com/baalimago/slivingdoc/internal/testminio"
+	"github.com/baalimago/slivingdoc/internal/tests3"
 	"github.com/baalimago/slivingdoc/internal/workspace"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -30,18 +30,18 @@ import (
 const codeRecoveryFailure = "RECOVERY_FAILURE"
 
 // HarnessConfig wires one black-box harness. The zero store builds the
-// real s3store adapter against the shared MinIO suite on a fresh per-test
-// prefix; scenarios substitute the deterministic fake or the fault
-// wrappers through Store.
+// real s3store adapter against the shared S3-compatible suite on a fresh
+// per-test prefix; scenarios substitute the deterministic fake or the
+// fault wrappers through Store.
 type HarnessConfig struct {
-	// Store is the base object store. Nil builds real MinIO.
+	// Store is the base object store. Nil builds the real S3 backend.
 	Store storage.ObjectStore
-	// Prefix is the S3 protocol prefix of the store. For MinIO the empty
-	// value uses a fresh per-test prefix; for an injected store the caller
-	// must set the prefix the store was built with.
+	// Prefix is the S3 protocol prefix of the store. For the real backend
+	// the empty value uses a fresh per-test prefix; for an injected store
+	// the caller must set the prefix the store was built with.
 	Prefix string
 	// Bucket and Endpoint feed the storage identity; they default to the
-	// MinIO suite values when Store is nil and are required for an
+	// real-backend suite values when Store is nil and are required for an
 	// injected store (the fake uses "test-bucket" and no endpoint).
 	Bucket   string
 	Endpoint string
@@ -108,12 +108,12 @@ func NewHarness(t *testing.T, cfg HarnessConfig) *Harness {
 	endpoint := cfg.Endpoint
 	prefix := cfg.Prefix
 	if cfg.Store == nil {
-		suite := testminio.Ensure(t)
+		suite := tests3.Ensure(t)
 		if prefix == "" {
 			prefix = suite.FreshPrefix("integrationtest")
 		}
 		if bucket == "" {
-			bucket = testminio.Bucket
+			bucket = tests3.Bucket
 		}
 		if endpoint == "" {
 			endpoint = suite.Endpoint

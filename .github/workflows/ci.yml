@@ -3,7 +3,7 @@ name: qa
 # Two jobs mirror the two commands a developer runs locally:
 #   go   `make lint` and `make test` — every Go test, no subset, no skips
 #   npm  the zero-dependency launcher suite
-# There is no separate integration job: the Docker-backed MinIO suites are
+# There is no separate integration job: the Docker-backed S3 suites are
 # part of `make test`, and an unreachable daemon fails it.
 # Actions are pinned by full commit SHA (architecture section 21).
 
@@ -19,7 +19,10 @@ permissions:
 env:
   GO_VERSION: "1.26.5"
   NODE_VERSION: "22.23.2"
-  MINIO_IMAGE: "minio/minio:RELEASE.2025-09-07T16-13-09Z"
+  # The pinned S3-compatible backend image. Keep it in sync with the
+  # tests3.Image constant (internal/tests3/s3.go): CI cannot read a Go
+  # constant, so the two pins are deliberately duplicated.
+  S3_IMAGE: "chrislusf/seaweedfs:4.42"
 
 jobs:
   qa:
@@ -41,8 +44,8 @@ jobs:
         run: make libgit2
       # Pre-pull so the container start never pays the image pull inside a
       # timed test.
-      - name: pre-pull MinIO image
-        run: docker pull "$MINIO_IMAGE"
+      - name: pre-pull S3 backend image
+        run: docker pull "$S3_IMAGE"
       - name: make lint
         run: make lint
       - name: make test
@@ -80,6 +83,6 @@ jobs:
       test: true
       test-readme-coverage: true
       build-command: make build
-      prerun-step-cmd: make libgit2 && docker pull minio/minio:RELEASE.2025-09-07T16-13-09Z
+      prerun-step-cmd: make libgit2 && docker pull chrislusf/seaweedfs:4.42
       test-command: make test
       coverage-command: go tool cover -func=.build/cover.out | tail -1 | awk '{print $3}' | tr -d '%'

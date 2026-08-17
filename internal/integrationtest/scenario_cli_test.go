@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/baalimago/slivingdoc/internal/testminio"
+	"github.com/baalimago/slivingdoc/internal/tests3"
 )
 
 // cliRoots builds the shared-root environment of a CLI scenario. Every
@@ -201,20 +201,20 @@ func TestScenarioCLIUsageRefusals(t *testing.T) {
 
 // TestScenarioCLISharedRemoteConflict proves the full multi-writer story
 // over the real S3 protocol: two workspaces alternate one-shot CLI
-// processes against one shared MinIO prefix; the divergent edit is a
+// processes against one shared S3 prefix; the divergent edit is a
 // nonzero CONTENT_CONFLICT report with the exact relative path and line
 // range, the visible file carries the markers, and the resolution
 // publishes and reaches the other workspace on its next pull.
 func TestScenarioCLISharedRemoteConflict(t *testing.T) {
 	t.Parallel()
-	suite := testminio.Ensure(t)
+	suite := tests3.Ensure(t)
 	env, root := cliRoots(t)
 	env = append(env,
-		"AWS_ACCESS_KEY_ID="+testminio.User,
-		"AWS_SECRET_ACCESS_KEY="+testminio.Pass,
+		"AWS_ACCESS_KEY_ID="+tests3.User,
+		"AWS_SECRET_ACCESS_KEY="+tests3.Pass,
 		"AWS_ENDPOINT_URL_S3="+suite.Endpoint,
 		"SLIVINGDOC_PATH_STYLE=true",
-		"SLIVINGDOC_BUCKET="+testminio.Bucket,
+		"SLIVINGDOC_BUCKET="+tests3.Bucket,
 		"SLIVINGDOC_PREFIX="+suite.FreshPrefix("integrationtest-cli"),
 	)
 	a, b := filepath.Join(root, "a"), filepath.Join(root, "b")

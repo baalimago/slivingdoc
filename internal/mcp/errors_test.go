@@ -182,7 +182,7 @@ func TestRedact(t *testing.T) {
 		"probe/" + probeUUID + " did not create; " +
 		"head " + gitID + " unreadable; " +
 		"private /home/user/.cache/slivingdoc/" + derivedKey + " + " +
-		"key AKIAIOSFODNN7EXAMPLE and endpoint http://user:secret@minio.example.com"
+		"key AKIAIOSFODNN7EXAMPLE and endpoint http://user:secret@s3.example.com"
 	got := Redact(input)
 	for _, leaked := range []string{
 		"packs/increments", packUUID, "probe/" + probeUUID,

@@ -26,13 +26,14 @@ const barrierTimeout = 5 * time.Second
 // an unexpected harness failure, never as a plausible protocol outcome.
 var errBarrierTimeout = fake.ErrBarrierTimeout
 
-// faultStore wraps any ObjectStore and injects the failures MinIO cannot
-// reliably produce: precondition failures, accept-then-error writes,
-// unprovable CAS reads, missing and corrupt objects, delete failures, and
-// op+key barriers. Every injection is keyed by protocol key, so the harness
-// can target one pack or the current manifest without touching unrelated
-// traffic. The failure, ambiguity, and barrier engine is the shared
-// fake.Injector; this wrapper adds what only a wrapping store can do:
+// faultStore wraps any ObjectStore and injects the failures the real S3
+// backend cannot reliably produce: precondition failures, accept-then-error
+// writes, unprovable CAS reads, missing and corrupt objects, delete
+// failures, and op+key barriers. Every injection is keyed by protocol key,
+// so the harness can target one pack or the current manifest without
+// touching unrelated traffic. The failure, ambiguity, and barrier engine is
+// the shared fake.Injector; this wrapper adds what only a wrapping store
+// can do:
 // corrupting real reads, failing whole delete batches, and the
 // unprovable-CAS read-after-write injection.
 type faultStore struct {

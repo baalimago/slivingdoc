@@ -20,8 +20,8 @@ import (
 // content, with either distributed timing (the once-per-minute cadence) or
 // one synchronized burst. It runs against the deterministic fake store and
 // fake engine, so the measured CAS contention and conflict counts are
-// reproducible without Docker, network, or CI noise; the MinIO suite
-// separately proves the same operations over real HTTP.
+// reproducible without Docker, network, or CI noise; the real S3 backend
+// suite separately proves the same operations over real HTTP.
 
 // loadSchedule selects the arrival pattern of one load run.
 type loadSchedule int

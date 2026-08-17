@@ -1,33 +1,31 @@
-# Local evaluation with MinIO
+# Local evaluation with SeaweedFS
 
-This example runs one pinned MinIO container so you can evaluate slivingdoc
-without an S3 account. The container is for manual evaluation only: the
-automated test suites create their own MinIO containers through
-testcontainers and never depend on this environment.
+This example runs one pinned SeaweedFS container so you can evaluate
+slivingdoc without an S3 account. The container is for manual evaluation
+only: the automated test suites create their own S3-compatible containers
+through testcontainers (`internal/tests3`) and never depend on this
+environment.
 
-## 1. Start MinIO
+## 1. Start SeaweedFS
 
 ```text
 docker compose up -d
 ```
 
-The S3 API listens on `http://localhost:9000` and the web console on
-`http://localhost:9001`. The root credentials are fixed in `compose.yaml`
-(`slivingdoc` / `slivingdoc-local`). They exist only inside this local
-container.
+The S3 gateway listens on `http://localhost:8333`. The credentials are
+fixed in `compose.yaml` (`slivingdoc` / `slivingdoc-local`). They exist
+only inside this local container.
 
-## 2. Create a bucket
+## 2. No bucket step
 
-Open the console at <http://localhost:9001>. Sign in with the credentials
-above. Then create a bucket named `my-notes`. (If you have the `mc` client
-installed, `mc alias set local http://localhost:9000 slivingdoc
-slivingdoc-local && mc mb local/my-notes` does the same.)
+`my-notes` is created on first write: the startup probe performs that
+write, so the bucket exists by the time the server accepts MCP calls.
 
 ## 3. Run the server
 
 Export the credentials and start the server with the local endpoint. The
 custom endpoint makes the server use path-style addressing, which is what
-MinIO expects:
+SeaweedFS expects:
 
 ```text
 export AWS_ACCESS_KEY_ID=slivingdoc
@@ -35,7 +33,7 @@ export AWS_SECRET_ACCESS_KEY=slivingdoc-local
 
 slivingdoc serve \
   --bucket my-notes \
-  --endpoint http://localhost:9000 \
+  --endpoint http://localhost:8333 \
   --path-style \
   --workspace-root /tmp/notes \
   --private-root /tmp/slivingdoc-private
@@ -62,11 +60,15 @@ creates `/tmp/notes` on first use.
         "-y",
         "slivingdoc",
         "serve",
-        "--bucket", "my-notes",
-        "--endpoint", "http://localhost:9000",
+        "--bucket",
+        "my-notes",
+        "--endpoint",
+        "http://localhost:8333",
         "--path-style",
-        "--workspace-root", "/tmp/notes",
-        "--private-root", "/tmp/slivingdoc-private"
+        "--workspace-root",
+        "/tmp/notes",
+        "--private-root",
+        "/tmp/slivingdoc-private"
       ],
       "env": {
         "AWS_ACCESS_KEY_ID": "slivingdoc",
@@ -87,9 +89,14 @@ changes merge automatically. Conflicting changes appear with
 markers with a text editor before you commit again.
 
 The `current` manifest object below the `slivingdoc/` prefix in the bucket
-durably references every accepted publication. You can inspect it in the
-console. The local private state under `/tmp/slivingdoc-private` is a
+durably references every accepted publication. You can inspect it with an
+S3 client. The local private state under `/tmp/slivingdoc-private` is a
 cache. Delete it and pull again to see it rebuilt from the bucket.
+
+## 6. Startup noise
+
+The container logs the non-fatal `no signing key found for STS service`
+line on startup. It is safe to ignore for basic credentials.
 
 ## Stop
 

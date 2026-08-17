@@ -90,4 +90,4 @@ AWS resource.
 - The bucket policy is replaced before the IAM user on destroy, so teardown
   never hits the deny.
 - The automated slivingdoc test suites never touch AWS. They use their own
-  MinIO containers.
+  S3 test containers.

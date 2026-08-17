@@ -10,34 +10,36 @@ import (
 
 	"github.com/baalimago/slivingdoc/internal/s3store"
 	"github.com/baalimago/slivingdoc/internal/storage"
-	"github.com/baalimago/slivingdoc/internal/testminio"
+	"github.com/baalimago/slivingdoc/internal/tests3"
 	"github.com/baalimago/slivingdoc/internal/workspace"
 )
 
-// The MinIO notebook suite proves the complete publication order over real
-// HTTP conditional writes with real libgit2: first publication, independent
-// pull, and concurrent writers converging on one accepted state. It runs
-// against one pinned MinIO container shared through internal/testminio and
-// skips only when Docker is unavailable, always naming the dependency; the
-// CI integration job treats any skip as failure.
+// The real-S3 notebook suite proves the complete publication order over
+// real HTTP conditional writes with real libgit2: first publication,
+// independent pull, and concurrent writers converging on one accepted
+// state. It runs against one pinned S3-compatible container shared through
+// internal/tests3; a missing Docker daemon fails the run with a diagnostic
+// that names the unavailable dependency, and the CI integration job treats
+// any skip as failure.
 
-// TestMain terminates the shared MinIO container after the whole suite.
+// TestMain terminates the shared S3-compatible container after the whole
+// suite.
 func TestMain(m *testing.M) {
 	code := m.Run()
-	testminio.Terminate()
+	tests3.Terminate()
 	os.Exit(code)
 }
 
-// newMinioStore builds one real s3store adapter on a fresh per-test prefix;
+// newTestStore builds one real s3store adapter on a fresh per-test prefix;
 // tests share one store across every notebook so writers observe each
 // other's publications.
-func newMinioStore(t *testing.T) *s3store.Store {
+func newTestStore(t *testing.T) *s3store.Store {
 	t.Helper()
-	suite := testminio.Ensure(t)
+	suite := tests3.Ensure(t)
 	prefix := suite.FreshPrefix("notebook")
 	mc := suite.StoreConfig()
 	st, err := s3store.New(context.Background(), s3store.Config{
-		Bucket: testminio.Bucket, Prefix: prefix, Region: mc.Region,
+		Bucket: tests3.Bucket, Prefix: prefix, Region: mc.Region,
 		Endpoint: mc.Endpoint, AccessKey: mc.AccessKey, SecretKey: mc.SecretKey,
 	})
 	if err != nil {
@@ -46,9 +48,9 @@ func newMinioStore(t *testing.T) *s3store.Store {
 	return st
 }
 
-// newMinioNotebook builds a real workspace over real libgit2 and the given
+// newTestNotebook builds a real workspace over real libgit2 and the given
 // store, with any additional harness configuration applied.
-func newMinioNotebook(t *testing.T, store storage.ObjectStore, ids *testIDSource, cfg nbConfig) (*Notebook, *workspace.Workspace, workspace.Config) {
+func newTestNotebook(t *testing.T, store storage.ObjectStore, ids *testIDSource, cfg nbConfig) (*Notebook, *workspace.Workspace, workspace.Config) {
 	t.Helper()
 	cfg.store = store
 	cfg.engine = openNativeEngine(t)
@@ -56,21 +58,21 @@ func newMinioNotebook(t *testing.T, store storage.ObjectStore, ids *testIDSource
 	return newNotebook(t, cfg)
 }
 
-// TestMinioNotebookPullSeesPublishedChange proves an independent pull over
-// MinIO sees every accepted commit result.
-func TestMinioNotebookPullSeesPublishedChange(t *testing.T) {
-	store := newMinioStore(t)
+// TestNotebookPullSeesPublishedChange proves an independent pull over the
+// real S3 backend sees every accepted commit result.
+func TestNotebookPullSeesPublishedChange(t *testing.T) {
+	store := newTestStore(t)
 	ids := &testIDSource{}
-	a, aw, _ := newMinioNotebook(t, store, ids, nbConfig{})
-	b, bw, _ := newMinioNotebook(t, store, ids, nbConfig{})
+	a, aw, _ := newTestNotebook(t, store, ids, nbConfig{})
+	b, bw, _ := newTestNotebook(t, store, ids, nbConfig{})
 
-	writeLocal(t, aw, map[string]string{"a.md": "minio v1"})
+	writeLocal(t, aw, map[string]string{"a.md": "s3 v1"})
 	pullOK(t, a)
 	commitOK(t, a, "first")
 
 	pullOK(t, b)
 	got := localSnapshot(t, bw)
-	if got["a.md"] != "minio v1" {
+	if got["a.md"] != "s3 v1" {
 		t.Fatalf("L after pull = %v, want the published file", got)
 	}
 	if gen := bw.Baseline().RemoteGeneration; gen != 1 {
@@ -81,19 +83,19 @@ func TestMinioNotebookPullSeesPublishedChange(t *testing.T) {
 	commitOK(t, b, "second")
 	pullOK(t, a)
 	got = localSnapshot(t, aw)
-	if got["a.md"] != "minio v1" || got["b.md"] != "from b" {
+	if got["a.md"] != "s3 v1" || got["b.md"] != "from b" {
 		t.Fatalf("L after second publication = %v, want both files", got)
 	}
 }
 
-// TestMinioNotebookTwoWriterRace runs concurrent commits from one shared
+// TestNotebookTwoWriterRace runs concurrent commits from one shared
 // baseline over real HTTP CAS: both writers succeed and the final state
 // contains both changes in one linear accepted history.
-func TestMinioNotebookTwoWriterRace(t *testing.T) {
-	store := newMinioStore(t)
+func TestNotebookTwoWriterRace(t *testing.T) {
+	store := newTestStore(t)
 	ids := &testIDSource{}
-	a, aw, _ := newMinioNotebook(t, store, ids, nbConfig{})
-	b, bw, _ := newMinioNotebook(t, store, ids, nbConfig{})
+	a, aw, _ := newTestNotebook(t, store, ids, nbConfig{})
+	b, bw, _ := newTestNotebook(t, store, ids, nbConfig{})
 
 	writeLocal(t, aw, map[string]string{"shared.md": "base", "a.md": "a"})
 	pullOK(t, a)
@@ -157,18 +159,18 @@ func (s *gatedStore) ReadObject(ctx context.Context, key string) (io.ReadCloser,
 	return s.ObjectStore.ReadObject(ctx, key)
 }
 
-// TestMinioNotebookCheckpointCleansAndReaderRestarts proves checkpoint
+// TestNotebookCheckpointCleansAndReaderRestarts proves checkpoint
 // publication, cleanup, and the stale-reader restart over real HTTP
 // conditional writes and real libgit2: a checkpoint compacts the accepted
 // tail, cleanup deletes the replaced generations, and a reader blocked on a
 // pack that cleanup deletes discards its stale observation, rereads
 // current, and reconstructs the final head.
-func TestMinioNotebookCheckpointCleansAndReaderRestarts(t *testing.T) {
-	store := newMinioStore(t)
+func TestNotebookCheckpointCleansAndReaderRestarts(t *testing.T) {
+	store := newTestStore(t)
 	ids := &testIDSource{}
 	// Writer A with retention 0: the next checkpoint may delete the
 	// previous generation's physical packs.
-	a, aw, _ := newMinioNotebook(t, store, ids, nbConfig{checkpointPacks: 2, retained: 0, retainedSet: true})
+	a, aw, _ := newTestNotebook(t, store, ids, nbConfig{checkpointPacks: 2, retained: 0, retainedSet: true})
 
 	writeLocal(t, aw, map[string]string{"a.md": "v1"})
 	pullOK(t, a)
@@ -181,7 +183,7 @@ func TestMinioNotebookCheckpointCleansAndReaderRestarts(t *testing.T) {
 	// that the upcoming cleanup deletes.
 	inc2 := "packs/increments/2-" + testUUIDv7(3).String() + ".pack"
 	gate := &gatedStore{ObjectStore: store, key: inc2, entered: make(chan struct{}), release: make(chan struct{})}
-	c, cw, _ := newMinioNotebook(t, gate, ids, nbConfig{})
+	c, cw, _ := newTestNotebook(t, gate, ids, nbConfig{})
 	pullDone := make(chan error, 1)
 	go func() { pullDone <- errOnly(c.Pull(context.Background())) }()
 	<-gate.entered

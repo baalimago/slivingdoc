@@ -189,7 +189,7 @@ func TestScenarioPullConflict(t *testing.T) {
 // section 10, L603): a reader blocked on a pack GET observes the pack deleted
 // by a concurrent writer's checkpoint cleanup, rereads current, restarts,
 // and completes with the current head. The barrier keeps the race
-// deterministic over real MinIO.
+// deterministic over the real S3 backend.
 func TestScenarioPullStaleReader(t *testing.T) {
 	t.Parallel()
 	a := NewHarness(t, HarnessConfig{CheckpointPacks: new(2)})

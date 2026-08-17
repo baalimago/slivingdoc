@@ -17,20 +17,20 @@ import (
 	"github.com/baalimago/slivingdoc/internal/git2"
 	"github.com/baalimago/slivingdoc/internal/storage"
 	"github.com/baalimago/slivingdoc/internal/storage/fake"
-	"github.com/baalimago/slivingdoc/internal/testminio"
+	"github.com/baalimago/slivingdoc/internal/tests3"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // TestMain intercepts the helper modes spawned by the process scenarios
-// and terminates the shared MinIO container after the suite. The helper
-// runs the real process body inside the test binary, so scenarios never
-// invoke an external executable.
+// and terminates the shared S3-compatible container after the suite. The
+// helper runs the real process body inside the test binary, so scenarios
+// never invoke an external executable.
 func TestMain(m *testing.M) {
 	if mode := os.Getenv("SLIVINGDOC_INTEGRATION_HELPER"); mode != "" {
 		os.Exit(helperMain(mode))
 	}
 	code := m.Run()
-	testminio.Terminate()
+	tests3.Terminate()
 	os.Exit(code)
 }
 
@@ -57,8 +57,8 @@ func helperMain(mode string) int {
 		}
 	case "real":
 		// The real S3 adapter against the environment-configured endpoint:
-		// the CLI scenarios point it at the shared MinIO suite, so state
-		// survives across one-shot pull and commit processes.
+		// the CLI scenarios point it at the shared S3-compatible suite, so
+		// state survives across one-shot pull and commit processes.
 	case "bad-store":
 		opts.StoreFactory = func(ctx context.Context, cfg app.ServiceConfig) (storage.ObjectStore, error) {
 			store := fake.New(cfg.Prefix)

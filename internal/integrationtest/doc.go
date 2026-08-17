@@ -14,16 +14,17 @@
 // # Store selection
 //
 // The store seam defaults to the real s3store adapter against a pinned
-// MinIO container, and accepts the deterministic fake and the
-// fault-injecting wrappers. A scenario runs against MinIO when its contract
-// is about real HTTP conditional-write semantics — the CAS races, the
-// competing checkpoint workers, the stale-reader restart, and the cleanup
-// after a successful checkpoint. Every other scenario runs against the fake,
-// which is contract-equivalent by construction: internal/storage/contract is
-// one suite run against both the fake and MinIO, so the fake's conditional
-// writes, ETags, and error mapping are proven to match the adapter's. That
-// keeps the whole catalog inside the strict race gate while the rows whose
-// evidence must be real HTTP still get it.
+// S3-compatible container, and accepts the deterministic fake and the
+// fault-injecting wrappers. A scenario runs against the pinned S3 backend
+// when its contract is about real HTTP conditional-write semantics — the
+// CAS races, the competing checkpoint workers, the stale-reader restart,
+// and the cleanup after a successful checkpoint. Every other scenario runs
+// against the fake, which is contract-equivalent by construction:
+// internal/storage/contract is one suite run against both the fake and the
+// real S3 backend, so the fake's conditional writes, ETags, and error
+// mapping are proven to match the adapter's. That keeps the whole catalog
+// inside the strict race gate while the rows whose evidence must be real
+// HTTP still get it.
 //
 // # Build tags
 //

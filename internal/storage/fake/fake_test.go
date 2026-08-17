@@ -20,7 +20,7 @@ var prefixSeq atomic.Uint64
 
 // TestContractSuite runs the shared object-store contract suite against the
 // fake. Every subtest gets a store with a unique configured prefix, exactly
-// like the MinIO-backed adapter does.
+// like the real S3 backend does.
 func TestContractSuite(t *testing.T) {
 	contract.Run(t, func(t *testing.T) storage.ObjectStore {
 		return New(fmt.Sprintf("fake-%d", prefixSeq.Add(1)))

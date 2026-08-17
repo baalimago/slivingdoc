@@ -1,6 +1,7 @@
 # Testing
 
-slivingdoc does not use live AWS resources in tests. MinIO tests use the pinned testcontainer image.
+slivingdoc does not use live AWS resources in tests. Real-S3 tests use the
+pinned testcontainer image (currently SeaweedFS).
 
 ## Two commands
 
@@ -41,9 +42,9 @@ Two dependencies are required rather than detected:
   `.build/libgit2` stamp. There is no pure-Go build: `internal/git2` needs
   CGo, so `CGO_ENABLED=0 go build` fails at compile time rather than
   producing a binary that fails at run time.
-- **Docker.** The MinIO suites run against real HTTP conditional writes. An
-  unreachable daemon fails the suite with an actionable diagnostic. It
-  never skips. `internal/testminio` owns that policy and
+- **Docker.** The real-S3 suites run against real HTTP conditional writes.
+  An unreachable daemon fails the suite with an actionable diagnostic. It
+  never skips. `internal/tests3` owns that policy and
   `TestRequireFailsWhenDockerIsUnavailable` pins it.
 
 The only remaining skips are genuine platform capabilities — symlinks,
@@ -56,7 +57,7 @@ filesystem cannot represent. They state the capability they need.
 | --- | --- | --- |
 | Unit | All packages | Pure validation and error mapping |
 | Component | `internal/git2` | Real libgit2 trees, merges, packs, and shallow history |
-| Contract | `internal/storage/contract` | One ObjectStore suite against fake storage and MinIO |
+| Contract | `internal/storage/contract` | One ObjectStore suite against fake storage and the real S3 backend |
 | Integration | `internal/notebook`, `internal/s3store` | Publication, CAS, checkpoint, cleanup, and S3 requests |
 | Scenario | `internal/integrationtest` | Black-box MCP use cases over in-memory and process transports |
 | Protocol | `internal/mcp`, `internal/app` | Schemas, envelopes, stdio, configuration, and shutdown |
@@ -91,7 +92,7 @@ They take their isolation from per-test S3 prefixes and per-test workspace,
 private, and cache roots.
 
 Packages also run concurrently, including the three that each start their
-own MinIO container. There is no `-p` bound. On a four-core runner, the
+own S3 test container. There is no `-p` bound. On a four-core runner, the
 slowest package sits near 20 s of the 30 s budget whether packages run one
 at a time or all at once. Serializing them bought no headroom and cost
 about 3x wall clock.
