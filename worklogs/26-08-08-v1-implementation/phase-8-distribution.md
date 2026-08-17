@@ -42,7 +42,7 @@ not complete while the external change is only an unmerged proposal.
 
 Use native or proven target toolchains for:
 
-- Linux amd64 and arm64
+- Linux amd64, 32-bit ARMv7 armhf (`arm`), and arm64
 - macOS amd64 and arm64
 - Windows amd64
 
@@ -115,6 +115,40 @@ checksum. Version values derive from the same release tag.
 | npm version and release tag differ      | Publication fails                           | Release validation test |
 
 ## Implementation notes
+
+### Session 2026-08-16 — Linux 32-bit ARMv7 / Raspberry Pi OS support
+
+Added the `linux/arm` artifact for 32-bit Raspberry Pi OS armhf. The npm
+launcher maps Node's `process.arch === "arm"` to
+`slivingdoc-v<version>-linux-arm`, and its exact supported-target test now
+requires the six-target release matrix. The caller release workflow adds an
+ARMv7 target on `ubuntu-24.04`: it installs
+`gcc-arm-linux-gnueabihf` and `qemu-user`, builds libgit2 with the same
+hard-float compiler, sets `GOOS=linux`, `GOARCH=arm`, and `GOARM=7`, and uses
+`qemu-arm` for the startup smoke test. The ARM build uses `netgo,osusergo` to
+keep the application resolver and user lookup independent of glibc NSS
+modules; it is linked fully statically.
+
+The release-style artifact was verified before any release was created. It is
+an ELF32 little-endian ARM EABI5 hard-float executable, static, with no dynamic
+`NEEDED` entries; `check-deps-linux.sh` passed and `qemu-arm <binary> version`
+reported `slivingdoc 0.0.0-arm-test`. The npm launcher suite passed all 35
+tests.
+
+After the branch was pushed, the same source built natively on the 32-bit
+Raspberry Pi OS armv7l host. The exact release-style flags
+`GOFLAGS="-tags=netgo,osusergo"` and `STATIC=1` produced a static ELF32 ARM
+EABI5 executable; its `version` command reported `slivingdoc 0.1.0-dev` and
+`check-deps-linux.sh` reported `ok`. The ordinary developer build was also
+able to start on the Pi, but it retains the host's dynamic `libresolv.so.2`
+dependency, so only the static release-style artifact is release evidence.
+
+Linux CGo now resolves the pinned headers and archive beneath this checkout
+directly. After `scripts/build-libgit2.sh` has built that one native
+dependency, `go install .` installs the developer binary without inheriting
+the Makefile-only `PKG_CONFIG_PATH` setup. Release builds continue to use the
+Makefile because they inject a version and, where needed, request static
+linking and a target compiler.
 
 ### Session 2026-08-10 (imago, worker session 16) — pipeline moved into `simple-go-pipeline`
 

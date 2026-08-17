@@ -1,10 +1,11 @@
 name: release
 
 # The caller workflow. Building slivingdoc links static libgit2 through CGo,
-# so no target can be cross-compiled: every one of the five architecture-21
-# targets needs its own runner and its own libgit2 build. The reusable
-# pipeline in baalimago/simple-go-pipeline owns the matrix, the release
-# creation, and the asset upload; this file supplies the native inputs.
+# so every target needs its own libgit2 build. Five targets build natively;
+# 32-bit Linux ARMv7 cross-builds on Ubuntu with the Debian hard-float
+# toolchain and runs its smoke test through qemu-arm. The reusable pipeline in
+# baalimago/simple-go-pipeline owns the matrix, release creation, and asset
+# upload; this file supplies the native inputs.
 #
 # The pipeline is referenced by an immutable commit SHA, never a branch or a
 # moving tag. The SHA below is the reviewed commit of the reusable-workflow
@@ -37,27 +38,29 @@ jobs:
       # grammar: slivingdoc-v<version>-<os>-<arch>[.exe].
       project-name: slivingdoc
       branch: master
-      # The five proven targets of architecture section 21. Windows arm64 is
-      # deliberately absent until its native toolchain and runner are proven.
+      # The six supported targets of architecture section 21. `linux/arm` is
+      # a statically linked ARMv7 hard-float binary for 32-bit Raspberry Pi OS.
+      # Windows arm64 is deliberately absent until its native toolchain and
+      # runner are proven.
       targets: |
         [
           {"os": "linux",   "arch": "amd64", "runner": "ubuntu-24.04"},
+          {"os": "linux",   "arch": "arm",   "runner": "ubuntu-24.04"},
           {"os": "linux",   "arch": "arm64", "runner": "ubuntu-24.04-arm"},
           {"os": "darwin",  "arch": "amd64", "runner": "macos-15-intel"},
           {"os": "darwin",  "arch": "arm64", "runner": "macos-15"},
           {"os": "windows", "arch": "amd64", "runner": "windows-2025"}
         ]
-      # One script builds the pinned libgit2 on every target runner. Linux
-      # targets build with musl-gcc so the shipped binary is fully static and
-      # runs on both glibc and musl (alpine); musl-tools supplies the native
-      # musl-gcc wrapper on the ubuntu runners. Non-linux targets keep their
-      # native toolchains.
-      native-setup-command: 'if [ "${TARGET_OS}" = linux ]; then sudo apt-get update -qq && sudo apt-get install -y -qq musl-tools && CC=musl-gcc ./scripts/build-libgit2.sh; else ./scripts/build-libgit2.sh; fi'
+      # One script builds pinned libgit2 per target. Linux amd64/arm64 use
+      # native musl-gcc. The ARMv7 artifact uses Debian's hard-float cross
+      # compiler, and qemu-arm executes its static smoke binary on the amd64
+      # GitHub runner. Non-linux targets keep their native toolchains.
+      native-setup-command: 'if [ "${TARGET_OS}" = linux ]; then sudo apt-get update -qq; if [ "${TARGET_ARCH}" = arm ]; then sudo apt-get install -y -qq gcc-arm-linux-gnueabihf qemu-user && CC=arm-linux-gnueabihf-gcc ./scripts/build-libgit2.sh; else sudo apt-get install -y -qq musl-tools && CC=musl-gcc ./scripts/build-libgit2.sh; fi; else ./scripts/build-libgit2.sh; fi'
       # The release version is injected by the linker; make build passes it.
       # BIN is the Makefile's build destination, so release builds write the
       # artifact directly at the pipeline's expected path ($TARGET_BINARY,
       # the architecture-21 asset name) instead of .build/slivingdoc.
-      native-build-command: 'if [ "${TARGET_OS}" = linux ]; then CC=musl-gcc make build BIN="${TARGET_BINARY}" VERSION="${RELEASE_VERSION#v}" STATIC=1; else make build BIN="${TARGET_BINARY}" VERSION="${RELEASE_VERSION#v}"; fi'
+      native-build-command: 'if [ "${TARGET_OS}" = linux ]; then if [ "${TARGET_ARCH}" = arm ]; then GOFLAGS="-tags=netgo,osusergo" GOOS=linux GOARCH=arm GOARM=7 CC=arm-linux-gnueabihf-gcc make build BIN="${TARGET_BINARY}" VERSION="${RELEASE_VERSION#v}" STATIC=1; else CC=musl-gcc make build BIN="${TARGET_BINARY}" VERSION="${RELEASE_VERSION#v}" STATIC=1; fi; else make build BIN="${TARGET_BINARY}" VERSION="${RELEASE_VERSION#v}"; fi'
       # Each target proves its own runtime dependency baseline. The pipeline
       # names platforms the way Go does (darwin), while the repo's checkers
       # use the OS names (macos); the substitution maps the one difference.
@@ -67,7 +70,7 @@ jobs:
       # bare invocation prints usage, so the smoke uses the version
       # subcommand. The ./ prefix is required because bash does not search
       # the working directory for executables.
-      smoke-command: './"${TARGET_BINARY}" version'
+      smoke-command: 'if [ "${TARGET_OS}" = linux ] && [ "${TARGET_ARCH}" = arm ]; then qemu-arm "./${TARGET_BINARY}" version; else ./"${TARGET_BINARY}" version; fi'
       # The strict SHA256SUMS grammar of architecture section 21. The
       # pipeline appends `dist/*` to this command itself, so the input is
       # the script path alone: a trailing `dist` argument would make the

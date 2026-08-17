@@ -51,8 +51,9 @@ a native binary directly from the
 [GitHub release](https://github.com/baalimago/slivingdoc/releases)
 (`slivingdoc-v<semver>-<os>-<arch>`) and run it in place.
 
-Supported platforms: Linux (amd64, arm64), macOS (amd64, arm64), and
-Windows (amd64).
+Supported platforms: Linux (amd64, 32-bit ARMv7, arm64), macOS (amd64,
+arm64), and Windows (amd64). The 32-bit Linux ARM artifact supports Raspberry
+Pi OS armhf.
 
 ## How it works
 

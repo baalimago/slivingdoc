@@ -77,7 +77,7 @@ make lint
 Apply formatting when you change Go files:
 
 ```text
-make fmt
+make format
 ```
 
 `make qa` runs `lint`, `test`, and `npm-test` together.

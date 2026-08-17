@@ -2,14 +2,16 @@
 //
 // Release tags use v<semver>. Assets use
 // slivingdoc-v<semver>-<os>-<arch> and add .exe on Windows. OS values are
-// linux, darwin, and windows; architecture values are amd64 and arm64.
+// linux, darwin, and windows; architecture values are amd64, arm, and arm64.
+// The `arm` artifact targets 32-bit Linux ARMv7 (Raspberry Pi OS armhf).
 // Windows arm64 stays deferred (architecture section 23).
 
 const OS_NAMES = Object.freeze({ linux: "linux", darwin: "darwin", win32: "windows" });
-const ARCH_NAMES = Object.freeze({ x64: "amd64", arm64: "arm64" });
+const ARCH_NAMES = Object.freeze({ x64: "amd64", arm: "arm", arm64: "arm64" });
 
 export const SUPPORTED_TARGETS = Object.freeze([
 	{ os: "linux", arch: "amd64" },
+	{ os: "linux", arch: "arm" },
 	{ os: "linux", arch: "arm64" },
 	{ os: "darwin", arch: "amd64" },
 	{ os: "darwin", arch: "arm64" },

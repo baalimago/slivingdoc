@@ -6,10 +6,10 @@ or a GitHub release. See the [README](../README.md).
 ## What a release contains
 
 A release tag `v<semver>` publishes native binaries for linux/amd64,
-linux/arm64, darwin/amd64, darwin/arm64, and windows/amd64
-(architecture section 21), together with a strict `SHA256SUMS` file and
-the license `NOTICE`. Asset names follow
-`slivingdoc-v<semver>-<os>-<arch>`, with `.exe` on Windows.
+linux/arm (32-bit ARMv7, including Raspberry Pi OS armhf), linux/arm64,
+darwin/amd64, darwin/arm64, and windows/amd64 (architecture section 21),
+together with a strict `SHA256SUMS` file and the license `NOTICE`. Asset names
+follow `slivingdoc-v<semver>-<os>-<arch>`, with `.exe` on Windows.
 
 The npm package `slivingdoc` is a launcher. It selects the asset for
 its exact version and platform, verifies the published SHA-256, caches
