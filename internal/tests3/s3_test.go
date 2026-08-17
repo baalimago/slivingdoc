@@ -1,4 +1,4 @@
-package testminio
+package tests3
 
 import (
 	"errors"
@@ -49,7 +49,7 @@ func TestRequireFailsWhenDockerIsUnavailable(t *testing.T) {
 // always-fail: a started suite passes through untouched.
 func TestRequireReturnsTheAvailableSuite(t *testing.T) {
 	t.Parallel()
-	want := &Suite{Endpoint: "http://127.0.0.1:9000"}
+	want := &Suite{Endpoint: "http://127.0.0.1:8333"}
 	rec := &recorder{}
 	if got := require(rec, want, nil); got != want {
 		t.Fatalf("require() = %v, want the started suite", got)

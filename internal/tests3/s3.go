@@ -1,11 +1,10 @@
-// Package testminio starts one pinned MinIO container per test process and
-// hands out per-test prefixes below a shared bucket. Both the s3store
-// contract suite and the notebook integration suite run against real HTTP
-// conditional writes; sharing the bootstrap keeps the container lifecycle
-// in one place.
+// Package tests3 starts one pinned S3-compatible container per test process
+// and hands out per-test prefixes below a shared bucket. The concrete image
+// is the current pinned implementation (SeaweedFS); importers depend on the
+// S3 contract, not on the vendor.
 //
 // The package is test-only: only _test.go files import it.
-package testminio
+package tests3
 
 import (
 	"context"
@@ -23,10 +22,11 @@ import (
 	"github.com/baalimago/slivingdoc/internal/storage"
 )
 
-// The pinned MinIO image and the shared test bucket. Credentials are
-// static and local; no test touches a live AWS account.
+// Image is the pinned S3-compatible backend container. SeaweedFS is the
+// current implementation; the contract it must satisfy is the S3 protocol
+// the probe and the suites exercise, not a vendor feature set.
 const (
-	Image  = "minio/minio:RELEASE.2025-09-07T16-13-09Z"
+	Image  = "chrislusf/seaweedfs:4.42"
 	User   = "slivingdoc"
 	Pass   = "slivingdoc-secret"
 	Bucket = "slivingdoc"
@@ -39,15 +39,15 @@ var (
 	startErr  error
 )
 
-// Suite is one shared MinIO container: its HTTP endpoint, a raw S3 client
-// for direct assertions, and a fresh-prefix factory.
+// Suite is one shared S3-compatible container: its HTTP endpoint, a raw S3
+// client for direct assertions, and a fresh-prefix factory.
 type Suite struct {
 	Endpoint string
 	Raw      *s3.Client
 	ctr      testcontainers.Container
 }
 
-// StoreConfig is the plain connection description of the suite's MinIO
+// StoreConfig is the plain connection description of the suite's S3
 // endpoint. It exposes no AWS SDK type, so store adapters build their own
 // configuration from these values.
 type StoreConfig struct {
@@ -86,26 +86,35 @@ type fataler interface {
 func require(t fataler, s *Suite, err error) *Suite {
 	t.Helper()
 	if err != nil {
-		t.Fatalf("minio integration unavailable: %v\n"+
+		t.Fatalf("s3 integration unavailable: %v\n"+
 			"Docker is required to run this suite; start the daemon and re-run.", err)
 		return nil
 	}
 	return s
 }
 
-// Terminate stops the shared container. Call it from TestMain after the
-// suite ran; it is a no-op when the container never started.
+// Terminate requests that the shared container stop. Call it from TestMain
+// after the suite ran; it is a no-op when the container never started.
+//
+// Termination runs detached so the test-binary critical path never blocks on
+// the Docker HTTP client: go test budgets one timeout for the whole binary
+// lifetime including TestMain, and the stop request can contend for a moby
+// connection on a busy runner. The testcontainers reaper (Ryuk) guarantees
+// eventual cleanup, so the binary may exit before the stop completes.
 func Terminate() {
-	if suite != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		_ = suite.ctr.Terminate(ctx)
-		cancel()
+	if suite == nil {
+		return
 	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		_ = suite.ctr.Terminate(ctx)
+	}()
 }
 
-// StoreConfig returns the plain connection values of the local MinIO
-// endpoint: the container credentials ride as plain strings, so no AWS SDK
-// type crosses this boundary.
+// StoreConfig returns the plain connection values of the local S3 endpoint:
+// the container credentials ride as plain strings, so no AWS SDK type
+// crosses this boundary.
 func (s *Suite) StoreConfig() StoreConfig {
 	return StoreConfig{Endpoint: s.Endpoint, Region: Region, AccessKey: User, SecretKey: Pass}
 }
@@ -115,12 +124,12 @@ func (s *Suite) StoreConfig() StoreConfig {
 func (s *Suite) FreshPrefix(namespace string) string {
 	id, err := storage.NewUUIDv7()
 	if err != nil {
-		panic("testminio: generate uuidv7: " + err.Error())
+		panic("tests3: generate uuidv7: " + err.Error())
 	}
 	return namespace + "/" + id.String()
 }
 
-// dockerAvailable pings the Docker daemon; the MinIO suite depends on it.
+// dockerAvailable pings the Docker daemon; the S3 suite depends on it.
 func dockerAvailable() error {
 	cli, err := testcontainers.NewDockerClientWithOpts(context.Background())
 	if err != nil {
@@ -134,22 +143,29 @@ func dockerAvailable() error {
 	return nil
 }
 
-// start starts the pinned MinIO container, waits for its health endpoint,
-// and creates the test bucket.
+// start starts the pinned S3-compatible container with the static identity
+// below a shared bucket, waits for the S3 gateway log line, and creates the
+// test bucket.
 func start() (*Suite, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
 	req := testcontainers.ContainerRequest{
 		Image:        Image,
-		ExposedPorts: []string{"9000/tcp"},
-		Cmd:          []string{"server", "/data"},
-		Env: map[string]string{
-			"MINIO_ROOT_USER":     User,
-			"MINIO_ROOT_PASSWORD": Pass,
-		},
-		WaitingFor: wait.ForHTTP("/minio/health/live").
-			WithPort("9000/tcp").
+		ExposedPorts: []string{"8333/tcp"},
+		Entrypoint:   []string{"/bin/sh"},
+		Cmd: []string{"-c", `echo '{
+      "identities": [
+        {
+          "name": "slivingdoc",
+          "credentials": [
+            { "accessKey": "slivingdoc", "secretKey": "slivingdoc-secret" }
+          ],
+          "actions": ["Admin", "Read", "Write", "List", "Tagging"]
+        }
+      ]
+    }' > /etc/seaweedfs/s3.json && weed server -s3 -s3.config /etc/seaweedfs/s3.json -dir /data`},
+		WaitingFor: wait.ForLog("Start Seaweed S3 API Server").
 			WithStartupTimeout(30 * time.Second),
 	}
 	c, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
@@ -157,17 +173,17 @@ func start() (*Suite, error) {
 		Started:          true,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("start minio container: %w", err)
+		return nil, fmt.Errorf("start s3 container: %w", err)
 	}
 	host, err := c.Host(ctx)
 	if err != nil {
 		_ = c.Terminate(ctx)
-		return nil, fmt.Errorf("minio host: %w", err)
+		return nil, fmt.Errorf("s3 host: %w", err)
 	}
-	port, err := c.MappedPort(ctx, "9000/tcp")
+	port, err := c.MappedPort(ctx, "8333/tcp")
 	if err != nil {
 		_ = c.Terminate(ctx)
-		return nil, fmt.Errorf("minio port: %w", err)
+		return nil, fmt.Errorf("s3 port: %w", err)
 	}
 	endpoint := fmt.Sprintf("http://%s:%s", host, port.Port())
 	cfg := aws.Config{

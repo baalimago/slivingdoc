@@ -86,7 +86,7 @@ type Config struct {
 	// normal AWS resolution; a custom endpoint always uses path style.
 	Endpoint string
 	// AccessKey and SecretKey bypass the default credential chain when
-	// both are set. The MinIO suites inject the container credentials;
+	// both are set. The S3 test backend injects the container credentials;
 	// production leaves them empty and uses the chain.
 	AccessKey string
 	SecretKey string
@@ -142,7 +142,7 @@ func New(ctx context.Context, cfg Config, opts ...Options) (*Store, error) {
 	}
 	client := s3.NewFromConfig(awsCfg, func(o *s3.Options) {
 		if cfg.Endpoint != "" || options.ForcePathStyle {
-			// S3-compatible endpoints (MinIO and similar) resolve
+			// S3-compatible endpoints (SeaweedFS and similar) resolve
 			// bucket names only in path style; --path-style requests the
 			// same addressing for the default AWS endpoint.
 			o.UsePathStyle = true
@@ -293,11 +293,11 @@ func (s *Store) ReplaceObject(ctx context.Context, key string, etag storage.ETag
 		IfMatch:       aws.String(string(etag)),
 	})
 	if err != nil {
-		// MinIO answers a conditional PUT against a missing key with
-		// NoSuchKey instead of 412. The protocol sees the same state: the
-		// observed precondition does not hold, the object was not mutated.
-		// Normalize so every compliant store reports the semantic
-		// precondition failure for a lost CAS.
+		// The pinned S3 backend answers a conditional PUT against a
+		// missing key with NoSuchKey instead of 412. The protocol sees the
+		// same state: the observed precondition does not hold, the object
+		// was not mutated. Normalize so every compliant store reports the
+		// semantic precondition failure for a lost CAS.
 		semantic := mapError("replace "+key, err)
 		if errors.Is(semantic, storage.ErrNotFound) {
 			semantic = fmt.Errorf("s3store: replace %s: object absent: %w", key, storage.ErrPreconditionFailed)

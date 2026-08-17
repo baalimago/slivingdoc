@@ -129,9 +129,10 @@ deployment decision:
 - **Inject.** Most MCP hosts accept an `env` block per server (see the
   example below). Use it when the host is not launched from a
   credentialed shell — a GUI app, a service manager — or to point at a
-  local MinIO. Prefer injecting `AWS_PROFILE` over pasting static keys:
-  host configuration files tend to be synced and backed up, while a
-  profile keeps the secret in `~/.aws/credentials`.
+  local S3-compatible store (such as SeaweedFS). Prefer injecting
+  `AWS_PROFILE` over pasting static keys: host configuration files tend
+  to be synced and backed up, while a profile keeps the secret in
+  `~/.aws/credentials`.
 - **Ambient.** On EC2, ECS, or EKS, an attached role satisfies the
   chain with no configuration at all. This is the cleanest server
   deployment.
@@ -212,7 +213,7 @@ credentials](#s3-credentials): the host passes these variables to the
 child process, and the AWS SDK chain picks them up. Omit it when the
 host already runs in a credentialed environment; replace it with
 `AWS_ENDPOINT_URL_S3` and static keys only for a local S3-compatible
-store such as MinIO.
+store such as SeaweedFS.
 
 Stdout carries only protocol messages; logs go to stderr. The host and
 the server share the visible directory: agents and humans edit files

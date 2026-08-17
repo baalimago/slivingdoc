@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"github.com/baalimago/slivingdoc/internal/storage"
-	"github.com/baalimago/slivingdoc/internal/testminio"
+	"github.com/baalimago/slivingdoc/internal/tests3"
 )
 
 // TestScenarioIntegrityCorruptManifest proves that current is strict
@@ -150,13 +150,13 @@ func TestScenarioIntegrityStartupProbeFailure(t *testing.T) {
 // error code instead of the blanket incompatible-store verdict.
 func TestScenarioIntegrityStartupProbeAuthReason(t *testing.T) {
 	t.Parallel()
-	suite := testminio.Ensure(t)
+	suite := tests3.Ensure(t)
 	env, _ := cliRoots(t)
 	env = append(env,
 		"AWS_ACCESS_KEY_ID=slivingdoc-bad",
 		"AWS_SECRET_ACCESS_KEY=definitely-not-the-secret",
 		"AWS_ENDPOINT_URL_S3="+suite.Endpoint,
-		"SLIVINGDOC_BUCKET="+testminio.Bucket,
+		"SLIVINGDOC_BUCKET="+tests3.Bucket,
 		"SLIVINGDOC_PREFIX="+suite.FreshPrefix("integrationtest-auth"),
 	)
 	h := spawnHelper(t, "real", env, "serve")

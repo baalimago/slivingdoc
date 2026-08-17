@@ -17,33 +17,34 @@ import (
 
 	"github.com/baalimago/slivingdoc/internal/storage"
 	"github.com/baalimago/slivingdoc/internal/storage/contract"
-	"github.com/baalimago/slivingdoc/internal/testminio"
+	"github.com/baalimago/slivingdoc/internal/tests3"
 )
 
-// The MinIO suite is the real-HTTP evidence for the storage protocol. It
-// runs against one pinned MinIO container per go test invocation (shared
-// through internal/testminio), isolates every test by configured prefix,
-// and reuses the shared contract suite so the fake and the real adapter
-// must agree. The tests skip only when Docker is unavailable or the
-// container cannot start, and they always name the unavailable dependency;
-// the CI integration job treats any skip as failure.
+// The real-S3 suite is the real-HTTP evidence for the storage protocol. It
+// runs against one pinned S3-compatible container per go test invocation
+// (shared through internal/tests3), isolates every test by configured
+// prefix, and reuses the shared contract suite so the fake and the real
+// adapter must agree. A missing Docker daemon fails the run with a
+// diagnostic that names the unavailable dependency; the CI integration job
+// treats any skip as failure.
 
-// TestMain terminates the shared MinIO container after the whole suite.
+// TestMain terminates the shared S3-compatible container after the whole
+// suite.
 func TestMain(m *testing.M) {
 	code := m.Run()
-	testminio.Terminate()
+	tests3.Terminate()
 	os.Exit(code)
 }
 
-// newMinioStore builds a Store for a fresh per-test prefix below the test
+// newTestStore builds a Store for a fresh per-test prefix below the test
 // bucket, plus the raw client for direct assertions.
-func newMinioStore(t *testing.T, namespace string, opts ...Options) (*Store, *s3.Client, string) {
+func newTestStore(t *testing.T, namespace string, opts ...Options) (*Store, *s3.Client, string) {
 	t.Helper()
-	suite := testminio.Ensure(t)
+	suite := tests3.Ensure(t)
 	prefix := suite.FreshPrefix(namespace)
 	mc := suite.StoreConfig()
 	st, err := New(context.Background(), Config{
-		Bucket: testminio.Bucket, Prefix: prefix, Region: mc.Region,
+		Bucket: tests3.Bucket, Prefix: prefix, Region: mc.Region,
 		Endpoint: mc.Endpoint, AccessKey: mc.AccessKey, SecretKey: mc.SecretKey,
 	}, opts...)
 	if err != nil {
@@ -52,15 +53,15 @@ func newMinioStore(t *testing.T, namespace string, opts ...Options) (*Store, *s3
 	return st, suite.Raw, prefix
 }
 
-// TestMinioContractSuite runs the shared storage contract suite against
-// MinIO. MinIO buckets default to versioning disabled; the probe subtest
-// proves the protocol starts without versioning.
-func TestMinioContractSuite(t *testing.T) {
-	suite := testminio.Ensure(t)
+// TestContractSuite runs the shared storage contract suite against the
+// pinned S3 backend. Buckets default to versioning disabled; the probe
+// subtest proves the protocol starts without versioning.
+func TestContractSuite(t *testing.T) {
+	suite := tests3.Ensure(t)
 	contract.Run(t, func(t *testing.T) storage.ObjectStore {
 		mc := suite.StoreConfig()
 		st, err := New(context.Background(), Config{
-			Bucket: testminio.Bucket, Prefix: suite.FreshPrefix("contract"), Region: mc.Region,
+			Bucket: tests3.Bucket, Prefix: suite.FreshPrefix("contract"), Region: mc.Region,
 			Endpoint: mc.Endpoint, AccessKey: mc.AccessKey, SecretKey: mc.SecretKey,
 		})
 		if err != nil {
@@ -70,11 +71,11 @@ func TestMinioContractSuite(t *testing.T) {
 	})
 }
 
-// TestMinioMultipartUpload proves that a body above the part size uploads
+// TestMultipartUpload proves that a body above the part size uploads
 // through real S3 multipart (threshold 1, part size 5 MiB, body 5 MiB+1)
 // and that SHA-256, size, and metadata survive the round trip.
-func TestMinioMultipartUpload(t *testing.T) {
-	st, raw, prefix := newMinioStore(t, "multipart", Options{
+func TestMultipartUpload(t *testing.T) {
+	st, raw, prefix := newTestStore(t, "multipart", Options{
 		MultipartThreshold: 1,
 		MultipartPartSize:  5 << 20,
 	})
@@ -112,7 +113,7 @@ func TestMinioMultipartUpload(t *testing.T) {
 	}
 
 	out, err := raw.GetObject(ctx, &s3.GetObjectInput{
-		Bucket: aws.String(testminio.Bucket),
+		Bucket: aws.String(tests3.Bucket),
 		Key:    aws.String(storage.JoinKey(prefix, key.String())),
 	})
 	if err != nil {
@@ -131,12 +132,12 @@ func TestMinioMultipartUpload(t *testing.T) {
 	}
 }
 
-// TestMinioPrefixIsolation proves that the configured prefix owns the key
+// TestPrefixIsolation proves that the configured prefix owns the key
 // namespace: the same protocol key under two prefixes stores independent
 // objects, and a raw LIST under one prefix never sees the other.
-func TestMinioPrefixIsolation(t *testing.T) {
-	st1, raw, prefix1 := newMinioStore(t, "iso-a")
-	st2, _, _ := newMinioStore(t, "iso-b")
+func TestPrefixIsolation(t *testing.T) {
+	st1, raw, prefix1 := newTestStore(t, "iso-a")
+	st2, _, _ := newTestStore(t, "iso-b")
 	ctx := context.Background()
 
 	if _, err := st1.CreateObject(ctx, storage.CurrentKey, []byte("one")); err != nil {
@@ -162,7 +163,7 @@ func TestMinioPrefixIsolation(t *testing.T) {
 	}
 
 	out, err := raw.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
-		Bucket: aws.String(testminio.Bucket),
+		Bucket: aws.String(tests3.Bucket),
 		Prefix: aws.String(prefix1 + "/"),
 	})
 	if err != nil {
@@ -177,11 +178,11 @@ func TestMinioPrefixIsolation(t *testing.T) {
 	}
 }
 
-// TestMinioConcurrentCAS races many writers that all hold the same observed
+// TestConcurrentCAS races many writers that all hold the same observed
 // ETag against real HTTP conditional writes: exactly one replacement wins
 // and the losers get the semantic precondition failure.
-func TestMinioConcurrentCAS(t *testing.T) {
-	st, _, _ := newMinioStore(t, "cas")
+func TestConcurrentCAS(t *testing.T) {
+	st, _, _ := newTestStore(t, "cas")
 	ctx := context.Background()
 	// The seed bytes must differ from every race payload so no winning
 	// write reproduces the seed ETag (the fake suite has the same rule).

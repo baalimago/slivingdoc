@@ -45,8 +45,8 @@ Add it to your agentic harness:
 ```
 
 The bucket must exist, and credentials come from the normal AWS chain.
-No S3 account yet? [`examples/minio/`](examples/minio/) runs a local
-MinIO container with a step-by-step walkthrough. You can also download
+No S3 account yet? [`examples/seaweedfs/`](examples/seaweedfs/) runs a local
+SeaweedFS container with a step-by-step walkthrough. You can also download
 a native binary directly from the
 [GitHub release](https://github.com/baalimago/slivingdoc/releases)
 (`slivingdoc-v<semver>-<os>-<arch>`) and run it in place.

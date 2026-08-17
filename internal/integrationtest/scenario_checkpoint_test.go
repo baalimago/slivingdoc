@@ -281,7 +281,8 @@ func TestScenarioCheckpointRetention(t *testing.T) {
 }
 
 // TestScenarioCheckpointCleanupAfterCAS proves the cleanup contract after a
-// successful checkpoint CAS over real MinIO (architecture section 14, L893):
+// successful checkpoint CAS over the real S3 backend (architecture section
+// 14, L893):
 // unreferenced generations at or before the cutoff are deleted best effort,
 // the active and retained descriptors are never deleted, the cleanup roots
 // are reread from `current` before deleting, and a cold reader still

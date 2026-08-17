@@ -84,8 +84,8 @@ Supporting packages sit beside the main path. `internal/strictjson`
 supplies the strict JSON value tree shared by the manifest and
 `state.json`. `internal/storage/fake` and `internal/storage/contract`
 provide the deterministic object store and the one contract suite run
-against both the fake and MinIO. `internal/testminio` starts the pinned
-testcontainers MinIO.
+against both the fake and the real S3 backend. `internal/tests3` starts
+the pinned S3-compatible testcontainers backend.
 
 ### Package Map
 
@@ -111,7 +111,7 @@ slivingdoc/
 |-- docs/                    slivingdoc-v1.md (the accepted contract),
 |                            build.md, testing.md
 |-- terraform/               reusable AWS module: bucket, IAM user, keys
-|-- examples/minio/          isolated local MinIO walkthrough
+|-- examples/seaweedfs/      isolated local SeaweedFS walkthrough
 |-- examples/terraform/      debug configuration calling the module
 |-- worklogs/                phased worklog: the implementation record
 `-- internal/
@@ -144,8 +144,9 @@ slivingdoc/
     |                        join, multipart upload, semantic error mapping
     |-- strictjson/          neutral strict JSON value tree (manifest and
     |                        state.json)
-    |-- testminio/           testcontainers MinIO helper (one container per
-    |                        `go test` invocation)
+    |-- tests3/              testcontainers S3 backend helper (currently
+    |                        SeaweedFS) (one container per `go test`
+    |                        invocation)
     |-- mcp/                 stdio MCP server: the two strict tool schemas,
     |                        strict decoding, the stable error envelope, and
     |                        the mcpReqID request logging

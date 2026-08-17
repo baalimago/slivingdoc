@@ -1,0 +1,35 @@
+# Local SeaweedFS for manual slivingdoc evaluation
+#
+# This environment is for humans only. Automated tests start their own
+# S3-compatible containers through testcontainers (internal/tests3) and never
+# read this file; no test depends on this environment running.
+#
+#   docker compose up -d
+#   docker compose down          # stop
+#   docker compose down -v       # stop and remove the note data volume
+services:
+  seaweedfs:
+    image: chrislusf/seaweedfs:4.42
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        echo '{
+          "identities": [
+            {
+              "name": "slivingdoc",
+              "credentials": [
+                { "accessKey": "slivingdoc", "secretKey": "slivingdoc-local" }
+              ],
+              "actions": ["Admin", "Read", "Write", "List", "Tagging"]
+            }
+          ]
+        }' > /etc/seaweedfs/s3.json &&
+        weed server -s3 -s3.config /etc/seaweedfs/s3.json -dir /data
+    ports:
+      - "8333:8333" # S3 API
+    volumes:
+      - seaweedfs-data:/data
+
+volumes:
+  seaweedfs-data:

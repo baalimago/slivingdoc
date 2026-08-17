@@ -1257,20 +1257,22 @@ are deterministic.
 
 Integration tests use
 [testcontainers-go](https://golang.testcontainers.org/) to start
-[MinIO](https://min.io/). They prove real request encoding, ETag handling,
-conditional writes, single and multipart pack transfer, checksum metadata,
-endpoint configuration, concurrent publication, and read-after-write recovery.
+the pinned S3-compatible backend (SeaweedFS). They prove real request
+encoding, ETag handling, conditional writes, single and multipart pack
+transfer, checksum metadata, endpoint configuration, concurrent
+publication, and read-after-write recovery.
 
-MinIO is the required S3-compatible integration target. Deterministic adapter
-tests emulate timeout-after-acceptance and other failures that MinIO cannot
-reliably induce. No correctness path uses S3 `LIST` to discover accepted state.
-Tests do not require a live AWS account.
+A real S3-compatible store is the required integration target; the pinned
+implementation is SeaweedFS (`chrislusf/seaweedfs:4.42`). Deterministic
+adapter tests emulate timeout-after-acceptance and other failures that a
+single store cannot produce on demand. No correctness path uses S3 `LIST`
+to discover accepted state. Tests do not require a live AWS account.
 
 Boundary tests include:
 
 ```text
 libgit2 boundary    object, pack, shallow checkpoint, and merge conformance
-storage boundary    fake contract suite and MinIO contract suite
+storage boundary    fake contract suite and real S3 contract suite
 notebook boundary   pull, commit, retry, conflict, checkpoint, and cleanup
 MCP boundary        schemas, OK results, structured errors, and stdio
 release boundary    native artifact startup and dependency inspection
@@ -1407,7 +1409,7 @@ depend on the internal representation.
 19. S3 versioning and backups are deployment policies.
 20. V1 targets high agent concurrency and avoids full-history upload per commit.
 21. External resources have mockable semantic boundaries.
-22. MinIO testcontainers prove the real S3 integration contract.
+22. SeaweedFS testcontainers prove the real S3 integration contract.
 23. The npm launcher downloads and verifies native GitHub release artifacts.
 24. L is caller-controlled, P is private local state, and R is accepted remote state.
 25. Synchronization occurs at MCP operation boundaries without a file watcher.
@@ -1441,4 +1443,5 @@ invariants:
 - Cleanup never determines commit success.
 - The executable has no runtime Git or libgit2 installation requirement.
 - Unit tests can replace all network services with deterministic fakes.
-- Required integration tests run against MinIO through testcontainers.
+- Required integration tests run against a real S3-compatible store
+  (SeaweedFS) through testcontainers.

@@ -169,12 +169,12 @@ func TestLoadConfigEndpointNormalization(t *testing.T) {
 		valid bool
 	}{
 		{name: "empty stays empty", env: "", want: "", valid: true},
-		{name: "lowercase and trailing slash", env: "HTTPS://Example.COM:9000/", want: "https://example.com:9000", valid: true},
-		{name: "non-root path preserved", env: "http://MINIO.local:9000/minio/", want: "http://minio.local:9000/minio", valid: true},
-		{name: "user information rejected", env: "http://user:pass@host:9000", want: "", valid: false},
-		{name: "query rejected", env: "http://host:9000?x=1", want: "", valid: false},
-		{name: "fragment rejected", env: "http://host:9000#f", want: "", valid: false},
-		{name: "relative rejected", env: "host:9000", want: "", valid: false},
+		{name: "lowercase and trailing slash", env: "HTTPS://Example.COM:8333/", want: "https://example.com:8333", valid: true},
+		{name: "non-root path preserved", env: "http://s3.local:8333/s3/", want: "http://s3.local:8333/s3", valid: true},
+		{name: "user information rejected", env: "http://user:pass@host:8333", want: "", valid: false},
+		{name: "query rejected", env: "http://host:8333?x=1", want: "", valid: false},
+		{name: "fragment rejected", env: "http://host:8333#f", want: "", valid: false},
+		{name: "relative rejected", env: "host:8333", want: "", valid: false},
 		{name: "ftp rejected", env: "ftp://host", want: "", valid: false},
 	}
 	for _, tt := range cases {
@@ -237,7 +237,7 @@ func TestLoadConfigUnknownFlagRejected(t *testing.T) {
 func TestConfigErrorNeverEchoesEndpoint(t *testing.T) {
 	_, err := loadConfig(testProcess([]string{
 		"SLIVINGDOC_BUCKET=bucket",
-		"AWS_ENDPOINT_URL_S3=http://user:supersecret@host:9000",
+		"AWS_ENDPOINT_URL_S3=http://user:supersecret@host:8333",
 	}))
 	if err == nil {
 		t.Fatal("loadConfig() = nil, want an endpoint error")
@@ -253,7 +253,7 @@ func TestConfigErrorIsRedacted(t *testing.T) {
 	var out discardWriter
 	p := testProcess([]string{
 		"SLIVINGDOC_BUCKET=bucket",
-		"AWS_ENDPOINT_URL_S3=http://user:supersecret@host:9000",
+		"AWS_ENDPOINT_URL_S3=http://user:supersecret@host:8333",
 	})
 	p.stdout = &out
 	err := run(p)
