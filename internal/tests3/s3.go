@@ -57,10 +57,11 @@ type StoreConfig struct {
 	SecretKey string
 }
 
-// Ensure returns the shared suite, starting the pinned container once per
-// test process.
-func Ensure(t *testing.T) *Suite {
-	t.Helper()
+// Start prepares the shared suite once per test process. A package TestMain
+// can call it before m.Run so container startup is treated as the mandatory
+// test environment prerequisite that it is, rather than consuming a
+// scenario's strict per-package test budget.
+func Start() error {
 	startOnce.Do(func() {
 		if err := dockerAvailable(); err != nil {
 			startErr = fmt.Errorf("docker unavailable: %w", err)
@@ -68,7 +69,14 @@ func Ensure(t *testing.T) *Suite {
 		}
 		suite, startErr = start()
 	})
-	return require(t, suite, startErr)
+	return startErr
+}
+
+// Ensure returns the shared suite, starting the pinned container once per
+// test process when a package has not already prepared it in TestMain.
+func Ensure(t *testing.T) *Suite {
+	t.Helper()
+	return require(t, suite, Start())
 }
 
 // fataler is the failure half of testing.TB. testing.TB cannot be

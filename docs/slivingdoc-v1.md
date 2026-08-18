@@ -1334,16 +1334,20 @@ Windows arm64 can be added after its native toolchain and runner are proven.
 One final release job creates the GitHub release after all target builds pass.
 The npm publish step runs only after every required artifact and checksum is
 available. It runs in the same workflow, after the release assembly, and
-fails unless `npm/slivingdoc/package.json` reports the tag version. The
-repository provides `make release`, an interactive script. The script
+fails unless `npm/slivingdoc/package.json` reports the tag version. The MCP
+Registry publish step depends on the npm step: it validates and publishes the
+checked-in `server.json` only after npm has made the matching `mcpName` and
+version publicly verifiable. It authenticates with GitHub Actions OIDC, so
+the repository stores no MCP Registry token or GitHub personal access token.
+The repository provides `make release`, an interactive script. The script
 prints the recent releases, prompts for the new version and a tag
-description, bumps the package version, commits it, and annotates the
-`v<semver>` tag. Thus the workflow and the package cannot drift. A
-prerelease version publishes to the `next` dist-tag. A stable version
+description, bumps the package and Registry-card versions, commits them, and
+annotates the `v<semver>` tag. Thus the workflow and published metadata cannot
+drift. A prerelease version publishes to the `next` dist-tag. A stable version
 publishes to `latest`. Publication uses npm trusted publishing (OIDC). The
-repository stores no npm token, and the registry accepts publishes only
-from the `release.yml` workflow of `baalimago/slivingdoc`. Provenance
-attestations are generated automatically for the public repository.
+repository stores no npm token, and the registry accepts publishes only from
+the `release.yml` workflow of `baalimago/slivingdoc`. Provenance attestations
+are generated automatically for the public repository.
 
 ## 22. Operational responsibility
 

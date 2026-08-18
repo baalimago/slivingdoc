@@ -119,6 +119,37 @@ func TestMCPRegistryManifest(t *testing.T) {
 	}
 }
 
+// TestMCPRegistryPublishWorkflow keeps the automated Registry publication
+// behind the npm publication it verifies. The Registry accepts a GitHub OIDC
+// identity for io.github.baalimago/*, so this job needs no stored credential.
+func TestMCPRegistryPublishWorkflow(t *testing.T) {
+	t.Parallel()
+
+	data, err := os.ReadFile(".github/workflows/release.yml")
+	if err != nil {
+		t.Fatalf("read release workflow: %v", err)
+	}
+	workflow := string(data)
+
+	publishNPM := strings.Index(workflow, "  publish-npm:")
+	publishMCP := strings.Index(workflow, "  publish-mcp:")
+	if publishNPM < 0 || publishMCP < 0 || publishMCP < publishNPM {
+		t.Fatal("release workflow does not define publish-mcp after publish-npm")
+	}
+	for _, want := range []string{
+		"needs: [publish-npm]",
+		"if: github.ref_type == 'tag'",
+		"id-token: write",
+		"mcp-publisher validate server.json",
+		"mcp-publisher login github-oidc",
+		"mcp-publisher publish server.json",
+	} {
+		if !strings.Contains(workflow[publishMCP:], want) {
+			t.Errorf("publish-mcp job does not contain %q", want)
+		}
+	}
+}
+
 // startAndWait runs name with args and collects its streams and exit code.
 //
 // os/exec is absent from the server by contract: the seam scan in

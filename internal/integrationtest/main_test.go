@@ -29,6 +29,14 @@ func TestMain(m *testing.M) {
 	if mode := os.Getenv("SLIVINGDOC_INTEGRATION_HELPER"); mode != "" {
 		os.Exit(helperMain(mode))
 	}
+	// The real S3 backend is a mandatory suite prerequisite. Start it before
+	// m.Run starts Go's strict package timeout, so the timeout continues to
+	// measure scenario execution rather than image/container startup. Helpers
+	// take the branch above and never start a second suite container.
+	if err := tests3.Start(); err != nil {
+		fmt.Fprintf(os.Stderr, "s3 integration unavailable: %v\nDocker is required to run this suite; start the daemon and re-run.\n", err)
+		os.Exit(1)
+	}
 	code := m.Run()
 	tests3.Terminate()
 	os.Exit(code)

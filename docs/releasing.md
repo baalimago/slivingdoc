@@ -51,16 +51,13 @@ either release version by hand. The npm package declares the matching
 `mcpName`, so ownership verification succeeds only after the release workflow
 has published that new package version.
 
-After the tagged release and npm publication have completed, publish the same
-checked-in manifest:
+After npm publication completes, the same tag's `publish-mcp` job validates and
+publishes the checked-in card automatically. It uses GitHub Actions OIDC for
+the `io.github.baalimago/slivingdoc` namespace, so the repository stores no
+Registry token or GitHub personal access token. The job depends on
+`publish-npm`; the Registry therefore cannot receive a card before it can
+verify the matching public npm package.
 
-```text
-mcp-publisher validate server.json
-mcp-publisher login github
-mcp-publisher publish server.json
-```
-
-GitHub authentication may publish the `io.github.baalimago/slivingdoc`
-namespace. `mcp-publisher publish` is deliberately a maintainer action, not a
-release-workflow step: it publishes public registry metadata after a maintainer
-has checked the completed npm release.
+For a transient GitHub or Registry failure, re-run only the `Publish MCP
+Registry card` job from the release workflow. Do not publish the card by hand
+as a normal release step.

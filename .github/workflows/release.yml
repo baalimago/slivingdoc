@@ -133,3 +133,28 @@ jobs:
           # the GitHub release for this version is complete. Trusted
           # publishing (OIDC) supplies the credentials; no token exists.
           npm publish --tag "$dist_tag"
+
+  publish-mcp:
+    # The Registry verifies the npm package's mcpName and version. Depend on
+    # publish-npm so this card can only be submitted once that exact package
+    # version is publicly available.
+    name: Publish MCP Registry card
+    needs: [publish-npm]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      # Lets mcp-publisher exchange this job's GitHub OIDC identity for a
+      # Registry token. No Registry token or GitHub PAT is stored as a secret.
+      id-token: write
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - name: Install mcp-publisher
+        run: |
+          curl --fail --silent --show-error --location "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
+      - name: Validate MCP Registry card
+        run: ./mcp-publisher validate server.json
+      - name: Authenticate to the MCP Registry
+        run: ./mcp-publisher login github-oidc
+      - name: Publish MCP Registry card
+        run: ./mcp-publisher publish server.json

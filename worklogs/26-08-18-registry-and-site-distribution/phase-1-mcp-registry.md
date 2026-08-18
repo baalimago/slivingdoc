@@ -7,7 +7,7 @@
 ## Goal
 
 Prepare a registry-valid, release-synchronized npm/stdio manifest that the
-maintainer can publish after the next npm release completes.
+existing release workflow can publish after the matching npm release completes.
 
 ## Specification
 
@@ -20,15 +20,15 @@ maintainer can publish after the next npm release completes.
 - Make `scripts/release.go` update and stage the package and registry version
   fields together. The package has one version field; the card has the server
   and npm-package version fields.
-- Document the post-release `mcp-publisher validate`, login, and publish flow
-  in `docs/releasing.md`.
+- Extend the existing `release.yml` workflow with a GitHub OIDC Registry job
+  that depends on `publish-npm`, then document that automatic flow.
 - Add a release-level test proving version/name/install-command parity.
 
 ## Integration contract
 
 | Trigger | Collaborators | Observable result | Required side effect | Prohibited side effect |
 | --- | --- | --- | --- | --- |
-| `make release` | release script, npm package, server card | Both manifests receive the selected version and are committed together. | Stage both metadata files. | No Registry publication. |
+| `make release` | release script, npm package, server card, release workflow | Both manifests receive the selected version and are committed together; the later Registry job publishes it after npm succeeds. | Stage both metadata files and submit the release card once. | Publish before npm can verify it. |
 | `mcp-publisher validate server.json` | Official Registry schema | The card is schema-valid. | Read local metadata only. | No public registry mutation. |
 | Registry install | npm/npx, slivingdoc CLI | Client invokes `npx -y slivingdoc serve` with a bucket configuration. | Start stdio server. | Expose or require static AWS keys. |
 
@@ -37,7 +37,8 @@ maintainer can publish after the next npm release completes.
 - [x] The package has the matching `mcpName`.
 - [x] `server.json` represents the npm stdio invocation and only requires the bucket.
 - [x] A release bump preserves package/card name and version parity.
-- [x] `docs/releasing.md` gives the maintainer the correct publication order.
+- [x] The existing release workflow validates and publishes the card after npm.
+- [x] `docs/releasing.md` gives the maintainer the automatic publication flow.
 - [x] A repeatable repository test proves the metadata contract.
 
 ## Error coverage
@@ -58,6 +59,9 @@ maintainer can publish after the next npm release completes.
   transport, and the required bucket setting agree across the two manifests.
 - The Registry metadata will be available in the next npm release, not
   retroactively in npm `0.1.4`.
+- The `publish-mcp` job uses GitHub OIDC with no stored Registry token or
+  personal access token. It first validates `server.json`, then publishes it
+  after `publish-npm` completes.
 
 ## Review findings
 
