@@ -15,8 +15,13 @@ make test
 make npm-test
 ```
 
-`make test` first builds the release-style binary (the `build` target),
-then runs exactly:
+`make test` first builds the release-style binary and the test-only S3 lease.
+The lease starts one SeaweedFS container and writes its loopback endpoint to
+an ephemeral ready file. The unchanged Go command receives that file path,
+so its package binaries attach to the same service while preserving fresh
+per-test prefixes. Container startup overlaps Go compilation and non-S3
+packages; the lease owns termination after the command exits. It then runs
+exactly:
 
 ```text
 go test -race -count=3 -timeout=30s -coverpkg=./... -coverprofile=.build/cover.out ./...
@@ -67,6 +72,11 @@ The release layer drives the real `scripts/*.sh` from `release_test.go` and
 builds the release-style binary once per test process, so `-count=3` links
 libgit2 once.
 
+Running the displayed `go test` command directly remains supported. Without
+the ready-file environment variable, `internal/tests3` starts its mandatory
+SeaweedFS container once in each package test process, preserving the same
+real-S3 coverage outside Make.
+
 ## Other gates
 
 Formatting and static analysis are not tests:
@@ -91,11 +101,11 @@ between counts fails the gate. Scenarios therefore run with `t.Parallel()`.
 They take their isolation from per-test S3 prefixes and per-test workspace,
 private, and cache roots.
 
-Packages also run concurrently, including the three that each start their
-own S3 test container. There is no `-p` bound. On a four-core runner, the
-slowest package sits near 20 s of the 30 s budget whether packages run one
-at a time or all at once. Serializing them bought no headroom and cost
-about 3x wall clock.
+Packages also run concurrently. `make test` begins one shared S3 lease before
+the command and the real-S3 test binaries wait only until that endpoint is
+ready; direct `go test` uses the per-process fallback. There is no `-p`
+bound. On a four-core runner, serializing packages bought no headroom and
+cost about 3x wall clock.
 
 Do not remove the race detector, the count, or the timeout, and do not
 reintroduce a mode that runs a subset. A test too slow for the budget is a

@@ -21,10 +21,10 @@ import (
 )
 
 // The real-S3 suite is the real-HTTP evidence for the storage protocol. It
-// runs against one pinned S3-compatible container per go test invocation
-// (shared through internal/tests3), isolates every test by configured
-// prefix, and reuses the shared contract suite so the fake and the real
-// adapter must agree. A missing Docker daemon fails the run with a
+// runs against the shared pinned S3-compatible backend supplied by make test
+// (or a per-process fallback for direct go test), isolates every test by
+// configured prefix, and reuses the shared contract suite so the fake and
+// the real adapter must agree. A missing Docker daemon fails the run with a
 // diagnostic that names the unavailable dependency; the CI integration job
 // treats any skip as failure.
 
