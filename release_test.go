@@ -5,6 +5,7 @@ package main
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"go/build"
 	"io"
@@ -25,6 +26,98 @@ import (
 // releaseTestVersion is injected into the smoke binary through the linker so
 // --version proves the release build wiring, not a compiled-in default.
 const releaseTestVersion = "0.0.0-release-test"
+
+type registryManifest struct {
+	Name     string `json:"name"`
+	Version  string `json:"version"`
+	Packages []struct {
+		Identifier       string `json:"identifier"`
+		Version          string `json:"version"`
+		RegistryType     string `json:"registryType"`
+		RuntimeHint      string `json:"runtimeHint"`
+		RuntimeArguments []struct {
+			Type  string `json:"type"`
+			Value string `json:"value"`
+		} `json:"runtimeArguments"`
+		PackageArguments []struct {
+			Type  string `json:"type"`
+			Value string `json:"value"`
+		} `json:"packageArguments"`
+		EnvironmentVariables []struct {
+			Name       string `json:"name"`
+			IsRequired bool   `json:"isRequired"`
+		} `json:"environmentVariables"`
+		Transport struct {
+			Type string `json:"type"`
+		} `json:"transport"`
+	} `json:"packages"`
+}
+
+type npmPackageManifest struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
+	MCPName string `json:"mcpName"`
+}
+
+// TestMCPRegistryManifest proves the source-controlled npm package and
+// registry card describe one installable stdio server. The registry verifies
+// mcpName from the published npm package, so this parity must survive every
+// release bump.
+func TestMCPRegistryManifest(t *testing.T) {
+	t.Parallel()
+
+	pkgData, err := os.ReadFile("npm/slivingdoc/package.json")
+	if err != nil {
+		t.Fatalf("read npm package manifest: %v", err)
+	}
+	var pkg npmPackageManifest
+	if err := json.Unmarshal(pkgData, &pkg); err != nil {
+		t.Fatalf("decode npm package manifest: %v", err)
+	}
+
+	registryData, err := os.ReadFile("server.json")
+	if err != nil {
+		t.Fatalf("read MCP Registry manifest: %v", err)
+	}
+	var registry registryManifest
+	if err := json.Unmarshal(registryData, &registry); err != nil {
+		t.Fatalf("decode MCP Registry manifest: %v", err)
+	}
+
+	if registry.Name != pkg.MCPName {
+		t.Fatalf("registry name = %q, npm mcpName = %q", registry.Name, pkg.MCPName)
+	}
+	if registry.Version != pkg.Version {
+		t.Fatalf("registry version = %q, npm version = %q", registry.Version, pkg.Version)
+	}
+	if len(registry.Packages) != 1 {
+		t.Fatalf("registry packages = %d, want 1", len(registry.Packages))
+	}
+
+	entry := registry.Packages[0]
+	if entry.RegistryType != "npm" || entry.Identifier != pkg.Name || entry.Version != pkg.Version {
+		t.Fatalf("registry package = (%q, %q, %q), want npm package %q at %q", entry.RegistryType, entry.Identifier, entry.Version, pkg.Name, pkg.Version)
+	}
+	if entry.RuntimeHint != "npx" || entry.Transport.Type != "stdio" {
+		t.Fatalf("registry runtime and transport = (%q, %q), want (npx, stdio)", entry.RuntimeHint, entry.Transport.Type)
+	}
+	if len(entry.RuntimeArguments) != 1 || entry.RuntimeArguments[0].Type != "positional" || entry.RuntimeArguments[0].Value != "-y" {
+		t.Fatalf("registry runtime arguments = %+v, want one positional -y", entry.RuntimeArguments)
+	}
+	if len(entry.PackageArguments) != 1 || entry.PackageArguments[0].Type != "positional" || entry.PackageArguments[0].Value != "serve" {
+		t.Fatalf("registry package arguments = %+v, want one positional serve", entry.PackageArguments)
+	}
+
+	hasBucket := false
+	for _, variable := range entry.EnvironmentVariables {
+		if variable.Name == "SLIVINGDOC_BUCKET" && variable.IsRequired {
+			hasBucket = true
+		}
+	}
+	if !hasBucket {
+		t.Fatal("registry manifest does not require SLIVINGDOC_BUCKET")
+	}
+}
 
 // startAndWait runs name with args and collects its streams and exit code.
 //

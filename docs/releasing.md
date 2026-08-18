@@ -24,9 +24,9 @@ make release
 ```
 
 The command prints the recent releases, prompts for the new version and
-a tag description, bumps `npm/slivingdoc/package.json`, commits the
-bump, annotates the `v<version>` tag, and pushes branch and tag. The
-tag push runs the release workflow.
+a tag description, bumps `npm/slivingdoc/package.json` and `server.json`,
+commits the bump, annotates the `v<version>` tag, and pushes branch and tag.
+The tag push runs the release workflow.
 
 ## Publication order
 
@@ -42,3 +42,25 @@ to `latest`.
 
 Publication uses npm trusted publishing (OIDC). The repository stores
 no npm token, and each publish carries a provenance attestation.
+
+## Official MCP Registry
+
+`server.json` is the official MCP Registry manifest. Its server version and
+npm package version always move together through `make release`; do not edit
+either release version by hand. The npm package declares the matching
+`mcpName`, so ownership verification succeeds only after the release workflow
+has published that new package version.
+
+After the tagged release and npm publication have completed, publish the same
+checked-in manifest:
+
+```text
+mcp-publisher validate server.json
+mcp-publisher login github
+mcp-publisher publish server.json
+```
+
+GitHub authentication may publish the `io.github.baalimago/slivingdoc`
+namespace. `mcp-publisher publish` is deliberately a maintainer action, not a
+release-workflow step: it publishes public registry metadata after a maintainer
+has checked the completed npm release.

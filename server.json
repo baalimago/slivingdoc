@@ -1,0 +1,67 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.baalimago/slivingdoc",
+  "title": "slivingdoc",
+  "description": "Share ordinary text files between concurrent agents without silently overwriting edits.",
+  "repository": {
+    "url": "https://github.com/baalimago/slivingdoc",
+    "source": "github"
+  },
+  "version": "0.1.4",
+  "websiteUrl": "https://slivingdoc.dev/",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "slivingdoc",
+      "version": "0.1.4",
+      "runtimeHint": "npx",
+      "runtimeArguments": [
+        {
+          "type": "positional",
+          "value": "-y"
+        }
+      ],
+      "packageArguments": [
+        {
+          "type": "positional",
+          "value": "serve"
+        }
+      ],
+      "environmentVariables": [
+        {
+          "name": "SLIVINGDOC_BUCKET",
+          "description": "S3-compatible bucket that stores the shared text workspace.",
+          "isRequired": true,
+          "valueHint": "my-notes"
+        },
+        {
+          "name": "AWS_PROFILE",
+          "description": "Optional AWS profile used by the standard AWS credential chain.",
+          "isRequired": false,
+          "valueHint": "slivingdoc"
+        },
+        {
+          "name": "AWS_REGION",
+          "description": "AWS region for the bucket or S3-compatible endpoint.",
+          "isRequired": false,
+          "default": "us-east-1"
+        },
+        {
+          "name": "AWS_ENDPOINT_URL_S3",
+          "description": "Optional endpoint for an S3-compatible store such as SeaweedFS.",
+          "isRequired": false,
+          "valueHint": "http://localhost:8333"
+        },
+        {
+          "name": "SLIVINGDOC_WORKSPACE_ROOT",
+          "description": "Optional root that contains directories agents may pull and commit.",
+          "isRequired": false,
+          "valueHint": "/srv/notes"
+        }
+      ],
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}

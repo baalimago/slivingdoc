@@ -25,6 +25,7 @@ const (
 
 const (
 	pkgPath       = "npm/slivingdoc/package.json"
+	registryPath  = "server.json"
 	releaseBranch = "master"
 )
 
@@ -65,7 +66,7 @@ func main() {
 }
 
 func run() error {
-	for _, marker := range []string{"go.mod", "Makefile", pkgPath} {
+	for _, marker := range []string{"go.mod", "Makefile", pkgPath, registryPath} {
 		if _, err := os.Stat(marker); err != nil {
 			return fmt.Errorf("run from the repository root; %s is missing", marker)
 		}
@@ -159,11 +160,17 @@ func run() error {
 		return err
 	}
 
-	if err := bumpVersion(pkgPath, version); err != nil {
+	if err := bumpPackageVersion(version); err != nil {
+		return err
+	}
+	if err := bumpRegistryVersions(version); err != nil {
 		return err
 	}
 	fmt.Printf("%s %s: %s -> %s\n",
 		paint(ansiGreen, "✓ bumped"), pkgPath,
+		paint(ansiDim, current), paint(ansiBold+ansiCyan, version))
+	fmt.Printf("%s %s: %s -> %s\n",
+		paint(ansiGreen, "✓ bumped"), registryPath,
 		paint(ansiDim, current), paint(ansiBold+ansiCyan, version))
 
 	fmt.Println(paint(ansiBold, "🧪 running npm launcher tests"))
@@ -181,7 +188,7 @@ func run() error {
 	tagArgs := []string{"tag", "-a", tag, "-m", desc}
 
 	steps := [][]string{
-		{"add", pkgPath},
+		{"add", pkgPath, registryPath},
 		commitArgs,
 		tagArgs,
 		{"push", "origin", releaseBranch},
@@ -231,7 +238,15 @@ func pkgVersion() (string, error) {
 	return "", fmt.Errorf("no version field in %s", pkgPath)
 }
 
-func bumpVersion(path, version string) error {
+func bumpPackageVersion(version string) error {
+	return bumpVersionFields(pkgPath, version, 1)
+}
+
+func bumpRegistryVersions(version string) error {
+	return bumpVersionFields(registryPath, version, 2)
+}
+
+func bumpVersionFields(path, version string, want int) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return err
@@ -241,16 +256,15 @@ func bumpVersion(path, version string) error {
 		return err
 	}
 	lines := strings.Split(string(data), "\n")
-	found := false
+	found := 0
 	for i, line := range lines {
 		if m := versionLineRE.FindStringSubmatch(line); m != nil {
 			lines[i] = m[1] + `"version": "` + version + `"` + m[3]
-			found = true
-			break
+			found++
 		}
 	}
-	if !found {
-		return fmt.Errorf("no version field in %s", path)
+	if found != want {
+		return fmt.Errorf("%s has %d version fields, want %d", path, found, want)
 	}
 	return os.WriteFile(path, []byte(strings.Join(lines, "\n")), info.Mode().Perm())
 }
