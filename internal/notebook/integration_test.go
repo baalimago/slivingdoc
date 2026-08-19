@@ -17,10 +17,10 @@ import (
 // The real-S3 notebook suite proves the complete publication order over
 // real HTTP conditional writes with real libgit2: first publication,
 // independent pull, and concurrent writers converging on one accepted
-// state. It runs against one pinned S3-compatible container shared through
-// internal/tests3; a missing Docker daemon fails the run with a diagnostic
-// that names the unavailable dependency, and the CI integration job treats
-// any skip as failure.
+// state. It runs against the shared pinned S3-compatible backend supplied by
+// make test (or a per-process fallback for direct go test); a missing Docker
+// daemon fails the run with a diagnostic that names the unavailable
+// dependency, and the CI integration job treats any skip as failure.
 
 // TestMain terminates the shared S3-compatible container after the whole
 // suite.

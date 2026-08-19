@@ -52,6 +52,13 @@ func TestScenarioLoggingRecordShape(t *testing.T) {
 	}
 
 	joined := strings.Join(lines, "\n")
+	// This helper explicitly sets NO_COLOR, so it is also the process-level
+	// proof that the convention suppresses ANSI escapes. Keeping that
+	// assertion here avoids starting an otherwise identical helper solely for
+	// the second half of the colour scenario.
+	if strings.Contains(joined, "\033[") {
+		t.Fatalf("NO_COLOR helper stderr carries ANSI escapes: %q", joined)
+	}
 	// The tool call is correlated: its module and its request id are both on
 	// the record, which is what makes a concurrent log readable.
 	if !strings.Contains(joined, "module=mcp") || !strings.Contains(joined, "mcpReqID=") {
@@ -90,34 +97,22 @@ func TestScenarioLoggingPerModuleLevels(t *testing.T) {
 	}
 }
 
-// TestScenarioLoggingColor proves the ANSI level color is on by default and
-// that any non-empty NO_COLOR removes it, following the NO_COLOR convention.
+// TestScenarioLoggingColor proves ANSI level color is on by default. Its
+// companion assertion in TestScenarioLoggingRecordShape exercises the same
+// server with NO_COLOR=1 and proves that the convention disables colour.
 func TestScenarioLoggingColor(t *testing.T) {
 	t.Parallel()
-	for _, row := range []struct {
-		name    string
-		env     []string
-		colored bool
-	}{
-		{name: "coloured by default", env: []string{"NO_COLOR="}, colored: true},
-		{name: "NO_COLOR disables", env: []string{"NO_COLOR=1"}},
-	} {
-		t.Run(row.name, func(t *testing.T) {
-			t.Parallel()
-			h := spawnHelper(t, "fake", row.env, "serve")
-			cs := h.connectClient(t)
-			assertProcessCallOK(t, cs, toolPull, filepath.Join(h.workspaceRoot, "notes"), "")
-			if err := cs.Close(); err != nil {
-				t.Fatalf("close MCP client: %v", err)
-			}
-			if code := h.waitExit(t); code != 0 {
-				t.Fatalf("process exit = %d, want 0", code)
-			}
-			got := strings.Contains(h.stderrText(t), "\033[")
-			if got != row.colored {
-				t.Fatalf("stderr colour = %v, want %v; stderr: %q", got, row.colored, h.stderrText(t))
-			}
-		})
+	h := spawnHelper(t, "fake", []string{"NO_COLOR="}, "serve")
+	cs := h.connectClient(t)
+	assertProcessCallOK(t, cs, toolPull, filepath.Join(h.workspaceRoot, "notes"), "")
+	if err := cs.Close(); err != nil {
+		t.Fatalf("close MCP client: %v", err)
+	}
+	if code := h.waitExit(t); code != 0 {
+		t.Fatalf("process exit = %d, want 0", code)
+	}
+	if !strings.Contains(h.stderrText(t), "\033[") {
+		t.Fatalf("default-colour stderr carries no ANSI escape: %q", h.stderrText(t))
 	}
 }
 

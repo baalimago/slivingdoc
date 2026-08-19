@@ -156,21 +156,10 @@ func TestScenarioConfigInvalidAndEarlyExit(t *testing.T) {
 		})
 	}
 
-	// Negative control for the rows above: the same probe-failing store and
-	// the same environment refuse the serve command, so exit zero is
-	// evidence about the version command rather than about a store that
-	// happens to accept everything.
-	t.Run("serve refuses the store the version command ignores", func(t *testing.T) {
-		t.Parallel()
-		h := spawnHelper(t, "bad-store", nil, "serve")
-		code, stdout, stderr := h.runStdioProcess(t, nil)
-		if code == 0 {
-			t.Fatalf("serve against the probe-failing store = exit 0, want a startup refusal; stdout %q", stdout)
-		}
-		if !strings.Contains(stderr, "INCOMPATIBLE_STORE") {
-			t.Fatalf("serve stderr = %q, want the incompatible-store refusal", stderr)
-		}
-	})
+	// TestScenarioIntegrityStartupProbeFailure is the complementary negative
+	// control: the same probe-failing serve process refuses before transport
+	// startup. Keeping its stronger redaction assertions there prevents this
+	// scenario from booting an identical helper a second time.
 
 	t.Run("serve help skips startup dependencies", func(t *testing.T) {
 		t.Parallel()

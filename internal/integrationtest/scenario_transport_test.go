@@ -14,9 +14,10 @@ import (
 )
 
 // TestScenarioTransportStdioProcess drives the public server through a
-// spawned process and real stdio pipes. It proves initialization, listing,
-// both tools, protocol-only stdout, and clean shutdown when the client
-// disconnects (architecture sections 2 (L26) and 18.1 (L1117)).
+// spawned process and real stdio pipes. On platforms that support the
+// filesystem attack fixtures it continues with that compatible path-security
+// chain before shutting down, so both contracts share one identical server
+// bootstrap (architecture sections 2 (L26) and 18.1 (L1117)).
 func TestScenarioTransportStdioProcess(t *testing.T) {
 	t.Parallel()
 	h := spawnHelper(t, "fake", nil, "serve")
@@ -43,6 +44,10 @@ func TestScenarioTransportStdioProcess(t *testing.T) {
 		t.Fatalf("write visible test file: %v", err)
 	}
 	assertProcessCallOK(t, cs, toolCommit, path, "stdio commit")
+	// This uses the same unconfigured fake server and untouched workspace
+	// paths, so it can extend the process chain without coupling accepted
+	// remote state to the path-security assertions.
+	exerciseOptionalPathSecurity(t, h, cs)
 
 	if err := cs.Close(); err != nil {
 		t.Fatalf("close MCP client: %v", err)

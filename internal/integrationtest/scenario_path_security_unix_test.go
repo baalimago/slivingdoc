@@ -12,18 +12,18 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// TestScenarioPathSecurityProcess exercises the filesystem attack surface
-// through a real stdio process (architecture section 18.2, L1131). The
-// parent only arranges host fixtures; every observation enters through
-// notes_pull and its MCP error envelope.
+// exerciseOptionalPathSecurity extends the compatible stdio transport
+// process with the filesystem attack surface (architecture section 18.2,
+// L1131). The parent only arranges host fixtures; every observation enters
+// through notes_pull and its MCP error envelope.
 //
 // Each fixture lives in its own directory, so a rejection is attributable
 // to exactly one rule: a symlinked path component, a special file inside
 // the requested directory, or a request path outside the workspace root.
-func TestScenarioPathSecurityProcess(t *testing.T) {
-	t.Parallel()
-	h := spawnHelper(t, "fake", nil, "serve")
-	cs := h.connectClient(t)
+// It deliberately does not start a second helper: the transport scenario
+// already owns a server with the exact same configuration and lifecycle.
+func exerciseOptionalPathSecurity(t *testing.T, h *helperProc, cs *sdk.ClientSession) {
+	t.Helper()
 
 	outside := t.TempDir()
 	link := filepath.Join(h.workspaceRoot, "link")
@@ -78,13 +78,6 @@ func TestScenarioPathSecurityProcess(t *testing.T) {
 		t.Fatalf("directory outside the root = %v (err %v), want untouched and empty", entries, err)
 	}
 	assertSpecialDirUntouched(t, special)
-
-	if err := cs.Close(); err != nil {
-		t.Fatalf("close MCP client: %v", err)
-	}
-	if code := h.waitExit(t); code != 0 {
-		t.Fatalf("path-security process exit = %d, want 0; stderr: %s", code, h.stderrText(t))
-	}
 }
 
 // assertSpecialDirUntouched proves the rejected directory was neither

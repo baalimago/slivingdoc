@@ -1,14 +1,20 @@
-// Package tests3 starts one pinned S3-compatible container per test process
-// and hands out per-test prefixes below a shared bucket. The concrete image
-// is the current pinned implementation (SeaweedFS); importers depend on the
-// S3 contract, not on the vendor.
+// Package tests3 hands out test S3 suites and per-test prefixes below a
+// shared bucket. make test starts one broker-owned pinned SeaweedFS container
+// and injects its loopback endpoint into every test binary; direct go test
+// keeps the fallback that starts one pinned container per test process.
+// Importers depend on the S3 contract, not on the vendor.
 //
-// The package is test-only: only _test.go files import it.
+// The package and its lease executable are test-only infrastructure.
 package tests3
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net"
+	"net/url"
+	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -31,7 +37,20 @@ const (
 	Pass   = "slivingdoc-secret"
 	Bucket = "slivingdoc"
 	Region = "us-east-1"
+
+	// EndpointEnv injects the loopback endpoint of a broker-owned test
+	// backend. make test sets it after starting the test-only lease process;
+	// direct go test deliberately leaves it unset and keeps the per-process
+	// container startup behavior.
+	EndpointEnv = "SLIVINGDOC_TESTS3_ENDPOINT"
+
+	// EndpointFileEnv injects the path where the broker atomically publishes
+	// EndpointEnv. It lets go test compile and run non-S3 packages while the
+	// one shared S3 container starts.
+	EndpointFileEnv = "SLIVINGDOC_TESTS3_ENDPOINT_FILE"
 )
+
+const endpointFileWait = 2 * time.Minute
 
 var (
 	startOnce sync.Once
@@ -39,8 +58,9 @@ var (
 	startErr  error
 )
 
-// Suite is one shared S3-compatible container: its HTTP endpoint, a raw S3
-// client for direct assertions, and a fresh-prefix factory.
+// Suite is one shared S3-compatible backend: its HTTP endpoint, a raw S3
+// client for direct assertions, and a fresh-prefix factory. ctr is non-nil
+// only in the process that owns container lifecycle.
 type Suite struct {
 	Endpoint string
 	Raw      *s3.Client
@@ -63,6 +83,14 @@ type StoreConfig struct {
 // scenario's strict per-package test budget.
 func Start() error {
 	startOnce.Do(func() {
+		if readyFile := os.Getenv(EndpointFileEnv); readyFile != "" {
+			suite, startErr = attachFromFile(readyFile)
+			return
+		}
+		if endpoint := os.Getenv(EndpointEnv); endpoint != "" {
+			suite, startErr = attach(endpoint)
+			return
+		}
 		if err := dockerAvailable(); err != nil {
 			startErr = fmt.Errorf("docker unavailable: %w", err)
 			return
@@ -70,6 +98,18 @@ func Start() error {
 		suite, startErr = start()
 	})
 	return startErr
+}
+
+// Endpoint returns the endpoint of the process's shared suite. The lease
+// executable uses it only after Start has made the backend ready.
+func Endpoint() (string, error) {
+	if err := Start(); err != nil {
+		return "", err
+	}
+	if suite == nil {
+		return "", fmt.Errorf("tests3: start returned no suite")
+	}
+	return suite.Endpoint, nil
 }
 
 // Ensure returns the shared suite, starting the pinned container once per
@@ -110,7 +150,7 @@ func require(t fataler, s *Suite, err error) *Suite {
 // connection on a busy runner. The testcontainers reaper (Ryuk) guarantees
 // eventual cleanup, so the binary may exit before the stop completes.
 func Terminate() {
-	if suite == nil {
+	if suite == nil || suite.ctr == nil {
 		return
 	}
 	go func() {
@@ -118,6 +158,76 @@ func Terminate() {
 		defer cancel()
 		_ = suite.ctr.Terminate(ctx)
 	}()
+}
+
+// attach builds an attach-only suite for the endpoint published by the
+// make-test lease process. It intentionally accepts only loopback HTTP URLs,
+// so a stray environment variable cannot send a test to a developer's or
+// cloud S3 endpoint. The broker owns termination; attached test binaries
+// leave ctr nil and Terminate becomes a no-op.
+func attach(endpoint string) (*Suite, error) {
+	endpoint, err := loopbackEndpoint(endpoint)
+	if err != nil {
+		return nil, fmt.Errorf("tests3: injected endpoint: %w", err)
+	}
+	return &Suite{Endpoint: endpoint, Raw: newRawClient(endpoint)}, nil
+}
+
+func attachFromFile(path string) (*Suite, error) {
+	deadline := time.Now().Add(endpointFileWait)
+	for {
+		endpoint, ready, err := endpointFromFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("tests3: injected endpoint file: %w", err)
+		}
+		if ready {
+			return attach(endpoint)
+		}
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("tests3: injected endpoint file %q was not ready within %s", path, endpointFileWait)
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+}
+
+func endpointFromFile(path string) (endpoint string, ready bool, err error) {
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	value := strings.TrimSpace(string(data))
+	if value == "" {
+		return "", false, nil
+	}
+	if text, ok := strings.CutPrefix(value, "error: "); ok {
+		return "", false, errors.New(text)
+	}
+	return value, true, nil
+}
+
+func loopbackEndpoint(endpoint string) (string, error) {
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return "", fmt.Errorf("parse URL: %w", err)
+	}
+	if u.Scheme != "http" || u.Host == "" || u.User != nil || u.Port() == "" {
+		return "", fmt.Errorf("must be an http loopback URL with an explicit port")
+	}
+	if u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
+		return "", fmt.Errorf("must not contain a path, query, or fragment")
+	}
+	host := u.Hostname()
+	if ip := net.ParseIP(host); ip != nil {
+		if !ip.IsLoopback() {
+			return "", fmt.Errorf("host %q is not loopback", host)
+		}
+	} else if !strings.EqualFold(host, "localhost") {
+		return "", fmt.Errorf("host %q is not loopback", host)
+	}
+	return u.String(), nil
 }
 
 // StoreConfig returns the plain connection values of the local S3 endpoint:
@@ -194,6 +304,15 @@ func start() (*Suite, error) {
 		return nil, fmt.Errorf("s3 port: %w", err)
 	}
 	endpoint := fmt.Sprintf("http://%s:%s", host, port.Port())
+	raw := newRawClient(endpoint)
+	if _, err := raw.CreateBucket(ctx, &s3.CreateBucketInput{Bucket: aws.String(Bucket)}); err != nil {
+		_ = c.Terminate(ctx)
+		return nil, fmt.Errorf("create bucket: %w", err)
+	}
+	return &Suite{Endpoint: endpoint, Raw: raw, ctr: c}, nil
+}
+
+func newRawClient(endpoint string) *s3.Client {
 	cfg := aws.Config{
 		Region:       Region,
 		BaseEndpoint: aws.String(endpoint),
@@ -201,10 +320,5 @@ func start() (*Suite, error) {
 			return aws.Credentials{AccessKeyID: User, SecretAccessKey: Pass}, nil
 		}),
 	}
-	raw := s3.NewFromConfig(cfg, func(o *s3.Options) { o.UsePathStyle = true })
-	if _, err := raw.CreateBucket(ctx, &s3.CreateBucketInput{Bucket: aws.String(Bucket)}); err != nil {
-		_ = c.Terminate(ctx)
-		return nil, fmt.Errorf("create bucket: %w", err)
-	}
-	return &Suite{Endpoint: endpoint, Raw: raw, ctr: c}, nil
+	return s3.NewFromConfig(cfg, func(o *s3.Options) { o.UsePathStyle = true })
 }

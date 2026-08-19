@@ -10,6 +10,8 @@ STATICCHECK := go run honnef.co/go/tools/cmd/staticcheck@v0.7.0
 
 BUILD_DIR := .build
 BIN := $(BUILD_DIR)/slivingdoc
+TEST_S3_LEASE := $(BUILD_DIR)/tests3-lease
+TEST_S3_LEASE_SOURCES := $(shell find internal/tests3 -type f -name '*.go' -print)
 COVER_PROFILE := $(BUILD_DIR)/cover.out
 # The documented statement-coverage floor; 90 % is preferred.
 COVER_FLOOR := 70
@@ -53,13 +55,19 @@ $(BUILD_DIR)/libgit2/.build-stamp: scripts/build-libgit2.sh
 $(BIN): $(BUILD_DIR)/libgit2/.build-stamp
 	CGO_ENABLED=1 $(GO) build -trimpath -ldflags '$(LDFLAGS)' -o $@ .
 
+# tests3-lease — the test-only process that owns the one S3-compatible
+# container used by make test. The test binaries receive only its loopback
+# endpoint; direct `go test` still starts its normal per-process suite.
+$(TEST_S3_LEASE): go.mod go.sum $(TEST_S3_LEASE_SOURCES)
+	$(GO) build -trimpath -o $@ ./internal/tests3/lease
+
 build: $(BIN)
 
 # test — every Go test in the repository, against the real libgit2 boundary
-# and real MinIO containers, under the race detector, reporting coverage.
-# Docker and the pinned libgit2 are prerequisites: an unreachable Docker
-# daemon fails the suite rather than skipping it, so no run can silently omit
-# the storage protocol.
+# and a real SeaweedFS container, under the race detector, reporting coverage.
+# The test-only lease starts one S3 service and injects it into every package
+# test binary; Docker and the pinned libgit2 remain prerequisites, so no run
+# can silently omit the storage protocol.
 #
 # Packages run concurrently. The timeout is per package, and measurement on a
 # four-core runner puts the slowest package near 20 s either way, so bounding
@@ -69,8 +77,19 @@ build: $(BIN)
 # packages other than its own; per-package coverage would understate it badly.
 #
 # Do not weaken -race, -count, or -timeout.
-test: $(BIN)
-	$(GO) test -race -count=3 -timeout=30s -coverpkg=./... -coverprofile=$(COVER_PROFILE) ./...
+test: $(BIN) $(TEST_S3_LEASE)
+	@lease_dir=$$(mktemp -d "$(abspath $(BUILD_DIR))/tests3.XXXXXX"); \
+	 ready_file="$$lease_dir/endpoint"; \
+	 "$(TEST_S3_LEASE)" --ready-file "$$ready_file" & lease_pid=$$!; \
+	 cleanup() { \
+	   kill -INT "$$lease_pid" 2>/dev/null || true; \
+	   wait "$$lease_pid" 2>/dev/null || true; \
+	   rm -f "$$ready_file"; \
+	   rmdir "$$lease_dir" 2>/dev/null || true; \
+	 }; \
+	 trap cleanup EXIT; \
+	 trap 'exit 130' HUP INT TERM; \
+	 SLIVINGDOC_TESTS3_ENDPOINT_FILE="$$ready_file" $(GO) test -race -count=3 -timeout=30s -coverpkg=./... -coverprofile=$(COVER_PROFILE) ./...
 	@total=$$($(GO) tool cover -func=$(COVER_PROFILE) | tail -1 | awk '{print $$3}'); \
 	 echo "== coverage: $$total (floor $(COVER_FLOOR)%) =="; \
 	 awk -v got="$${total%\%}" -v floor=$(COVER_FLOOR) 'BEGIN { \
