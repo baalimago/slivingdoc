@@ -506,6 +506,35 @@ func TestIncrementPackRequiresBase(t *testing.T) {
 	}
 }
 
+func TestIncrementPackWithDeltaImportsSelfContained(t *testing.T) {
+	repo := newTestRepo(t)
+
+	// Two mutually-similar large blobs appear only in the head commit, so
+	// the pack builder delta-compresses one against the other (REF_DELTA)
+	// inside the increment. The pack must still import into an empty
+	// repository: its delta base lives inside its own object set.
+	big := strings.Repeat("line one two three four five six seven eight nine ten\n", 400)
+	bigA := big + "marker alpha\n"
+	bigB := strings.Replace(big, "line one", "LINE ONE", 1) + "marker bravo\n"
+
+	c1 := commitAt(t, repo, buildSnapshotTree(t, repo, map[string]string{"seed.txt": "seed"}), nil, "one")
+	c2 := commitAt(t, repo, buildSnapshotTree(t, repo, map[string]string{
+		"seed.txt": "seed",
+		"a.txt":    bigA,
+		"b.txt":    bigB,
+	}), []git.OID{c1}, "two")
+
+	increment, err := git.ExportIncrement(repo, c2, c1)
+	if err != nil {
+		t.Fatalf("ExportIncrement() = %v", err)
+	}
+
+	empty := newTestRepo(t)
+	if err := git.ImportPack(empty, increment.Data); err != nil {
+		t.Fatalf("ImportPack(increment) = %v", err)
+	}
+}
+
 func TestTruncatedPackRejected(t *testing.T) {
 	repo := newTestRepo(t)
 	c1 := commitAt(t, repo, buildSnapshotTree(t, repo, map[string]string{"a.txt": "one"}), nil, "one")

@@ -64,18 +64,17 @@ static int sl_merge_file(
 	return git_merge_file(out, &ancestor, &ours, &theirs, &opts);
 }
 
-// sl_odb_writepack_* forward to the writepack vtable. The stats argument is
-// required non-NULL by libgit2's indexer, so each call passes a local
-// progress struct; slivingdoc reports import progress through Go errors,
+// sl_odb_writepack_* forward to the writepack vtable. The stats argument
+// carries the indexer progress across the append and commit calls; libgit2
+// requires one shared struct so commit sees the total object count that
+// append recorded. slivingdoc reports import progress through Go errors,
 // not indexer callbacks.
-static int sl_odb_writepack_append(git_odb_writepack *wp, const void *data, size_t size) {
-	git_indexer_progress stats = { 0 };
-	return wp->append(wp, data, size, &stats);
+static int sl_odb_writepack_append(git_odb_writepack *wp, const void *data, size_t size, git_indexer_progress *stats) {
+	return wp->append(wp, data, size, stats);
 }
 
-static int sl_odb_writepack_commit(git_odb_writepack *wp) {
-	git_indexer_progress stats = { 0 };
-	return wp->commit(wp, &stats);
+static int sl_odb_writepack_commit(git_odb_writepack *wp, git_indexer_progress *stats) {
+	return wp->commit(wp, stats);
 }
 
 static void sl_odb_writepack_free(git_odb_writepack *wp) {
@@ -500,14 +499,15 @@ func libgit2ImportPack(odb *odbHandle, data []byte) error {
 		return nativeError("start pack import")
 	}
 	var (
-		p  unsafe.Pointer
-		rc C.int
+		p     unsafe.Pointer
+		stats C.git_indexer_progress
+		rc    C.int
 	)
 	if len(data) > 0 {
 		p = unsafe.Pointer(&data[0])
 	}
-	if rc = C.sl_odb_writepack_append(wp, p, C.size_t(len(data))); rc >= 0 {
-		rc = C.sl_odb_writepack_commit(wp)
+	if rc = C.sl_odb_writepack_append(wp, p, C.size_t(len(data)), &stats); rc >= 0 {
+		rc = C.sl_odb_writepack_commit(wp, &stats)
 	}
 	C.sl_odb_writepack_free(wp)
 	if rc < 0 {
