@@ -228,8 +228,9 @@ JSON-RPC over stdio. A typical client configuration is:
 }
 ```
 
-With no `--workspace-root`, the server takes its own session directory and
-the agent calls `notes_pull` and `notes_commit` without a `path`. Add
+With no `--workspace-root`, the server takes its own session directory. The
+agent omits `path` or sends an empty string when it calls `notes_pull` and
+`notes_commit`. Add
 `"--workspace-root", "/srv/notes"` to the args when humans and agents should
 share one fixed directory instead.
 

@@ -215,13 +215,13 @@ func errorResult(te *ToolError) *sdk.CallToolResult {
 // and commit (architecture section 2).
 const (
 	pullDescription = "Write the current notebook into the notebook directory " +
-		"and record the accepted state. Omit path to use the server's notebook " +
+		"and record the accepted state. Omit path or pass an empty string to use the server's notebook " +
 		"directory, which the result reports. Edit UTF-8 text files (without " +
 		"U+0000) there between notes_pull and notes_commit; notes_commit " +
 		"publishes the changes and incorporates concurrent non-conflicting changes."
 
 	commitDescription = "Publish the caller's changes in the notebook directory " +
-		"and incorporate concurrent non-conflicting changes. Omit path to use " +
+		"and incorporate concurrent non-conflicting changes. Omit path or pass an empty string to use " +
 		"the server's notebook directory, which the result reports. message must " +
 		"be non-blank UTF-8 without U+0000, at most 16,384 bytes; it is retained " +
 		"in recent internal history only."
@@ -252,9 +252,9 @@ var (
 	pathProperty = map[string]any{
 		"type": "string",
 		"description": "Optional absolute UTF-8 host path of the notebook " +
-			"directory, 1 through 4,096 bytes. Omit it to use the server's " +
+			"directory, 1 through 4,096 bytes. Omit it or pass an empty string to use the server's " +
 			"notebook directory.",
-		"minLength": 1,
+		"minLength": 0,
 		"maxLength": maxPathBytes,
 	}
 

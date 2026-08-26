@@ -22,7 +22,7 @@ func TestDecodePull(t *testing.T) {
 		{name: "duplicate field", args: `{"path":"/a","path":"/b"}`, wantErr: "duplicate field"},
 		{name: "path not a string", args: map[string]any{"path": 5}, wantErr: "path must be a string"},
 		{name: "relative path", args: map[string]any{"path": "notes"}, wantErr: "path must be absolute"},
-		{name: "empty path", args: map[string]any{"path": ""}, wantErr: "path must not be empty"},
+		{name: "empty path defers to the notebook root", args: map[string]any{"path": ""}, want: ""},
 		{name: "path with NUL", args: map[string]any{"path": "/tmp/a\x00b"}, wantErr: "U+0000"},
 		{name: "non-object arguments", args: []any{abs}, wantErr: "must be a JSON object"},
 		{name: "string arguments", args: `"notes"`, wantErr: "must be a JSON object"},
@@ -85,6 +85,7 @@ func TestDecodeCommit(t *testing.T) {
 	}{
 		{name: "valid", args: map[string]any{"path": abs, "message": "update"}, wantPath: abs, wantMessage: "update"},
 		{name: "omitted path defers to the notebook root", args: map[string]any{"message": "m"}, wantPath: "", wantMessage: "m"},
+		{name: "empty path defers to the notebook root", args: map[string]any{"path": "", "message": "m"}, wantPath: "", wantMessage: "m"},
 		{name: "missing message", args: map[string]any{"path": abs}, wantErr: "message is required"},
 		{name: "unknown field", args: map[string]any{"path": abs, "message": "m", "extra": 1}, wantErr: "unknown field"},
 		{name: "null message", args: map[string]any{"path": abs, "message": nil}, wantErr: "explicit null"},

@@ -479,6 +479,22 @@ func TestInstructionsNameNotebookRoot(t *testing.T) {
 	}
 }
 
+// TestToolDescriptionsAdvertiseEmptyPathDefault keeps the MCP discovery text
+// aligned with the accepted empty-string request behavior.
+func TestToolDescriptionsAdvertiseEmptyPathDefault(t *testing.T) {
+	for name, description := range map[string]string{
+		toolPull:   pullDescription,
+		toolCommit: commitDescription,
+	} {
+		if !strings.Contains(description, "empty string") {
+			t.Errorf("%s description = %q, want empty-path guidance", name, description)
+		}
+	}
+	if got := pathProperty["minLength"]; got != 0 {
+		t.Fatalf("path schema minLength = %v, want 0", got)
+	}
+}
+
 // TestInvalidInputsNeverReachService proves that unknown fields, relative
 // paths, and non-object arguments are rejected before the service runs.
 func TestInvalidInputsNeverReachService(t *testing.T) {

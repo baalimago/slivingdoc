@@ -34,6 +34,10 @@ func TestScenarioEphemeralNotebook(t *testing.T) {
 	if !strings.Contains(instructions, pulled.Path) {
 		t.Fatalf("instructions = %q, want the notebook directory %q", instructions, pulled.Path)
 	}
+	emptyPulled := assertProcessArgsOK(t, cs, toolPull, "(empty)", map[string]any{"path": ""})
+	if emptyPulled.Path != pulled.Path {
+		t.Fatalf("empty-path pull path = %q, want the default path %q", emptyPulled.Path, pulled.Path)
+	}
 
 	// The directory is a per-process temporary one, not the working
 	// directory: the negative control is that no configured root was in
@@ -49,9 +53,9 @@ func TestScenarioEphemeralNotebook(t *testing.T) {
 		t.Fatalf("private root is not a sibling of the notebook: %v", err)
 	}
 
-	// A commit without a path publishes the edits in that same directory.
+	// A commit with an empty path publishes the edits in that same directory.
 	writeCLIFile(t, filepath.Join(pulled.Path, "a.md"), "ephemeral notes\n")
-	committed := assertProcessArgsOK(t, cs, toolCommit, "(default)", map[string]any{"message": "no path"})
+	committed := assertProcessArgsOK(t, cs, toolCommit, "(empty)", map[string]any{"path": "", "message": "empty path"})
 	if committed.Path != pulled.Path {
 		t.Fatalf("commit path = %q, want the pull path %q", committed.Path, pulled.Path)
 	}

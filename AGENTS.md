@@ -164,8 +164,8 @@ the engine seam. `internal/workspace` owns its narrow `Engine` view.
 ```text
 Public API:   notes_pull([path]) / notes_commit(message, [path])
               CLI mirror: slivingdoc pull [path] / commit [path] -m <message>
-              An omitted path is the workspace root, which serve defaults
-              to a per-process temporary session directory.
+              An omitted or empty MCP path is the workspace root, which
+              serve defaults to a per-process temporary session directory.
                                          |
                                          |  MCP stdio JSON-RPC or one-shot argv
                                          v
