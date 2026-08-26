@@ -169,9 +169,9 @@ func (w *Workspace) readVisibleFile(ctx context.Context, rawRel, path string) ([
 
 // collectVisible walks the visible directory without opening anything and
 // returns every file path and directory path relative to the workspace
-// root, in slash form. It is used to remove obsolete entries during the
-// copy fallback; removing a symlink removes the link, never the target, so
-// no entry is opened.
+// root, in slash form. It is used to remove obsolete entries during a
+// materialization; removing a symlink removes the link, never the target,
+// so no entry is opened.
 func (w *Workspace) collectVisible(ctx context.Context, dirRel, prefix string, files, dirs *[]string) error {
 	entries, err := w.readDir(dirRel)
 	if err != nil {

@@ -7,28 +7,22 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
-
-	"golang.org/x/sys/unix"
 )
 
-// forceExdevRename forces the copy fallback by making every rename of one
-// workspace fail with EXDEV, as a private root on a different device does.
-func forceExdevRename(t *testing.T, w *Workspace) {
-	t.Helper()
-	w.rename = func(_, _ string) error { return &os.LinkError{Op: "rename", Err: unix.EXDEV} }
-}
-
-func TestCopyFallbackMaterializesTree(t *testing.T) {
+// TestApplyMaterializesTree proves the in-place materialization covers
+// every shape of change in one operation: new files, obsolete files,
+// obsolete directory trees, a directory replaced by a file of the same
+// name, and an empty file. The transient private directories are cleaned
+// up and the workspace is left healthy.
+func TestApplyMaterializesTree(t *testing.T) {
 	w := openWorkspace(t, testConfig(t, newFakeEngine(), "notes"))
-	forceExdevRename(t, w)
-	// Seed obsolete state through the rename path first.
 	first := buildTree(t, w, map[string]string{"old.md": "old", "gone/sub/x.md": "x", "dirswap/f.md": "file"})
 	if err := w.Accept(context.Background(), Baseline{RemoteGeneration: 1, Head: oidTest("c"), Tree: first}); err != nil {
 		t.Fatalf("first Accept() = %v", err)
 	}
 	second := buildTree(t, w, map[string]string{"keep.md": "k", "dirswap.md": "now-file", "newdir/a.md": "a", "empty.txt": ""})
 	if err := w.Accept(context.Background(), Baseline{RemoteGeneration: 2, Head: oidTest("d"), Tree: second}); err != nil {
-		t.Fatalf("copy-fallback Accept() = %v", err)
+		t.Fatalf("second Accept() = %v", err)
 	}
 	for path, want := range map[string]string{"keep.md": "k", "dirswap.md": "now-file", "newdir/a.md": "a", "empty.txt": ""} {
 		if got := readFileBytes(t, filepath.Join(w.Path(), filepath.FromSlash(path))); string(got) != want {
@@ -46,16 +40,79 @@ func TestCopyFallbackMaterializesTree(t *testing.T) {
 		}
 	}
 	if w.RecoveryRequired() {
-		t.Fatal("copy fallback left the workspace requiring recovery")
+		t.Fatal("materialization left the workspace requiring recovery")
 	}
 }
 
-func TestCopyFallbackBreaksHardLinks(t *testing.T) {
+// TestApplyPreservesVisibleDirectoryIdentity is the regression guard for
+// the directory-swap bug: materialization must never replace L itself. An
+// earlier design renamed L aside and renamed a staged tree into its place,
+// which left every outside holder of L — a shell's working directory, an
+// open editor, a file watcher — pointing at a removed inode. The symptom
+// was a working directory where getcwd(2) fails and every relative path
+// resolves to nothing.
+//
+// The test holds an open descriptor on L across two materializations and
+// requires it to still name the live directory afterwards, which is the
+// same reference a working directory is.
+func TestApplyPreservesVisibleDirectoryIdentity(t *testing.T) {
+	for _, rel := range []string{"notes", "."} {
+		t.Run("rel="+rel, func(t *testing.T) {
+			cfg := testConfig(t, newFakeEngine(), rel)
+			w := openWorkspace(t, cfg)
+
+			before, err := os.Stat(w.Path())
+			if err != nil {
+				t.Fatalf("stat before: %v", err)
+			}
+			held, err := os.Open(w.Path())
+			if err != nil {
+				t.Fatalf("open visible directory: %v", err)
+			}
+			defer held.Close()
+
+			first := buildTree(t, w, map[string]string{"a.md": "one", "sub/b.md": "b"})
+			if err := w.Accept(context.Background(), Baseline{RemoteGeneration: 1, Head: oidTest("c"), Tree: first}); err != nil {
+				t.Fatalf("first Accept() = %v", err)
+			}
+			second := buildTree(t, w, map[string]string{"a.md": "two"})
+			if err := w.Accept(context.Background(), Baseline{RemoteGeneration: 2, Head: oidTest("d"), Tree: second}); err != nil {
+				t.Fatalf("second Accept() = %v", err)
+			}
+
+			after, err := os.Stat(w.Path())
+			if err != nil {
+				t.Fatalf("stat after: %v", err)
+			}
+			if !os.SameFile(before, after) {
+				t.Fatal("materialization replaced the visible directory; every outside holder of it is now orphaned")
+			}
+
+			// The held descriptor is the shell's working directory in
+			// miniature: reading through it must see the new tree, not an
+			// unlinked one.
+			names, err := held.Readdirnames(-1)
+			if err != nil {
+				t.Fatalf("read held directory: %v", err)
+			}
+			if len(names) == 0 {
+				t.Fatal("the held directory reads as empty: it was unlinked and replaced")
+			}
+			if got := readFileBytes(t, filepath.Join(w.Path(), "a.md")); string(got) != "two" {
+				t.Fatalf("a.md = %q, want the materialized content", got)
+			}
+		})
+	}
+}
+
+// TestApplyBreaksHardLinks proves each file is replaced through its own
+// temporary file, so a hard link into the notebook does not leak the new
+// content to its other name.
+func TestApplyBreaksHardLinks(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("hard-link creation needs privileges on Windows")
 	}
 	w := openWorkspace(t, testConfig(t, newFakeEngine(), "notes"))
-	forceExdevRename(t, w)
 	a := filepath.Join(w.Path(), "a.md")
 	if err := os.WriteFile(a, []byte("shared"), 0o644); err != nil {
 		t.Fatalf("write a.md: %v", err)
@@ -77,7 +134,7 @@ func TestCopyFallbackBreaksHardLinks(t *testing.T) {
 		t.Fatalf("stat b.md: %v", err)
 	}
 	if os.SameFile(ia, ib) {
-		t.Fatal("copy fallback preserved the hard link")
+		t.Fatal("materialization preserved the hard link")
 	}
 }
 
@@ -109,8 +166,8 @@ func TestSymlinkSubstitutionCannotEscapeRoot(t *testing.T) {
 	if _, err := w.Snapshot(context.Background()); !errors.Is(err, ErrSymlink) {
 		t.Fatalf("Snapshot() error = %v, want ErrSymlink", err)
 	}
-	// Replacement moves the link aside and removes the link itself; the
-	// target outside the root stays untouched.
+	// Materialization removes the link itself; the target outside the root
+	// stays untouched.
 	tree := buildTree(t, w, map[string]string{"a.md": "new"})
 	if err := w.Accept(context.Background(), Baseline{RemoteGeneration: 1, Head: oidTest("c"), Tree: tree}); err != nil {
 		t.Fatalf("Accept() = %v", err)

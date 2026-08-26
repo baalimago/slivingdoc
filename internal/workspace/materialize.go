@@ -4,9 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -81,18 +79,8 @@ func (w *Workspace) applyLocked(ctx context.Context, targetTree git.OID, newBase
 			return fmt.Errorf("workspace: replace: %w: injected: %v", ErrPartial, err)
 		}
 	}
-	if err := w.replaceVisible(ctx, stageDir, backupDir, snap); err != nil {
+	if err := w.applyInPlace(ctx, stageDir, snap); err != nil {
 		return err
-	}
-	// When the visible directory is the workspace root itself (rel == "."),
-	// the replacement renamed the root directory away and a new directory
-	// into place; the os.Root handle opened at Open still refers to the
-	// removed inode, so every later relative operation fails.
-	// Reopening w.path restores a live handle. For a visible path below the
-	// root the reopen resolves the same inode and is a harmless no-op. The
-	// operation lock is held, so no other root user can observe the swap.
-	if err := w.refreshRoot(); err != nil {
-		return fmt.Errorf("workspace: reopen workspace root: %w: %w", ErrPartial, err)
 	}
 
 	w.mu.Lock()
@@ -147,9 +135,10 @@ func (w *Workspace) markRecoveryRequired() error {
 
 // writeStage writes the target snapshot into the staging directory inside
 // P with the final visible modes: directories 0755, files 0644, subject to
-// the process umask. The staging directory itself is created even for an
-// empty target so the rename into place always has a source. A failure
-// leaves the visible directory untouched.
+// the process umask. It is the pre-flight of a materialization: the whole
+// target tree must be writable before L is touched at all, so an
+// out-of-space or cancelled write fails while the visible directory is
+// still intact and no recovery is required.
 func (w *Workspace) writeStage(ctx context.Context, stageDir string, snap git.Snapshot) error {
 	if err := os.MkdirAll(stageDir, 0o755); err != nil {
 		return fmt.Errorf("create staging directory: %w", err)
@@ -169,62 +158,27 @@ func (w *Workspace) writeStage(ctx context.Context, stageDir string, snap git.Sn
 	return nil
 }
 
-// replaceVisible replaces L with the staged tree. On the same device the
-// visible directory is moved aside, the staged tree is renamed into place,
-// and the moved directory is removed. When P and the workspace root live
-// on different devices, rename(2) fails with EXDEV and the staged tree is
-// copied into place instead. Any failure after the first rename or after
-// the first copied file is a partial mutation and requires recovery.
-func (w *Workspace) replaceVisible(ctx context.Context, stageDir, backupDir string, target git.Snapshot) error {
-	moved := false
-	if _, err := os.Lstat(w.path); err == nil {
-		if err := w.rename(w.path, backupDir); err != nil {
-			if isCrossDevice(err) {
-				return w.copyIntoPlace(ctx, stageDir, target)
-			}
-			return fmt.Errorf("workspace: move visible directory aside: %w: %w", ErrPartial, err)
-		}
-		moved = true
-	} else if !errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("workspace: inspect visible directory: %w: %w", ErrPartial, err)
+// applyInPlace writes the target tree into L without ever replacing L
+// itself. Each file lands through a temporary file renamed over the
+// target, so an individual file is replaced atomically and hard links are
+// not preserved; obsolete entries and then obsolete directories are
+// removed afterwards. Any failure after the first write is a partial
+// mutation and requires recovery.
+//
+// L keeps its identity across the whole operation. An earlier design
+// renamed L aside and renamed the staged tree into its place, which was
+// cheaper but changed the directory inode on every pull: a shell standing
+// in L, an open editor, a file watcher, and the workspace's own os.Root
+// handle were all left pointing at a removed inode. The directory swap
+// was never atomic either — between the two renames the path did not
+// exist at all — so it bought no failure guarantee that the durable
+// recovery flag does not already provide.
+func (w *Workspace) applyInPlace(ctx context.Context, stageDir string, target git.Snapshot) error {
+	// L is created rather than replaced, so a first materialization into a
+	// missing directory has somewhere to land.
+	if err := w.root.MkdirAll(w.rel, 0o755); err != nil {
+		return fmt.Errorf("workspace: create visible directory: %w: %w", ErrPartial, err)
 	}
-	if err := w.rename(stageDir, w.path); err != nil {
-		if isCrossDevice(err) && !moved {
-			return w.copyIntoPlace(ctx, stageDir, target)
-		}
-		return fmt.Errorf("workspace: rename staged tree into place: %w: %w", ErrPartial, err)
-	}
-	if err := os.RemoveAll(backupDir); err != nil {
-		return fmt.Errorf("workspace: remove replaced directory: %w: %w", ErrPartial, err)
-	}
-	return nil
-}
-
-// refreshRoot reopens the workspace root handle after a successful visible
-// replacement. When the visible directory is the workspace root itself
-// (rel == "."), the replacement renamed the root directory away and a new
-// directory into place, so the os.Root handle opened at Open still refers
-// to the removed inode and every later relative operation fails.
-// Reopening at the configured workspace root restores a live handle. For a
-// visible path below the root the reopen resolves the same inode and is a
-// harmless no-op. The operation lock is held, so no other root user can
-// observe the swap.
-func (w *Workspace) refreshRoot() error {
-	root, err := os.OpenRoot(w.wsRoot)
-	if err != nil {
-		return err
-	}
-	old := w.root
-	w.root = root
-	return old.Close()
-}
-
-// copyIntoPlace is the cross-device fallback: it writes every staged file
-// through a temporary file renamed over the target (so hard links are not
-// preserved and each file lands atomically), removes obsolete entries, and
-// removes empty directories. Any failure after the first write is a
-// partial mutation.
-func (w *Workspace) copyIntoPlace(ctx context.Context, stageDir string, target git.Snapshot) error {
 	targetFiles := make(map[string]bool, len(target.Files))
 	for _, f := range target.Files {
 		targetFiles[f.Path] = true

@@ -327,6 +327,15 @@ with mode `0600`. It writes L directories with `0755` and L files with `0644`,
 subject to the process umask. Windows inherits the root ACL and never broadens
 it.
 
+L keeps its directory identity for the lifetime of the workspace. Slivingdoc
+creates L when it is missing and thereafter only changes its contents: it
+never renames L aside, replaces it, or removes it. A working directory, an
+open editor, and a file watcher are references to the directory itself, not
+to its name, so replacing L would silently orphan every one of them while
+the path still appeared to resolve. Individual files are replaced through a
+temporary file renamed over the target, so one file changes atomically and a
+hard link into L does not observe the new content.
+
 The derived key includes the canonical visible path and the notebook storage
 identity. It uses a digest and does not expose the caller's path.
 

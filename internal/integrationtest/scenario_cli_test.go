@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -97,6 +98,77 @@ func TestScenarioCLIPullCommitRoundTrip(t *testing.T) {
 	runCLIExact(t, "fake", env,
 		"OK  generation 1\n  a.md  +1\n1 files changed, 1 insertions(+), 0 deletions(-)\n",
 		"commit", notes, "-m", "cli commit")
+}
+
+// TestScenarioCLIPullKeepsDirectoryIdentity proves that repeated pulls
+// never replace the notebook directory itself. A human keeps a shell open
+// in that directory between pulls; a shell's working directory is a
+// reference to the directory inode, not to its name, so replacing the
+// directory silently orphans the shell — getcwd(2) starts failing and
+// every relative path resolves to nothing, while the prompt still shows
+// the old path.
+//
+// The workspace and private roots here share a filesystem, which is the
+// case that used to take the directory-swap path.
+func TestScenarioCLIPullKeepsDirectoryIdentity(t *testing.T) {
+	t.Parallel()
+	suite := tests3.Ensure(t)
+	env, root := cliRoots(t)
+	env = append(env,
+		"AWS_ACCESS_KEY_ID="+tests3.User,
+		"AWS_SECRET_ACCESS_KEY="+tests3.Pass,
+		"AWS_ENDPOINT_URL_S3="+suite.Endpoint,
+		"SLIVINGDOC_PATH_STYLE=true",
+		"SLIVINGDOC_BUCKET="+tests3.Bucket,
+		"SLIVINGDOC_PREFIX="+suite.FreshPrefix("integrationtest-identity"),
+	)
+	writer, reader := filepath.Join(root, "writer"), filepath.Join(root, "reader")
+
+	// Publish from one workspace so the other has real content to
+	// materialize; an empty tree would not exercise the replacement.
+	runCLIOK(t, "real", env, "pull", writer)
+	writeCLIFile(t, filepath.Join(writer, "note.md"), "first\n")
+	runCLIOK(t, "real", env, "commit", writer, "-m", "first")
+
+	runCLIOK(t, "real", env, "pull", reader)
+	before, err := os.Stat(reader)
+	if err != nil {
+		t.Fatalf("stat after the first pull: %v", err)
+	}
+	// The open descriptor stands in for the human's working directory.
+	held, err := os.Open(reader)
+	if err != nil {
+		t.Fatalf("open the notebook directory: %v", err)
+	}
+	defer held.Close()
+
+	// A second publication gives the reader's next pull a real change to
+	// apply on top of an existing tree.
+	writeCLIFile(t, filepath.Join(writer, "note.md"), "second\n")
+	writeCLIFile(t, filepath.Join(writer, "added.md"), "added\n")
+	runCLIOK(t, "real", env, "commit", writer, "-m", "second")
+	runCLIOK(t, "real", env, "pull", reader)
+
+	if got, err := os.ReadFile(filepath.Join(reader, "note.md")); err != nil || string(got) != "second\n" {
+		t.Fatalf("reader/note.md = %q, %v; want the republished bytes", got, err)
+	}
+	after, err := os.Stat(reader)
+	if err != nil {
+		t.Fatalf("stat after the second pull: %v", err)
+	}
+	if !os.SameFile(before, after) {
+		t.Fatal("pull replaced the notebook directory; a shell or editor sitting in it is now orphaned")
+	}
+	// Reading through the descriptor opened before the pull must observe
+	// the materialized tree. A replaced directory leaves this descriptor on
+	// the removed inode, which reads as empty.
+	names, err := held.Readdirnames(-1)
+	if err != nil {
+		t.Fatalf("read the held directory: %v", err)
+	}
+	if !slices.Contains(names, "added.md") {
+		t.Fatalf("the held directory lists %v, want the materialized added.md; it was unlinked and replaced", names)
+	}
 }
 
 // TestScenarioCLIRelativePathResolvesAgainstCwd proves a relative notebook

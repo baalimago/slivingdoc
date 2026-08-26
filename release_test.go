@@ -150,6 +150,40 @@ func TestMCPRegistryPublishWorkflow(t *testing.T) {
 	}
 }
 
+// slivingdocEnv is every variable that configures the server. A spawned
+// process must not inherit these from whoever runs the suite: a developer
+// who exports SLIVINGDOC_BUCKET to drive the CLI would otherwise hand the
+// released binary a bucket and turn the startup-refusal assertions into
+// silent passes or confusing failures. internal/integrationtest sanitizes
+// the same set for the same reason.
+var slivingdocEnv = map[string]bool{
+	"AWS_ACCESS_KEY_ID": true, "AWS_SECRET_ACCESS_KEY": true, "AWS_SESSION_TOKEN": true,
+	"AWS_PROFILE": true, "AWS_DEFAULT_REGION": true, "AWS_REGION": true,
+	"AWS_ENDPOINT_URL_S3": true, "AWS_ENDPOINT_URL": true, "AWS_CA_BUNDLE": true,
+	"AWS_SHARED_CREDENTIALS_FILE": true, "AWS_CONFIG_FILE": true,
+	"SLIVINGDOC_BUCKET": true, "SLIVINGDOC_PREFIX": true,
+	"SLIVINGDOC_WORKSPACE_ROOT": true, "SLIVINGDOC_PRIVATE_ROOT": true,
+	"SLIVINGDOC_PATH_STYLE": true, "SLIVINGDOC_COMMIT_RETRIES": true,
+	"SLIVINGDOC_CHECKPOINT_PACKS": true, "SLIVINGDOC_RETAINED_CHECKPOINTS": true,
+	"NO_COLOR": true, "LOG_LEVEL": true,
+}
+
+// sanitizedEnv is the ambient environment without any slivingdoc
+// configuration. Everything else is preserved, because the same spawner
+// runs the Go toolchain and the dependency-check scripts, which need PATH,
+// HOME, and the Go cache variables.
+func sanitizedEnv() []string {
+	env := os.Environ()
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		if name, _, ok := strings.Cut(kv, "="); ok && slivingdocEnv[name] {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
+}
+
 // startAndWait runs name with args and collects its streams and exit code.
 //
 // os/exec is absent from the server by contract: the seam scan in
@@ -176,7 +210,7 @@ func startAndWait(name string, args ...string) (stdout, stderr string, code int,
 	}
 
 	proc, startErr := os.StartProcess(name, append([]string{name}, args...), &os.ProcAttr{
-		Env:   os.Environ(),
+		Env:   sanitizedEnv(),
 		Files: []*os.File{devNull, outW, errW},
 	})
 	// The parent must drop its write ends or the readers never see EOF.
