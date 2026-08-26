@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/baalimago/slivingdoc/internal/notebook"
+	"github.com/baalimago/slivingdoc/internal/pathutil"
 	"github.com/baalimago/slivingdoc/internal/storage"
 	"github.com/baalimago/slivingdoc/internal/workspace"
 )
@@ -225,12 +226,16 @@ func resolveInt(f *intFlag, env string, def int) (int, error) {
 	return def, nil
 }
 
-// absolute resolves a root to its clean absolute form: an absolute value
-// is cleaned, a relative value is joined to the working directory. An
-// empty root is invalid.
+// absolute resolves a root to its clean absolute form: a leading home
+// abbreviation expands first, an absolute value is cleaned, and a relative
+// value is joined to the working directory. An empty root is invalid.
 func absolute(cwd, root string) (string, error) {
 	if root == "" {
 		return "", errors.New("must not be empty")
+	}
+	var err error
+	if root, err = pathutil.ExpandHome(root); err != nil {
+		return "", err
 	}
 	if !filepath.IsAbs(root) {
 		root = filepath.Join(cwd, root)

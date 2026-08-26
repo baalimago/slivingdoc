@@ -78,8 +78,10 @@ permanent message or commit-history retention.
 
 Tool inputs are strict JSON objects. `notes_pull` requires only `path`.
 `notes_commit` requires only `path` and `message`. Unknown fields and explicit
-null values are invalid. `path` is an absolute UTF-8 host path with 1 through
-4,096 bytes. `message` is valid UTF-8 with at most 16,384 bytes and no U+0000.
+null values are invalid. `path` is a UTF-8 host path, or a path beginning with
+`~/`; the latter expands to the current user's home directory before the
+absolute-path and 1 through 4,096-byte checks. `message` is valid UTF-8 with
+at most 16,384 bytes and no U+0000.
 The service rejects a message that contains only Unicode white space. It
 preserves every byte of any other message.
 
@@ -340,7 +342,8 @@ from changing the same P state at the same time.
 V1 does not use a background filesystem watcher. It ingests and rewrites L only
 at MCP operation boundaries.
 
-The MCP `path` is an absolute host path. The service cleans it lexically and
+The MCP `path` expands a leading `~/` to the current user's home directory,
+then becomes an absolute host path. The service cleans it lexically and
 requires it to be at or below the absolute workspace root. Filesystem access
 uses Go `os.Root` relative operations. It does not use a check-then-open path
 sequence. Existing or newly substituted symlink components cannot escape the

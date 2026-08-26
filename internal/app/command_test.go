@@ -65,6 +65,19 @@ func TestOperationPath(t *testing.T) {
 	}
 }
 
+func TestOperationPathExpandsHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	_, fs := parsedFlagSet(t, []string{"~/notes"})
+	got, err := OperationPath(fs, t.TempDir())
+	if err != nil {
+		t.Fatalf("OperationPath() = %v", err)
+	}
+	if want := filepath.Join(home, "notes"); got != want {
+		t.Fatalf("OperationPath() = %q, want %q", got, want)
+	}
+}
+
 // TestOperationPathParsesTrailingFlags proves a flag placed after the
 // positional path really lands in the shared holder, which is what lets a
 // human write "slivingdoc commit notes -m msg" in the documented order.

@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -220,6 +221,23 @@ func TestLoadConfigRootsBecomeAbsolute(t *testing.T) {
 	}, "--workspace-root", "/work", "--private-root", "/work/notes"))
 	if err == nil {
 		t.Fatal("loadConfig() = nil, want the overlapping-roots error")
+	}
+}
+
+func TestLoadConfigExpandsHomeRoots(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	cfg, err := loadConfig(testProcess([]string{
+		"SLIVINGDOC_BUCKET=bucket",
+	}, "--workspace-root", "~/notes", "--private-root", "~/private"))
+	if err != nil {
+		t.Fatalf("loadConfig() = %v", err)
+	}
+	if want := filepath.Join(home, "notes"); cfg.workspaceRoot != want {
+		t.Fatalf("workspace root = %q, want %q", cfg.workspaceRoot, want)
+	}
+	if want := filepath.Join(home, "private"); cfg.privateRoot != want {
+		t.Fatalf("private root = %q, want %q", cfg.privateRoot, want)
 	}
 }
 

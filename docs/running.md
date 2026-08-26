@@ -31,7 +31,8 @@ slivingdoc commit notes -m "meeting summary"
 ```
 
 Each subcommand takes exactly one notebook path, which may precede or
-follow the flags. A relative path resolves against the working
+follow the flags. A path beginning with `~/` resolves against the current
+user's home directory. Other relative paths resolve against the working
 directory. The resolved path must stay at or below the workspace root.
 `commit` requires `-m`/`--message`.
 
@@ -251,10 +252,11 @@ falls back to `info`; it never refuses startup.
 - Files must be valid UTF-8 text without the NUL character (U+0000).
   Empty files are valid. Bytes and line endings are preserved.
 - Symbolic links, devices, sockets, and named pipes are rejected.
-- An MCP request `path` is an absolute host path of 1 through 4,096
-  bytes, below the configured workspace root. A subcommand path may be
-  relative; it resolves against the working directory before the same
-  root rule applies.
+- An MCP request `path` may begin with `~/`, which resolves against the
+  current user's home directory. The resulting absolute host path must be 1
+  through 4,096 bytes and below the configured workspace root. A subcommand
+  path may be relative; it resolves against the working directory before the
+  same root rule applies.
 - A commit `message` must be non-blank UTF-8 without U+0000, at most
   16,384 bytes. Messages are retained in recent internal history only.
 - A complete conflict-marker block (`<<<<<<< local`, `=======`,

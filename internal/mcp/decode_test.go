@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -45,6 +46,18 @@ func TestDecodePull(t *testing.T) {
 				t.Fatalf("decodePull() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestDecodePullExpandsHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	got, err := decodePull(marshalArgs(t, map[string]any{"path": "~/notes"}))
+	if err != nil {
+		t.Fatalf("decodePull() = %v", err)
+	}
+	if want := filepath.Join(home, "notes"); got != want {
+		t.Fatalf("decodePull() = %q, want %q", got, want)
 	}
 }
 

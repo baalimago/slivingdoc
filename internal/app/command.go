@@ -11,6 +11,7 @@ import (
 
 	"github.com/baalimago/slivingdoc/internal/mcp"
 	"github.com/baalimago/slivingdoc/internal/notebook"
+	"github.com/baalimago/slivingdoc/internal/pathutil"
 )
 
 // OperationPath extracts the one positional notebook path of a pull or
@@ -52,11 +53,16 @@ func positionals(fs *flag.FlagSet) ([]string, error) {
 	return out, nil
 }
 
-// resolvePath makes the requested notebook path absolute: an absolute path
-// is cleaned, a relative one joins the working directory.
+// resolvePath makes the requested notebook path absolute: a leading home
+// abbreviation expands first, an absolute path is cleaned, and a relative
+// one joins the working directory.
 func resolvePath(cwd, path string) (string, error) {
 	if path == "" {
 		return "", errors.New("the notebook path must not be empty")
+	}
+	var err error
+	if path, err = pathutil.ExpandHome(path); err != nil {
+		return "", err
 	}
 	if filepath.IsAbs(path) {
 		return filepath.Clean(path), nil
