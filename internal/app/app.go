@@ -57,6 +57,16 @@ type ProcessOptions struct {
 	StoreFactory     StoreFactory
 	ShutdownDeadline time.Duration
 
+	// Ephemeral asks for process-owned temporary roots when neither the
+	// workspace root nor the private root is configured (architecture
+	// section 17). The serve command sets it; the one-shot subcommands
+	// address a real directory and leave it false.
+	Ephemeral bool
+
+	// NewSessionDir creates the ephemeral session directory. Nil uses the
+	// operating-system temporary directory.
+	NewSessionDir func() (string, error)
+
 	// Logger is the process logger. Nil builds one from the environment
 	// (LOG_LEVEL and NO_COLOR) over Stderr.
 	Logger *slog.Logger
@@ -85,6 +95,9 @@ type process struct {
 	storeFactory     func(ctx context.Context, cfg config) (storage.ObjectStore, error)
 	hooks            *ServiceHooks
 	shutdownDeadline time.Duration
+
+	ephemeral     bool
+	newSessionDir func() (string, error)
 }
 
 // Setup resolves the configuration, opens the pinned native engine, builds
@@ -162,6 +175,8 @@ func Setup(engine git.Engine, flags *Flags, opts ProcessOptions) (*Runtime, erro
 		signals:          sig,
 		storeFactory:     wrapped,
 		shutdownDeadline: deadline,
+		ephemeral:        opts.Ephemeral,
+		newSessionDir:    opts.NewSessionDir,
 	})
 }
 
@@ -181,28 +196,44 @@ type Runtime struct {
 // Serve runs the MCP server until the client disconnects, ctx is cancelled,
 // or a termination signal starts the bounded shutdown.
 func (r *Runtime) Serve(ctx context.Context) error {
-	r.logger.Info("serving", "bucket", r.cfg.bucket, "workspaceRoot", r.cfg.workspaceRoot)
+	r.logger.Info("serving",
+		"bucket", r.cfg.bucket,
+		"notebookRoot", r.cfg.workspaceRoot,
+		"ephemeral", r.cfg.sessionDir != "")
 	srv := mcp.NewServer(r.svc, Version, Module(r.base, ModuleMCP))
 	return serve(ctx, r.p, srv, r.logger)
 }
 
 // Pull writes the current notebook into path for one CLI invocation and
-// returns the operation result.
+// returns the operation result. An empty path is the workspace root.
 func (r *Runtime) Pull(ctx context.Context, path string) (notebook.Result, error) {
-	return r.svc.Pull(notebook.WithLogger(ctx, Module(r.base, ModuleNotebook)), path)
+	return r.svc.Pull(notebook.WithLogger(ctx, Module(r.base, ModuleNotebook)), r.resolve(path))
 }
 
 // Commit publishes the caller's changes at path for one CLI invocation and
-// returns the operation result.
+// returns the operation result. An empty path is the workspace root.
 func (r *Runtime) Commit(ctx context.Context, path, message string) (notebook.Result, error) {
-	return r.svc.Commit(notebook.WithLogger(ctx, Module(r.base, ModuleNotebook)), path, message)
+	return r.svc.Commit(notebook.WithLogger(ctx, Module(r.base, ModuleNotebook)), r.resolve(path), message)
 }
 
-// Close releases the notebook service and the native engine. It is safe to
+// resolve maps an omitted CLI path to the workspace root.
+func (r *Runtime) resolve(path string) string {
+	if path == "" {
+		return r.cfg.workspaceRoot
+	}
+	return path
+}
+
+// Close releases the notebook service and the native engine, then removes
+// the ephemeral session directory when the process owns one. It is safe to
 // call once per successful Setup.
 func (r *Runtime) Close() error {
 	r.svc.Close()
-	return r.p.engine.Close()
+	err := r.p.engine.Close()
+	if rmErr := removeSessionDir(r.cfg.sessionDir); rmErr != nil && err == nil {
+		err = fmt.Errorf("app: remove session directory: %w", rmErr)
+	}
+	return err
 }
 
 // setup is the startup half of the process body: validate the
@@ -224,12 +255,14 @@ func setup(p process) (*Runtime, error) {
 		return nil, fmt.Errorf("app: invalid configuration: %s", mcp.Redact(err.Error()))
 	}
 	if err := p.engine.Open(); err != nil {
+		removeSessionDir(cfg.sessionDir)
 		return nil, fmt.Errorf("app: open native engine: %w", err)
 	}
 	logger.Debug("native engine open", "pinned", true)
 	svc, err := buildService(p, cfg)
 	if err != nil {
 		p.engine.Close()
+		removeSessionDir(cfg.sessionDir)
 		return nil, err
 	}
 	return &Runtime{p: p, svc: svc, cfg: cfg, base: base, logger: logger}, nil

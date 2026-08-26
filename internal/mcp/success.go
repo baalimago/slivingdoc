@@ -9,7 +9,10 @@ import "github.com/baalimago/slivingdoc/internal/notebook"
 // files is always present, empty for a no-op synchronization. All paths
 // are the same normalized internal slash form used by error files.
 type SuccessInfo struct {
-	Code         string       `json:"code"`
+	Code string `json:"code"`
+	// Path is the resolved notebook directory the operation ran against.
+	// It is the caller's own visible directory, never private state.
+	Path         string       `json:"path"`
 	Generation   uint64       `json:"generation"`
 	FilesChanged int          `json:"filesChanged"`
 	Insertions   int          `json:"insertions"`
@@ -31,13 +34,14 @@ type ChangeFile struct {
 // carries no credential, S3 key, private path, or Git ID, and the diffstat
 // paths are already the normalized internal relative form used by error
 // files.
-func MapSuccess(result notebook.Result) *SuccessInfo {
+func MapSuccess(result notebook.Result, path string) *SuccessInfo {
 	files := make([]ChangeFile, 0, len(result.Stat.Files))
 	for _, f := range result.Stat.Files {
 		files = append(files, ChangeFile{Path: f.Path, Insertions: f.Insertions, Deletions: f.Deletions})
 	}
 	return &SuccessInfo{
 		Code:         "OK",
+		Path:         path,
 		Generation:   result.Generation,
 		FilesChanged: len(result.Stat.Files),
 		Insertions:   result.Stat.Insertions,

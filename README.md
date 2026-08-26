@@ -25,15 +25,7 @@ Add it to your agentic harness:
   "mcpServers": {
     "slivingdoc": {
       "command": "npx",
-      "args": [
-        "-y",
-        "slivingdoc",
-        "serve",
-        "--bucket",
-        "my-notes",
-        "--workspace-root",
-        "/srv/notes"
-      ],
+      "args": ["-y", "slivingdoc", "serve", "--bucket", "my-notes"],
       "env": {
         "AWS_ACCESS_KEY_ID": "<your-access-key-id>",
         "AWS_SECRET_ACCESS_KEY": "<your-secret-access-key>",
@@ -59,10 +51,16 @@ Pi OS armhf.
 
 The server exposes two MCP tools over stdio:
 
-| Tool           | Inputs            | Success result |
-| -------------- | ----------------- | -------------- |
-| `notes_pull`   | `path`            | `OK`           |
-| `notes_commit` | `path`, `message` | `OK`           |
+| Tool           | Inputs                       | Success result |
+| -------------- | ---------------------------- | -------------- |
+| `notes_pull`   | `path` (optional)            | `OK`           |
+| `notes_commit` | `message`, `path` (optional) | `OK`           |
+
+No path needed. Each server takes its own private notebook directory and
+tells the agent where it is, in the server instructions and in every tool
+result, so nothing has to be configured or coordinated between agents. Pass
+`--workspace-root` instead when you want a fixed directory that humans and
+agents share, and `path` then addresses any directory below it.
 
 `notes_pull` writes the current notebook into your directory.
 `notes_commit` publishes your changes and incorporates concurrent
@@ -71,8 +69,9 @@ agents edit the files with the tools they already have, and humans can
 write in the same directory with any editor. The next commit carries
 their changes too.
 
-Humans can also drive both operations directly, without an MCP host.
-A relative path resolves against the working directory:
+Humans can also drive both operations directly, without an MCP host. The
+path is optional and defaults to the working directory; a relative path
+resolves against it:
 
 ```text
 slivingdoc pull notes
@@ -113,9 +112,13 @@ variables. `--bucket` is required. The most common flags:
 | Flag               | Environment                 | Default             |
 | ------------------ | --------------------------- | ------------------- |
 | `--bucket`         | `SLIVINGDOC_BUCKET`         | — (required)        |
-| `--workspace-root` | `SLIVINGDOC_WORKSPACE_ROOT` | startup working dir |
+| `--workspace-root` | `SLIVINGDOC_WORKSPACE_ROOT` | temporary dir[^1]   |
 | `--endpoint`       | `AWS_ENDPOINT_URL_S3`       | AWS resolution      |
 | `--region`         | `AWS_REGION`                | `us-east-1`         |
+
+[^1]: `serve` with no configured root takes a per-process temporary
+    notebook directory and removes it at shutdown; the notes themselves live
+    in the bucket. `pull` and `commit` default to the working directory.
 
 `slivingdoc serve -h` prints the full reference, and
 [`docs/running.md`](docs/running.md) covers everything an operator

@@ -92,11 +92,13 @@ func (c *command) Run(ctx context.Context) error {
 const helpText = `slivingdoc commit - publish the changes at a notebook directory
 
 Usage:
-  slivingdoc commit [flags] -m <message> <path>
+  slivingdoc commit [flags] -m <message> [path]
 
-<path> is the notebook directory of an earlier 'slivingdoc pull'. A
-relative path resolves against the working directory; the resolved path
-must stay at or below the workspace root. Concurrent non-conflicting
+[path] is the notebook directory of an earlier 'slivingdoc pull' and
+defaults to the workspace root, which is the working directory unless
+--workspace-root says otherwise. A relative path resolves against the
+working directory; the resolved path must stay at or below the workspace
+root. Concurrent non-conflicting
 changes are incorporated; a conflict rewrites the files with visible
 markers and reports every conflicted range.
 

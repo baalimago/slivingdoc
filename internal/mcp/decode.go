@@ -22,11 +22,12 @@ const (
 )
 
 // decodePull strictly decodes the raw notes_pull arguments: a JSON object
-// with exactly the "path" field, a non-null string, an absolute UTF-8 host
+// with an optional "path" field, a non-null string, an absolute UTF-8 host
 // path or a leading ~/ abbreviation, of at most 4,096 bytes without U+0000.
-// Unknown fields, duplicate fields, explicit null, non-object arguments, and
-// malformed JSON are
-// rejected by the strict parser before any semantic check.
+// An omitted path returns the empty string, which the handler resolves to
+// the server's notebook root. Unknown fields, duplicate fields, explicit
+// null, non-object arguments, and malformed JSON are rejected by the strict
+// parser before any semantic check.
 func decodePull(raw json.RawMessage) (string, error) {
 	v, err := strictjson.Parse(raw)
 	if err != nil {
@@ -38,9 +39,16 @@ func decodePull(raw json.RawMessage) (string, error) {
 	if err := v.RejectUnknown("path"); err != nil {
 		return "", err
 	}
+	return decodeOptionalPath(v)
+}
+
+// decodeOptionalPath reads the optional "path" field of an already strictly
+// parsed argument object. An absent field is the empty string; a present
+// field must be a string that satisfies the path contract.
+func decodeOptionalPath(v strictjson.Value) (string, error) {
 	field, ok := v.Field("path")
 	if !ok {
-		return "", errors.New("path is required")
+		return "", nil
 	}
 	if field.Kind != strictjson.String {
 		return "", errors.New("path must be a string")
@@ -49,8 +57,10 @@ func decodePull(raw json.RawMessage) (string, error) {
 }
 
 // decodeCommit strictly decodes the raw notes_commit arguments: a JSON
-// object with exactly "path" and "message", both non-null strings. The
-// message is non-blank UTF-8 of at most 16,384 bytes without U+0000.
+// object with the required "message" and the optional "path", both non-null
+// strings. The message is non-blank UTF-8 of at most 16,384 bytes without
+// U+0000. An omitted path returns the empty string, which the handler
+// resolves to the server's notebook root.
 func decodeCommit(raw json.RawMessage) (path, message string, err error) {
 	v, err := strictjson.Parse(raw)
 	if err != nil {
@@ -62,13 +72,6 @@ func decodeCommit(raw json.RawMessage) (path, message string, err error) {
 	if err := v.RejectUnknown("path", "message"); err != nil {
 		return "", "", err
 	}
-	pathField, ok := v.Field("path")
-	if !ok {
-		return "", "", errors.New("path is required")
-	}
-	if pathField.Kind != strictjson.String {
-		return "", "", errors.New("path must be a string")
-	}
 	messageField, ok := v.Field("message")
 	if !ok {
 		return "", "", errors.New("message is required")
@@ -76,8 +79,7 @@ func decodeCommit(raw json.RawMessage) (path, message string, err error) {
 	if messageField.Kind != strictjson.String {
 		return "", "", errors.New("message must be a string")
 	}
-	path, err = validatePath(pathField.Str)
-	if err != nil {
+	if path, err = decodeOptionalPath(v); err != nil {
 		return "", "", err
 	}
 	if err := validateMessage(messageField.Str); err != nil {

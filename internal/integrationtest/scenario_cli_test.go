@@ -174,8 +174,8 @@ func TestScenarioCLIUsageRefusals(t *testing.T) {
 		wantOut  string // required stdout substring, empty skips
 		wantErr  string // required stderr substring, empty skips
 	}{
-		{name: "pull without a path", args: []string{"pull"}, wantExit: 1, wantErr: "exactly one notebook path"},
-		{name: "pull with two paths", args: []string{"pull", "a", "b"}, wantExit: 1, wantErr: "exactly one notebook path"},
+		{name: "pull with two paths", args: []string{"pull", "a", "b"}, wantExit: 1, wantErr: "at most one notebook path"},
+		{name: "commit with two paths", args: []string{"commit", "-m", "m", "a", "b"}, wantExit: 1, wantErr: "at most one notebook path"},
 		{name: "commit without a message", args: []string{"commit", "notes"}, wantExit: 1, wantErr: "-m"},
 		{name: "pull help skips startup dependencies", args: []string{"pull", "-h"}, wantExit: 0, wantOut: "slivingdoc pull"},
 		{name: "commit help skips startup dependencies", args: []string{"commit", "-h"}, wantExit: 0, wantOut: "slivingdoc commit"},

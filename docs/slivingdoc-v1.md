@@ -27,36 +27,48 @@ provide a public Go package, a Go SDK, or a separate HTTP notebook API.
 
 The MCP server exposes exactly two tools:
 
-| Tool           | Input             | Success result |
-| -------------- | ----------------- | -------------- |
-| `notes_pull`   | `path`            | `OK`           |
-| `notes_commit` | `path`, `message` | `OK`           |
+| Tool           | Input                        | Success result |
+| -------------- | ---------------------------- | -------------- |
+| `notes_pull`   | `path` (optional)            | `OK`           |
+| `notes_commit` | `message`, `path` (optional) | `OK`           |
 
 The normal workflow is:
 
 ```text
-notes_pull(path)
+notes_pull()
         |
         v
-edit UTF-8 text files at path
+edit UTF-8 text files in the notebook directory
         |
         v
-notes_commit(path, message)
+notes_commit(message)
 ```
 
-`notes_pull` writes the current notebook into `path`. `notes_commit` publishes
-the caller's changes and incorporates concurrent, non-conflicting changes.
+`notes_pull` writes the current notebook into the notebook directory.
+`notes_commit` publishes the caller's changes and incorporates concurrent,
+non-conflicting changes.
+
+An omitted `path` is the server's notebook directory: the configured
+workspace root, or the process-owned temporary directory the server takes
+when no root is configured (section 17). Every success result names the
+resolved directory, and so do the server instructions, so a caller that
+never configured a path still knows where to edit. A supplied `path`
+addresses one directory at or below the workspace root, which is how one
+server serves several notebooks.
 
 The same two operations are also public as one-shot process subcommands, so
 a human shares the directory with the agents without an MCP host:
 
 ```text
-slivingdoc pull <path>
-slivingdoc commit <path> -m <message>
+slivingdoc pull [path]
+slivingdoc commit [path] -m <message>
 ```
 
-A subcommand `path` can be relative. It resolves against the working
-directory, and the resolved path must stay at or below the workspace root.
+A subcommand `path` is optional and can be relative. It resolves against the
+working directory, and the resolved path must stay at or below the workspace
+root. An omitted subcommand path is the workspace root itself. The one-shot
+subcommands never take a temporary directory: they address a directory the
+human can still see after the process exits.
 A successful subcommand writes the unified result report to stdout and
 exits zero: the `OK` status token, the accepted remote generation, one
 line per changed file with its insertion and deletion counts, and the
@@ -76,9 +88,10 @@ path. These values are internal implementation details.
 The commit message is retained in recent internal Git data. V1 does not promise
 permanent message or commit-history retention.
 
-Tool inputs are strict JSON objects. `notes_pull` requires only `path`.
-`notes_commit` requires only `path` and `message`. Unknown fields and explicit
-null values are invalid. `path` is a UTF-8 host path, or a path beginning with
+Tool inputs are strict JSON objects. `notes_pull` requires no field.
+`notes_commit` requires only `message`. Both accept the optional `path`.
+Unknown fields and explicit null values are invalid. `path` is a UTF-8 host
+path, or a path beginning with
 `~/`; the latter expands to the current user's home directory before the
 absolute-path and 1 through 4,096-byte checks. `message` is valid UTF-8 with
 at most 16,384 bytes and no U+0000.
@@ -91,6 +104,7 @@ this structured object:
 ```json
 {
   "code": "OK",
+  "path": "/tmp/slivingdoc-7f3a1c/notebook",
   "generation": 18,
   "filesChanged": 3,
   "insertions": 3,
@@ -103,15 +117,17 @@ this structured object:
 }
 ```
 
-`code` is always `OK`; `generation` is the accepted remote generation
+`code` is always `OK`; `path` is the resolved notebook directory the
+operation ran against; `generation` is the accepted remote generation
 after the operation; `filesChanged`, `insertions`, and `deletions` are the
 totals of the per-file change stat; `files` is always present, empty for a
 no-op synchronization. The pull diffstat is the on-disk delta between the
 visible state before the pull and the materialized result; the commit
 diffstat is the increment the publication added over the observed remote
-parent tree, empty for a no-op synchronization. Paths are the same
-normalized internal slash form used by error files, and no success data
-contains credentials, S3 keys, private paths, or Git IDs.
+parent tree, empty for a no-op synchronization. The `files` paths are the
+same normalized internal slash form used by error files. The success `path`
+is the caller's own visible directory, never private state, and no success
+data contains credentials, S3 keys, private paths, or Git IDs.
 
 A diffstat line is an LF-terminated run of bytes with one trailing CR
 stripped for comparison and counting. A final run without a trailing LF
@@ -301,6 +317,11 @@ contains the Git object cache and accepted baseline for L.
   conflict metadata
 ```
 
+With no configured root, both roots are siblings under one temporary
+session directory the process owns and removes at shutdown (section 17).
+The derived key binds P to the canonical L path, so a temporary L gives a
+temporary P that no later process can address.
+
 On POSIX hosts, slivingdoc creates P directories with mode `0700` and P files
 with mode `0600`. It writes L directories with `0755` and L files with `0644`,
 subject to the process umask. Windows inherits the root ACL and never broadens
@@ -342,9 +363,11 @@ from changing the same P state at the same time.
 V1 does not use a background filesystem watcher. It ingests and rewrites L only
 at MCP operation boundaries.
 
-The MCP `path` expands a leading `~/` to the current user's home directory,
-then becomes an absolute host path. The service cleans it lexically and
-requires it to be at or below the absolute workspace root. Filesystem access
+An omitted MCP `path` resolves to the workspace root before the service
+sees the request, so the service always receives one absolute directory. A
+supplied MCP `path` expands a leading `~/` to the current user's home
+directory, then becomes an absolute host path. The service cleans it
+lexically and requires it to be at or below the absolute workspace root. Filesystem access
 uses Go `os.Root` relative operations. It does not use a check-then-open path
 sequence. Existing or newly substituted symlink components cannot escape the
 root. The service creates L when it does not exist.
@@ -1145,10 +1168,33 @@ information, query, or fragment. Configuration lowercases its scheme and host,
 removes a trailing slash, and preserves a non-root path. This normalized value
 is part of the P storage identity.
 
-The workspace root defaults to the startup working directory. The private root
-defaults to `<user-cache-dir>/slivingdoc`. Both roots become absolute before
-startup. They cannot overlap, and the private root cannot be below the
-workspace root.
+`serve` with neither root configured owns one temporary session directory
+for the process lifetime and places both roots inside it as siblings:
+
+```text
+<tmp>/slivingdoc-<random>/notebook    the workspace root
+<tmp>/slivingdoc-<random>/private     the private root
+```
+
+The random component is what makes the pair unique, so two servers started
+the same way never share a notebook directory, a private state, or an
+operation lock. This is the default because agents want isolation without
+configuration; the durable notebook is the remote, so the local directory
+carries nothing that outlives the process. `Runtime.Close` removes the whole
+session directory at shutdown, and a startup refusal after the directory
+exists removes it too. A process that dies without shutting down leaves the
+directory for the operating system to reap; no later process can address it,
+because the derived private key binds to the random path.
+
+Configuring either root disables that default. The workspace root then
+defaults to the startup working directory and the private root to
+`<user-cache-dir>/slivingdoc`, and neither is removed at shutdown. The
+`pull` and `commit` subcommands never take a temporary session directory:
+they address a directory the human still uses after the process exits.
+
+Both roots become absolute before startup. They cannot overlap, and the
+private root cannot be below the workspace root; the session layout
+satisfies that by construction.
 
 The commit retry value counts retries after the first CAS attempt. Its default
 is 8, and its valid range is 0 through 100. Retry delay uses full jitter from an

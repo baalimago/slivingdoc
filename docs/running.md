@@ -30,11 +30,12 @@ slivingdoc pull notes
 slivingdoc commit notes -m "meeting summary"
 ```
 
-Each subcommand takes exactly one notebook path, which may precede or
-follow the flags. A path beginning with `~/` resolves against the current
-user's home directory. Other relative paths resolve against the working
-directory. The resolved path must stay at or below the workspace root.
-`commit` requires `-m`/`--message`.
+Each subcommand takes at most one notebook path, which may precede or
+follow the flags. Omitting it uses the workspace root, which is the working
+directory unless `--workspace-root` says otherwise. A path beginning with
+`~/` resolves against the current user's home directory. Other relative
+paths resolve against the working directory. The resolved path must stay at
+or below the workspace root. `commit` requires `-m`/`--message`.
 
 On success a subcommand writes the unified result report to stdout and
 exits zero: the `OK` status token, the accepted remote generation, one
@@ -71,8 +72,8 @@ the per-file counts, and the conflict paths are coloured only when stdout
 is a real terminal; piped or redirected output stays plain text. Any
 non-empty `NO_COLOR` disables the colour even on a terminal.
 
-A missing path or message exits nonzero before any native or network
-dependency is touched.
+A missing message, or more than one path, exits nonzero before any native
+or network dependency is touched.
 
 ## Configuration
 
@@ -89,16 +90,42 @@ reference.
 | S3 region             | `--region`               | `AWS_REGION`                      | `us-east-1`               |
 | S3 endpoint           | `--endpoint`             | `AWS_ENDPOINT_URL_S3`             | empty (AWS resolution)    |
 | S3 path-style access  | `--path-style`           | `SLIVINGDOC_PATH_STYLE`           | `false`                   |
-| Workspace root        | `--workspace-root`       | `SLIVINGDOC_WORKSPACE_ROOT`       | startup working dir       |
-| Private state root    | `--private-root`         | `SLIVINGDOC_PRIVATE_ROOT`         | `<user-cache>/slivingdoc` |
+| Workspace root        | `--workspace-root`       | `SLIVINGDOC_WORKSPACE_ROOT`       | session dir / working dir |
+| Private state root    | `--private-root`         | `SLIVINGDOC_PRIVATE_ROOT`         | session dir / user cache  |
 | CAS retry limit       | `--commit-retries`       | `SLIVINGDOC_COMMIT_RETRIES`       | `8` (0..100)              |
 | Checkpoint pack count | `--checkpoint-packs`     | `SLIVINGDOC_CHECKPOINT_PACKS`     | `1024` (minimum 1)        |
 | Retained checkpoints  | `--retained-checkpoints` | `SLIVINGDOC_RETAINED_CHECKPOINTS` | `1` (0..64)               |
 
-`--workspace-root` is the root below which request paths may live. The
-private root holds the internal Git repository, the state record, and
-the operation locks. It must not be at or below the workspace root.
-Both roots become absolute before startup.
+`--workspace-root` is the root below which request paths may live, and is
+also the notebook directory an omitted path resolves to. The private root
+holds the internal Git repository, the state record, and the operation
+locks. It must not be at or below the workspace root. Both roots become
+absolute before startup.
+
+### The session directory
+
+`serve` with neither root configured takes a per-process session directory
+and puts both roots inside it:
+
+```text
+<tmp>/slivingdoc-<random>/notebook    the workspace root
+<tmp>/slivingdoc-<random>/private     the private root
+```
+
+This is the default because it needs no configuration and no coordination:
+every server gets its own notebook directory and its own private state, so
+concurrent agents never contend for one operation lock. The tools then need
+no `path`, and both the server instructions and every tool result name the
+directory. The whole session directory is removed at shutdown — the durable
+notebook is the bucket, so nothing of value is in it. A process killed
+outright leaves the directory for the operating system to reap; no later
+process reuses it.
+
+Configuring either root turns the default off, and neither root is removed
+at shutdown. Use that when humans and agents share one directory, or when
+you want the notebook to survive a server restart on disk. `pull` and
+`commit` never take a session directory: they default to the working
+directory, which you can still open after the process exits.
 
 ## S3 credentials
 
@@ -192,15 +219,7 @@ JSON-RPC over stdio. A typical client configuration is:
   "mcpServers": {
     "slivingdoc": {
       "command": "npx",
-      "args": [
-        "-y",
-        "slivingdoc",
-        "serve",
-        "--bucket",
-        "my-notes",
-        "--workspace-root",
-        "/srv/notes"
-      ],
+      "args": ["-y", "slivingdoc", "serve", "--bucket", "my-notes"],
       "env": {
         "AWS_PROFILE": "notes"
       }
@@ -208,6 +227,11 @@ JSON-RPC over stdio. A typical client configuration is:
   }
 }
 ```
+
+With no `--workspace-root`, the server takes its own session directory and
+the agent calls `notes_pull` and `notes_commit` without a `path`. Add
+`"--workspace-root", "/srv/notes"` to the args when humans and agents should
+share one fixed directory instead.
 
 The `env` block is the injection route from [S3
 credentials](#s3-credentials): the host passes these variables to the
@@ -220,7 +244,8 @@ Stdout carries only protocol messages; logs go to stderr. The host and
 the server share the visible directory: agents and humans edit files
 there, and the server scans them at each call. A human edit made with
 any editor is published by the next `notes_commit` for that path — or
-directly with `slivingdoc commit <path> -m <message>`.
+directly with `slivingdoc commit [path] -m <message>`. This sharing needs
+`--workspace-root`: a session directory is private to the server process.
 
 ## Logging
 
@@ -252,11 +277,13 @@ falls back to `info`; it never refuses startup.
 - Files must be valid UTF-8 text without the NUL character (U+0000).
   Empty files are valid. Bytes and line endings are preserved.
 - Symbolic links, devices, sockets, and named pipes are rejected.
-- An MCP request `path` may begin with `~/`, which resolves against the
-  current user's home directory. The resulting absolute host path must be 1
-  through 4,096 bytes and below the configured workspace root. A subcommand
-  path may be relative; it resolves against the working directory before the
-  same root rule applies.
+- An MCP request `path` is optional; omitting it uses the server's notebook
+  directory, which every result reports. When supplied it may begin with
+  `~/`, which resolves against the current user's home directory. The
+  resulting absolute host path must be 1 through 4,096 bytes and below the
+  configured workspace root. A subcommand path is optional too and may be
+  relative; it resolves against the working directory before the same root
+  rule applies.
 - A commit `message` must be non-blank UTF-8 without U+0000, at most
   16,384 bytes. Messages are retained in recent internal history only.
 - A complete conflict-marker block (`<<<<<<< local`, `=======`,

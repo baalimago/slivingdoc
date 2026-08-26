@@ -60,6 +60,134 @@ func TestLoadConfigDefaults(t *testing.T) {
 	}
 }
 
+// ephemeralProcess is testProcess with the serve command's ephemeral
+// default and a deterministic session directory.
+func ephemeralProcess(session string, env []string, args ...string) process {
+	p := testProcess(env, args...)
+	p.ephemeral = true
+	p.newSessionDir = func() (string, error) { return session, nil }
+	return p
+}
+
+// TestLoadConfigEphemeralRoots proves the transparent serve default: with
+// no configured root the process owns one session directory holding both
+// roots as siblings, so the roots cannot overlap and no two servers can
+// select the same private state.
+func TestLoadConfigEphemeralRoots(t *testing.T) {
+	session := t.TempDir()
+	cfg, err := loadConfig(ephemeralProcess(session, []string{"SLIVINGDOC_BUCKET=my-bucket"}))
+	if err != nil {
+		t.Fatalf("loadConfig() = %v", err)
+	}
+	if cfg.sessionDir != session {
+		t.Fatalf("sessionDir = %q, want %q", cfg.sessionDir, session)
+	}
+	if want := filepath.Join(session, "notebook"); cfg.workspaceRoot != want {
+		t.Fatalf("workspaceRoot = %q, want %q", cfg.workspaceRoot, want)
+	}
+	if want := filepath.Join(session, "private"); cfg.privateRoot != want {
+		t.Fatalf("privateRoot = %q, want %q", cfg.privateRoot, want)
+	}
+}
+
+// TestLoadConfigEphemeralYieldsToConfiguredRoots proves that configuring
+// either root keeps the shared-directory behaviour: an operator who names a
+// workspace root never gets a temporary one, and the private root falls
+// back to the user cache directory as before.
+func TestLoadConfigEphemeralYieldsToConfiguredRoots(t *testing.T) {
+	session := t.TempDir()
+	for _, row := range []struct {
+		name        string
+		env         []string
+		wantWs      string
+		wantPrivate string
+	}{
+		{
+			name:        "workspace root flag",
+			env:         []string{"SLIVINGDOC_BUCKET=b", "SLIVINGDOC_WORKSPACE_ROOT=/notes"},
+			wantWs:      "/notes",
+			wantPrivate: "/cache/slivingdoc",
+		},
+		{
+			name:        "private root only",
+			env:         []string{"SLIVINGDOC_BUCKET=b", "SLIVINGDOC_PRIVATE_ROOT=/state"},
+			wantWs:      "/work",
+			wantPrivate: "/state",
+		},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			cfg, err := loadConfig(ephemeralProcess(session, row.env))
+			if err != nil {
+				t.Fatalf("loadConfig() = %v", err)
+			}
+			if cfg.sessionDir != "" {
+				t.Fatalf("sessionDir = %q, want no session directory", cfg.sessionDir)
+			}
+			if cfg.workspaceRoot != row.wantWs || cfg.privateRoot != row.wantPrivate {
+				t.Fatalf("roots = %q/%q, want %q/%q",
+					cfg.workspaceRoot, cfg.privateRoot, row.wantWs, row.wantPrivate)
+			}
+		})
+	}
+}
+
+// TestLoadConfigEphemeralEmptyFlagStillRefuses proves an explicitly empty
+// root is a refusal, not a silent fall-through to the temporary default.
+func TestLoadConfigEphemeralEmptyFlagStillRefuses(t *testing.T) {
+	p := ephemeralProcess(t.TempDir(), []string{"SLIVINGDOC_BUCKET=b"}, "--workspace-root=")
+	if _, err := loadConfig(p); err == nil || !strings.Contains(err.Error(), "must not be empty") {
+		t.Fatalf("loadConfig() = %v, want the empty-root refusal", err)
+	}
+}
+
+// TestLoadConfigRefusalRemovesSessionDir proves a startup refusal leaves
+// nothing behind: the session directory is created while resolving, before
+// the bucket, prefix, endpoint, and numeric rules can refuse, so the
+// creator removes it again on every failure path.
+func TestLoadConfigRefusalRemovesSessionDir(t *testing.T) {
+	for _, row := range []struct {
+		name string
+		env  []string
+	}{
+		{name: "missing bucket", env: nil},
+		{name: "invalid prefix", env: []string{"SLIVINGDOC_BUCKET=b", "SLIVINGDOC_PREFIX=../escape"}},
+		{name: "invalid endpoint", env: []string{"SLIVINGDOC_BUCKET=b", "AWS_ENDPOINT_URL_S3=ftp://example.invalid"}},
+		{name: "invalid integer", env: []string{"SLIVINGDOC_BUCKET=b", "SLIVINGDOC_COMMIT_RETRIES=-1"}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			session := filepath.Join(t.TempDir(), "session")
+			if err := os.MkdirAll(session, 0o700); err != nil {
+				t.Fatalf("MkdirAll() = %v", err)
+			}
+			if _, err := loadConfig(ephemeralProcess(session, row.env)); err == nil {
+				t.Fatal("loadConfig() = nil, want a configuration refusal")
+			}
+			if _, err := os.Stat(session); !os.IsNotExist(err) {
+				t.Fatalf("Stat(session) = %v, want the session directory removed", err)
+			}
+		})
+	}
+}
+
+// TestRemoveSessionDirIsScoped proves the shutdown cleanup removes only the
+// process-owned session directory and tolerates an empty one, which is what
+// every configured-root run passes.
+func TestRemoveSessionDirIsScoped(t *testing.T) {
+	if err := removeSessionDir(""); err != nil {
+		t.Fatalf("removeSessionDir(\"\") = %v", err)
+	}
+	session := filepath.Join(t.TempDir(), "session")
+	if err := os.MkdirAll(filepath.Join(session, "notebook"), 0o700); err != nil {
+		t.Fatalf("MkdirAll() = %v", err)
+	}
+	if err := removeSessionDir(session); err != nil {
+		t.Fatalf("removeSessionDir() = %v", err)
+	}
+	if _, err := os.Stat(session); !os.IsNotExist(err) {
+		t.Fatalf("Stat(session) = %v, want it removed", err)
+	}
+}
+
 // TestLoadConfigFlagOverEnvOverDefault proves the precedence rule: flags
 // override environment variables, which override defaults.
 func TestLoadConfigFlagOverEnvOverDefault(t *testing.T) {

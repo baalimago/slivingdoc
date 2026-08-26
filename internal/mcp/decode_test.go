@@ -16,7 +16,7 @@ func TestDecodePull(t *testing.T) {
 		wantErr string
 	}{
 		{name: "valid", args: map[string]any{"path": abs}, want: abs},
-		{name: "missing path", args: map[string]any{}, wantErr: "path is required"},
+		{name: "omitted path defers to the notebook root", args: map[string]any{}, want: ""},
 		{name: "unknown field", args: map[string]any{"path": abs, "extra": 1}, wantErr: "unknown field"},
 		{name: "null path", args: map[string]any{"path": nil}, wantErr: "explicit null"},
 		{name: "duplicate field", args: `{"path":"/a","path":"/b"}`, wantErr: "duplicate field"},
@@ -84,7 +84,7 @@ func TestDecodeCommit(t *testing.T) {
 		wantErr     string
 	}{
 		{name: "valid", args: map[string]any{"path": abs, "message": "update"}, wantPath: abs, wantMessage: "update"},
-		{name: "missing path", args: map[string]any{"message": "m"}, wantErr: "path is required"},
+		{name: "omitted path defers to the notebook root", args: map[string]any{"message": "m"}, wantPath: "", wantMessage: "m"},
 		{name: "missing message", args: map[string]any{"path": abs}, wantErr: "message is required"},
 		{name: "unknown field", args: map[string]any{"path": abs, "message": "m", "extra": 1}, wantErr: "unknown field"},
 		{name: "null message", args: map[string]any{"path": abs, "message": nil}, wantErr: "explicit null"},

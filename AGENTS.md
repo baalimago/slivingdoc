@@ -13,7 +13,7 @@ shape every operation. **L** is the caller-controlled visible directory.
 
 ```text
      MCP client (agent)              human shell
- notes_pull / notes_commit      pull <path> / commit <path> -m <msg>
+ notes_pull / notes_commit      pull [path] / commit [path] -m <msg>
                        |         |
                        |  stdio JSON-RPC / one-shot argv
                        v         v
@@ -162,8 +162,10 @@ the engine seam. `internal/workspace` owns its narrow `Engine` view.
 ### Event Flow
 
 ```text
-Public API:   notes_pull(path) / notes_commit(path, message)
-              CLI mirror: slivingdoc pull <path> / commit <path> -m <message>
+Public API:   notes_pull([path]) / notes_commit(message, [path])
+              CLI mirror: slivingdoc pull [path] / commit [path] -m <message>
+              An omitted path is the workspace root, which serve defaults
+              to a per-process temporary session directory.
                                          |
                                          |  MCP stdio JSON-RPC or one-shot argv
                                          v

@@ -107,6 +107,14 @@ func assertProcessCallOK(t *testing.T, cs *sdk.ClientSession, tool, path, messag
 	if tool == toolCommit {
 		args["message"] = message
 	}
+	assertProcessArgsOK(t, cs, tool, path, args)
+}
+
+// assertProcessArgsOK is assertProcessCallOK over an explicit argument
+// object, so a scenario can omit the optional path. path is used only for
+// diagnostics. It returns the decoded success envelope.
+func assertProcessArgsOK(t *testing.T, cs *sdk.ClientSession, tool, path string, args map[string]any) mcp.SuccessInfo {
+	t.Helper()
 	res, err := cs.CallTool(context.Background(), &sdk.CallToolParams{Name: tool, Arguments: args})
 	if err != nil {
 		t.Fatalf("%s(%s) = %v", tool, path, err)
@@ -129,4 +137,5 @@ func assertProcessCallOK(t *testing.T, cs *sdk.ClientSession, tool, path, messag
 	if !ok || text.Text != "OK" {
 		t.Fatalf("%s(%s) text = %#v, want exactly OK", tool, path, res.Content[0])
 	}
+	return got
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -27,11 +28,22 @@ type fakeService struct {
 	pullErr   error
 	commitErr error
 	block     chan struct{}
+	root      string
 }
 
 type commitCall struct {
 	path    string
 	message string
+}
+
+// fakeRoot is the notebook directory an omitted request path resolves to.
+const fakeRoot = "/fake/notebook"
+
+func (f *fakeService) Root() string {
+	if f.root == "" {
+		return fakeRoot
+	}
+	return f.root
 }
 
 func (f *fakeService) Pull(ctx context.Context, path string) (notebook.Result, error) {
@@ -83,9 +95,17 @@ func newTestPair(t *testing.T, svc Service) (*sdk.ClientSession, *fakeService) {
 	return clientSession, svc.(*fakeService)
 }
 
+// requiredFields is the documented required set of each tool schema. path
+// is optional on both tools: an omitted path is the server's notebook root.
+var requiredFields = map[string][]string{
+	toolPull:   {},
+	toolCommit: {"message"},
+}
+
 // TestListToolsExactlyTwo proves the acceptance criterion that exactly two
 // tools appear in the MCP tool listing, with strict schemas that require
-// the documented fields and reject unknown ones.
+// the documented fields, declare the optional ones, and reject unknown
+// ones.
 func TestListToolsExactlyTwo(t *testing.T) {
 	client, _ := newTestPair(t, nil)
 	res, err := client.ListTools(context.Background(), nil)
@@ -115,15 +135,25 @@ func TestListToolsExactlyTwo(t *testing.T) {
 			t.Fatalf("tool %q schema must reject additional properties", name)
 		}
 		required, ok := schema["required"].([]any)
-		if !ok || len(required) == 0 {
-			t.Fatalf("tool %q schema must require fields", name)
+		if !ok {
+			t.Fatalf("tool %q schema has no required list", name)
+		}
+		got := make([]string, 0, len(required))
+		for _, field := range required {
+			got = append(got, field.(string))
+		}
+		if !slices.Equal(got, requiredFields[name]) {
+			t.Fatalf("tool %q required = %v, want %v", name, got, requiredFields[name])
 		}
 		properties, ok := schema["properties"].(map[string]any)
 		if !ok {
 			t.Fatalf("tool %q schema has no properties", name)
 		}
-		for _, field := range required {
-			if _, ok := properties[field.(string)]; !ok {
+		if _, ok := properties["path"]; !ok {
+			t.Fatalf("tool %q schema must declare the optional path", name)
+		}
+		for _, field := range got {
+			if _, ok := properties[field]; !ok {
 				t.Fatalf("tool %q requires %q but does not declare it", name, field)
 			}
 		}
@@ -184,6 +214,7 @@ func TestPullSuccessEnvelope(t *testing.T) {
 		t.Fatalf("CallTool() = %v", err)
 	}
 	assertSuccessInfo(t, res, &SuccessInfo{
+		Path:         "/abs/notes",
 		Code:         "OK",
 		Generation:   18,
 		FilesChanged: 3,
@@ -211,6 +242,7 @@ func TestCommitSuccessEnvelope(t *testing.T) {
 		t.Fatalf("CallTool() = %v", err)
 	}
 	assertSuccessInfo(t, res, &SuccessInfo{
+		Path:         "/abs/notes",
 		Code:         "OK",
 		Generation:   18,
 		FilesChanged: 3,
@@ -250,6 +282,7 @@ func TestNoOpCommitReturnsEmptyStatEnvelope(t *testing.T) {
 		t.Fatalf("CallTool() = %v", err)
 	}
 	assertSuccessInfo(t, res, &SuccessInfo{
+		Path: "/abs/notes",
 		Code: "OK", Generation: 7, FilesChanged: 0, Insertions: 0, Deletions: 0, Files: []ChangeFile{},
 	})
 }
@@ -268,6 +301,7 @@ func TestZeroResultWithNoErrorNeverPanics(t *testing.T) {
 		t.Fatalf("CallTool() = %v", err)
 	}
 	assertSuccessInfo(t, res, &SuccessInfo{
+		Path: "/abs/notes",
 		Code: "OK", Generation: 0, FilesChanged: 0, Insertions: 0, Deletions: 0, Files: []ChangeFile{},
 	})
 }
@@ -397,6 +431,54 @@ func TestErrorMessagesAreRedacted(t *testing.T) {
 	}
 }
 
+// TestOmittedPathResolvesToNotebookRoot proves the default-directory
+// contract: a call without path reaches the service as the server's
+// notebook root, and the result reports that directory, so an agent that
+// never configured a path still knows where to edit.
+func TestOmittedPathResolvesToNotebookRoot(t *testing.T) {
+	svc := &fakeService{root: "/session/notebook"}
+	client, _ := newTestPair(t, svc)
+	res, err := client.CallTool(context.Background(), &sdk.CallToolParams{
+		Name:      toolPull,
+		Arguments: map[string]any{},
+	})
+	if err != nil {
+		t.Fatalf("CallTool() = %v", err)
+	}
+	assertSuccessInfo(t, res, &SuccessInfo{
+		Path: "/session/notebook", Code: "OK", Files: []ChangeFile{},
+	})
+	commitRes, err := client.CallTool(context.Background(), &sdk.CallToolParams{
+		Name:      toolCommit,
+		Arguments: map[string]any{"message": "notes"},
+	})
+	if err != nil {
+		t.Fatalf("CallTool() = %v", err)
+	}
+	assertSuccessInfo(t, commitRes, &SuccessInfo{
+		Path: "/session/notebook", Code: "OK", Files: []ChangeFile{},
+	})
+	svc.mu.Lock()
+	defer svc.mu.Unlock()
+	if len(svc.pulls) != 1 || svc.pulls[0] != "/session/notebook" {
+		t.Fatalf("service pulls = %v, want the notebook root", svc.pulls)
+	}
+	if len(svc.commits) != 1 || svc.commits[0].path != "/session/notebook" {
+		t.Fatalf("service commits = %v, want the notebook root", svc.commits)
+	}
+}
+
+// TestInstructionsNameNotebookRoot proves the server tells the caller which
+// directory to edit before any tool call returns.
+func TestInstructionsNameNotebookRoot(t *testing.T) {
+	svc := &fakeService{root: "/session/notebook"}
+	client, _ := newTestPair(t, svc)
+	got := client.InitializeResult().Instructions
+	if !strings.Contains(got, "/session/notebook") {
+		t.Fatalf("instructions = %q, want the notebook root", got)
+	}
+}
+
 // TestInvalidInputsNeverReachService proves that unknown fields, relative
 // paths, and non-object arguments are rejected before the service runs.
 func TestInvalidInputsNeverReachService(t *testing.T) {
@@ -409,7 +491,7 @@ func TestInvalidInputsNeverReachService(t *testing.T) {
 	}{
 		{name: "unknown field", tool: toolPull, arguments: map[string]any{"path": "/abs/n", "extra": 1}},
 		{name: "relative path", tool: toolPull, arguments: map[string]any{"path": "notes"}},
-		{name: "missing path", tool: toolPull, arguments: map[string]any{}},
+		{name: "missing message", tool: toolCommit, arguments: map[string]any{"path": "/abs/n"}},
 		{name: "null path", tool: toolPull, arguments: map[string]any{"path": nil}},
 	}
 	for _, call := range calls {

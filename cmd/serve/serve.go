@@ -31,6 +31,9 @@ func Command(engine git.Engine, opts app.ProcessOptions) *command {
 	fs.SetOutput(io.Discard)
 	flags := app.NewFlags()
 	flags.Bind(fs)
+	// With no configured root the server owns a temporary notebook
+	// directory: every agent gets a private one and the tools need no path.
+	opts.Ephemeral = true
 	return &command{engine: engine, opts: opts, flags: flags, flagset: fs}
 }
 

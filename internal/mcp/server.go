@@ -31,6 +31,8 @@ const (
 // method returns the operation result, which the handler maps into the
 // structured success envelope.
 type Service interface {
+	// Root is the notebook directory an omitted request path resolves to.
+	Root() string
 	// Pull writes the current notebook into the resolved path.
 	Pull(ctx context.Context, path string) (notebook.Result, error)
 	// Commit publishes the caller's changes at the resolved path with the
@@ -54,10 +56,8 @@ func NewServer(svc Service, version string, logger *slog.Logger) *Server {
 	}
 	impl := &sdk.Implementation{Name: "slivingdoc", Version: version}
 	s := sdk.NewServer(impl, &sdk.ServerOptions{
-		Instructions: "Edit UTF-8 text files at the request path between " +
-			"notes_pull and notes_commit. The notebook accepts UTF-8 text " +
-			"without U+0000 only.",
-		Logger: logger,
+		Instructions: instructions(svc.Root()),
+		Logger:       logger,
 	})
 	h := &handler{svc: svc, logger: logger}
 	s.AddTool(&sdk.Tool{
@@ -99,40 +99,51 @@ type handler struct {
 	logger *slog.Logger
 }
 
+// path resolves an omitted request path to the server's notebook root, so
+// the service always receives one absolute directory.
+func (h *handler) path(requested string) string {
+	if requested == "" {
+		return h.svc.Root()
+	}
+	return requested
+}
+
 func (h *handler) pull(ctx context.Context, req *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
 	logger, ctx := h.requestLogger(ctx, toolPull)
 	start := time.Now()
 	logger.Info("tool call started")
-	path, err := decodePull(req.Params.Arguments)
+	requested, err := decodePull(req.Params.Arguments)
 	if err != nil {
 		logger.Warn("tool call completed", "outcome", "invalid_request", "duration", time.Since(start))
 		return errorResult(invalidRequest(err)), nil
 	}
+	path := h.path(requested)
 	result, err := h.svc.Pull(ctx, path)
 	if err != nil {
 		logger.Warn("tool call completed", "outcome", "error", "duration", time.Since(start))
 		return resultFor(err)
 	}
 	logger.Info("tool call completed", "outcome", "ok", "duration", time.Since(start))
-	return successResult(result), nil
+	return successResult(result, path), nil
 }
 
 func (h *handler) commit(ctx context.Context, req *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
 	logger, ctx := h.requestLogger(ctx, toolCommit)
 	start := time.Now()
 	logger.Info("tool call started")
-	path, message, err := decodeCommit(req.Params.Arguments)
+	requested, message, err := decodeCommit(req.Params.Arguments)
 	if err != nil {
 		logger.Warn("tool call completed", "outcome", "invalid_request", "duration", time.Since(start))
 		return errorResult(invalidRequest(err)), nil
 	}
+	path := h.path(requested)
 	result, err := h.svc.Commit(ctx, path, message)
 	if err != nil {
 		logger.Warn("tool call completed", "outcome", "error", "duration", time.Since(start))
 		return resultFor(err)
 	}
 	logger.Info("tool call completed", "outcome", "ok", "duration", time.Since(start))
-	return successResult(result), nil
+	return successResult(result, path), nil
 }
 
 // requestLogger derives the request-scoped logger from the server logger:
@@ -170,12 +181,24 @@ func resultFor(err error) (*sdk.CallToolResult, error) {
 }
 
 // successResult is the success envelope: one text item with exactly "OK"
-// and the structured SuccessInfo object (architecture section 2).
-func successResult(result notebook.Result) *sdk.CallToolResult {
+// and the structured SuccessInfo object (architecture section 2). path is
+// the resolved notebook directory, which the caller needs when it omitted
+// the request path.
+func successResult(result notebook.Result, path string) *sdk.CallToolResult {
 	return &sdk.CallToolResult{
 		Content:           []sdk.Content{&sdk.TextContent{Text: "OK"}},
-		StructuredContent: MapSuccess(result),
+		StructuredContent: MapSuccess(result, path),
 	}
+}
+
+// instructions is the server instruction text. It names the notebook
+// directory, so a caller that omits path still knows where to edit before
+// the first tool call returns.
+func instructions(root string) string {
+	return "The notebook directory is " + root + ". Call notes_pull, edit " +
+		"UTF-8 text files (without U+0000) there, then call notes_commit to " +
+		"publish. Both tools default to that directory; pass path only to " +
+		"address a subdirectory of it."
 }
 
 // errorResult is the domain-error envelope: isError, one candid text item,
@@ -191,14 +214,16 @@ func errorResult(te *ToolError) *sdk.CallToolResult {
 // Tool descriptions tell the caller to edit UTF-8 text files between pull
 // and commit (architecture section 2).
 const (
-	pullDescription = "Write the current notebook into the absolute path and " +
-		"record the accepted state. Edit UTF-8 text files (without U+0000) at " +
-		"that path between notes_pull and notes_commit; notes_commit publishes " +
-		"the changes and incorporates concurrent non-conflicting changes."
+	pullDescription = "Write the current notebook into the notebook directory " +
+		"and record the accepted state. Omit path to use the server's notebook " +
+		"directory, which the result reports. Edit UTF-8 text files (without " +
+		"U+0000) there between notes_pull and notes_commit; notes_commit " +
+		"publishes the changes and incorporates concurrent non-conflicting changes."
 
-	commitDescription = "Publish the caller's changes at the absolute path and " +
-		"incorporate concurrent non-conflicting changes. message must be " +
-		"non-blank UTF-8 without U+0000, at most 16,384 bytes; it is retained " +
+	commitDescription = "Publish the caller's changes in the notebook directory " +
+		"and incorporate concurrent non-conflicting changes. Omit path to use " +
+		"the server's notebook directory, which the result reports. message must " +
+		"be non-blank UTF-8 without U+0000, at most 16,384 bytes; it is retained " +
 		"in recent internal history only."
 )
 
@@ -210,7 +235,7 @@ var (
 	pullSchema = map[string]any{
 		"type":                 "object",
 		"properties":           map[string]any{"path": pathProperty},
-		"required":             []string{"path"},
+		"required":             []string{},
 		"additionalProperties": false,
 	}
 
@@ -220,15 +245,17 @@ var (
 			"path":    pathProperty,
 			"message": messageProperty,
 		},
-		"required":             []string{"path", "message"},
+		"required":             []string{"message"},
 		"additionalProperties": false,
 	}
 
 	pathProperty = map[string]any{
-		"type":        "string",
-		"description": "Absolute UTF-8 host path of the notebook directory, 1 through 4,096 bytes.",
-		"minLength":   1,
-		"maxLength":   maxPathBytes,
+		"type": "string",
+		"description": "Optional absolute UTF-8 host path of the notebook " +
+			"directory, 1 through 4,096 bytes. Omit it to use the server's " +
+			"notebook directory.",
+		"minLength": 1,
+		"maxLength": maxPathBytes,
 	}
 
 	messageProperty = map[string]any{

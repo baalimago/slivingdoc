@@ -16,7 +16,7 @@ An MCP host starts the server as a child process, or you can run it directly:
 
 ```text
 npx -y slivingdoc version
-npx -y slivingdoc serve --bucket my-notes --workspace-root /srv/notes ...
+npx -y slivingdoc serve --bucket my-notes ...
 ```
 
 The launcher never writes to stdout: stdout belongs to the MCP protocol

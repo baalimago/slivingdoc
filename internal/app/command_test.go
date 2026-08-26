@@ -28,9 +28,10 @@ func parsedFlagSet(t *testing.T, args []string) (*Flags, *flag.FlagSet) {
 	return f, fs
 }
 
-// TestOperationPath proves the pull/commit argument contract: exactly one
+// TestOperationPath proves the pull/commit argument contract: at most one
 // path, resolved against the working directory, with flags accepted on
-// either side of it.
+// either side of it. No path is the empty string, which the runtime
+// resolves to the workspace root.
 func TestOperationPath(t *testing.T) {
 	t.Parallel()
 	cwd := t.TempDir()
@@ -44,8 +45,8 @@ func TestOperationPath(t *testing.T) {
 		{name: "relative path resolves against cwd", args: []string{"notes"}, want: filepath.Join(cwd, "notes")},
 		{name: "absolute path is cleaned", args: []string{abs + "/./sub"}, want: filepath.Join(abs, "sub")},
 		{name: "flags after the path are parsed", args: []string{"notes", "--bucket", "b"}, want: filepath.Join(cwd, "notes")},
-		{name: "no path", args: nil, wantErr: "exactly one notebook path"},
-		{name: "two paths", args: []string{"a", "b"}, wantErr: "exactly one notebook path"},
+		{name: "no path defers to the workspace root", args: nil, want: ""},
+		{name: "two paths", args: []string{"a", "b"}, wantErr: "at most one notebook path"},
 		{name: "unknown flag after the path", args: []string{"notes", "--frobnicate"}, wantErr: "frobnicate"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
@@ -88,7 +89,7 @@ func TestOperationPathParsesTrailingFlags(t *testing.T) {
 	if _, err := OperationPath(fs, cwd); err != nil {
 		t.Fatalf("OperationPath() = %v", err)
 	}
-	cfg, err := flags.resolve(nil, cwd, t.TempDir())
+	cfg, err := flags.resolve(nil, cwd, t.TempDir(), false, nil)
 	if err != nil {
 		t.Fatalf("resolve() = %v", err)
 	}

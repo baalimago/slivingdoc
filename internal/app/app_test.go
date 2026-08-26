@@ -55,6 +55,8 @@ func (f *fakeEngine) OpenRepo(string) (git.Repository, error) { return nil, errE
 // transport lifecycle without a notebook.
 type fakeService struct{}
 
+func (fakeService) Root() string { return "/fake/notebook" }
+
 func (fakeService) Pull(context.Context, string) (notebook.Result, error) {
 	return notebook.Result{}, nil
 }
@@ -70,6 +72,8 @@ type blockingService struct {
 	started chan struct{}
 	release chan struct{}
 }
+
+func (b *blockingService) Root() string { return "/fake/notebook" }
 
 func (b *blockingService) Pull(context.Context, string) (notebook.Result, error) {
 	close(b.started)
@@ -88,6 +92,8 @@ func (b *blockingService) Commit(context.Context, string, string) (notebook.Resu
 type cancelingService struct {
 	started chan struct{}
 }
+
+func (c *cancelingService) Root() string { return "/fake/notebook" }
 
 func (c *cancelingService) Pull(ctx context.Context, _ string) (notebook.Result, error) {
 	close(c.started)

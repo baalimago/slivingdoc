@@ -78,12 +78,13 @@ func (c *command) Run(ctx context.Context) error {
 const helpText = `slivingdoc pull - write the current notebook into a directory
 
 Usage:
-  slivingdoc pull [flags] <path>
+  slivingdoc pull [flags] [path]
 
-<path> is the notebook directory. A relative path resolves against the
-working directory; the resolved path must stay at or below the workspace
-root. Edit UTF-8 text files there, then publish with
-'slivingdoc commit <path> -m <message>'.
+[path] is the notebook directory and defaults to the workspace root, which
+is the working directory unless --workspace-root says otherwise. A relative
+path resolves against the working directory; the resolved path must stay at
+or below the workspace root. Edit UTF-8 text files there, then publish with
+'slivingdoc commit [path] -m <message>'.
 
 Prints the unified result report on stdout. Success shows the OK status
 token, the accepted remote generation, one line per changed file with its

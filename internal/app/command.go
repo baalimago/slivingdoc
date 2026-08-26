@@ -14,19 +14,25 @@ import (
 	"github.com/baalimago/slivingdoc/internal/pathutil"
 )
 
-// OperationPath extracts the one positional notebook path of a pull or
+// OperationPath extracts the optional positional notebook path of a pull or
 // commit command line and resolves it against the working directory. The
 // command router parses flags up to the first positional argument only, so
-// flags that follow the path are parsed here before the count is judged.
+// flags that follow the path are parsed here before the count is judged. No
+// positional argument returns the empty string, which the runtime resolves
+// to the workspace root.
 func OperationPath(fs *flag.FlagSet, cwd string) (string, error) {
 	positionals, err := positionals(fs)
 	if err != nil {
 		return "", err
 	}
-	if len(positionals) != 1 {
-		return "", fmt.Errorf("exactly one notebook path argument is required, got %d", len(positionals))
+	switch len(positionals) {
+	case 0:
+		return "", nil
+	case 1:
+		return resolvePath(cwd, positionals[0])
+	default:
+		return "", fmt.Errorf("at most one notebook path argument is accepted, got %d", len(positionals))
 	}
-	return resolvePath(cwd, positionals[0])
 }
 
 // positionals returns the positional arguments remaining on an

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -31,6 +32,11 @@ type config struct {
 	commitRetries       int
 	checkpointPacks     int
 	retainedCheckpoints int
+
+	// sessionDir is the process-owned parent of both roots when neither is
+	// configured (architecture section 17). It is removed at shutdown; the
+	// notebook itself lives in S3.
+	sessionDir string
 }
 
 // Flags are the serve-command flags (architecture section 17). Binding and
@@ -95,20 +101,53 @@ func loadConfig(p process) (config, error) {
 			return config{}, err
 		}
 	}
-	return f.resolve(p.env, p.cwd, p.cacheDir)
+	return f.resolve(p.env, p.cwd, p.cacheDir, p.ephemeral, p.newSessionDir)
 }
 
 // resolve applies the documented precedence — an explicitly set flag over
-// the environment over the default — and validates the result.
-func (f *Flags) resolve(environment []string, cwd, cacheDir string) (config, error) {
+// the environment over the default — and validates the result. When
+// ephemeral is set and neither root is configured, the process owns a
+// temporary session directory holding both roots as siblings. A refusal
+// after that directory exists removes it again: a startup refusal must
+// leave nothing behind.
+func (f *Flags) resolve(environment []string, cwd, cacheDir string, ephemeral bool, newSessionDir func() (string, error)) (cfgOut config, errOut error) {
+	var session string
+	defer func() {
+		if errOut != nil {
+			removeSessionDir(session)
+		}
+	}()
 	env := environ(environment)
 	cfg := config{
-		bucket:        resolveString(&f.bucket, env["SLIVINGDOC_BUCKET"], ""),
-		prefix:        resolveString(&f.prefix, env["SLIVINGDOC_PREFIX"], "slivingdoc"),
-		region:        resolveString(&f.region, env["AWS_REGION"], "us-east-1"),
-		endpoint:      resolveString(&f.endpoint, env["AWS_ENDPOINT_URL_S3"], ""),
-		workspaceRoot: resolveString(&f.workspaceRoot, env["SLIVINGDOC_WORKSPACE_ROOT"], cwd),
-		privateRoot:   resolveString(&f.privateRoot, env["SLIVINGDOC_PRIVATE_ROOT"], filepath.Join(cacheDir, "slivingdoc")),
+		bucket:   resolveString(&f.bucket, env["SLIVINGDOC_BUCKET"], ""),
+		prefix:   resolveString(&f.prefix, env["SLIVINGDOC_PREFIX"], "slivingdoc"),
+		region:   resolveString(&f.region, env["AWS_REGION"], "us-east-1"),
+		endpoint: resolveString(&f.endpoint, env["AWS_ENDPOINT_URL_S3"], ""),
+	}
+	wsRoot, wsSet := resolveRoot(&f.workspaceRoot, env["SLIVINGDOC_WORKSPACE_ROOT"])
+	privRoot, privSet := resolveRoot(&f.privateRoot, env["SLIVINGDOC_PRIVATE_ROOT"])
+	switch {
+	case ephemeral && !wsSet && !privSet:
+		if newSessionDir == nil {
+			newSessionDir = defaultSessionDir
+		}
+		created, err := newSessionDir()
+		if err != nil {
+			return config{}, fmt.Errorf("create session directory: %w", err)
+		}
+		session = created
+		cfg.sessionDir = session
+		cfg.workspaceRoot = filepath.Join(session, sessionNotebookDir)
+		cfg.privateRoot = filepath.Join(session, sessionPrivateDir)
+	default:
+		cfg.workspaceRoot = cwd
+		if wsSet {
+			cfg.workspaceRoot = wsRoot
+		}
+		cfg.privateRoot = filepath.Join(cacheDir, "slivingdoc")
+		if privSet {
+			cfg.privateRoot = privRoot
+		}
 	}
 	var err error
 	if cfg.pathStyle, err = resolveBool(&f.pathStyle, env["SLIVINGDOC_PATH_STYLE"]); err != nil {
@@ -192,6 +231,46 @@ func resolveString(f *stringFlag, env, def string) string {
 		return env
 	}
 	return def
+}
+
+// resolveRoot returns a configured root and whether it was configured at
+// all. An explicitly empty flag counts as configured, so it still fails the
+// empty-root check instead of silently taking a default.
+func resolveRoot(f *stringFlag, env string) (string, bool) {
+	if f.set {
+		return f.value, true
+	}
+	if env != "" {
+		return env, true
+	}
+	return "", false
+}
+
+// The ephemeral session layout. Both roots are siblings under one
+// process-owned parent, so they can never overlap and no two processes can
+// select the same private state.
+const (
+	sessionNotebookDir = "notebook"
+	sessionPrivateDir  = "private"
+	sessionDirPattern  = "slivingdoc-"
+)
+
+// defaultSessionDir creates the process-owned session directory in the
+// operating-system temporary directory. The random component is what makes
+// each server's notebook and private state unique.
+func defaultSessionDir() (string, error) {
+	return os.MkdirTemp("", sessionDirPattern)
+}
+
+// removeSessionDir removes an ephemeral session directory. An unconfigured
+// root is process-owned scratch space: nothing outside this process can
+// address it again, because the derived private key binds to the random
+// path. The durable notebook is the remote.
+func removeSessionDir(dir string) error {
+	if dir == "" {
+		return nil
+	}
+	return os.RemoveAll(dir)
 }
 
 // resolveBool returns the flag value when set, the parsed environment
@@ -347,9 +426,11 @@ const FlagReference = `  --bucket string               S3 bucket (required)     
   --region string               S3 region (default "us-east-1")              AWS_REGION
   --endpoint string             S3-compatible endpoint URL (empty for AWS)   AWS_ENDPOINT_URL_S3
   --path-style                  force S3 path-style addressing               SLIVINGDOC_PATH_STYLE
-  --workspace-root string       visible workspace root (default: startup     SLIVINGDOC_WORKSPACE_ROOT
-                                working directory)
-  --private-root string         private state root (default:                 SLIVINGDOC_PRIVATE_ROOT
+  --workspace-root string       visible workspace root (serve default: a     SLIVINGDOC_WORKSPACE_ROOT
+                                per-process temporary directory; pull and
+                                commit default to the working directory)
+  --private-root string         private state root (default: beside the      SLIVINGDOC_PRIVATE_ROOT
+                                temporary workspace root, else
                                 <user-cache-dir>/slivingdoc)
   --commit-retries int          CAS retries after the first attempt          SLIVINGDOC_COMMIT_RETRIES
                                 (default 8, range 0..100)
@@ -364,6 +445,13 @@ const HelpText = `slivingdoc serve - shared UTF-8 text notebook over MCP stdio
 
 Usage:
   slivingdoc serve [flags]
+
+With no configured workspace root, the server owns one temporary notebook
+directory for its lifetime and removes it at shutdown; the notebook itself
+is durable in the bucket. notes_pull and notes_commit then need no path,
+and the resolved directory is reported in the server instructions and in
+every tool result. Setting --workspace-root keeps the shared-directory
+behaviour instead.
 
 Flags take precedence over environment variables, which override defaults.
 An explicitly empty flag value does not fall back to an environment value.

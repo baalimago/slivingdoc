@@ -99,6 +99,11 @@ func NewService(engine git.Engine, store storage.ObjectStore, cfg ServiceConfig,
 	}, nil
 }
 
+// Root is the notebook directory an omitted request path resolves to: the
+// configured workspace root, or the process-owned temporary notebook
+// directory when no root was configured (architecture section 17).
+func (s *Service) Root() string { return s.cfg.WorkspaceRoot }
+
 // Pull resolves path to its notebook, pulls it, and returns the operation
 // result: the accepted generation and the pull delta diffstat.
 func (s *Service) Pull(ctx context.Context, path string) (notebook.Result, error) {

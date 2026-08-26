@@ -90,18 +90,18 @@ func (e *stubEngine) OpenRepo(string) (git.Repository, error) {
 	return nil, errors.New("unused")
 }
 
-// TestPullRefusesWithoutPath proves a missing path is a Setup refusal that
+// TestPullRefusesExtraPaths proves a second path is a Setup refusal that
 // never opens the native engine.
-func TestPullRefusesWithoutPath(t *testing.T) {
+func TestPullRefusesExtraPaths(t *testing.T) {
 	t.Parallel()
 	engine := &stubEngine{}
 	opts, _, _ := testOptions(t, fake.New("p"))
 	c := Command(engine, opts)
-	if err := c.Flagset().Parse(nil); err != nil {
+	if err := c.Flagset().Parse([]string{"a", "b"}); err != nil {
 		t.Fatalf("Parse() = %v", err)
 	}
 	err := c.Setup(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "exactly one notebook path") {
+	if err == nil || !strings.Contains(err.Error(), "at most one notebook path") {
 		t.Fatalf("Setup() = %v, want the path refusal", err)
 	}
 	if engine.opened {
