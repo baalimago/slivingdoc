@@ -58,6 +58,41 @@ func TestNewLoggerRecordShape(t *testing.T) {
 	}
 }
 
+// TestRuntimeLoggerHonoursLogSettings proves the flag-resolved settings
+// reach the records: the configured module level applies, and the
+// timestamp toggle removes exactly the time= field while the level, the
+// module, and the attributes stay.
+func TestRuntimeLoggerHonoursLogSettings(t *testing.T) {
+	t.Parallel()
+	for _, row := range []struct {
+		name      string
+		timestamp bool
+	}{
+		{name: "timestamp off omits time=", timestamp: false},
+		{name: "timestamp on keeps time=", timestamp: true},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			var out strings.Builder
+			logger, err := runtimeLogger(config{logLevel: "mcp=debug", logTimestamp: row.timestamp},
+				[]string{"NO_COLOR=1"}, &out)
+			if err != nil {
+				t.Fatalf("runtimeLogger() = %v", err)
+			}
+			Module(logger, ModuleMCP).Debug("tool call started", "mcpReqID", "abc123")
+			line := out.String()
+			for _, want := range []string{"level=DEBUG", `msg="tool call started"`, "module=mcp", "mcpReqID=abc123"} {
+				if !strings.Contains(line, want) {
+					t.Fatalf("record = %q, want %q", line, want)
+				}
+			}
+			if got := strings.Contains(line, "time="); got != row.timestamp {
+				t.Fatalf("record = %q, time= present = %v, want %v", line, got, row.timestamp)
+			}
+		})
+	}
+}
+
 // TestNewLoggerInvalidLevelIsNotFatal proves a malformed LOG_LEVEL reports
 // the problem but still returns a working Info logger. Refusing to start
 // over a typo in diagnostic plumbing turns it into an outage.

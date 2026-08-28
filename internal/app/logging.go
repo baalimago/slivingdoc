@@ -1,9 +1,11 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"log/slog"
+	"time"
 
 	"github.com/baalimago/go_away_boilerplate/pkg/slogcolor"
 )
@@ -39,23 +41,67 @@ const (
 // logger falls back to the Info default and the returned error names the
 // problem so the caller can report it through that same logger.
 func NewLogger(environment []string, w io.Writer) (*slog.Logger, error) {
+	env := environ(environment)
+	return buildLogger(env[logEnvLevel], env[logEnvNoColor] != "", true, w)
+}
+
+// runtimeLogger rebuilds the process logger from the resolved logging
+// configuration: the flag-over-environment level spec and timestamp
+// toggle, with the color gate still read from the environment. setup
+// calls it after flags resolve, so --log-level and --log-timestamp reach
+// the runtime's records.
+func runtimeLogger(cfg config, environment []string, w io.Writer) (*slog.Logger, error) {
+	env := environ(environment)
+	return buildLogger(cfg.logLevel, env[logEnvNoColor] != "", cfg.logTimestamp, w)
+}
+
+// buildLogger constructs the logger from resolved settings: the level
+// spec in the LOG_LEVEL grammar, the color gate, and whether records
+// carry the time= field. A malformed spec falls back to the Info default
+// with the returned error naming the problem (see NewLogger).
+func buildLogger(levelSpec string, noColor, timestamp bool, w io.Writer) (*slog.Logger, error) {
 	if w == nil {
 		w = io.Discard
 	}
-	env := environ(environment)
-
 	var parseErr error
-	levels, err := slogcolor.ParseLevels(env[logEnvLevel])
+	levels, err := slogcolor.ParseLevels(levelSpec)
 	if err != nil {
-		parseErr = fmt.Errorf("app: invalid %s %q: %w", logEnvLevel, env[logEnvLevel], err)
+		parseErr = fmt.Errorf("app: invalid %s %q: %w", logEnvLevel, levelSpec, err)
 		levels = slogcolor.NewLevels(slog.LevelInfo)
 	}
 
-	handler := slogcolor.New(w, &slogcolor.Options{
+	var handler slog.Handler = slogcolor.New(w, &slogcolor.Options{
 		Levels:  levels,
-		NoColor: env[logEnvNoColor] != "",
+		NoColor: noColor,
 	})
+	if !timestamp {
+		handler = noTimeHandler{inner: handler}
+	}
 	return slog.New(handler), parseErr
+}
+
+// noTimeHandler suppresses the time= field by zeroing each record's time,
+// which the text handler renders as no field at all. Embedders whose log
+// pipeline stamps lines itself ask for it with --log-timestamp=false.
+type noTimeHandler struct {
+	inner slog.Handler
+}
+
+func (h noTimeHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	return h.inner.Enabled(ctx, level)
+}
+
+func (h noTimeHandler) Handle(ctx context.Context, r slog.Record) error {
+	r.Time = time.Time{}
+	return h.inner.Handle(ctx, r)
+}
+
+func (h noTimeHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return noTimeHandler{inner: h.inner.WithAttrs(attrs)}
+}
+
+func (h noTimeHandler) WithGroup(name string) slog.Handler {
+	return noTimeHandler{inner: h.inner.WithGroup(name)}
 }
 
 // Module returns logger bound to a module name, which selects that module's

@@ -1218,8 +1218,8 @@ empty flag value does not fall back to an environment value. Boolean values use
 Go `strconv.ParseBool`. Decimal integer values do not accept a sign.
 
 Logs go to stderr as structured `key=value` text. Every record carries a
-timestamp, a level, and the module that emitted it. Stdout carries only MCP
-protocol messages and command output.
+timestamp (unless disabled), a level, and the module that emitted it.
+Stdout carries only MCP protocol messages and command output.
 
 The environment configures logging, so it applies to every command and is
 resolved before flags are parsed. `LOG_LEVEL` is a comma-separated list in
@@ -1229,6 +1229,13 @@ default, for example `cli=warn,mcp=debug,info`. The modules are `cli`,
 A malformed value is reported and falls back to the info default rather
 than refusing startup. `NO_COLOR` set to any non-empty value disables the
 level color.
+
+The `--log-level` flag takes the same grammar and overrides `LOG_LEVEL`
+once the flags resolve; an invalid flag value refuses startup like any
+other flag. `--log-timestamp` (environment `SLIVINGDOC_LOG_TIMESTAMP`,
+default true) set to false removes the `time=` field, for hosts that
+stamp log lines themselves. Records emitted before the flags resolve
+follow the environment configuration.
 SIGINT and SIGTERM stop new requests and cancel in-flight request contexts.
 Shutdown waits at most 30 seconds, closes native and lock resources, and exits
 nonzero if the deadline expires.

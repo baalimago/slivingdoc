@@ -54,6 +54,7 @@ func TestLoadConfigDefaults(t *testing.T) {
 		commitRetries:       8,
 		checkpointPacks:     1024,
 		retainedCheckpoints: 1,
+		logTimestamp:        true,
 	}
 	if cfg != want {
 		t.Fatalf("config = %+v, want %+v", cfg, want)
@@ -215,6 +216,80 @@ func TestLoadConfigFlagOverEnvOverDefault(t *testing.T) {
 	}
 	if !cfg.pathStyle {
 		t.Fatal("path style = false, want the env value true")
+	}
+}
+
+// TestLoadConfigLogSettings proves the logging knobs resolve with the
+// documented precedence: the flag beats the environment, the timestamp
+// defaults to true, and only an explicit flag or SLIVINGDOC_LOG_TIMESTAMP
+// marks the logging as configured — LOG_LEVEL alone already reached the
+// pre-parse logger, so it must not trigger a rebuild.
+func TestLoadConfigLogSettings(t *testing.T) {
+	cases := []struct {
+		name           string
+		env            []string
+		args           []string
+		wantLevel      string
+		wantTimestamp  bool
+		wantConfigured bool
+	}{
+		{name: "defaults", wantTimestamp: true},
+		{
+			name: "env level alone is not configured",
+			env:  []string{"LOG_LEVEL=mcp=debug"}, wantLevel: "mcp=debug", wantTimestamp: true,
+		},
+		{
+			name: "flag level beats env and configures",
+			env:  []string{"LOG_LEVEL=warn"}, args: []string{"--log-level", "mcp=debug"},
+			wantLevel: "mcp=debug", wantTimestamp: true, wantConfigured: true,
+		},
+		{
+			name: "timestamp flag disables",
+			args: []string{"--log-timestamp=false"}, wantConfigured: true,
+		},
+		{
+			name: "timestamp env disables",
+			env:  []string{"SLIVINGDOC_LOG_TIMESTAMP=false"}, wantConfigured: true,
+		},
+		{
+			name: "timestamp flag beats env",
+			env:  []string{"SLIVINGDOC_LOG_TIMESTAMP=false"}, args: []string{"--log-timestamp=true"},
+			wantTimestamp: true, wantConfigured: true,
+		},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			env := append([]string{"SLIVINGDOC_BUCKET=b"}, tt.env...)
+			cfg, err := loadConfig(testProcess(env, tt.args...))
+			if err != nil {
+				t.Fatalf("loadConfig() = %v", err)
+			}
+			if cfg.logLevel != tt.wantLevel {
+				t.Fatalf("logLevel = %q, want %q", cfg.logLevel, tt.wantLevel)
+			}
+			if cfg.logTimestamp != tt.wantTimestamp {
+				t.Fatalf("logTimestamp = %v, want %v", cfg.logTimestamp, tt.wantTimestamp)
+			}
+			if cfg.logConfigured != tt.wantConfigured {
+				t.Fatalf("logConfigured = %v, want %v", cfg.logConfigured, tt.wantConfigured)
+			}
+		})
+	}
+}
+
+// TestLoadConfigInvalidLogValues proves an explicit flag value fails fast
+// like every other flag, an invalid timestamp variable is refused like
+// every other boolean variable, and a malformed LOG_LEVEL environment
+// value keeps its documented lenient fallback.
+func TestLoadConfigInvalidLogValues(t *testing.T) {
+	if _, err := loadConfig(testProcess([]string{"SLIVINGDOC_BUCKET=b"}, "--log-level", "cli=verbose")); err == nil {
+		t.Fatal("loadConfig(--log-level cli=verbose) = nil, want an invalid-level error")
+	}
+	if _, err := loadConfig(testProcess([]string{"SLIVINGDOC_BUCKET=b", "SLIVINGDOC_LOG_TIMESTAMP=nope"})); err == nil {
+		t.Fatal("loadConfig(SLIVINGDOC_LOG_TIMESTAMP=nope) = nil, want an invalid-boolean error")
+	}
+	if _, err := loadConfig(testProcess([]string{"SLIVINGDOC_BUCKET=b", "LOG_LEVEL=cli=verbose"})); err != nil {
+		t.Fatalf("loadConfig(malformed LOG_LEVEL env) = %v, want the lenient fallback", err)
 	}
 }
 

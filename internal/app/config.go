@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/baalimago/go_away_boilerplate/pkg/slogcolor"
+
 	"github.com/baalimago/slivingdoc/internal/notebook"
 	"github.com/baalimago/slivingdoc/internal/pathutil"
 	"github.com/baalimago/slivingdoc/internal/storage"
@@ -33,6 +35,15 @@ type config struct {
 	checkpointPacks     int
 	retainedCheckpoints int
 
+	// logLevel is the flag-over-environment level spec in the LOG_LEVEL
+	// grammar; empty means the Info default. logTimestamp controls the
+	// time= field of every record. logConfigured records whether either
+	// came from its flag or SLIVINGDOC_LOG_TIMESTAMP, which is what makes
+	// setup rebuild the process logger after flags resolve.
+	logLevel      string
+	logTimestamp  bool
+	logConfigured bool
+
 	// sessionDir is the process-owned parent of both roots when neither is
 	// configured (architecture section 17). It is removed at shutdown; the
 	// notebook itself lives in S3.
@@ -53,6 +64,8 @@ type Flags struct {
 	commitRetries       intFlag
 	checkpointPacks     intFlag
 	retainedCheckpoints intFlag
+	logLevel            stringFlag
+	logTimestamp        boolFlag
 }
 
 // NewFlags returns an unbound flag holder for the serve command.
@@ -72,6 +85,8 @@ func (f *Flags) Bind(fs *flag.FlagSet) {
 	fs.Var(&f.commitRetries, "commit-retries", "CAS retries after the first attempt")
 	fs.Var(&f.checkpointPacks, "checkpoint-packs", "active tail length that schedules a checkpoint")
 	fs.Var(&f.retainedCheckpoints, "retained-checkpoints", "retained previous checkpoint generations")
+	fs.Var(&f.logLevel, "log-level", "per-module log levels (LOG_LEVEL grammar)")
+	fs.Var(&f.logTimestamp, "log-timestamp", "include the time= field in log records")
 }
 
 // The documented numeric bounds and defaults (architecture section 17).
@@ -150,7 +165,7 @@ func (f *Flags) resolve(environment []string, cwd, cacheDir string, ephemeral bo
 		}
 	}
 	var err error
-	if cfg.pathStyle, err = resolveBool(&f.pathStyle, env["SLIVINGDOC_PATH_STYLE"]); err != nil {
+	if cfg.pathStyle, err = resolveBool(&f.pathStyle, env["SLIVINGDOC_PATH_STYLE"], false); err != nil {
 		return config{}, err
 	}
 	if cfg.commitRetries, err = resolveInt(&f.commitRetries, env["SLIVINGDOC_COMMIT_RETRIES"], defaultCommitRetries); err != nil {
@@ -162,6 +177,18 @@ func (f *Flags) resolve(environment []string, cwd, cacheDir string, ephemeral bo
 	if cfg.retainedCheckpoints, err = resolveInt(&f.retainedCheckpoints, env["SLIVINGDOC_RETAINED_CHECKPOINTS"], defaultRetainedCheckpoints); err != nil {
 		return config{}, err
 	}
+	cfg.logLevel = resolveString(&f.logLevel, env[logEnvLevel], "")
+	if f.logLevel.set {
+		// An explicit flag value fails fast like every other flag; only the
+		// ambient environment keeps the lenient Info fallback.
+		if _, err := slogcolor.ParseLevels(f.logLevel.value); err != nil {
+			return config{}, fmt.Errorf("invalid log level %q: %w", f.logLevel.value, err)
+		}
+	}
+	if cfg.logTimestamp, err = resolveBool(&f.logTimestamp, env["SLIVINGDOC_LOG_TIMESTAMP"], true); err != nil {
+		return config{}, err
+	}
+	cfg.logConfigured = f.logLevel.set || f.logTimestamp.set || env["SLIVINGDOC_LOG_TIMESTAMP"] != ""
 	return cfg.finish(cwd)
 }
 
@@ -274,8 +301,8 @@ func removeSessionDir(dir string) error {
 }
 
 // resolveBool returns the flag value when set, the parsed environment
-// value when present and non-empty, else false.
-func resolveBool(f *boolFlag, env string) (bool, error) {
+// value when present and non-empty, else the default.
+func resolveBool(f *boolFlag, env string, def bool) (bool, error) {
 	if f.set {
 		return f.value, nil
 	}
@@ -286,7 +313,7 @@ func resolveBool(f *boolFlag, env string) (bool, error) {
 		}
 		return v, nil
 	}
-	return false, nil
+	return def, nil
 }
 
 // resolveInt returns the flag value when set, the parsed unsigned
@@ -438,6 +465,12 @@ const FlagReference = `  --bucket string               S3 bucket (required)     
                                 checkpoint (default 1024, minimum 1)
   --retained-checkpoints int    retained previous checkpoint generations     SLIVINGDOC_RETAINED_CHECKPOINTS
                                 (default 1, range 0..64)
+  --log-level string            per-module log levels, for example           LOG_LEVEL
+                                "cli=warn,mcp=debug,info"; a bare level
+                                is the default (default "info")
+  --log-timestamp               include the time= field in log records       SLIVINGDOC_LOG_TIMESTAMP
+                                (default true; pass =false when the host
+                                stamps log lines itself)
 `
 
 // HelpText is the serve-command help (architecture section 17).

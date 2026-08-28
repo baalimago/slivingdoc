@@ -274,7 +274,14 @@ only be resolved from a bound attribute.
 | Variable | Effect |
 | -------- | ------ |
 | `LOG_LEVEL` | Per-module levels, for example `cli=warn,mcp=debug,info`. A bare level is the default. A malformed value falls back to info and is reported, never fatal. |
+| `SLIVINGDOC_LOG_TIMESTAMP` | `false` removes the `time=` field, for hosts that stamp lines themselves. |
 | `NO_COLOR` | Any non-empty value disables the ANSI level color. |
+
+The `--log-level` and `--log-timestamp` flags (shared by `serve`, `pull`,
+and `commit`) override the environment once the flags resolve; `setup`
+rebuilds the process logger when either is configured. An invalid
+`--log-level` value refuses startup; a malformed `LOG_LEVEL` environment
+value keeps the lenient info fallback.
 
 Modules are `app.ModuleCLI`, `ModuleApp`, `ModuleMCP`, and
 `ModuleNotebook`.
@@ -378,7 +385,9 @@ not `%v`, so callers can use `errors.Is`.
 call. Completion records add `duration` and `outcome`. `internal/notebook` takes the same request-scoped
 logger from the context (`notebook.WithLogger` / `LoggerFrom`), so a
 checkpoint or cleanup warning shares the request's ID. Logs go to stderr;
-stdout is protocol-only.
+stdout is protocol-only. The MCP SDK's session-lifecycle records are
+demoted to DEBUG with empty-string attributes dropped (`sdkLogger` in
+`internal/mcp`), so `mcp=info` shows only slivingdoc's own records.
 
 **Invariants that a change must not break.** These come from the accepted
 architecture, and a change that touches one of them updates

@@ -57,7 +57,7 @@ func NewServer(svc Service, version string, logger *slog.Logger) *Server {
 	impl := &sdk.Implementation{Name: "slivingdoc", Version: version}
 	s := sdk.NewServer(impl, &sdk.ServerOptions{
 		Instructions: instructions(svc.Root()),
-		Logger:       logger,
+		Logger:       sdkLogger(logger),
 	})
 	h := &handler{svc: svc, logger: logger}
 	s.AddTool(&sdk.Tool{

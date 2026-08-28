@@ -95,6 +95,8 @@ reference.
 | CAS retry limit       | `--commit-retries`       | `SLIVINGDOC_COMMIT_RETRIES`       | `8` (0..100)              |
 | Checkpoint pack count | `--checkpoint-packs`     | `SLIVINGDOC_CHECKPOINT_PACKS`     | `1024` (minimum 1)        |
 | Retained checkpoints  | `--retained-checkpoints` | `SLIVINGDOC_RETAINED_CHECKPOINTS` | `1` (0..64)               |
+| Log levels            | `--log-level`            | `LOG_LEVEL`                       | `info`                    |
+| Log timestamps        | `--log-timestamp`        | `SLIVINGDOC_LOG_TIMESTAMP`        | `true`                    |
 
 `--workspace-root` is the root below which request paths may live, and is
 also the notebook directory an omitted path resolves to. The private root
@@ -250,14 +252,19 @@ directly with `slivingdoc commit [path] -m <message>`. This sharing needs
 
 ## Logging
 
-Logging is configured by the environment, not by flags, so it applies
-to every command and works before flags are parsed. Records are
-structured `key=value` text on stderr. Each record carries a timestamp,
-a level, and the module that emitted it.
+Logging is configured by the environment, which applies to every command
+and works before flags are parsed. `serve`, `pull`, and `commit` also
+take `--log-level` and `--log-timestamp`, which override the environment
+once the flags resolve; the few records emitted before that point (the
+command router, a configuration refusal) follow the environment. Records
+are structured `key=value` text on stderr. Each record carries a
+timestamp (unless `--log-timestamp=false`), a level, and the module that
+emitted it.
 
 | Variable    | Effect                                              |
 | ----------- | --------------------------------------------------- |
 | `LOG_LEVEL` | Per-module levels. A bare level is the default.     |
+| `SLIVINGDOC_LOG_TIMESTAMP` | `false` removes the `time=` field, for hosts that stamp log lines themselves. |
 | `NO_COLOR`  | Any non-empty value disables ANSI colour: log levels and the CLI report. |
 
 `LOG_LEVEL` takes a comma-separated list. `module=level` sets one
@@ -271,7 +278,8 @@ The modules are `cli` (command routing), `app` (startup and shutdown),
 `mcp` (one record per tool call, carrying `mcpReqID`), and `notebook`
 (best-effort checkpoint and cleanup records). Levels are `debug`,
 `info`, `warn`, and `error`. A malformed `LOG_LEVEL` is reported and
-falls back to `info`; it never refuses startup.
+falls back to `info`; it never refuses startup. An invalid `--log-level`
+flag value, in contrast, refuses startup like any other flag.
 
 ## Notebook rules
 

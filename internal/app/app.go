@@ -254,6 +254,17 @@ func setup(p process) (*Runtime, error) {
 	if err != nil {
 		return nil, fmt.Errorf("app: invalid configuration: %s", mcp.Redact(err.Error()))
 	}
+	if cfg.logConfigured {
+		// A logging flag (or SLIVINGDOC_LOG_TIMESTAMP) resolves only after
+		// the flags parse, so the runtime logger is rebuilt here; records
+		// before this point follow the environment configuration.
+		rebuilt, levelErr := runtimeLogger(cfg, p.env, p.stderr)
+		if levelErr != nil {
+			Module(rebuilt, ModuleApp).Warn("falling back to the default log level", "error", levelErr)
+		}
+		base = rebuilt
+		logger = Module(base, ModuleApp)
+	}
 	if err := p.engine.Open(); err != nil {
 		removeSessionDir(cfg.sessionDir)
 		return nil, fmt.Errorf("app: open native engine: %w", err)

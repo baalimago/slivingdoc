@@ -36,7 +36,8 @@ Run 'slivingdoc serve -h' for the full flag and environment reference.
 Humans sync the shared directory directly with 'slivingdoc pull <path>'
 and 'slivingdoc commit <path> -m <message>'.
 
-Logging is configured by the environment, not by flags:
+Logging is configured by the environment; serve, pull, and commit also
+take --log-level and --log-timestamp, which override it:
   LOG_LEVEL   per-module levels, for example "cli=warn,mcp=debug,info".
               A bare level is the default; modules are cli, app, mcp, notebook.
   NO_COLOR    any non-empty value disables the ANSI level colour.`
