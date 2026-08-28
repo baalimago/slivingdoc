@@ -275,8 +275,8 @@ func writeNote(t *testing.T, path, name, data string) {
 }
 
 // resultOK asserts the success envelope of a tool result: one text item
-// exactly OK and a structured SuccessInfo whose code is OK with the files
-// key always present.
+// carrying the resolved notebook path and a structured SuccessInfo whose
+// code is OK with the files key always present.
 func resultOK(res *sdk.CallToolResult) error {
 	if res.IsError {
 		return fmt.Errorf("result is an error: %v", res.StructuredContent)
@@ -302,8 +302,8 @@ func resultOK(res *sdk.CallToolResult) error {
 		return fmt.Errorf("content items = %d, want exactly one", len(res.Content))
 	}
 	text, ok := res.Content[0].(*sdk.TextContent)
-	if !ok || text.Text != "OK" {
-		return fmt.Errorf("text item = %#v, want exactly OK", res.Content[0])
+	if !ok || text.Text != got.Path {
+		return fmt.Errorf("text item = %#v, want the resolved notebook path %q", res.Content[0], got.Path)
 	}
 	return nil
 }

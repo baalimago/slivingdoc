@@ -161,8 +161,9 @@ func TestListToolsExactlyTwo(t *testing.T) {
 }
 
 // TestPullSuccessReturnsOK proves the success envelope of a clean pull:
-// one text item with exactly OK, a structured SuccessInfo with code OK, no
-// error, and the exact request path reaching the service.
+// one text item carrying the resolved notebook path, a structured
+// SuccessInfo with code OK, no error, and the exact request path reaching
+// the service.
 func TestPullSuccessReturnsOK(t *testing.T) {
 	client, svc := newTestPair(t, nil)
 	res, err := client.CallTool(context.Background(), &sdk.CallToolParams{
@@ -589,10 +590,10 @@ func TestCancellationPropagatesToService(t *testing.T) {
 	}
 }
 
-// assertOKResult proves the exact success envelope: one text item with
-// exactly OK, no isError, and a structured SuccessInfo whose code is OK.
-// The full structured values are asserted per test with
-// assertSuccessInfo.
+// assertOKResult proves the exact success envelope: one text item
+// carrying the resolved notebook path, no isError, and a structured
+// SuccessInfo whose code is OK. The full structured values are asserted
+// per test with assertSuccessInfo.
 func assertOKResult(t *testing.T, res *sdk.CallToolResult) {
 	t.Helper()
 	if res.IsError {
@@ -619,8 +620,8 @@ func assertOKResult(t *testing.T, res *sdk.CallToolResult) {
 		t.Fatalf("content items = %d, want exactly one", len(res.Content))
 	}
 	text, ok := res.Content[0].(*sdk.TextContent)
-	if !ok || text.Text != "OK" {
-		t.Fatalf("text item = %#v, want exactly OK", res.Content[0])
+	if !ok || text.Text != got.Path {
+		t.Fatalf("text item = %#v, want the resolved notebook path %q", res.Content[0], got.Path)
 	}
 }
 

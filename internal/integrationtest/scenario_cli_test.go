@@ -91,12 +91,12 @@ func TestScenarioCLIPullCommitRoundTrip(t *testing.T) {
 	notes := filepath.Join(root, "notes")
 
 	runCLIExact(t, "fake", env,
-		"OK  generation 0\n0 files changed, 0 insertions(+), 0 deletions(-)\n",
+		"OK  generation 0  "+notes+"\n0 files changed, 0 insertions(+), 0 deletions(-)\n",
 		"pull", notes)
 
 	writeCLIFile(t, filepath.Join(notes, "a.md"), "cli notes\n")
 	runCLIExact(t, "fake", env,
-		"OK  generation 1\n  a.md  +1\n1 files changed, 1 insertions(+), 0 deletions(-)\n",
+		"OK  generation 1  "+notes+"\n  a.md  +1\n1 files changed, 1 insertions(+), 0 deletions(-)\n",
 		"commit", notes, "-m", "cli commit")
 }
 

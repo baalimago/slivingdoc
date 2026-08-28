@@ -142,19 +142,20 @@ func TestScenarioContentRules(t *testing.T) {
 }
 
 // TestScenarioResultShape proves the success envelope of both tools: one
-// text item exactly OK plus a structured SuccessInfo, with no commit ID,
-// pack key, or internal value anywhere in the result (architecture
-// section 2, L26).
+// text item carrying the resolved notebook path plus a structured
+// SuccessInfo, with no commit ID, pack key, or internal value anywhere in
+// the result (architecture section 2, L26).
 func TestScenarioResultShape(t *testing.T) {
 	t.Parallel()
 	h := newFakeHarness(t, HarnessConfig{})
 	path := h.Path("notes")
 	commitFirst(t, h, path, "a.md", "alpha", "first commit")
 
-	// The success envelope is one text item "OK" plus the structured
-	// SuccessInfo, which assertOK enforces. The scan below is the
-	// belt-and-braces check that neither the text item nor the structured
-	// content carries a Git object ID, pack key, or other internal value.
+	// The success envelope is one text item carrying the resolved notebook
+	// path plus the structured SuccessInfo, which assertOK enforces. The
+	// scan below is the belt-and-braces check that neither the text item nor
+	// the structured content carries a Git object ID, pack key, or other
+	// internal value.
 	h.WriteFile(path+"/b.md", "beta")
 	for _, res := range []*sdk.CallToolResult{
 		h.Pull("", path),
@@ -162,9 +163,6 @@ func TestScenarioResultShape(t *testing.T) {
 	} {
 		h.assertOK(t, res)
 		text := res.Content[0].(*sdk.TextContent).Text
-		if text != "OK" {
-			t.Fatalf("success text = %q, want exactly OK", text)
-		}
 		if gitObjectID.MatchString(text) || strings.Contains(text, "packs/") {
 			t.Fatalf("success text leaks an internal value: %q", text)
 		}

@@ -423,10 +423,11 @@ func (h *Harness) eventually(t *testing.T, timeout time.Duration, fn func() erro
 	}
 }
 
-// assertOK asserts the success envelope: one text item exactly OK and a
-// structured SuccessInfo whose code is OK with the files key always
-// present. The exact generation and diffstat values of each scenario are
-// asserted by the Success expectation of CallExpectation.
+// assertOK asserts the success envelope: one text item carrying the
+// resolved notebook path and a structured SuccessInfo whose code is OK
+// with the files key always present. The exact generation and diffstat
+// values of each scenario are asserted by the Success expectation of
+// CallExpectation.
 func (h *Harness) assertOK(t *testing.T, res *sdk.CallToolResult) {
 	t.Helper()
 	got := h.successInfo(t, res)
@@ -440,8 +441,8 @@ func (h *Harness) assertOK(t *testing.T, res *sdk.CallToolResult) {
 		t.Fatalf("content items = %d, want exactly one", len(res.Content))
 	}
 	text, ok := res.Content[0].(*sdk.TextContent)
-	if !ok || text.Text != "OK" {
-		t.Fatalf("text item = %#v, want exactly OK", res.Content[0])
+	if !ok || text.Text != got.Path {
+		t.Fatalf("text item = %#v, want the resolved notebook path %q", res.Content[0], got.Path)
 	}
 }
 

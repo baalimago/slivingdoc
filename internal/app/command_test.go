@@ -127,10 +127,10 @@ func TestReport(t *testing.T) {
 	t.Run("success writes the OK-prefixed report", func(t *testing.T) {
 		t.Parallel()
 		var out bytes.Buffer
-		if err := Report(&out, successResult(), nil, nil); err != nil {
+		if err := Report(&out, successResult(), nil, "/tmp/nb", nil); err != nil {
 			t.Fatalf("Report(nil) = %v", err)
 		}
-		want := "OK  generation 18\n" +
+		want := "OK  generation 18  /tmp/nb\n" +
 			"  archive/old.md  -3\n" +
 			"  notes/a.md  +1 -1\n" +
 			"  notes/c.md  +2\n" +
@@ -150,7 +150,7 @@ func TestReport(t *testing.T) {
 				{Path: "a.md", Ranges: []git.MarkerRange{{Start: 1, End: 5}}},
 				{Path: "dir/b.md", Ranges: nil},
 			},
-		}, nil)
+		}, "/tmp/nb", nil)
 		if err == nil || err.Error() != "CONTENT_CONFLICT" {
 			t.Fatalf("Report() = %v, want the terse category", err)
 		}
@@ -166,7 +166,7 @@ func TestReport(t *testing.T) {
 	t.Run("non-domain error passes through unprinted", func(t *testing.T) {
 		t.Parallel()
 		var out bytes.Buffer
-		if err := Report(&out, notebook.Result{}, context.Canceled, nil); err != context.Canceled {
+		if err := Report(&out, notebook.Result{}, context.Canceled, "/tmp/nb", nil); err != context.Canceled {
 			t.Fatalf("Report(context.Canceled) = %v, want the unchanged error", err)
 		}
 		if out.Len() != 0 {
@@ -188,7 +188,7 @@ func TestReport(t *testing.T) {
 			_, _ = io.Copy(&b, r)
 			got <- b.String()
 		}()
-		if err := Report(w, successResult(), nil, nil); err != nil {
+		if err := Report(w, successResult(), nil, "/tmp/nb", nil); err != nil {
 			t.Fatalf("Report() = %v", err)
 		}
 		w.Close()
@@ -200,7 +200,7 @@ func TestReport(t *testing.T) {
 	t.Run("NO_COLOR keeps the report plain", func(t *testing.T) {
 		t.Parallel()
 		var out bytes.Buffer
-		if err := Report(&out, successResult(), nil, []string{"NO_COLOR=1"}); err != nil {
+		if err := Report(&out, successResult(), nil, "/tmp/nb", []string{"NO_COLOR=1"}); err != nil {
 			t.Fatalf("Report() = %v", err)
 		}
 		if strings.Contains(out.String(), "\x1b[") {
@@ -215,8 +215,8 @@ func TestReport(t *testing.T) {
 func TestWriteSuccessColoured(t *testing.T) {
 	t.Parallel()
 	var out bytes.Buffer
-	writeSuccess(&out, successResult(), painter{on: true})
-	want := "\x1b[32mOK\x1b[0m  \x1b[36mgeneration 18\x1b[0m\n" +
+	writeSuccess(&out, successResult(), "/tmp/nb", painter{on: true})
+	want := "\x1b[32mOK\x1b[0m  \x1b[36mgeneration 18\x1b[0m  /tmp/nb\n" +
 		"  archive/old.md  \x1b[31m-3\x1b[0m\n" +
 		"  notes/a.md  \x1b[32m+1\x1b[0m \x1b[31m-1\x1b[0m\n" +
 		"  notes/c.md  \x1b[32m+2\x1b[0m\n" +
@@ -231,8 +231,8 @@ func TestWriteSuccessColoured(t *testing.T) {
 func TestWriteSuccessEmptyStat(t *testing.T) {
 	t.Parallel()
 	var out bytes.Buffer
-	writeSuccess(&out, notebook.Result{Generation: 7}, painter{})
-	want := "OK  generation 7\n" +
+	writeSuccess(&out, notebook.Result{Generation: 7}, "/tmp/nb", painter{})
+	want := "OK  generation 7  /tmp/nb\n" +
 		"0 files changed, 0 insertions(+), 0 deletions(-)\n"
 	if out.String() != want {
 		t.Fatalf("output = %q, want %q", out.String(), want)

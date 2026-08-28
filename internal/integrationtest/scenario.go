@@ -22,8 +22,8 @@ type ToolCall struct {
 // CallExpectation is the tool-result envelope expectation. Exactly one of
 // OK and ErrorCode must be set.
 type CallExpectation struct {
-	// OK requires the success envelope: one text item exactly "OK" and a
-	// structured SuccessInfo whose code is OK.
+	// OK requires the success envelope: one text item carrying the resolved
+	// notebook path and a structured SuccessInfo whose code is OK.
 	OK bool
 	// Success pins the exact structured success envelope (generation,
 	// totals, and the ordered per-file stat) when non-nil; nil asserts the

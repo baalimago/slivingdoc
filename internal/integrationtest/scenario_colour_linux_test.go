@@ -28,7 +28,7 @@ func TestScenarioCLIColourOnTerminal(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("pull on a terminal = exit %d, want 0; stdout: %q", code, stdout)
 	}
-	want := "\x1b[32mOK\x1b[0m  \x1b[36mgeneration 0\x1b[0m\n" +
+	want := "\x1b[32mOK\x1b[0m  \x1b[36mgeneration 0\x1b[0m  " + notes + "\n" +
 		"0 files changed, 0 insertions(+), 0 deletions(-)\n"
 	if stdout != want {
 		t.Fatalf("pull on a terminal stdout = %q, want the ANSI report %q", stdout, want)

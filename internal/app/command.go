@@ -86,17 +86,18 @@ func resolvePath(cwd, path string) (string, error) {
 // Report writes the candid result of one CLI operation to out as the
 // unified status/detail/trailer skeleton shared by success and domain
 // errors (architecture section 2 CLI report): a status token and summary,
-// one indented line per file the result is about, and a trailer. Colour
-// is presentation-only: it appears only when out is a real terminal and
+// one indented line per file the result is about, and a trailer. path is
+// the resolved notebook directory the success line reports. Colour is
+// presentation-only: it appears only when out is a real terminal and
 // NO_COLOR is unset or empty, and the success output stays prefixed with
 // the OK token for script compatibility. The returned error is nil on
 // success, the terse category for a domain error — the router echoes it
 // and exits nonzero — or the unchanged error when it is not a domain
 // error (cancellation).
-func Report(out io.Writer, result notebook.Result, err error, env []string) error {
+func Report(out io.Writer, result notebook.Result, err error, path string, env []string) error {
 	p := painter{on: colourEnabled(out, env)}
 	if err == nil {
-		writeSuccess(out, result, p)
+		writeSuccess(out, result, path, p)
 		return nil
 	}
 	te, domain := mcp.MapError(err)
@@ -107,12 +108,13 @@ func Report(out io.Writer, result notebook.Result, err error, env []string) erro
 	return errors.New(te.Code)
 }
 
-// writeSuccess renders the success report: the OK status token and the
-// accepted generation, one line per changed file with its insertion and
-// deletion counts (a zero-count side is omitted), and the totals trailer.
-func writeSuccess(out io.Writer, result notebook.Result, p painter) {
+// writeSuccess renders the success report: the OK status token, the
+// accepted generation, and the resolved notebook directory, one line per
+// changed file with its insertion and deletion counts (a zero-count side
+// is omitted), and the totals trailer.
+func writeSuccess(out io.Writer, result notebook.Result, path string, p painter) {
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s  %s\n", p.green("OK"), p.cyan(fmt.Sprintf("generation %d", result.Generation)))
+	fmt.Fprintf(&b, "%s  %s  %s\n", p.green("OK"), p.cyan(fmt.Sprintf("generation %d", result.Generation)), path)
 	for _, f := range result.Stat.Files {
 		counts := make([]string, 0, 2)
 		if f.Insertions > 0 {

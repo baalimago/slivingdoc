@@ -219,9 +219,10 @@ notebook operations. They share the serve flag set (`app.Flags`) and take
 one positional notebook path. A relative path resolves against the working
 directory, and flags can follow the path. Both commands run the same
 startup refusal surface through `app.Setup` and call `Runtime.Pull` /
-`Runtime.Commit`. `app.Report` prints the candid result: exactly `OK` on
-stdout, or the structured `mcp.ToolError.Report` text (category, retryable,
-files with line ranges) with a nonzero exit. `commit` requires
+`Runtime.Commit`. `app.Report` prints the candid result: the `OK` status
+line with the generation and the resolved notebook path on stdout, or the
+structured `mcp.ToolError.Report` text (category, retryable, files with
+line ranges) with a nonzero exit. `commit` requires
 `-m`/`--message`.
 
 `cmd/serve` maps straight onto `internal/app`: `Setup` is `app.Setup`

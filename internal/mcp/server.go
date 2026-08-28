@@ -180,13 +180,14 @@ func resultFor(err error) (*sdk.CallToolResult, error) {
 	return errorResult(te), nil
 }
 
-// successResult is the success envelope: one text item with exactly "OK"
-// and the structured SuccessInfo object (architecture section 2). path is
-// the resolved notebook directory, which the caller needs when it omitted
-// the request path.
+// successResult is the success envelope: one text item carrying the
+// resolved notebook directory and the structured SuccessInfo object
+// (architecture section 2). The text item is often the only part a client
+// forwards to its model, so it must tell the caller where to work; the
+// structured path field carries the same value.
 func successResult(result notebook.Result, path string) *sdk.CallToolResult {
 	return &sdk.CallToolResult{
-		Content:           []sdk.Content{&sdk.TextContent{Text: "OK"}},
+		Content:           []sdk.Content{&sdk.TextContent{Text: path}},
 		StructuredContent: MapSuccess(result, path),
 	}
 }

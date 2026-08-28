@@ -306,8 +306,9 @@ func (r *recordingReadCloser) Read(p []byte) (int, error) {
 func (r *recordingReadCloser) Close() error { return nil }
 
 // assertProcessOK asserts the success envelope of a process-level tool
-// result: one text item with exactly OK and a structured SuccessInfo
-// whose code is OK with the files key always present.
+// result: one text item carrying the resolved notebook path and a
+// structured SuccessInfo whose code is OK with the files key always
+// present.
 func assertProcessOK(t *testing.T, res *sdk.CallToolResult) {
 	t.Helper()
 	if res.IsError {
@@ -334,8 +335,8 @@ func assertProcessOK(t *testing.T, res *sdk.CallToolResult) {
 		t.Fatalf("content items = %d, want exactly one", len(res.Content))
 	}
 	text, ok := res.Content[0].(*sdk.TextContent)
-	if !ok || text.Text != "OK" {
-		t.Fatalf("text item = %#v, want exactly OK", res.Content[0])
+	if !ok || text.Text != got.Path {
+		t.Fatalf("text item = %#v, want the resolved notebook path %q", res.Content[0], got.Path)
 	}
 }
 

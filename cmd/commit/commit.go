@@ -86,7 +86,7 @@ func (c *command) Run(ctx context.Context) error {
 	}
 	defer c.runtime.Close()
 	result, err := c.runtime.Commit(ctx, c.path, c.message)
-	return app.Report(c.opts.Out(), result, err, c.opts.Env)
+	return app.Report(c.opts.Out(), result, err, c.path, c.opts.Env)
 }
 
 const helpText = `slivingdoc commit - publish the changes at a notebook directory

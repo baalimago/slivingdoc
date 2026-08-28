@@ -99,8 +99,8 @@ func assertToolCallLogged(t *testing.T, stderr, tool string) {
 }
 
 // assertProcessCallOK asserts the success envelope of one process-level
-// tool call: no error, one text item exactly OK, and a structured
-// SuccessInfo whose code is OK.
+// tool call: no error, one text item carrying the resolved notebook path,
+// and a structured SuccessInfo whose code is OK.
 func assertProcessCallOK(t *testing.T, cs *sdk.ClientSession, tool, path, message string) {
 	t.Helper()
 	args := map[string]any{"path": path}
@@ -134,8 +134,8 @@ func assertProcessArgsOK(t *testing.T, cs *sdk.ClientSession, tool, path string,
 		t.Fatalf("%s(%s) structured code = %q, want OK", tool, path, got.Code)
 	}
 	text, ok := res.Content[0].(*sdk.TextContent)
-	if !ok || text.Text != "OK" {
-		t.Fatalf("%s(%s) text = %#v, want exactly OK", tool, path, res.Content[0])
+	if !ok || text.Text != got.Path {
+		t.Fatalf("%s(%s) text = %#v, want the resolved notebook path %q", tool, path, res.Content[0], got.Path)
 	}
 	return got
 }

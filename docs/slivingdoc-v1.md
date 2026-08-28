@@ -98,8 +98,10 @@ at most 16,384 bytes and no U+0000.
 The service rejects a message that contains only Unicode white space. It
 preserves every byte of any other message.
 
-A successful tool result contains one MCP text item with exactly `OK` and
-this structured object:
+A successful tool result contains one MCP text item carrying the resolved
+notebook directory — the same value as the structured `path`, because a
+client often forwards only the text item to its model — and this
+structured object:
 
 ```json
 {

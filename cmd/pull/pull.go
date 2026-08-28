@@ -72,7 +72,7 @@ func (c *command) Run(ctx context.Context) error {
 	}
 	defer c.runtime.Close()
 	result, err := c.runtime.Pull(ctx, c.path)
-	return app.Report(c.opts.Out(), result, err, c.opts.Env)
+	return app.Report(c.opts.Out(), result, err, c.path, c.opts.Env)
 }
 
 const helpText = `slivingdoc pull - write the current notebook into a directory
