@@ -25,6 +25,28 @@ func cliRoots(t *testing.T) (env []string, workspaceRoot string) {
 	return env, workspaceRoot
 }
 
+// realCLIEnv returns the environment entries and workspace root that point
+// one-shot CLI processes at the shared real S3 suite on one fresh prefix.
+// The prefix is also returned so an in-process writer harness can share the
+// same remote state, which lets a scenario publish through the cheap MCP
+// path while still proving the CLI one-shot process boundary where the
+// property under test lives.
+func realCLIEnv(t *testing.T, namespace string) (env []string, root, prefix string) {
+	t.Helper()
+	suite := tests3.Ensure(t)
+	prefix = suite.FreshPrefix(namespace)
+	env, root = cliRoots(t)
+	env = append(env,
+		"AWS_ACCESS_KEY_ID="+tests3.User,
+		"AWS_SECRET_ACCESS_KEY="+tests3.Pass,
+		"AWS_ENDPOINT_URL_S3="+suite.Endpoint,
+		"SLIVINGDOC_PATH_STYLE=true",
+		"SLIVINGDOC_BUCKET="+tests3.Bucket,
+		"SLIVINGDOC_PREFIX="+prefix,
+	)
+	return env, root, prefix
+}
+
 // writeCLIFile writes one UTF-8 text file, creating parent directories.
 func writeCLIFile(t *testing.T, path, data string) {
 	t.Helper()
@@ -112,24 +134,17 @@ func TestScenarioCLIPullCommitRoundTrip(t *testing.T) {
 // case that used to take the directory-swap path.
 func TestScenarioCLIPullKeepsDirectoryIdentity(t *testing.T) {
 	t.Parallel()
-	suite := tests3.Ensure(t)
-	env, root := cliRoots(t)
-	env = append(env,
-		"AWS_ACCESS_KEY_ID="+tests3.User,
-		"AWS_SECRET_ACCESS_KEY="+tests3.Pass,
-		"AWS_ENDPOINT_URL_S3="+suite.Endpoint,
-		"SLIVINGDOC_PATH_STYLE=true",
-		"SLIVINGDOC_BUCKET="+tests3.Bucket,
-		"SLIVINGDOC_PREFIX="+suite.FreshPrefix("integrationtest-identity"),
-	)
-	writer, reader := filepath.Join(root, "writer"), filepath.Join(root, "reader")
+	env, root, prefix := realCLIEnv(t, "integrationtest-identity")
 
-	// Publish from one workspace so the other has real content to
-	// materialize; an empty tree would not exercise the replacement.
-	runCLIOK(t, "real", env, "pull", writer)
-	writeCLIFile(t, filepath.Join(writer, "note.md"), "first\n")
-	runCLIOK(t, "real", env, "commit", writer, "-m", "first")
+	// The writer publishes through the in-process harness: the property
+	// under test lives in the reader's one-shot pull path, so paying a full
+	// helper process (libgit2 open plus the S3 probe) for every write is
+	// avoidable startup. The reader keeps the CLI boundary.
+	writer := NewHarness(t, HarnessConfig{Prefix: prefix})
+	notes := writer.Path("notes")
+	commitFirst(t, writer, notes, "note.md", "first\n", "first")
 
+	reader := filepath.Join(root, "reader")
 	runCLIOK(t, "real", env, "pull", reader)
 	before, err := os.Stat(reader)
 	if err != nil {
@@ -144,9 +159,9 @@ func TestScenarioCLIPullKeepsDirectoryIdentity(t *testing.T) {
 
 	// A second publication gives the reader's next pull a real change to
 	// apply on top of an existing tree.
-	writeCLIFile(t, filepath.Join(writer, "note.md"), "second\n")
-	writeCLIFile(t, filepath.Join(writer, "added.md"), "added\n")
-	runCLIOK(t, "real", env, "commit", writer, "-m", "second")
+	writer.WriteFile(filepath.Join(notes, "note.md"), "second\n")
+	writer.WriteFile(filepath.Join(notes, "added.md"), "added\n")
+	writer.assertOK(t, writer.Commit("", notes, "second"))
 	runCLIOK(t, "real", env, "pull", reader)
 
 	if got, err := os.ReadFile(filepath.Join(reader, "note.md")); err != nil || string(got) != "second\n" {
@@ -279,16 +294,7 @@ func TestScenarioCLIUsageRefusals(t *testing.T) {
 // publishes and reaches the other workspace on its next pull.
 func TestScenarioCLISharedRemoteConflict(t *testing.T) {
 	t.Parallel()
-	suite := tests3.Ensure(t)
-	env, root := cliRoots(t)
-	env = append(env,
-		"AWS_ACCESS_KEY_ID="+tests3.User,
-		"AWS_SECRET_ACCESS_KEY="+tests3.Pass,
-		"AWS_ENDPOINT_URL_S3="+suite.Endpoint,
-		"SLIVINGDOC_PATH_STYLE=true",
-		"SLIVINGDOC_BUCKET="+tests3.Bucket,
-		"SLIVINGDOC_PREFIX="+suite.FreshPrefix("integrationtest-cli"),
-	)
+	env, root, _ := realCLIEnv(t, "integrationtest-cli")
 	a, b := filepath.Join(root, "a"), filepath.Join(root, "b")
 	shared := "shared.md"
 
