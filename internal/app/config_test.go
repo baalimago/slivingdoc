@@ -52,7 +52,7 @@ func TestLoadConfigDefaults(t *testing.T) {
 		workspaceRoot:       "/work",
 		privateRoot:         "/cache/slivingdoc",
 		commitRetries:       8,
-		checkpointPacks:     1024,
+		checkpointPacks:     256,
 		retainedCheckpoints: 1,
 		logTimestamp:        true,
 	}

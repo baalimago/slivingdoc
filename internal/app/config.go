@@ -462,7 +462,7 @@ const FlagReference = `  --bucket string               S3 bucket (required)     
   --commit-retries int          CAS retries after the first attempt          SLIVINGDOC_COMMIT_RETRIES
                                 (default 8, range 0..100)
   --checkpoint-packs int        active tail length that schedules one        SLIVINGDOC_CHECKPOINT_PACKS
-                                checkpoint (default 1024, minimum 1)
+                                checkpoint (default 256, minimum 1)
   --retained-checkpoints int    retained previous checkpoint generations     SLIVINGDOC_RETAINED_CHECKPOINTS
                                 (default 1, range 0..64)
   --log-level string            per-module log levels, for example           LOG_LEVEL

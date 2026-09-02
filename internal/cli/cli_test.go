@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -135,6 +136,41 @@ func TestServeHelpExitsCleanly(t *testing.T) {
 	}
 	if engine.opened {
 		t.Fatal("serve -h opened the native engine")
+	}
+}
+
+// TestDebugPerfCapturesTheCommand proves the DEBUG_PERF surface on the
+// router: one invocation with an explicit base directory writes exactly
+// one run directory holding the CPU profile, the heap profile, and the
+// execution trace, and never disturbs the command's own exit code.
+//
+// Not parallel: the CPU profile and the execution trace are
+// process-global recordings.
+func TestDebugPerfCapturesTheCommand(t *testing.T) {
+	base := filepath.Join(t.TempDir(), "perf")
+	engine := &stubEngine{}
+	code, out := run(t, engine, []string{"DEBUG_PERF=" + base}, "version")
+	if code != 0 {
+		t.Fatalf("version under DEBUG_PERF = exit %d, want 0", code)
+	}
+	if out != "slivingdoc "+app.Version+"\n" {
+		t.Fatalf("version stdout = %q, want the exact version line; profiling must stay on stderr", out)
+	}
+	runs, err := os.ReadDir(base)
+	if err != nil {
+		t.Fatalf("read the capture base: %v", err)
+	}
+	if len(runs) != 1 {
+		t.Fatalf("capture runs = %d, want exactly one per invocation", len(runs))
+	}
+	for _, name := range []string{"cpu.pprof", "heap.pprof", "trace.out"} {
+		info, err := os.Stat(filepath.Join(base, runs[0].Name(), name))
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if info.Size() == 0 {
+			t.Errorf("%s is empty", name)
+		}
 	}
 }
 

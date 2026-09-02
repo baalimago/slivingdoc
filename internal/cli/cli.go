@@ -40,7 +40,10 @@ Logging is configured by the environment; serve, pull, and commit also
 take --log-level and --log-timestamp, which override it:
   LOG_LEVEL   per-module levels, for example "cli=warn,mcp=debug,info".
               A bare level is the default; modules are cli, app, mcp, notebook.
-  NO_COLOR    any non-empty value disables the ANSI level colour.`
+  NO_COLOR    any non-empty value disables the ANSI level colour.
+  DEBUG_PERF  capture CPU, heap, and execution-trace profiles across the
+              whole command: 1 writes under the system temporary
+              directory, any other value is the base directory itself.`
 
 // Commands is the complete command surface over the given native engine and
 // process environment. The engine and the options are injected because the
@@ -83,7 +86,12 @@ func Run(ctx context.Context, args []string, engine git.Engine, opts app.Process
 	}
 	log.Debug("routing command", "args", args[1:])
 
+	// The capture brackets the whole command — startup refusals, the
+	// native engine, the operation, and shutdown — because a slow pull is
+	// diagnosed end to end, not from the operation alone.
+	stopPerf := app.StartPerf(environment, log)
 	code := cmd.Run(ctx, args, Commands(engine, opts), Usage)
+	stopPerf()
 	log.Debug("command finished", "exit", code)
 	return code
 }

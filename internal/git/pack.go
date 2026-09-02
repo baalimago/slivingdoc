@@ -83,6 +83,12 @@ func MarkShallow(repo Repository, head OID) error {
 // permitted gap is the declared shallow boundary: the parents of shallow
 // can be missing because the checkpoint pack omits them intentionally. Any other
 // missing commit, tree, or blob fails the walk.
+//
+// One seen set spans the whole walk. Consecutive generations share almost
+// all of their trees and blobs, so an already-proven subtree short-circuits
+// at its root OID and the walk costs the number of unique objects, not
+// commits times files. An OID names one object whatever its type, so
+// commits, trees, and blobs share the set safely.
 func ValidateHistory(repo Repository, head, shallow OID) error {
 	queue := []OID{head}
 	seen := map[OID]struct{}{}
@@ -97,7 +103,7 @@ func ValidateHistory(repo Repository, head, shallow OID) error {
 		if err != nil {
 			return fmt.Errorf("git: validate history: commit %s: %w", id, err)
 		}
-		if err := treeClosureValidate(repo, commit.Tree); err != nil {
+		if err := treeClosureValidate(repo, commit.Tree, seen); err != nil {
 			return fmt.Errorf("git: validate history: commit %s: %w", id, err)
 		}
 		for _, parent := range commit.Parents {
@@ -200,9 +206,11 @@ func treeClosure(repo Repository, tree OID, set map[OID]struct{}) error {
 }
 
 // treeClosureValidate verifies that a tree, every subtree, and every
-// referenced blob resolve in the repository object store.
-func treeClosureValidate(repo Repository, tree OID) error {
-	seen := map[OID]struct{}{}
+// referenced blob resolve in the repository object store. Objects already
+// in seen are proven and skipped; every object proven here joins the set.
+// Presence is answered by HasObject, never ReadBlob: validation needs
+// existence, and reading would inflate every blob only to discard it.
+func treeClosureValidate(repo Repository, tree OID, seen map[OID]struct{}) error {
 	queue := []OID{tree}
 	for len(queue) > 0 {
 		id := queue[0]
@@ -220,9 +228,17 @@ func treeClosureValidate(repo Repository, tree OID) error {
 			case ModeTree:
 				queue = append(queue, e.ID)
 			case ModeBlob:
-				if _, err := repo.ReadBlob(e.ID); err != nil {
+				if _, ok := seen[e.ID]; ok {
+					continue
+				}
+				present, err := repo.HasObject(e.ID)
+				if err != nil {
 					return fmt.Errorf("blob %s: %w", e.ID, err)
 				}
+				if !present {
+					return fmt.Errorf("blob %s: missing from the object store", e.ID)
+				}
+				seen[e.ID] = struct{}{}
 			default:
 				return fmt.Errorf("unsupported file mode %o for %q", e.Mode, e.Name)
 			}

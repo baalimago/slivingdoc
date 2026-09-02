@@ -276,6 +276,7 @@ only be resolved from a bound attribute.
 | `LOG_LEVEL` | Per-module levels, for example `cli=warn,mcp=debug,info`. A bare level is the default. A malformed value falls back to info and is reported, never fatal. |
 | `SLIVINGDOC_LOG_TIMESTAMP` | `false` removes the `time=` field, for hosts that stamp lines themselves. |
 | `NO_COLOR` | Any non-empty value disables the ANSI level color. |
+| `DEBUG_PERF` | Captures CPU, heap, and execution-trace profiles across the whole command (`internal/app/perf.go`); `1` writes under the system temporary directory, any other value is the base directory. See `docs/running.md`. |
 
 The `--log-level` and `--log-timestamp` flags (shared by `serve`, `pull`,
 and `commit`) override the environment once the flags resolve; `setup`

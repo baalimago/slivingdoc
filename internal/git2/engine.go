@@ -137,6 +137,15 @@ func (r *repository) ReadBlob(id git.OID) ([]byte, error) {
 	return odbReadFn(r.odb, id)
 }
 
+func (r *repository) HasObject(id git.OID) (bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if err := r.usable(); err != nil {
+		return false, err
+	}
+	return odbExistsFn(r.odb, id), nil
+}
+
 func (r *repository) WriteTree(entries []git.TreeEntry) (git.OID, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

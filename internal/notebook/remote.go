@@ -113,12 +113,26 @@ func (n *Notebook) readCurrent(ctx context.Context) (data []byte, etag storage.E
 	return data, info.ETag, true, nil
 }
 
+// importRemote imports the manifest's descriptor chain: the checkpoint
+// pack, the shallow boundary, and every increment in manifest order. The
+// imports are strictly sequential — the boundary must exist before the
+// tail lands on it — but the downloads behind them overlap through
+// prefetchPacks: S3 has no bulk read, so a long tail fetched serially
+// costs one round-trip latency per generation.
 func (n *Notebook) importRemote(ctx context.Context, m storage.Manifest) error {
-	data, err := n.ensurePack(ctx, packSpec{
+	specs := make([]packSpec, 0, 1+len(m.Increments))
+	specs = append(specs, packSpec{
 		key:  m.Checkpoint.Key.String(),
 		sha:  m.Checkpoint.SHA256,
 		size: m.Checkpoint.Size,
 	})
+	for _, inc := range m.Increments {
+		specs = append(specs, packSpec{key: inc.Key.String(), sha: inc.SHA256, size: inc.Size})
+	}
+	next, stop := n.prefetchPacks(ctx, specs)
+	defer stop()
+
+	data, err := next()
 	if err != nil {
 		return err
 	}
@@ -129,7 +143,7 @@ func (n *Notebook) importRemote(ctx context.Context, m storage.Manifest) error {
 		return storageIntegrity(err, "record checkpoint boundary %s", m.Checkpoint.Head)
 	}
 	for _, inc := range m.Increments {
-		data, err := n.ensurePack(ctx, packSpec{key: inc.Key.String(), sha: inc.SHA256, size: inc.Size})
+		data, err := next()
 		if err != nil {
 			return err
 		}
@@ -138,6 +152,74 @@ func (n *Notebook) importRemote(ctx context.Context, m storage.Manifest) error {
 		}
 	}
 	return nil
+}
+
+// packFetchConcurrency bounds the pack downloads in flight during one
+// import. Each download is one storage round trip, so the serial cost of
+// a long tail is its length times the endpoint latency; this many in
+// flight collapse that to roughly the bandwidth cost without opening an
+// unbounded number of connections.
+const packFetchConcurrency = 16
+
+// packFetchResult carries one prefetched pack: the verified bytes or the
+// first error of its download.
+type packFetchResult struct {
+	data []byte
+	err  error
+}
+
+// prefetchPacks downloads every spec with at most packFetchConcurrency
+// fetches in flight. next yields each pack in spec order, so the caller's
+// import loop keeps its sequential shape; stop abandons the remaining
+// downloads and must always be called.
+//
+// The dispatcher hands out indexes in order and every worker delivers on
+// an unbuffered channel, so the fetches in flight are always the lowest
+// unconsumed indexes — the one the importer needs next is always among
+// them, and a worker that runs ahead waits with its bytes instead of
+// buffering without bound. Cancellation reaches every side: workers and
+// the dispatcher select on it, and next itself returns once the context
+// ends, so no participant can wait on a partner that already left.
+func (n *Notebook) prefetchPacks(ctx context.Context, specs []packSpec) (next func() ([]byte, error), stop func()) {
+	fctx, cancel := context.WithCancel(ctx)
+	results := make([]chan packFetchResult, len(specs))
+	for i := range results {
+		results[i] = make(chan packFetchResult)
+	}
+	work := make(chan int)
+	go func() {
+		defer close(work)
+		for i := range specs {
+			select {
+			case work <- i:
+			case <-fctx.Done():
+				return
+			}
+		}
+	}()
+	for w := 0; w < min(packFetchConcurrency, len(specs)); w++ {
+		go func() {
+			for i := range work {
+				data, err := n.ensurePack(fctx, specs[i])
+				select {
+				case results[i] <- packFetchResult{data: data, err: err}:
+				case <-fctx.Done():
+					return
+				}
+			}
+		}()
+	}
+	i := 0
+	next = func() ([]byte, error) {
+		select {
+		case r := <-results[i]:
+			i++
+			return r.data, r.err
+		case <-fctx.Done():
+			return nil, storageFailure(fctx.Err(), "download packs")
+		}
+	}
+	return next, cancel
 }
 
 // packSpec identifies one pack descriptor: the protocol key and the

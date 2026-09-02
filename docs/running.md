@@ -93,7 +93,7 @@ reference.
 | Workspace root        | `--workspace-root`       | `SLIVINGDOC_WORKSPACE_ROOT`       | session dir / working dir |
 | Private state root    | `--private-root`         | `SLIVINGDOC_PRIVATE_ROOT`         | session dir / user cache  |
 | CAS retry limit       | `--commit-retries`       | `SLIVINGDOC_COMMIT_RETRIES`       | `8` (0..100)              |
-| Checkpoint pack count | `--checkpoint-packs`     | `SLIVINGDOC_CHECKPOINT_PACKS`     | `1024` (minimum 1)        |
+| Checkpoint pack count | `--checkpoint-packs`     | `SLIVINGDOC_CHECKPOINT_PACKS`     | `256` (minimum 1)         |
 | Retained checkpoints  | `--retained-checkpoints` | `SLIVINGDOC_RETAINED_CHECKPOINTS` | `1` (0..64)               |
 | Log levels            | `--log-level`            | `LOG_LEVEL`                       | `info`                    |
 | Log timestamps        | `--log-timestamp`        | `SLIVINGDOC_LOG_TIMESTAMP`        | `true`                    |
@@ -280,6 +280,38 @@ The modules are `cli` (command routing), `app` (startup and shutdown),
 `info`, `warn`, and `error`. A malformed `LOG_LEVEL` is reported and
 falls back to `info`; it never refuses startup. An invalid `--log-level`
 flag value, in contrast, refuses startup like any other flag.
+
+## Profiling
+
+`DEBUG_PERF` captures performance profiles across one whole command —
+startup, the operation, and shutdown — for finding where a slow `pull`
+or `commit` spends its time. `1` (or `true`) writes under
+`slivingdoc-perf/` in the system temporary directory; `0`, `false`, and
+empty disable the capture; any other value is the base directory
+itself. Each invocation creates its own timestamped run directory under
+the base, so repeated benchmark runs never overwrite each other and can
+be compared with `go tool pprof -diff_base`.
+
+A run directory holds three artifacts:
+
+| File         | Shows                                                        |
+| ------------ | ------------------------------------------------------------ |
+| `cpu.pprof`  | where CPU time went: `go tool pprof cpu.pprof`                |
+| `heap.pprof` | what the command retained at exit: `go tool pprof heap.pprof` |
+| `trace.out`  | the execution timeline, including time blocked on the network and on locks: `go tool trace trace.out` |
+
+For an operation dominated by object-store round trips, the CPU profile
+stays near-empty and `trace.out` shows the waiting; that split is the
+point of capturing both.
+
+```bash
+DEBUG_PERF=1 slivingdoc pull ./notes
+```
+
+The exact paths are reported on stderr when the capture starts and
+finishes; stdout stays protocol-only. A capture that cannot start or
+finish is a warning, never a refusal, and never changes the command's
+result or exit code.
 
 ## Notebook rules
 
