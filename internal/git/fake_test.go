@@ -28,6 +28,11 @@ type fakeRepository struct {
 	imported    [][]byte
 	shallow     []OID
 	closed      bool
+
+	// treeReads and presenceChecks count ReadTree and HasObject calls, so
+	// a test can prove the validation walk visits each object once.
+	treeReads      int
+	presenceChecks int
 }
 
 func newFakeRepository() *fakeRepository {
@@ -55,6 +60,18 @@ func (f *fakeRepository) ReadBlob(id OID) ([]byte, error) {
 	return append([]byte{}, data...), nil
 }
 
+func (f *fakeRepository) HasObject(id OID) (bool, error) {
+	f.presenceChecks++
+	if _, ok := f.blobs[id]; ok {
+		return true, nil
+	}
+	if _, ok := f.trees[id]; ok {
+		return true, nil
+	}
+	_, ok := f.commits[id]
+	return ok, nil
+}
+
 func (f *fakeRepository) WriteTree(entries []TreeEntry) (OID, error) {
 	sorted := append([]TreeEntry(nil), entries...)
 	sort.SliceStable(sorted, func(i, j int) bool { return treeEntryLess(sorted[i], sorted[j]) })
@@ -64,6 +81,7 @@ func (f *fakeRepository) WriteTree(entries []TreeEntry) (OID, error) {
 }
 
 func (f *fakeRepository) ReadTree(id OID) ([]TreeEntry, error) {
+	f.treeReads++
 	entries, ok := f.trees[id]
 	if !ok {
 		return nil, fmt.Errorf("fake: tree %s not found", id)

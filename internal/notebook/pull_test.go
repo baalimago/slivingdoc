@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -519,5 +520,74 @@ func TestPullDiffStatReadFailureMapsToIntegrity(t *testing.T) {
 	}
 	if got := bw.Baseline(); got != baselineBefore {
 		t.Fatalf("baseline changed by the failed pull: %+v -> %+v", baselineBefore, got)
+	}
+}
+
+// rendezvousStore proves download overlap: a pack read parks until a
+// second pack read is concurrently active, then every read proceeds. The
+// park has a short grace period, so a serial fetcher — which never has
+// two reads in flight — records no overlap and fails the assertion
+// instead of hanging the suite. Non-pack reads pass straight through.
+type rendezvousStore struct {
+	storage.ObjectStore
+	mu      sync.Mutex
+	active  int
+	ready   chan struct{}
+	overlap bool
+}
+
+func (s *rendezvousStore) ReadObject(ctx context.Context, key string) (io.ReadCloser, storage.ObjectInfo, error) {
+	if !strings.HasPrefix(key, "packs/") {
+		return s.ObjectStore.ReadObject(ctx, key)
+	}
+	s.mu.Lock()
+	s.active++
+	if s.active >= 2 && !s.overlap {
+		s.overlap = true
+		close(s.ready)
+	}
+	s.mu.Unlock()
+	select {
+	case <-s.ready:
+	case <-time.After(500 * time.Millisecond):
+	}
+	s.mu.Lock()
+	s.active--
+	s.mu.Unlock()
+	return s.ObjectStore.ReadObject(ctx, key)
+}
+
+// TestPullDownloadsPacksConcurrently proves the import path's fetch
+// fan-out: a manifest referencing several packs must hold more than one
+// download in flight at once. Fetched serially, a long increment tail
+// costs one storage round trip per generation, which dominates a cold
+// pull's wall clock; the overlap is the contract that prevents it.
+func TestPullDownloadsPacksConcurrently(t *testing.T) {
+	store := fake.New("")
+	ids := &testIDSource{}
+	writer, ww, _ := newNotebook(t, nbConfig{store: store, ids: ids})
+	writeLocal(t, ww, map[string]string{"a.md": "v1"})
+	pullOK(t, writer)
+	commitOK(t, writer, "first")
+	writeLocal(t, ww, map[string]string{"a.md": "v2"})
+	commitOK(t, writer, "second")
+	writeLocal(t, ww, map[string]string{"a.md": "v3"})
+	commitOK(t, writer, "third")
+
+	// The manifest now references three packs: the generation-1 checkpoint
+	// and two increments. A fresh reader has an empty cache, so its pull
+	// downloads all three.
+	gate := &rendezvousStore{ObjectStore: store, ready: make(chan struct{})}
+	reader, rw, _ := newNotebook(t, nbConfig{store: gate, ids: ids})
+	pullOK(t, reader)
+
+	gate.mu.Lock()
+	overlap := gate.overlap
+	gate.mu.Unlock()
+	if !overlap {
+		t.Fatal("pack downloads never overlapped; the import path fetches serially")
+	}
+	if got := localSnapshot(t, rw); got["a.md"] != "v3" {
+		t.Fatalf("L = %v, want the accepted head content", got)
 	}
 }

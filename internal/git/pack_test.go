@@ -237,6 +237,36 @@ func TestValidateHistoryAllowsDeclaredShallowGap(t *testing.T) {
 	}
 }
 
+// TestValidateHistoryVisitsEachObjectOnce proves the walk cost is the
+// number of unique objects, not commits times files. The third commit
+// reuses the second's tree, like a generation that changed nothing: its
+// closure must short-circuit at the already-proven tree OID instead of
+// re-walking it, and no blob may be presence-checked twice.
+func TestValidateHistoryVisitsEachObjectOnce(t *testing.T) {
+	repo := newFakeRepository()
+	_, c2 := seedHistory(t, repo)
+	c3, err := CreateCommit(repo, CommitSpec{
+		Message: "three", Tree: repo.commits[c2].Tree, Parents: []OID{c2}, Time: fakeTime(),
+	})
+	if err != nil {
+		t.Fatalf("CreateCommit(c3) = %v", err)
+	}
+
+	repo.treeReads, repo.presenceChecks = 0, 0
+	if err := ValidateHistory(repo, c3, OID{}); err != nil {
+		t.Fatalf("ValidateHistory() = %v", err)
+	}
+	// The history holds two unique trees (t1 and the shared t2) and three
+	// unique blobs; a per-commit walk would read t2 twice and check five
+	// blob presences.
+	if repo.treeReads != 2 {
+		t.Errorf("tree reads = %d, want 2 (one per unique tree)", repo.treeReads)
+	}
+	if repo.presenceChecks != 3 {
+		t.Errorf("presence checks = %d, want 3 (one per unique blob)", repo.presenceChecks)
+	}
+}
+
 func TestValidateHistoryFailsOnMissingBlob(t *testing.T) {
 	repo := newFakeRepository()
 	c1, _ := seedHistory(t, repo)

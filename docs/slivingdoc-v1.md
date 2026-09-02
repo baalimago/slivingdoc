@@ -948,12 +948,12 @@ make the checkpoint commit and complete file tree readable.
 ```text
 before checkpoint
 
-C0 -> I1 -> I2 -> ... -> I1024 -> I1025 -> I1026
-      \________ compacted ______/       \__ tail __/
+C0 -> I1 -> I2 -> ... -> I256 -> I257 -> I258
+      \_______ compacted ______/      \__ tail __/
 
 after checkpoint
 
-C1(at I1024) -> I1025 -> I1026
+C1(at I256) -> I257 -> I258
 ```
 
 ### 13.3 Stable-prefix compaction

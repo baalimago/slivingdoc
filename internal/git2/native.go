@@ -111,6 +111,7 @@ var (
 	repoODBFn      = libgit2RepoODB
 	odbWriteFn     = libgit2ODBWrite
 	odbReadFn      = libgit2ODBRead
+	odbExistsFn    = libgit2ODBExists
 	writeTreeFn    = libgit2WriteTree
 	readTreeFn     = libgit2ReadTree
 	createCommitFn = libgit2CreateCommit
@@ -219,6 +220,17 @@ func libgit2ODBRead(odb *odbHandle, id git.OID) ([]byte, error) {
 		return nil, &git.NativeError{Op: "read blob", Message: "blob exceeds maximum supported size"}
 	}
 	return C.GoBytes(C.git_odb_object_data(obj), C.int(size)), nil
+}
+
+// libgit2ODBExists answers object presence from the object database
+// headers alone: unlike git_odb_read it never inflates the content, which
+// is what makes history validation cheap. git_odb_exists refreshes the
+// pack directory on a miss, so objects from a just-imported pack are
+// visible.
+func libgit2ODBExists(odb *odbHandle, id git.OID) bool {
+	var cid C.git_oid
+	C.sl_oid_from_bytes(&cid, (*C.uchar)(unsafe.Pointer(&id[0])))
+	return C.git_odb_exists(odb.ptr, &cid) == 1
 }
 
 // libgit2WriteTree writes a tree from its entries, rejecting every mode

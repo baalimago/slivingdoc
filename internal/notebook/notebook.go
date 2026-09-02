@@ -69,8 +69,12 @@ type Config struct {
 const DefaultRetryLimit = 8
 
 // DefaultCheckpointPacks is the application-resolved checkpoint threshold:
-// the active tail length that schedules one checkpoint effort.
-const DefaultCheckpointPacks = 1024
+// the active tail length that schedules one checkpoint effort. A fresh
+// workspace downloads and imports the whole tail one pack at a time, so
+// the threshold bounds the cost of a cold pull; 256 keeps that bounded
+// while the checkpoint effort — one full-state export and upload — stays
+// rare.
+const DefaultCheckpointPacks = 256
 
 // DefaultRetainedCheckpoints is the application-resolved retention count:
 // the number of previous checkpoint generations kept in addition to the

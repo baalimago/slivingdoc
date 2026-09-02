@@ -76,6 +76,10 @@ func (f *fakeRepository) ReadBlob(id git.OID) ([]byte, error) {
 	return append([]byte(nil), data...), nil
 }
 
+func (f *fakeRepository) HasObject(git.OID) (bool, error) {
+	return false, fmt.Errorf("fake: HasObject not implemented")
+}
+
 func (f *fakeRepository) WriteTree(entries []git.TreeEntry) (git.OID, error) {
 	if f.closed {
 		return git.OID{}, fmt.Errorf("fake: repository closed")

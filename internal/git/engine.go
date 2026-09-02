@@ -39,6 +39,11 @@ type Repository interface {
 	// callers pass IDs of blob-mode tree entries; the engine does not
 	// interpret the object type.
 	ReadBlob(id OID) ([]byte, error)
+	// HasObject reports whether the object store holds the given ID,
+	// without reading the object content. History validation proves
+	// blob presence with it; a full ReadBlob would inflate every blob
+	// only to discard the bytes.
+	HasObject(id OID) (bool, error)
 	// ReadCommit returns the tree, parent chain, and message of a commit.
 	ReadCommit(id OID) (Commit, error)
 	// ReadTree returns the entries of a tree in Git tree order.

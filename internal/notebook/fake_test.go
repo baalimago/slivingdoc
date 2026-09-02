@@ -165,6 +165,14 @@ func (f *fakeRepository) ReadBlob(id git.OID) ([]byte, error) {
 	return append([]byte(nil), data...), nil
 }
 
+// HasObject answers from the raw object map: every write path — blob,
+// tree, commit, and pack import — records raw bytes there, so it is the
+// fake's object database.
+func (f *fakeRepository) HasObject(id git.OID) (bool, error) {
+	_, ok := f.data.raw[id]
+	return ok, nil
+}
+
 func (f *fakeRepository) WriteTree(entries []git.TreeEntry) (git.OID, error) {
 	if f.closed {
 		return git.OID{}, errors.New("fake: repository closed")

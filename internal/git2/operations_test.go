@@ -658,6 +658,33 @@ func TestMarkShallowWritesBoundaryFile(t *testing.T) {
 	}
 }
 
+// TestHasObjectNative proves presence answers against the real object
+// database: a written blob is present, an unknown ID is absent, and
+// absence is an answer, not an error.
+func TestHasObjectNative(t *testing.T) {
+	repo := newTestRepo(t)
+	blob, err := repo.WriteBlob([]byte("present"))
+	if err != nil {
+		t.Fatalf("WriteBlob() = %v", err)
+	}
+	present, err := repo.HasObject(blob)
+	if err != nil {
+		t.Fatalf("HasObject(written) = %v", err)
+	}
+	if !present {
+		t.Fatal("HasObject(written) = false, want true")
+	}
+	var ghost git.OID
+	ghost[0] = 0xaa
+	present, err = repo.HasObject(ghost)
+	if err != nil {
+		t.Fatalf("HasObject(absent) = %v", err)
+	}
+	if present {
+		t.Fatal("HasObject(absent) = true, want false")
+	}
+}
+
 func TestRepositoryLifetimes(t *testing.T) {
 	e := New()
 	if err := e.Open(); err != nil {
@@ -688,6 +715,9 @@ func TestRepositoryLifetimes(t *testing.T) {
 	}
 	if _, err := repo.ReadTree(tree); err == nil {
 		t.Fatal("ReadTree() after Close() = nil, want error")
+	}
+	if _, err := repo.HasObject(tree); err == nil {
+		t.Fatal("HasObject() after Close() = nil, want error")
 	}
 
 	// Closing the engine invalidates every repository it handed out.

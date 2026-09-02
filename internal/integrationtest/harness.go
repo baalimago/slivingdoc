@@ -48,7 +48,7 @@ type HarnessConfig struct {
 	// Hooks are the service failpoints; nil leaves them disabled.
 	Hooks *app.ServiceHooks
 	// RetryLimit, CheckpointPacks, and RetainedCheckpoints override the
-	// documented defaults (8, 1024, 1). They are pointers because zero is a
+	// documented defaults (8, 256, 1). They are pointers because zero is a
 	// documented value of two of them (no retries, no retained generation),
 	// which a plain int cannot distinguish from "unset".
 	RetryLimit       *int
