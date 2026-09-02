@@ -92,6 +92,7 @@ reference.
 | S3 path-style access  | `--path-style`           | `SLIVINGDOC_PATH_STYLE`           | `false`                   |
 | Workspace root        | `--workspace-root`       | `SLIVINGDOC_WORKSPACE_ROOT`       | session dir / working dir |
 | Private state root    | `--private-root`         | `SLIVINGDOC_PRIVATE_ROOT`         | session dir / user cache  |
+| Shared pack cache     | `--shared-pack-cache`    | `SLIVINGDOC_SHARED_PACK_CACHE`    | `false`                   |
 | CAS retry limit       | `--commit-retries`       | `SLIVINGDOC_COMMIT_RETRIES`       | `8` (0..100)              |
 | Checkpoint pack count | `--checkpoint-packs`     | `SLIVINGDOC_CHECKPOINT_PACKS`     | `256` (minimum 1)         |
 | Retained checkpoints  | `--retained-checkpoints` | `SLIVINGDOC_RETAINED_CHECKPOINTS` | `1` (0..64)               |
@@ -128,6 +129,33 @@ at shutdown. Use that when humans and agents share one directory, or when
 you want the notebook to survive a server restart on disk. `pull` and
 `commit` never take a session directory: they default to the working
 directory, which you can still open after the process exits.
+
+### The shared pack cache
+
+By default every workspace keeps its own cache of downloaded pack bytes
+inside its private state, so several agents on one machine each download the
+same packs — and an ephemeral session throws its cache away at shutdown.
+`--shared-pack-cache` moves that cache to one durable directory per
+notebook:
+
+```text
+<user-cache-dir>/slivingdoc/pack-cache/<bucket>-<prefix>-<digest>/
+```
+
+Every server addressing the same endpoint, bucket, and prefix computes the
+same directory from its own configuration, so agents share downloads with no
+coordination: the first cold pull populates the directory and later pulls by
+any agent read from it. Entries are keyed by SHA-256 and re-verified against
+the authoritative manifest on every read, so a corrupt or foreign entry is
+discarded and re-downloaded, never trusted. Only pack bytes are shared —
+each workspace keeps its own private repository, baseline, and locks.
+
+Writing into the cache is best-effort: a read-only or full cache directory
+logs a warning and the operation continues. That makes a pre-populated
+read-only cache (for example baked into a container image) work as-is.
+
+The directory names make manual cleanup easy: remove a notebook's directory
+when you are done with it, and the next pull simply re-downloads.
 
 ## S3 credentials
 
@@ -358,7 +386,7 @@ it against any newer remote state. No Git command is involved.
 Each normal commit uploads one small incremental pack. To bound
 cold-start downloads, the server periodically compacts a stable prefix
 of accepted increments into one complete-state checkpoint pack. After
-`--checkpoint-packs` (1,024 by default) active increments, one
+`--checkpoint-packs` (256 by default) active increments, one
 checkpoint is scheduled. It never blocks writers, and its failure never
 changes an accepted commit.
 

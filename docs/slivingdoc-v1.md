@@ -467,11 +467,27 @@ It is not the durable product contract.
 Each private repository retains imported objects. A normal pull imports only
 packs that are absent from that cache.
 
-P stores downloaded pack bytes by lowercase SHA-256, not by an untrusted S3
-key. A cache hit requires the expected byte size and a fresh SHA-256 check.
-Downloads use a temporary file and atomic rename. After all imports, the Git
-engine walks the accepted head commit, complete tree, and every blob. Pull does
-not rewrite L until this closure and all text content pass validation.
+The pack-byte cache stores downloaded pack bytes by lowercase SHA-256, not by
+an untrusted S3 key. A cache hit requires the expected byte size and a fresh
+SHA-256 check. Downloads use a temporary file and atomic rename. After all
+imports, the Git engine walks the accepted head commit, complete tree, and
+every blob. Pull does not rewrite L until this closure and all text content
+pass validation.
+
+By default the pack-byte cache is private to one workspace inside P. With the
+shared pack cache enabled (section 17), workspaces of one notebook share one
+identity-selected cache directory instead, so agents on one machine download
+each pack once. The per-read verification is what makes sharing safe: no
+entry is trusted for its location or its writer, a corrupt entry is discarded
+and re-downloaded, and concurrent writers of one entry converge through the
+atomic rename. Only verified pack bytes are shared; the private repository
+and baseline stay per-workspace.
+
+Writing a downloaded pack into the cache is best-effort: an unwritable cache
+directory — read-only, permission-denied, or full — degrades to a logged
+warning and the operation continues with the verified bytes in hand. A
+pre-populated read-only shared cache therefore serves hits without any
+special mode.
 
 The cache improves performance but does not determine accepted state. The S3
 manifest and its referenced packs are authoritative.
@@ -1166,6 +1182,7 @@ any native or network dependency is touched.
 | S3 path-style access  | `--path-style`           | `SLIVINGDOC_PATH_STYLE`           |
 | Workspace root        | `--workspace-root`       | `SLIVINGDOC_WORKSPACE_ROOT`       |
 | Private root          | `--private-root`         | `SLIVINGDOC_PRIVATE_ROOT`         |
+| Shared pack cache     | `--shared-pack-cache`    | `SLIVINGDOC_SHARED_PACK_CACHE`    |
 | CAS retry limit       | `--commit-retries`       | `SLIVINGDOC_COMMIT_RETRIES`       |
 | Checkpoint pack count | `--checkpoint-packs`     | `SLIVINGDOC_CHECKPOINT_PACKS`     |
 | Retained generations  | `--retained-checkpoints` | `SLIVINGDOC_RETAINED_CHECKPOINTS` |
@@ -1207,10 +1224,30 @@ Both roots become absolute before startup. They cannot overlap, and the
 private root cannot be below the workspace root; the session layout
 satisfies that by construction.
 
+The shared pack cache defaults to false. Enabling it moves the pack-byte
+cache (section 8.3) from its private per-workspace location to one directory
+per notebook identity below the durable user cache directory:
+
+```text
+<user-cache-dir>/slivingdoc/pack-cache/<bucket>-<prefix>-<digest16>/
+```
+
+The directory name carries the sanitized bucket and prefix so a human can
+recognize and remove one notebook's cache by hand, and a 16-hex digest of
+the full storage identity — the derived-key encoding without the visible
+path — so distinct endpoints, regions, buckets, prefixes, and manifest
+versions never share a directory. Every workspace of one notebook computes
+the same name from its own configuration; no index or discovery exists, and
+the name carries no correctness weight because every entry is verified on
+read. The shared root stays durable even for an ephemeral session, which is
+the multi-agent use case: private temporary state, shared verified pack
+bytes. Enabling the shared cache requires a resolvable user cache directory,
+and the shared root cannot be at or below the workspace root.
+
 The commit retry value counts retries after the first CAS attempt. Its default
 is 8, and its valid range is 0 through 100. Retry delay uses full jitter from an
 exponential ceiling. The first ceiling is 25 ms, and the maximum is 2 seconds.
-The checkpoint pack-count default is 1,024 and its minimum is 1. Retained
+The checkpoint pack-count default is 256 and its minimum is 1. Retained
 checkpoint generations default to 1 and have a valid range of 0 through 64.
 
 Flags override environment variables, which override defaults. An explicitly

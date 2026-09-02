@@ -47,6 +47,9 @@ type HarnessConfig struct {
 	Endpoint string
 	// Hooks are the service failpoints; nil leaves them disabled.
 	Hooks *app.ServiceHooks
+	// PackCacheRoot is the shared pack-cache root served to the app; empty
+	// keeps the private per-workspace cache.
+	PackCacheRoot string
 	// RetryLimit, CheckpointPacks, and RetainedCheckpoints override the
 	// documented defaults (8, 256, 1). They are pointers because zero is a
 	// documented value of two of them (no retries, no retained generation),
@@ -146,6 +149,7 @@ func NewHarness(t *testing.T, cfg HarnessConfig) *Harness {
 		Endpoint:            endpoint,
 		WorkspaceRoot:       workspaceRoot,
 		PrivateRoot:         privateRoot,
+		PackCacheRoot:       cfg.PackCacheRoot,
 		CommitRetries:       setting(cfg.RetryLimit, notebook.DefaultRetryLimit),
 		CheckpointPacks:     setting(cfg.CheckpointPacks, notebook.DefaultCheckpointPacks),
 		RetainedCheckpoints: setting(cfg.RetainedCheckpts, notebook.DefaultRetainedCheckpoints),

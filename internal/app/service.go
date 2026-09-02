@@ -24,6 +24,7 @@ type ServiceConfig struct {
 	PathStyle           bool
 	WorkspaceRoot       string
 	PrivateRoot         string
+	PackCacheRoot       string
 	CommitRetries       int
 	CheckpointPacks     int
 	RetainedCheckpoints int
@@ -40,6 +41,7 @@ func (cfg config) serviceConfig() ServiceConfig {
 		PathStyle:           cfg.pathStyle,
 		WorkspaceRoot:       cfg.workspaceRoot,
 		PrivateRoot:         cfg.privateRoot,
+		PackCacheRoot:       cfg.packCacheRoot,
 		CommitRetries:       cfg.commitRetries,
 		CheckpointPacks:     cfg.checkpointPacks,
 		RetainedCheckpoints: cfg.retainedCheckpoints,
@@ -147,6 +149,7 @@ func (s *Service) notebookFor(ctx context.Context, path string) (*notebook.Noteb
 		WorkspaceRoot: s.cfg.WorkspaceRoot,
 		Path:          path,
 		PrivateRoot:   s.cfg.PrivateRoot,
+		PackCacheRoot: s.cfg.PackCacheRoot,
 		Identity:      s.identity(),
 		Engine:        s.engine,
 		Failpoints:    wsFailpoints,

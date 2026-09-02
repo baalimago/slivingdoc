@@ -53,6 +53,11 @@ type Config struct {
 	Path string
 	// PrivateRoot is the absolute configured private root.
 	PrivateRoot string
+	// PackCacheRoot is the absolute shared pack-cache root, or empty for
+	// the private per-workspace cache inside P. When set, the identity
+	// selects one shared directory below it, so every workspace of one
+	// notebook shares the verified pack bytes.
+	PackCacheRoot string
 	// Identity is the notebook storage identity; the derived key selects
 	// the private directory.
 	Identity Identity
@@ -73,6 +78,7 @@ type Workspace struct {
 	rel        string // visible path relative to the workspace root, slash form
 	wsRoot     string // canonical configured workspace root
 	privDir    string // <private-root>/<derived-key>
+	cacheDir   string // shared pack cache; empty selects <privDir>/pack-cache
 	derivedKey string
 	repo       git.Repository
 	flock      *flock.Flock
@@ -98,6 +104,16 @@ func Open(ctx context.Context, cfg Config) (*Workspace, error) {
 	}
 	if RootsOverlap(cfg.PrivateRoot, cfg.WorkspaceRoot) {
 		return nil, fmt.Errorf("%w: private root %q is at or below the workspace root", ErrInvalidPath, cfg.PrivateRoot)
+	}
+	var cacheDir string
+	if cfg.PackCacheRoot != "" {
+		if !filepath.IsAbs(cfg.PackCacheRoot) {
+			return nil, fmt.Errorf("%w: pack cache root %q is not absolute", ErrInvalidPath, cfg.PackCacheRoot)
+		}
+		if RootsOverlap(cfg.PackCacheRoot, cfg.WorkspaceRoot) {
+			return nil, fmt.Errorf("%w: pack cache root %q is at or below the workspace root", ErrInvalidPath, cfg.PackCacheRoot)
+		}
+		cacheDir = filepath.Join(cfg.PackCacheRoot, SharedCacheDirName(cfg.Identity))
 	}
 	if cfg.Engine == nil {
 		return nil, errors.New("workspace: engine is required")
@@ -154,6 +170,7 @@ func Open(ctx context.Context, cfg Config) (*Workspace, error) {
 		rel:        rel,
 		wsRoot:     cfg.WorkspaceRoot,
 		privDir:    privDir,
+		cacheDir:   cacheDir,
 		derivedKey: derivedKey,
 		repo:       repo,
 		flock:      fl,
@@ -401,11 +418,16 @@ func (w *Workspace) Materialize(ctx context.Context, baseline Baseline, tree git
 	})
 }
 
-// CacheDir returns the private pack-byte cache directory. The notebook owns
-// the cache protocol (SHA-256-keyed files, size and fresh SHA-256 on every
-// hit); the workspace owns the directory location inside P. The directory
-// is created lazily by the notebook on first use.
+// CacheDir returns the pack-byte cache directory: the identity-selected
+// shared directory when a pack cache root is configured, else the private
+// directory inside P. The notebook owns the cache protocol (SHA-256-keyed
+// files, size and fresh SHA-256 on every hit), which is what makes the
+// shared directory safe: no entry is trusted for its location. The
+// directory is created lazily by the notebook on first use.
 func (w *Workspace) CacheDir() string {
+	if w.cacheDir != "" {
+		return w.cacheDir
+	}
 	return filepath.Join(w.privDir, cacheDirName)
 }
 

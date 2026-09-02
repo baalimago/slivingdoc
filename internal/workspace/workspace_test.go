@@ -127,6 +127,8 @@ func TestOpenRejectsBadConfig(t *testing.T) {
 		"relative private root": {WorkspaceRoot: root, Path: notes, PrivateRoot: "rel", Identity: id, Engine: engine},
 		"private below root":    {WorkspaceRoot: root, Path: notes, PrivateRoot: filepath.Join(root, "private"), Identity: id, Engine: engine},
 		"nil engine":            {WorkspaceRoot: root, Path: notes, PrivateRoot: priv, Identity: id},
+		"relative cache root":   {WorkspaceRoot: root, Path: notes, PrivateRoot: t.TempDir(), PackCacheRoot: "rel", Identity: id, Engine: engine},
+		"cache below root":      {WorkspaceRoot: root, Path: notes, PrivateRoot: t.TempDir(), PackCacheRoot: filepath.Join(root, "cache"), Identity: id, Engine: engine},
 	}
 	for name, cfg := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -134,6 +136,24 @@ func TestOpenRejectsBadConfig(t *testing.T) {
 				t.Fatal("Open() succeeded, want error")
 			}
 		})
+	}
+}
+
+// TestCacheDirSelectsSharedRoot proves the cache-directory selection: a
+// configured pack cache root yields the identity-selected shared directory,
+// and the default stays the private per-workspace directory inside P.
+func TestCacheDirSelectsSharedRoot(t *testing.T) {
+	cfg := testConfig(t, newFakeEngine(), "notes")
+	cacheRoot := t.TempDir()
+	cfg.PackCacheRoot = cacheRoot
+	w := openWorkspace(t, cfg)
+	if want := filepath.Join(cacheRoot, SharedCacheDirName(cfg.Identity)); w.CacheDir() != want {
+		t.Fatalf("CacheDir() = %q, want the shared %q", w.CacheDir(), want)
+	}
+
+	private := openWorkspace(t, testConfig(t, newFakeEngine(), "notes"))
+	if want := filepath.Join(private.privDir, cacheDirName); private.CacheDir() != want {
+		t.Fatalf("CacheDir() = %q, want the private %q", private.CacheDir(), want)
 	}
 }
 

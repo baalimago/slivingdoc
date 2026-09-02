@@ -233,7 +233,9 @@ type packSpec struct {
 // ensurePack returns the exact pack bytes for a descriptor. A cache hit
 // requires the expected byte size and a fresh SHA-256 check; a corrupt
 // cache entry is discarded and re-downloaded, never a false hit. Downloads
-// verify the descriptor checksum and size before caching and importing.
+// verify the descriptor checksum and size before caching and importing;
+// caching itself is best-effort, so an unwritable cache directory costs
+// future downloads, never the operation.
 func (n *Notebook) ensurePack(ctx context.Context, spec packSpec) ([]byte, error) {
 	if data, ok := n.cacheRead(spec); ok {
 		return data, nil
@@ -256,7 +258,10 @@ func (n *Notebook) ensurePack(ctx context.Context, spec packSpec) ([]byte, error
 		return nil, storageIntegrity(nil, "pack %s does not match its descriptor checksum and size", spec.key)
 	}
 	if err := n.cacheWrite(spec.sha, data); err != nil {
-		return nil, &Error{Code: CodeStorageFailure, Message: "write pack cache", Cause: err}
+		// The cache only saves future downloads; the verified bytes are
+		// already in hand. An unwritable cache — a read-only shared
+		// directory, permissions, a full disk — must not fail the pull.
+		LoggerFrom(ctx).Warn("pack cache write failed", "error", err)
 	}
 	return data, nil
 }
