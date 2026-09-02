@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/baalimago/slivingdoc/internal/workspace"
 )
 
 // stateRecord is the minimal strict view of the private state record
@@ -40,6 +42,18 @@ func (h *Harness) StateRecord(t *testing.T, path string) stateRecord {
 // path.
 func (h *Harness) PackCacheDir(path string) string {
 	return filepath.Join(h.PrivateDir(path), "pack-cache")
+}
+
+// SharedPackCacheDir returns the identity-selected shared pack-cache
+// directory of the harness. It fails the test when the harness was wired
+// without a pack cache root, so an assertion can never silently point at
+// the private location instead.
+func (h *Harness) SharedPackCacheDir(t *testing.T) string {
+	t.Helper()
+	if h.cfg.PackCacheRoot == "" {
+		t.Fatal("harness has no pack cache root")
+	}
+	return filepath.Join(h.cfg.PackCacheRoot, workspace.SharedCacheDirName(h.Identity()))
 }
 
 // jsonValid reports whether s is a single valid JSON value.

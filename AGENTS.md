@@ -73,7 +73,9 @@ Runtime layout (implemented):
 ```text
 L  visible directory       caller path; UTF-8 text files only
 P  <private-root>/<key>/   state.json, operation.lock, repo/, staging/,
-                           backup/, pulled, pack-cache/
+                           backup/, pulled, pack-cache/ (--shared-pack-cache
+                           relocates pack-cache to one identity-keyed dir
+                           under <user-cache-dir>/slivingdoc/pack-cache/)
 R  <bucket>/<prefix>/      current                manifest v1, strict; the only
                                                   accepted-state authority
                            packs/checkpoints/<gen>-<id>.pack   complete state

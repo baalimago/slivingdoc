@@ -427,6 +427,83 @@ func TestLoadConfigRootsBecomeAbsolute(t *testing.T) {
 	}
 }
 
+// TestLoadConfigSharedPackCache proves the shared pack-cache resolution:
+// off by default, enabled by the flag or the environment (flag wins), the
+// root below the user cache directory, and the refusals — no user cache
+// directory, an invalid boolean, and a root at or below the workspace root.
+func TestLoadConfigSharedPackCache(t *testing.T) {
+	base := "SLIVINGDOC_BUCKET=my-bucket"
+	sharedRoot := "/cache/slivingdoc/pack-cache"
+
+	cfg, err := loadConfig(testProcess([]string{base}))
+	if err != nil {
+		t.Fatalf("loadConfig() = %v", err)
+	}
+	if cfg.packCacheRoot != "" {
+		t.Fatalf("default packCacheRoot = %q, want the private per-workspace cache", cfg.packCacheRoot)
+	}
+
+	cfg, err = loadConfig(testProcess([]string{base}, "--shared-pack-cache"))
+	if err != nil {
+		t.Fatalf("loadConfig(--shared-pack-cache) = %v", err)
+	}
+	if cfg.packCacheRoot != sharedRoot {
+		t.Fatalf("flag packCacheRoot = %q, want %q", cfg.packCacheRoot, sharedRoot)
+	}
+
+	cfg, err = loadConfig(testProcess([]string{base, "SLIVINGDOC_SHARED_PACK_CACHE=true"}))
+	if err != nil {
+		t.Fatalf("loadConfig(env) = %v", err)
+	}
+	if cfg.packCacheRoot != sharedRoot {
+		t.Fatalf("env packCacheRoot = %q, want %q", cfg.packCacheRoot, sharedRoot)
+	}
+
+	cfg, err = loadConfig(testProcess([]string{base, "SLIVINGDOC_SHARED_PACK_CACHE=true"}, "--shared-pack-cache=false"))
+	if err != nil {
+		t.Fatalf("loadConfig(flag over env) = %v", err)
+	}
+	if cfg.packCacheRoot != "" {
+		t.Fatalf("explicit false packCacheRoot = %q, want the private per-workspace cache", cfg.packCacheRoot)
+	}
+
+	if _, err := loadConfig(testProcess([]string{base, "SLIVINGDOC_SHARED_PACK_CACHE=banana"})); err == nil {
+		t.Fatal("loadConfig(invalid boolean) = nil, want an error")
+	}
+
+	p := testProcess([]string{base}, "--shared-pack-cache")
+	p.cacheDir = ""
+	if _, err := loadConfig(p); err == nil || !strings.Contains(err.Error(), "user cache directory") {
+		t.Fatalf("loadConfig(no cache dir) = %v, want the user-cache-directory refusal", err)
+	}
+
+	_, err = loadConfig(testProcess([]string{base}, "--shared-pack-cache", "--workspace-root", sharedRoot))
+	if err == nil || !strings.Contains(err.Error(), "pack cache root") {
+		t.Fatalf("loadConfig(overlap) = %v, want the overlapping pack-cache-root refusal", err)
+	}
+}
+
+// TestLoadConfigSharedPackCacheEphemeral proves the multi-agent use case:
+// an ephemeral session keeps its temporary roots while the pack cache root
+// resolves below the durable user cache directory, so agents with private
+// temporary state still share downloaded packs.
+func TestLoadConfigSharedPackCacheEphemeral(t *testing.T) {
+	session := t.TempDir()
+	cfg, err := loadConfig(ephemeralProcess(session, []string{
+		"SLIVINGDOC_BUCKET=my-bucket",
+		"SLIVINGDOC_SHARED_PACK_CACHE=true",
+	}))
+	if err != nil {
+		t.Fatalf("loadConfig() = %v", err)
+	}
+	if want := filepath.Join(session, "private"); cfg.privateRoot != want {
+		t.Fatalf("privateRoot = %q, want the session-private %q", cfg.privateRoot, want)
+	}
+	if want := "/cache/slivingdoc/pack-cache"; cfg.packCacheRoot != want {
+		t.Fatalf("packCacheRoot = %q, want the durable %q", cfg.packCacheRoot, want)
+	}
+}
+
 func TestLoadConfigExpandsHomeRoots(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

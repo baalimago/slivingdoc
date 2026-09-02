@@ -31,6 +31,7 @@ type config struct {
 	pathStyle           bool
 	workspaceRoot       string
 	privateRoot         string
+	packCacheRoot       string
 	commitRetries       int
 	checkpointPacks     int
 	retainedCheckpoints int
@@ -61,6 +62,7 @@ type Flags struct {
 	workspaceRoot       stringFlag
 	privateRoot         stringFlag
 	pathStyle           boolFlag
+	sharedPackCache     boolFlag
 	commitRetries       intFlag
 	checkpointPacks     intFlag
 	retainedCheckpoints intFlag
@@ -82,6 +84,7 @@ func (f *Flags) Bind(fs *flag.FlagSet) {
 	fs.Var(&f.pathStyle, "path-style", "force S3 path-style addressing")
 	fs.Var(&f.workspaceRoot, "workspace-root", "visible workspace root")
 	fs.Var(&f.privateRoot, "private-root", "private state root")
+	fs.Var(&f.sharedPackCache, "shared-pack-cache", "share downloaded pack bytes between workspaces of one notebook")
 	fs.Var(&f.commitRetries, "commit-retries", "CAS retries after the first attempt")
 	fs.Var(&f.checkpointPacks, "checkpoint-packs", "active tail length that schedules a checkpoint")
 	fs.Var(&f.retainedCheckpoints, "retained-checkpoints", "retained previous checkpoint generations")
@@ -168,6 +171,16 @@ func (f *Flags) resolve(environment []string, cwd, cacheDir string, ephemeral bo
 	if cfg.pathStyle, err = resolveBool(&f.pathStyle, env["SLIVINGDOC_PATH_STYLE"], false); err != nil {
 		return config{}, err
 	}
+	sharedPackCache, err := resolveBool(&f.sharedPackCache, env["SLIVINGDOC_SHARED_PACK_CACHE"], false)
+	if err != nil {
+		return config{}, err
+	}
+	if sharedPackCache {
+		if cacheDir == "" {
+			return config{}, errors.New("shared pack cache requires a user cache directory")
+		}
+		cfg.packCacheRoot = filepath.Join(cacheDir, "slivingdoc", "pack-cache")
+	}
 	if cfg.commitRetries, err = resolveInt(&f.commitRetries, env["SLIVINGDOC_COMMIT_RETRIES"], defaultCommitRetries); err != nil {
 		return config{}, err
 	}
@@ -220,6 +233,14 @@ func (cfg config) finish(cwd string) (config, error) {
 	}
 	if workspace.RootsOverlap(cfg.privateRoot, cfg.workspaceRoot) {
 		return config{}, errors.New("private root must not be at or below the workspace root")
+	}
+	if cfg.packCacheRoot != "" {
+		if cfg.packCacheRoot, err = absolute(cwd, cfg.packCacheRoot); err != nil {
+			return config{}, fmt.Errorf("pack cache root: %w", err)
+		}
+		if workspace.RootsOverlap(cfg.packCacheRoot, cfg.workspaceRoot) {
+			return config{}, errors.New("pack cache root must not be at or below the workspace root")
+		}
 	}
 
 	if cfg.commitRetries > maxCommitRetries {
@@ -459,6 +480,10 @@ const FlagReference = `  --bucket string               S3 bucket (required)     
   --private-root string         private state root (default: beside the      SLIVINGDOC_PRIVATE_ROOT
                                 temporary workspace root, else
                                 <user-cache-dir>/slivingdoc)
+  --shared-pack-cache           share downloaded pack bytes between          SLIVINGDOC_SHARED_PACK_CACHE
+                                workspaces of one notebook under
+                                <user-cache-dir>/slivingdoc/pack-cache
+                                (default false)
   --commit-retries int          CAS retries after the first attempt          SLIVINGDOC_COMMIT_RETRIES
                                 (default 8, range 0..100)
   --checkpoint-packs int        active tail length that schedules one        SLIVINGDOC_CHECKPOINT_PACKS
