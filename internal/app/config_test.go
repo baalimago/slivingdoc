@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -54,9 +55,11 @@ func TestLoadConfigDefaults(t *testing.T) {
 		commitRetries:       8,
 		checkpointPacks:     256,
 		retainedCheckpoints: 1,
+		readOnlyPaths:       []string{},
 		logTimestamp:        true,
 	}
-	if cfg != want {
+	// config holds a slice, so compare with reflect.DeepEqual.
+	if !reflect.DeepEqual(cfg, want) {
 		t.Fatalf("config = %+v, want %+v", cfg, want)
 	}
 }
@@ -154,6 +157,7 @@ func TestLoadConfigRefusalRemovesSessionDir(t *testing.T) {
 		{name: "invalid prefix", env: []string{"SLIVINGDOC_BUCKET=b", "SLIVINGDOC_PREFIX=../escape"}},
 		{name: "invalid endpoint", env: []string{"SLIVINGDOC_BUCKET=b", "AWS_ENDPOINT_URL_S3=ftp://example.invalid"}},
 		{name: "invalid integer", env: []string{"SLIVINGDOC_BUCKET=b", "SLIVINGDOC_COMMIT_RETRIES=-1"}},
+		{name: "invalid read-only path", env: []string{"SLIVINGDOC_BUCKET=b", "SLIVINGDOC_READ_ONLY_PATHS=.."}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			session := filepath.Join(t.TempDir(), "session")
@@ -301,6 +305,17 @@ func TestLoadConfigEmptyFlagDoesNotFallBackToEnv(t *testing.T) {
 	}, "--bucket="))
 	if err == nil {
 		t.Fatal("loadConfig() = nil, want the required-bucket error")
+	}
+
+	// An explicitly empty flag must clear an inherited environment value.
+	cfg, err := loadConfig(testProcess([]string{
+		"SLIVINGDOC_BUCKET=b", "SLIVINGDOC_READ_ONLY_PATHS=docs",
+	}, "--read-only-paths="))
+	if err != nil {
+		t.Fatalf("loadConfig() = %v", err)
+	}
+	if got := cfg.readOnlyPaths; len(got) != 0 {
+		t.Fatalf("readOnlyPaths = %v, want the empty set, not the inherited environment value", got)
 	}
 }
 
@@ -560,5 +575,105 @@ func TestConfigErrorIsRedacted(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "supersecret") {
 		t.Fatalf("run diagnostic leaks the endpoint credential: %v", err)
+	}
+}
+
+// TestLoadConfigReadOnlyPaths checks precedence, splitting, trimming, and
+// empty-piece rules (architecture section 17).
+func TestLoadConfigReadOnlyPaths(t *testing.T) {
+	cases := []struct {
+		name string
+		env  []string
+		args []string
+		want []string
+	}{
+		{name: "default is the empty set", want: []string{}},
+		{
+			name: "environment sets the set",
+			env:  []string{"SLIVINGDOC_READ_ONLY_PATHS=docs"},
+			want: []string{"docs"},
+		},
+		{
+			name: "flag wins over environment",
+			env:  []string{"SLIVINGDOC_READ_ONLY_PATHS=docs"},
+			args: []string{"--read-only-paths=notes"},
+			want: []string{"notes"},
+		},
+		{
+			name: "explicitly empty flag beats an inherited environment value",
+			env:  []string{"SLIVINGDOC_READ_ONLY_PATHS=docs"},
+			args: []string{"--read-only-paths="},
+			want: []string{},
+		},
+		{
+			name: "splitting, trimming, and dropping empty pieces; nested entries collapse",
+			args: []string{"--read-only-paths=notes,docs/,docs/faq.md, ,"},
+			want: []string{"docs", "notes"},
+		},
+		{
+			name: "a malformed environment value never parses when the flag wins",
+			env:  []string{"SLIVINGDOC_READ_ONLY_PATHS=.."},
+			args: []string{"--read-only-paths=docs"},
+			want: []string{"docs"},
+		},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			env := append([]string{"SLIVINGDOC_BUCKET=b"}, tt.env...)
+			cfg, err := loadConfig(testProcess(env, tt.args...))
+			if err != nil {
+				t.Fatalf("loadConfig() = %v", err)
+			}
+			if !reflect.DeepEqual(cfg.readOnlyPaths, tt.want) {
+				t.Fatalf("readOnlyPaths = %v, want %v", cfg.readOnlyPaths, tt.want)
+			}
+		})
+	}
+}
+
+// TestLoadConfigReadOnlyPathsInvalid checks every invalid entry refuses startup
+// with a diagnostic naming the entry and no package prefix.
+func TestLoadConfigReadOnlyPathsInvalid(t *testing.T) {
+	overLimit := make([]string, 0, 2050)
+	for range 2050 {
+		overLimit = append(overLimit, "a")
+	}
+	cases := []struct {
+		name  string
+		value string
+		want  string // exact text after "read-only paths: "; empty skips the exact check
+	}{
+		{
+			name:  "dot-dot segment",
+			value: "..",
+			want:  `invalid read-only path "..": invalid path "..": ".." segment is not allowed`,
+		},
+		{
+			name:  "absolute path",
+			value: "/abs",
+			want:  `invalid read-only path "/abs": invalid path "/abs": must not start or end with a slash`,
+		},
+		{name: "git segment", value: "docs/.git"},
+		{name: "over the path byte bound", value: strings.Join(overLimit, "/")},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := loadConfig(testProcess([]string{"SLIVINGDOC_BUCKET=b"}, "--read-only-paths="+tt.value))
+			if err == nil {
+				t.Fatalf("loadConfig(--read-only-paths=%s) = nil, want a refusal", tt.name)
+			}
+			const prefix = "read-only paths: "
+			if !strings.Contains(err.Error(), "read-only paths:") {
+				t.Fatalf("loadConfig() error = %v, want it prefixed %q", err, "read-only paths:")
+			}
+			if strings.Contains(err.Error(), "git:") {
+				t.Fatalf("loadConfig() error = %v, want no `git:` package prefix", err)
+			}
+			if tt.want != "" {
+				if got := strings.TrimPrefix(err.Error(), prefix); got != tt.want {
+					t.Fatalf("loadConfig() error = %v, want %q%s", err, prefix, tt.want)
+				}
+			}
+		})
 	}
 }

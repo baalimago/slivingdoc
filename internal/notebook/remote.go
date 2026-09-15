@@ -56,7 +56,7 @@ func (n *Notebook) readRemote(ctx context.Context) (remoteState, error) {
 		}
 		m, err := storage.DecodeManifest(data)
 		if err != nil {
-			return remoteState{}, storageIntegrity(err, "current is not a valid manifest")
+			return remoteState{}, storageIntegrity(ReasonManifestInvalid, err, "current is not a valid manifest")
 		}
 
 		if err := n.importRemote(ctx, m); err != nil {
@@ -64,7 +64,7 @@ func (n *Notebook) readRemote(ctx context.Context) (remoteState, error) {
 				return remoteState{}, err
 			}
 			if restart >= n.retryLimit {
-				return remoteState{}, storageIntegrity(nil, "manifest did not stabilize after %d stale reads", restart)
+				return remoteState{}, storageIntegrity(ReasonPackInvalid, nil, "manifest did not stabilize after %d stale reads", restart)
 			}
 			// The referenced pack disappeared during cleanup: re-read
 			// current and restart only when the manifest actually moved.
@@ -73,21 +73,21 @@ func (n *Notebook) readRemote(ctx context.Context) (remoteState, error) {
 				return remoteState{}, rerr
 			}
 			if !newPresent || newETag == etag {
-				return remoteState{}, storageIntegrity(nil, "manifest references a pack that is missing and unchanged after re-read")
+				return remoteState{}, storageIntegrity(ReasonPackInvalid, nil, "manifest references a pack that is missing and unchanged after re-read")
 			}
 			continue
 		}
 
 		st := remoteState{manifest: m, etag: etag, present: true, generation: m.Generation, head: m.Head}
 		if err := git.ValidateHistory(n.ws.Repo(), m.Head, m.Checkpoint.Head); err != nil {
-			return remoteState{}, storageIntegrity(err, "accepted state is incomplete")
+			return remoteState{}, storageIntegrity(ReasonHistoryInvalid, err, "accepted state is incomplete")
 		}
 		commit, err := n.ws.Repo().ReadCommit(m.Head)
 		if err != nil {
-			return remoteState{}, storageIntegrity(err, "accepted state %s is unreadable", m.Head)
+			return remoteState{}, storageIntegrity(ReasonHistoryInvalid, err, "accepted state %s is unreadable", m.Head)
 		}
 		if _, err := git.ReadSnapshot(n.ws.Repo(), commit.Tree); err != nil {
-			return remoteState{}, storageIntegrity(err, "accepted state is not valid notebook text")
+			return remoteState{}, storageIntegrity(ReasonHistoryInvalid, err, "accepted state is not valid notebook text")
 		}
 		n.recordTail(m)
 		st.tree = commit.Tree
@@ -103,12 +103,12 @@ func (n *Notebook) readCurrent(ctx context.Context) (data []byte, etag storage.E
 		if errors.Is(err, storage.ErrNotFound) {
 			return nil, "", false, nil
 		}
-		return nil, "", false, storageFailure(err, "read current manifest")
+		return nil, "", false, storageFailure(ReasonManifestRead, err, "read current manifest")
 	}
 	defer rc.Close()
 	data, err = io.ReadAll(rc)
 	if err != nil {
-		return nil, "", false, storageFailure(err, "read current manifest body")
+		return nil, "", false, storageFailure(ReasonManifestRead, err, "read current manifest body")
 	}
 	return data, info.ETag, true, nil
 }
@@ -137,10 +137,10 @@ func (n *Notebook) importRemote(ctx context.Context, m storage.Manifest) error {
 		return err
 	}
 	if err := git.ImportPack(n.ws.Repo(), data); err != nil {
-		return storageIntegrity(err, "import checkpoint pack %s", m.Checkpoint.Key)
+		return storageIntegrity(ReasonPackInvalid, err, "import checkpoint pack %s", m.Checkpoint.Key)
 	}
 	if err := git.MarkShallow(n.ws.Repo(), m.Checkpoint.Head); err != nil {
-		return storageIntegrity(err, "record checkpoint boundary %s", m.Checkpoint.Head)
+		return storageIntegrity(ReasonEngineFailed, err, "record checkpoint boundary %s", m.Checkpoint.Head)
 	}
 	for _, inc := range m.Increments {
 		data, err := next()
@@ -148,7 +148,7 @@ func (n *Notebook) importRemote(ctx context.Context, m storage.Manifest) error {
 			return err
 		}
 		if err := git.ImportPack(n.ws.Repo(), data); err != nil {
-			return storageIntegrity(err, "import increment pack %s", inc.Key)
+			return storageIntegrity(ReasonPackInvalid, err, "import increment pack %s", inc.Key)
 		}
 	}
 	return nil
@@ -216,7 +216,7 @@ func (n *Notebook) prefetchPacks(ctx context.Context, specs []packSpec) (next fu
 			i++
 			return r.data, r.err
 		case <-fctx.Done():
-			return nil, storageFailure(fctx.Err(), "download packs")
+			return nil, storageFailure(ReasonPackDownload, fctx.Err(), "download packs")
 		}
 	}
 	return next, cancel
@@ -247,15 +247,15 @@ func (n *Notebook) ensurePack(ctx context.Context, spec packSpec) ([]byte, error
 			// stale, not the pack. The caller re-reads current.
 			return nil, fmt.Errorf("notebook: pack %s: %w", spec.key, errStaleManifest)
 		}
-		return nil, storageFailure(err, "download pack %s", spec.key)
+		return nil, storageFailure(ReasonPackDownload, err, "download pack %s", spec.key)
 	}
 	defer rc.Close()
 	data, err := io.ReadAll(rc)
 	if err != nil {
-		return nil, storageFailure(err, "download pack %s", spec.key)
+		return nil, storageFailure(ReasonPackDownload, err, "download pack %s", spec.key)
 	}
 	if uint64(len(data)) != spec.size || sha256.Sum256(data) != spec.sha {
-		return nil, storageIntegrity(nil, "pack %s does not match its descriptor checksum and size", spec.key)
+		return nil, storageIntegrity(ReasonPackInvalid, nil, "pack %s does not match its descriptor checksum and size", spec.key)
 	}
 	if err := n.cacheWrite(spec.sha, data); err != nil {
 		// The cache only saves future downloads; the verified bytes are
@@ -329,7 +329,7 @@ func (n *Notebook) lookupPublication(ctx context.Context, id storage.UUID) (bool
 	}
 	m, err := storage.DecodeManifest(data)
 	if err != nil {
-		return false, storageIntegrity(err, "current is not a valid manifest")
+		return false, storageIntegrity(ReasonManifestInvalid, err, "current is not a valid manifest")
 	}
 	if m.Checkpoint.Publication == id {
 		return true, nil

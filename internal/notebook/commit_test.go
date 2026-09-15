@@ -78,7 +78,10 @@ func TestCommitWithoutPull(t *testing.T) {
 	nb, w, _ := newNotebook(t, nbConfig{store: store, ids: ids})
 	writeLocal(t, w, map[string]string{"a.md": "x"})
 
-	assertErrorCode(t, errOnly(nb.Commit(context.Background(), "msg")), CodeInvalidRequest)
+	ne := assertErrorCode(t, errOnly(nb.Commit(context.Background(), "msg")), CodeInvalidRequest)
+	if ne.Reason != ReasonPullRequired || ne.Action != ActionPull {
+		t.Fatalf("reason/action = %s/%s, want %s/%s", ne.Reason, ne.Action, ReasonPullRequired, ActionPull)
+	}
 	for _, op := range []fake.Op{fake.OpGet, fake.OpPut, fake.OpCreate, fake.OpReplace} {
 		if got := store.Calls(op); got != 0 {
 			t.Fatalf("commit without pull made %d %s calls, want none", got, op)
@@ -90,14 +93,17 @@ func TestCommitWithoutPull(t *testing.T) {
 // or S3 access.
 func TestCommitBlankMessage(t *testing.T) {
 	long := strings.Repeat("m", 16385)
-	cases := map[string]string{
-		"empty":        "",
-		"whitespace":   "   \t\n",
-		"too long":     long,
-		"invalid utf8": string([]byte{0xff, 0xfe}),
-		"nul":          "a\x00b",
+	cases := map[string]struct {
+		message string
+		reason  Reason
+	}{
+		"empty":        {"", ReasonMessageBlank},
+		"whitespace":   {"   \t\n", ReasonMessageBlank},
+		"too long":     {long, ReasonMessageTooLong},
+		"invalid utf8": {string([]byte{0xff, 0xfe}), ReasonMessageInvalid},
+		"nul":          {"a\x00b", ReasonMessageInvalid},
 	}
-	for name, message := range cases {
+	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			store := fake.New("")
 			ids := &testIDSource{}
@@ -105,7 +111,10 @@ func TestCommitBlankMessage(t *testing.T) {
 			writeLocal(t, w, map[string]string{"a.md": "x"})
 			pullOK(t, nb)
 			getsBefore := store.Calls(fake.OpGet)
-			assertErrorCode(t, errOnly(nb.Commit(context.Background(), message)), CodeInvalidRequest)
+			ne := assertErrorCode(t, errOnly(nb.Commit(context.Background(), tc.message)), CodeInvalidRequest)
+			if ne.Reason != tc.reason || ne.Action != ActionFixInput {
+				t.Fatalf("reason/action = %s/%s, want %s/%s", ne.Reason, ne.Action, tc.reason, ActionFixInput)
+			}
 			if got := store.Calls(fake.OpGet) - getsBefore; got != 0 {
 				t.Fatalf("invalid message made %d GET calls, want none", got)
 			}

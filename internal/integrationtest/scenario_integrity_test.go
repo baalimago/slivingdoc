@@ -22,7 +22,7 @@ func TestScenarioIntegrityCorruptManifest(t *testing.T) {
 	res := h.Pull("", path)
 	h.assertEnvelope(t, ToolCall{
 		Tool: toolPull, Path: path,
-		Expect: CallExpectation{ErrorCode: "STORAGE_INTEGRITY", Retryable: new(false)},
+		Expect: CallExpectation{ErrorCode: "STORAGE_INTEGRITY", Reason: "MANIFEST_INVALID", Action: "OPERATOR", Retryable: new(false)},
 	}, res)
 	if got := h.ReadFile(path + "/a.md"); got != "alpha" {
 		t.Fatalf("corrupt-manifest pull changed L to %q", got)
@@ -58,7 +58,7 @@ func TestScenarioIntegrityPackTransportFailure(t *testing.T) {
 	res := b.Pull("", pathB)
 	b.assertEnvelope(t, ToolCall{
 		Tool: toolPull, Path: pathB,
-		Expect: CallExpectation{ErrorCode: "STORAGE_FAILURE", Retryable: new(true)},
+		Expect: CallExpectation{ErrorCode: "STORAGE_FAILURE", Reason: "PACK_DOWNLOAD", Action: "RETRY", Retryable: new(true)},
 	}, res)
 	if got := b.FSSnapshot(pathB); len(got) != 0 {
 		t.Fatalf("a failed pack download changed L: %v", got)
@@ -85,7 +85,7 @@ func TestScenarioIntegrityCorruptPack(t *testing.T) {
 	res := b.Pull("", pathB)
 	b.assertEnvelope(t, ToolCall{
 		Tool: toolPull, Path: pathB,
-		Expect: CallExpectation{ErrorCode: "STORAGE_INTEGRITY", Retryable: new(false)},
+		Expect: CallExpectation{ErrorCode: "STORAGE_INTEGRITY", Reason: "PACK_INVALID", Action: "OPERATOR", Retryable: new(false)},
 	}, res)
 	if got := b.FSSnapshot(pathB); len(got) != 0 {
 		t.Fatalf("corrupt pack reached L: %v", got)
@@ -115,7 +115,7 @@ func TestScenarioIntegrityMissingPackWithUnchangedManifest(t *testing.T) {
 	res := b.Pull("", pathB)
 	b.assertEnvelope(t, ToolCall{
 		Tool: toolPull, Path: pathB,
-		Expect: CallExpectation{ErrorCode: "STORAGE_INTEGRITY", Retryable: new(false)},
+		Expect: CallExpectation{ErrorCode: "STORAGE_INTEGRITY", Reason: "PACK_INVALID", Action: "OPERATOR", Retryable: new(false)},
 	}, res)
 	if got := b.Recorder().CountKey(OpGet, storage.CurrentKey); got != 2 {
 		t.Fatalf("current reads after missing pack = %d, want initial read plus unchanged-ETag proof", got)

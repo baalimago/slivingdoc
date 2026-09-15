@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -57,6 +58,8 @@ type HarnessConfig struct {
 	RetryLimit       *int
 	CheckpointPacks  *int
 	RetainedCheckpts *int
+	// ReadOnlyPaths configures the service's read-only set.
+	ReadOnlyPaths []string
 }
 
 // setting returns the pointed-to override, or def when the field is unset.
@@ -153,6 +156,7 @@ func NewHarness(t *testing.T, cfg HarnessConfig) *Harness {
 		CommitRetries:       setting(cfg.RetryLimit, notebook.DefaultRetryLimit),
 		CheckpointPacks:     setting(cfg.CheckpointPacks, notebook.DefaultCheckpointPacks),
 		RetainedCheckpoints: setting(cfg.RetainedCheckpts, notebook.DefaultRetainedCheckpoints),
+		ReadOnlyPaths:       cfg.ReadOnlyPaths,
 	}
 	hooks := cfg.Hooks
 	if hooks == nil {
@@ -441,13 +445,26 @@ func (h *Harness) assertOK(t *testing.T, res *sdk.CallToolResult) {
 	if got.Files == nil {
 		t.Fatal("files must always be present")
 	}
+	if got.ReadOnly == nil {
+		t.Fatal("readOnly must always be present")
+	}
 	if len(res.Content) != 1 {
 		t.Fatalf("content items = %d, want exactly one", len(res.Content))
 	}
 	text, ok := res.Content[0].(*sdk.TextContent)
-	if !ok || text.Text != got.Path {
-		t.Fatalf("text item = %#v, want the resolved notebook path %q", res.Content[0], got.Path)
+	wantText := readOnlyText(got.Path, got.ReadOnly)
+	if !ok || text.Text != wantText {
+		t.Fatalf("text item = %#v, want %q", res.Content[0], wantText)
 	}
+}
+
+// readOnlyText is the expected success text item for a read-only set
+// (architecture section 2, Read-only paths).
+func readOnlyText(path string, entries []string) string {
+	if len(entries) == 0 {
+		return path
+	}
+	return path + " (read-only: " + strings.Join(entries, notebook.ReadOnlyListSeparator) + ")"
 }
 
 // successInfo decodes the structured content of a success result into the
@@ -513,6 +530,12 @@ func (h *Harness) assertEnvelope(t *testing.T, call ToolCall, res *sdk.CallToolR
 		if exp.Success != nil {
 			h.assertSuccessStat(t, call, res, *exp.Success)
 		}
+		if exp.ReadOnly != nil {
+			got := h.successInfo(t, res).ReadOnly
+			if !slices.Equal(got, exp.ReadOnly) {
+				t.Fatalf("call %s(%s) success readOnly = %v, want %v", call.Tool, call.Path, got, exp.ReadOnly)
+			}
+		}
 		for _, sub := range exp.NoText {
 			text, ok := res.Content[0].(*sdk.TextContent)
 			if !ok || strings.Contains(text.Text, sub) {
@@ -524,6 +547,12 @@ func (h *Harness) assertEnvelope(t *testing.T, call ToolCall, res *sdk.CallToolR
 	env := decodeEnvelope(t, call, res)
 	if env.Code != exp.ErrorCode {
 		t.Fatalf("call %s(%s) code = %q, want %q", call.Tool, call.Path, env.Code, exp.ErrorCode)
+	}
+	if exp.Reason != "" && env.Reason != exp.Reason {
+		t.Fatalf("call %s(%s) reason = %q, want %q", call.Tool, call.Path, env.Reason, exp.Reason)
+	}
+	if exp.Action != "" && env.Action != exp.Action {
+		t.Fatalf("call %s(%s) action = %q, want %q", call.Tool, call.Path, env.Action, exp.Action)
 	}
 	if exp.Retryable != nil && env.Retryable != *exp.Retryable {
 		t.Fatalf("call %s(%s) retryable = %v, want %v", call.Tool, call.Path, env.Retryable, *exp.Retryable)
@@ -537,6 +566,9 @@ func (h *Harness) assertEnvelope(t *testing.T, call ToolCall, res *sdk.CallToolR
 			if got[i].Path != exp.Files[i].Path {
 				t.Fatalf("call %s(%s) file %d path = %q, want %q", call.Tool, call.Path, i, got[i].Path, exp.Files[i].Path)
 			}
+			if exp.Files[i].Reason != "" && got[i].Reason != exp.Files[i].Reason {
+				t.Fatalf("call %s(%s) file %d reason = %q, want %q", call.Tool, call.Path, i, got[i].Reason, exp.Files[i].Reason)
+			}
 			if exp.Files[i].Ranges == nil {
 				continue // the row asserts the path only
 			}
@@ -549,6 +581,9 @@ func (h *Harness) assertEnvelope(t *testing.T, call ToolCall, res *sdk.CallToolR
 				}
 			}
 		}
+	}
+	if exp.ReadOnly != nil && !slices.Equal(env.ReadOnly, exp.ReadOnly) {
+		t.Fatalf("call %s(%s) error readOnly = %v, want %v", call.Tool, call.Path, env.ReadOnly, exp.ReadOnly)
 	}
 	if exp.Recovery != nil {
 		if env.Recovery == nil {
@@ -570,18 +605,22 @@ func (h *Harness) assertEnvelope(t *testing.T, call ToolCall, res *sdk.CallToolR
 }
 
 // envelope is the structured error object of the tool-error shape
-// (architecture section 2): code, retryable, message, and files are always
-// present; recovery appears only for RECOVERY_FAILURE.
+// (architecture section 2): code, reason, action, retryable, message, and
+// files are always present; recovery appears only for RECOVERY_FAILURE.
 type envelope struct {
 	Code      string            `json:"code"`
+	Reason    string            `json:"reason"`
+	Action    string            `json:"action"`
 	Retryable bool              `json:"retryable"`
 	Message   string            `json:"message"`
 	Files     []envelopeFile    `json:"files"`
 	Recovery  *envelopeRecovery `json:"recovery"`
+	ReadOnly  []string          `json:"readOnly"`
 }
 
 type envelopeFile struct {
 	Path   string          `json:"path"`
+	Reason string          `json:"reason"`
 	Ranges []envelopeRange `json:"ranges"`
 }
 
@@ -596,9 +635,33 @@ type envelopeRecovery struct {
 	Resynchronized bool   `json:"resynchronized"`
 }
 
+// envelopeTokenViolation describes the first envelope shape invariant an
+// error envelope breaks, or returns "" (architecture section 2).
+func envelopeTokenViolation(env envelope) string {
+	switch {
+	case env.Message == "":
+		return "carries an empty message"
+	case env.Reason == "":
+		return "carries an empty reason"
+	case env.Action == "":
+		return "carries an empty action"
+	case env.Files == nil:
+		return "carries no files key"
+	case env.ReadOnly == nil:
+		return "carries no readOnly key"
+	}
+	for i, f := range env.Files {
+		if f.Reason == "" {
+			return fmt.Sprintf("file %d carries an empty reason", i)
+		}
+	}
+	return ""
+}
+
 // decodeEnvelope unmarshals the structured content of an error result and
-// proves the envelope shape invariants: non-empty message, files always
-// present, and recovery only for RECOVERY_FAILURE.
+// proves the envelope shape invariants: non-empty message, reason, and
+// action, files always present with a non-empty reason on every entry, and
+// recovery only for RECOVERY_FAILURE.
 func decodeEnvelope(t *testing.T, call ToolCall, res *sdk.CallToolResult) envelope {
 	t.Helper()
 	if !res.IsError {
@@ -615,11 +678,8 @@ func decodeEnvelope(t *testing.T, call ToolCall, res *sdk.CallToolResult) envelo
 	if err := json.Unmarshal(data, &env); err != nil {
 		t.Fatalf("structured content = %s: %v", data, err)
 	}
-	if env.Message == "" {
-		t.Fatalf("call %s(%s) error envelope carries an empty message", call.Tool, call.Path)
-	}
-	if env.Files == nil {
-		t.Fatalf("call %s(%s) error envelope carries no files key", call.Tool, call.Path)
+	if violation := envelopeTokenViolation(env); violation != "" {
+		t.Fatalf("call %s(%s) error envelope %s", call.Tool, call.Path, violation)
 	}
 	if env.Code != codeRecoveryFailure && env.Recovery != nil {
 		t.Fatalf("call %s(%s) carries a recovery report for %s", call.Tool, call.Path, env.Code)

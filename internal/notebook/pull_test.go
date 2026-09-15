@@ -357,7 +357,13 @@ func TestPullInvalidContentMapsToInvalidRequest(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(w.Path(), "bad.md"), []byte{0xff, 0xfe}, 0o644); err != nil {
 		t.Fatalf("write invalid file: %v", err)
 	}
-	assertErrorCode(t, errOnly(nb.Pull(context.Background())), CodeInvalidRequest)
+	ne := assertErrorCode(t, errOnly(nb.Pull(context.Background())), CodeInvalidRequest)
+	if ne.Reason != ReasonInvalidContent || ne.Action != ActionEditFiles {
+		t.Fatalf("reason/action = %s/%s, want %s/%s", ne.Reason, ne.Action, ReasonInvalidContent, ActionEditFiles)
+	}
+	if len(ne.Files) != 1 || ne.Files[0].Path != "bad.md" || ne.Files[0].Reason != FileReasonInvalidContent {
+		t.Fatalf("files = %+v, want exactly [{bad.md INVALID_CONTENT}]", ne.Files)
+	}
 	if got := store.Calls(fake.OpGet); got != 0 {
 		t.Fatalf("pull with invalid content made %d GET calls, want none", got)
 	}

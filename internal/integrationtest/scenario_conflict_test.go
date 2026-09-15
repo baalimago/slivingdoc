@@ -43,12 +43,15 @@ func TestScenarioConflictMarkerGrammar(t *testing.T) {
 				}
 				return
 			}
+			// A marker block already in L is the pre-merge rejection, not a merge conflict.
 			res := h.Commit("", path, "markers")
 			h.assertEnvelope(t, ToolCall{
 				Tool: toolCommit, Path: path, Message: "markers",
 				Expect: CallExpectation{
 					ErrorCode: "CONTENT_CONFLICT",
-					Files:     []FileExpectation{{Path: "a.md", Ranges: row.want}},
+					Reason:    "UNRESOLVED_MARKERS",
+					Action:    "EDIT_FILES",
+					Files:     []FileExpectation{{Path: "a.md", Reason: "UNRESOLVED_MARKERS", Ranges: row.want}},
 				},
 			}, res)
 			// Rejection happens before any Git or S3 work: the commit's
@@ -121,7 +124,9 @@ func TestScenarioConflictAfterRemoteMovement(t *testing.T) {
 		Tool: toolCommit, Path: pathB, Message: "B v2",
 		Expect: CallExpectation{
 			ErrorCode: "CONTENT_CONFLICT",
-			Files:     []FileExpectation{{Path: "shared.md", Ranges: []RangeExpectation{{Start: 1, End: 5}}}},
+			Reason:    "MERGE_CONFLICT",
+			Action:    "EDIT_FILES",
+			Files:     []FileExpectation{{Path: "shared.md", Reason: "TEXT_CONFLICT", Ranges: []RangeExpectation{{Start: 1, End: 5}}}},
 		},
 	}, res)
 

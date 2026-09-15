@@ -165,7 +165,9 @@ func TestScenarioPullConflict(t *testing.T) {
 		Tool: toolPull, Path: pathB,
 		Expect: CallExpectation{
 			ErrorCode: "CONTENT_CONFLICT",
-			Files:     []FileExpectation{{Path: "shared.md", Ranges: []RangeExpectation{{Start: 1, End: 5}}}},
+			Reason:    "MERGE_CONFLICT",
+			Action:    "EDIT_FILES",
+			Files:     []FileExpectation{{Path: "shared.md", Reason: "TEXT_CONFLICT", Ranges: []RangeExpectation{{Start: 1, End: 5}}}},
 		},
 	}, res)
 

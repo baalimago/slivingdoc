@@ -3,6 +3,7 @@ package integrationtest
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -99,15 +100,16 @@ func assertToolCallLogged(t *testing.T, stderr, tool string) {
 }
 
 // assertProcessCallOK asserts the success envelope of one process-level
-// tool call: no error, one text item carrying the resolved notebook path,
-// and a structured SuccessInfo whose code is OK.
-func assertProcessCallOK(t *testing.T, cs *sdk.ClientSession, tool, path, message string) {
+// tool call: no error, one text item carrying the resolved notebook path
+// (suffixed with the read-only set when configured), and a structured
+// SuccessInfo whose code is OK. It returns the decoded success envelope.
+func assertProcessCallOK(t *testing.T, cs *sdk.ClientSession, tool, path, message string) mcp.SuccessInfo {
 	t.Helper()
 	args := map[string]any{"path": path}
 	if tool == toolCommit {
 		args["message"] = message
 	}
-	assertProcessArgsOK(t, cs, tool, path, args)
+	return assertProcessArgsOK(t, cs, tool, path, args)
 }
 
 // assertProcessArgsOK is assertProcessCallOK over an explicit argument
@@ -133,9 +135,14 @@ func assertProcessArgsOK(t *testing.T, cs *sdk.ClientSession, tool, path string,
 	if got.Code != "OK" {
 		t.Fatalf("%s(%s) structured code = %q, want OK", tool, path, got.Code)
 	}
+	// A configured read-only set suffixes the text item (architecture section 2).
+	wantText := got.Path
+	if len(got.ReadOnly) > 0 {
+		wantText = fmt.Sprintf("%s (read-only: %s)", got.Path, strings.Join(got.ReadOnly, ", "))
+	}
 	text, ok := res.Content[0].(*sdk.TextContent)
-	if !ok || text.Text != got.Path {
-		t.Fatalf("%s(%s) text = %#v, want the resolved notebook path %q", tool, path, res.Content[0], got.Path)
+	if !ok || text.Text != wantText {
+		t.Fatalf("%s(%s) text = %#v, want %q", tool, path, res.Content[0], wantText)
 	}
 	return got
 }

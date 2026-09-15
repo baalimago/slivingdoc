@@ -8,14 +8,15 @@ import (
 // ANSI SGR colour codes of the CLI report. The codes are the standard
 // sequences: green for the success token and insertions, red for the
 // error token and deletions, yellow for conflict paths, cyan for the
-// success generation summary. Colour is presentation-only; the report
-// keeps its plain form everywhere else (architecture section 2 CLI
-// report).
+// success generation summary and the next-step label, dim for the reason
+// tokens and the read-only label. Colour is presentation-only; the report
+// keeps its plain form everywhere else (architecture section 2 CLI report).
 const (
 	colourGreen  = "\x1b[32m"
 	colourRed    = "\x1b[31m"
 	colourYellow = "\x1b[33m"
 	colourCyan   = "\x1b[36m"
+	colourDim    = "\x1b[2m"
 	colourReset  = "\x1b[0m"
 )
 
@@ -30,6 +31,7 @@ func (p painter) green(s string) string  { return p.paint(s, colourGreen) }
 func (p painter) red(s string) string    { return p.paint(s, colourRed) }
 func (p painter) yellow(s string) string { return p.paint(s, colourYellow) }
 func (p painter) cyan(s string) string   { return p.paint(s, colourCyan) }
+func (p painter) dim(s string) string    { return p.paint(s, colourDim) }
 
 func (p painter) paint(s, code string) string {
 	if !p.on {

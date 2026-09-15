@@ -49,11 +49,113 @@ const (
 	CodeRecoveryFailure Code = "RECOVERY_FAILURE"
 )
 
-// ConflictFile names one conflicted path and the one-based inclusive marker
-// ranges inside it (architecture section 12). A path with no marker range
-// (a file/directory conflict) has an empty Ranges slice.
-type ConflictFile struct {
+// Reason classifies a domain error one level below Code (architecture
+// section 2, Reason tokens by code).
+type Reason string
+
+const (
+	ReasonMalformedInput      Reason = "MALFORMED_INPUT"
+	ReasonPathOutsideRoot     Reason = "PATH_OUTSIDE_ROOT"
+	ReasonMessageBlank        Reason = "MESSAGE_BLANK"
+	ReasonMessageTooLong      Reason = "MESSAGE_TOO_LONG"
+	ReasonMessageInvalid      Reason = "MESSAGE_INVALID"
+	ReasonPullRequired        Reason = "PULL_REQUIRED"
+	ReasonInvalidContent      Reason = "INVALID_CONTENT"
+	ReasonReadOnlyPath        Reason = "READ_ONLY_PATH"
+	ReasonMergeConflict       Reason = "MERGE_CONFLICT"
+	ReasonUnresolvedMarkers   Reason = "UNRESOLVED_MARKERS"
+	ReasonRetriesExhausted    Reason = "RETRIES_EXHAUSTED"
+	ReasonManifestRead        Reason = "MANIFEST_READ"
+	ReasonPackDownload        Reason = "PACK_DOWNLOAD"
+	ReasonPackUpload          Reason = "PACK_UPLOAD"
+	ReasonPublicationUnproven Reason = "PUBLICATION_UNPROVEN"
+	ReasonManifestWrite       Reason = "MANIFEST_WRITE"
+	ReasonLocalState          Reason = "LOCAL_STATE"
+	ReasonInternal            Reason = "INTERNAL"
+	ReasonManifestInvalid     Reason = "MANIFEST_INVALID"
+	ReasonPackInvalid         Reason = "PACK_INVALID"
+	ReasonHistoryInvalid      Reason = "HISTORY_INVALID"
+	ReasonEngineFailed        Reason = "ENGINE_FAILED"
+	ReasonLocalMutationFailed Reason = "LOCAL_MUTATION_FAILED"
+)
+
+// FileReason classifies one file entry of a domain error.
+type FileReason string
+
+const (
+	FileReasonTextConflict      FileReason = "TEXT_CONFLICT"
+	FileReasonPathConflict      FileReason = "PATH_CONFLICT"
+	FileReasonUnresolvedMarkers FileReason = "UNRESOLVED_MARKERS"
+	FileReasonReadOnly          FileReason = "READ_ONLY"
+	FileReasonInvalidContent    FileReason = "INVALID_CONTENT"
+)
+
+// Action is the caller's next step after a domain error.
+type Action string
+
+const (
+	ActionFixInput  Action = "FIX_INPUT"
+	ActionEditFiles Action = "EDIT_FILES"
+	ActionPull      Action = "PULL"
+	ActionRetry     Action = "RETRY"
+	ActionOperator  Action = "OPERATOR"
+)
+
+type codeReason struct {
+	code   Code
+	reason Reason
+}
+
+// actionForPairing is the code/reason to action table of architecture
+// section 2; CodeRecoveryFailure branches on the recovery report instead.
+var actionForPairing = map[codeReason]Action{
+	{CodeInvalidRequest, ReasonMalformedInput}:      ActionFixInput,
+	{CodeInvalidRequest, ReasonPathOutsideRoot}:     ActionFixInput,
+	{CodeInvalidRequest, ReasonMessageBlank}:        ActionFixInput,
+	{CodeInvalidRequest, ReasonMessageTooLong}:      ActionFixInput,
+	{CodeInvalidRequest, ReasonMessageInvalid}:      ActionFixInput,
+	{CodeInvalidRequest, ReasonPullRequired}:        ActionPull,
+	{CodeInvalidRequest, ReasonInvalidContent}:      ActionEditFiles,
+	{CodeInvalidRequest, ReasonReadOnlyPath}:        ActionEditFiles,
+	{CodeContentConflict, ReasonMergeConflict}:      ActionEditFiles,
+	{CodeContentConflict, ReasonUnresolvedMarkers}:  ActionEditFiles,
+	{CodeRemoteBusy, ReasonRetriesExhausted}:        ActionRetry,
+	{CodeStorageFailure, ReasonManifestRead}:        ActionRetry,
+	{CodeStorageFailure, ReasonPackDownload}:        ActionRetry,
+	{CodeStorageFailure, ReasonPackUpload}:          ActionRetry,
+	{CodeStorageFailure, ReasonPublicationUnproven}: ActionPull,
+	{CodeStorageFailure, ReasonManifestWrite}:       ActionRetry,
+	{CodeStorageFailure, ReasonLocalState}:          ActionRetry,
+	{CodeStorageFailure, ReasonInternal}:            ActionRetry,
+	{CodeStorageIntegrity, ReasonManifestInvalid}:   ActionOperator,
+	{CodeStorageIntegrity, ReasonPackInvalid}:       ActionOperator,
+	{CodeStorageIntegrity, ReasonHistoryInvalid}:    ActionOperator,
+	{CodeStorageIntegrity, ReasonEngineFailed}:      ActionOperator,
+}
+
+// errUnknownActionPairing marks a constructor-site programming error.
+var errUnknownActionPairing = errors.New("notebook: programming error: no action mapped for this code/reason pairing")
+
+// actionFor returns the Action for a code/reason pairing. An unknown
+// pairing returns ActionRetry and errUnknownActionPairing.
+func actionFor(code Code, reason Reason, report *RecoveryReport) (Action, error) {
+	if code == CodeRecoveryFailure {
+		if report != nil && report.Resynchronized {
+			return ActionPull, nil
+		}
+		return ActionRetry, nil
+	}
+	if action, ok := actionForPairing[codeReason{code, reason}]; ok {
+		return action, nil
+	}
+	return ActionRetry, fmt.Errorf("%w: code=%q reason=%q", errUnknownActionPairing, code, reason)
+}
+
+// ErrorFile names one conflicted or rejected path, its reason, and the
+// one-based inclusive marker ranges inside it (architecture section 12).
+type ErrorFile struct {
 	Path   string
+	Reason FileReason
 	Ranges []git.MarkerRange
 }
 
@@ -76,22 +178,24 @@ type RecoveryReport struct {
 	Resynchronized bool
 }
 
-// Error is a notebook domain error. Files is present only for
-// CodeContentConflict; Recovery only for CodeRecoveryFailure. Cause keeps
-// the underlying failure for diagnostics and errors.Is.
+// Error is a notebook domain error (architecture section 2). Recovery is
+// set only for CodeRecoveryFailure. Cause keeps the underlying failure for
+// diagnostics and errors.Is.
 type Error struct {
 	Code     Code
+	Reason   Reason
+	Action   Action
 	Message  string
-	Files    []ConflictFile
+	Files    []ErrorFile
 	Recovery *RecoveryReport
 	Cause    error
 }
 
 func (e *Error) Error() string {
 	if e.Cause != nil {
-		return fmt.Sprintf("notebook: %s: %s: %v", e.Code, e.Message, e.Cause)
+		return fmt.Sprintf("notebook: %s: %s: %s: %v", e.Code, e.Reason, e.Message, e.Cause)
 	}
-	return fmt.Sprintf("notebook: %s: %s", e.Code, e.Message)
+	return fmt.Sprintf("notebook: %s: %s: %s", e.Code, e.Reason, e.Message)
 }
 
 // Unwrap exposes the cause so errors.Is can classify wrapped failures.
@@ -106,47 +210,69 @@ var errCASLost = errors.New("notebook: manifest CAS lost")
 // unless the manifest is unchanged.
 var errStaleManifest = errors.New("notebook: manifest references a missing pack")
 
-// invalidRequest builds an INVALID_REQUEST error.
-func invalidRequest(format string, args ...any) error {
-	return &Error{Code: CodeInvalidRequest, Message: fmt.Sprintf(format, args...)}
+// invalidRequest builds an INVALID_REQUEST error; cause and files are
+// optional.
+func invalidRequest(reason Reason, cause error, files []ErrorFile, format string, args ...any) error {
+	action, _ := actionFor(CodeInvalidRequest, reason, nil)
+	return &Error{
+		Code: CodeInvalidRequest, Reason: reason, Action: action,
+		Message: fmt.Sprintf(format, args...), Files: files, Cause: cause,
+	}
 }
 
 // contentConflict builds a CONTENT_CONFLICT error naming every conflicted
 // path and marker range.
-func contentConflict(message string, files []ConflictFile) error {
-	return &Error{Code: CodeContentConflict, Message: message, Files: files}
+func contentConflict(reason Reason, message string, files []ErrorFile) error {
+	action, _ := actionFor(CodeContentConflict, reason, nil)
+	return &Error{Code: CodeContentConflict, Reason: reason, Action: action, Message: message, Files: files}
 }
 
-// storageIntegrity builds a STORAGE_INTEGRITY error wrapping cause. A nil
-// cause is valid for a validation verdict with no underlying error.
-func storageIntegrity(cause error, format string, args ...any) error {
-	return &Error{Code: CodeStorageIntegrity, Message: fmt.Sprintf(format, args...), Cause: cause}
+// storageIntegrity builds a STORAGE_INTEGRITY error; cause may be nil.
+func storageIntegrity(reason Reason, cause error, format string, args ...any) error {
+	action, _ := actionFor(CodeStorageIntegrity, reason, nil)
+	return &Error{
+		Code: CodeStorageIntegrity, Reason: reason, Action: action,
+		Message: fmt.Sprintf(format, args...), Cause: cause,
+	}
 }
 
 // storageFailure builds a STORAGE_FAILURE error wrapping cause.
-func storageFailure(cause error, format string, args ...any) error {
-	return &Error{Code: CodeStorageFailure, Message: fmt.Sprintf(format, args...), Cause: cause}
+func storageFailure(reason Reason, cause error, format string, args ...any) error {
+	action, _ := actionFor(CodeStorageFailure, reason, nil)
+	return &Error{
+		Code: CodeStorageFailure, Reason: reason, Action: action,
+		Message: fmt.Sprintf(format, args...), Cause: cause,
+	}
 }
 
 // remoteBusy builds a REMOTE_BUSY error.
 func remoteBusy(format string, args ...any) error {
-	return &Error{Code: CodeRemoteBusy, Message: fmt.Sprintf(format, args...)}
+	const reason = ReasonRetriesExhausted
+	action, _ := actionFor(CodeRemoteBusy, reason, nil)
+	return &Error{Code: CodeRemoteBusy, Reason: reason, Action: action, Message: fmt.Sprintf(format, args...)}
 }
 
 // recoveryFailure builds a RECOVERY_FAILURE error carrying the report and
 // the underlying cause.
 func recoveryFailure(report RecoveryReport, cause error) error {
+	const reason = ReasonLocalMutationFailed
+	action, _ := actionFor(CodeRecoveryFailure, reason, &report)
 	return &Error{
-		Code: CodeRecoveryFailure, Message: "unexpected failure after local mutation started; recovery ran",
+		Code: CodeRecoveryFailure, Reason: reason, Action: action,
+		Message:  "unexpected failure after local mutation started; recovery ran",
 		Recovery: &report, Cause: cause,
 	}
 }
 
 // contentConflictFiles converts git conflicts into the stable error shape.
-func contentConflictFiles(conflicts []git.Conflict) []ConflictFile {
-	files := make([]ConflictFile, 0, len(conflicts))
+func contentConflictFiles(conflicts []git.Conflict) []ErrorFile {
+	files := make([]ErrorFile, 0, len(conflicts))
 	for _, c := range conflicts {
-		files = append(files, ConflictFile{Path: c.Path, Ranges: c.Ranges})
+		reason := FileReasonPathConflict
+		if c.Content != nil {
+			reason = FileReasonTextConflict
+		}
+		files = append(files, ErrorFile{Path: c.Path, Reason: reason, Ranges: c.Ranges})
 	}
 	return files
 }

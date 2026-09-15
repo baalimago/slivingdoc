@@ -18,19 +18,33 @@ import (
 // files and recovery reports survive exactly.
 func TestMapErrorEveryCategory(t *testing.T) {
 	tests := []struct {
-		name      string
-		err       error
-		wantCode  string
-		wantRetry bool
-		wantFiles bool
-		wantReco  bool
+		name       string
+		err        error
+		wantCode   string
+		wantReason string
+		wantAction string
+		wantRetry  bool
+		wantFiles  bool
+		wantReco   bool
 	}{
-		{name: "invalid request", err: &notebook.Error{Code: notebook.CodeInvalidRequest, Message: "commit message must not be blank"}, wantCode: codeInvalidRequest, wantRetry: false},
-		{name: "content conflict", err: conflictError(), wantCode: "CONTENT_CONFLICT", wantRetry: false, wantFiles: true},
-		{name: "remote busy", err: &notebook.Error{Code: notebook.CodeRemoteBusy, Message: "another writer kept winning"}, wantCode: "REMOTE_BUSY", wantRetry: true},
-		{name: "storage failure", err: &notebook.Error{Code: notebook.CodeStorageFailure, Message: "pack upload failed"}, wantCode: codeStorageFailure, wantRetry: true},
-		{name: "storage integrity", err: &notebook.Error{Code: notebook.CodeStorageIntegrity, Message: "corrupt pack"}, wantCode: "STORAGE_INTEGRITY", wantRetry: false},
-		{name: "recovery failure", err: recoveryError(), wantCode: "RECOVERY_FAILURE", wantRetry: true, wantReco: true},
+		{
+			name: "invalid request", wantCode: codeInvalidRequest, wantReason: "MESSAGE_BLANK", wantAction: "FIX_INPUT", wantRetry: false,
+			err: &notebook.Error{Code: notebook.CodeInvalidRequest, Reason: notebook.ReasonMessageBlank, Action: notebook.ActionFixInput, Message: "commit message must not be blank"},
+		},
+		{name: "content conflict", err: conflictError(), wantCode: "CONTENT_CONFLICT", wantReason: "MERGE_CONFLICT", wantAction: "EDIT_FILES", wantRetry: false, wantFiles: true},
+		{
+			name: "remote busy", wantCode: "REMOTE_BUSY", wantReason: "RETRIES_EXHAUSTED", wantAction: "RETRY", wantRetry: true,
+			err: &notebook.Error{Code: notebook.CodeRemoteBusy, Reason: notebook.ReasonRetriesExhausted, Action: notebook.ActionRetry, Message: "another writer kept winning"},
+		},
+		{
+			name: "storage failure", wantCode: codeStorageFailure, wantReason: "PACK_UPLOAD", wantAction: "RETRY", wantRetry: true,
+			err: &notebook.Error{Code: notebook.CodeStorageFailure, Reason: notebook.ReasonPackUpload, Action: notebook.ActionRetry, Message: "pack upload failed"},
+		},
+		{
+			name: "storage integrity", wantCode: "STORAGE_INTEGRITY", wantReason: "PACK_INVALID", wantAction: "OPERATOR", wantRetry: false,
+			err: &notebook.Error{Code: notebook.CodeStorageIntegrity, Reason: notebook.ReasonPackInvalid, Action: notebook.ActionOperator, Message: "corrupt pack"},
+		},
+		{name: "recovery failure", err: recoveryError(), wantCode: "RECOVERY_FAILURE", wantReason: "LOCAL_MUTATION_FAILED", wantAction: "PULL", wantRetry: true, wantReco: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -40,6 +54,12 @@ func TestMapErrorEveryCategory(t *testing.T) {
 			}
 			if te.Code != tt.wantCode {
 				t.Fatalf("code = %q, want %q", te.Code, tt.wantCode)
+			}
+			if te.Reason != tt.wantReason {
+				t.Fatalf("reason = %q, want %q", te.Reason, tt.wantReason)
+			}
+			if te.Action != tt.wantAction {
+				t.Fatalf("action = %q, want %q", te.Action, tt.wantAction)
 			}
 			if te.Retryable != tt.wantRetry {
 				t.Fatalf("retryable = %v, want %v", te.Retryable, tt.wantRetry)
@@ -63,6 +83,46 @@ func TestMapErrorEveryCategory(t *testing.T) {
 	}
 }
 
+// TestMapErrorReasonAndActionAlwaysPresent checks every MapError branch sets
+// reason and action.
+func TestMapErrorReasonAndActionAlwaysPresent(t *testing.T) {
+	errs := []error{
+		&notebook.Error{Code: notebook.CodeInvalidRequest, Reason: notebook.ReasonPullRequired, Action: notebook.ActionPull, Message: "commit requires a pull"},
+		workspace.ErrInvalidPath,
+		workspace.ErrSymlink,
+		errors.New("unrecognized failure"),
+	}
+	for _, err := range errs {
+		te, domain := MapError(err)
+		if !domain {
+			t.Fatalf("MapError(%v) is not a domain error", err)
+		}
+		if te.Reason == "" {
+			t.Fatalf("MapError(%v) reason is empty", err)
+		}
+		if te.Action == "" {
+			t.Fatalf("MapError(%v) action is empty", err)
+		}
+	}
+}
+
+// TestMapErrorInvalidContentFile checks a named INVALID_CONTENT file maps
+// through unchanged.
+func TestMapErrorInvalidContentFile(t *testing.T) {
+	err := &notebook.Error{
+		Code: notebook.CodeInvalidRequest, Reason: notebook.ReasonInvalidContent, Action: notebook.ActionEditFiles,
+		Message: "visible files violate the notebook contract",
+		Files:   []notebook.ErrorFile{{Path: "docs/bad.md", Reason: notebook.FileReasonInvalidContent}},
+	}
+	te, domain := MapError(err)
+	if !domain {
+		t.Fatal("MapError() reported a non-domain error")
+	}
+	if len(te.Files) != 1 || te.Files[0].Path != "docs/bad.md" || te.Files[0].Reason != "INVALID_CONTENT" {
+		t.Fatalf("files = %+v, want exactly [{docs/bad.md INVALID_CONTENT}]", te.Files)
+	}
+}
+
 // TestMapErrorConflictShape proves the exact structured conflict data: the
 // normalized relative path and the one-based inclusive ranges survive the
 // mapping unchanged.
@@ -72,15 +132,15 @@ func TestMapErrorConflictShape(t *testing.T) {
 		t.Fatalf("files = %d, want 2", len(te.Files))
 	}
 	first := te.Files[0]
-	if first.Path != "notes/today.md" {
-		t.Fatalf("path = %q, want the normalized relative path", first.Path)
+	if first.Path != "notes/today.md" || first.Reason != "TEXT_CONFLICT" {
+		t.Fatalf("path/reason = %q/%q, want notes/today.md/TEXT_CONFLICT", first.Path, first.Reason)
 	}
 	if len(first.Ranges) != 2 || first.Ranges[0] != (ErrorRange{12, 18}) || first.Ranges[1] != (ErrorRange{25, 25}) {
 		t.Fatalf("ranges = %+v, want [{12 18} {25 25}]", first.Ranges)
 	}
 	second := te.Files[1]
-	if second.Path != "notes/plan.txt" || len(second.Ranges) != 0 {
-		t.Fatalf("second file = %+v, want an empty ranges array", second)
+	if second.Path != "notes/plan.txt" || second.Reason != "PATH_CONFLICT" || len(second.Ranges) != 0 {
+		t.Fatalf("second file = %+v, want PATH_CONFLICT with an empty ranges array", second)
 	}
 }
 
@@ -100,7 +160,7 @@ func TestMapErrorRecoveryShape(t *testing.T) {
 }
 
 // TestMapErrorServicePath maps the workspace path sentinels the service
-// returns before any notebook work.
+// returns before any notebook work to PATH_OUTSIDE_ROOT/FIX_INPUT.
 func TestMapErrorServicePath(t *testing.T) {
 	for _, err := range []error{workspace.ErrInvalidPath, workspace.ErrSymlink} {
 		te, domain := MapError(err)
@@ -109,6 +169,9 @@ func TestMapErrorServicePath(t *testing.T) {
 		}
 		if te.Code != codeInvalidRequest || te.Retryable {
 			t.Fatalf("MapError(%v) = %+v, want INVALID_REQUEST not retryable", err, te)
+		}
+		if te.Reason != reasonPathOutsideRoot || te.Action != actionFixInput {
+			t.Fatalf("MapError(%v) reason/action = %q/%q, want %q/%q", err, te.Reason, te.Action, reasonPathOutsideRoot, actionFixInput)
 		}
 	}
 }
@@ -154,18 +217,18 @@ func TestMapErrorFallback(t *testing.T) {
 
 func conflictError() error {
 	return &notebook.Error{
-		Code:    notebook.CodeContentConflict,
+		Code: notebook.CodeContentConflict, Reason: notebook.ReasonMergeConflict, Action: notebook.ActionEditFiles,
 		Message: "Resolve the conflict blocks before notes_commit.",
-		Files: []notebook.ConflictFile{
-			{Path: "notes/today.md", Ranges: []git.MarkerRange{{Start: 12, End: 18}, {Start: 25, End: 25}}},
-			{Path: "notes/plan.txt", Ranges: nil},
+		Files: []notebook.ErrorFile{
+			{Path: "notes/today.md", Reason: notebook.FileReasonTextConflict, Ranges: []git.MarkerRange{{Start: 12, End: 18}, {Start: 25, End: 25}}},
+			{Path: "notes/plan.txt", Reason: notebook.FileReasonPathConflict, Ranges: nil},
 		},
 	}
 }
 
 func recoveryError() error {
 	return &notebook.Error{
-		Code:     notebook.CodeRecoveryFailure,
+		Code: notebook.CodeRecoveryFailure, Reason: notebook.ReasonLocalMutationFailed, Action: notebook.ActionPull,
 		Message:  "unexpected failure after local mutation started; recovery ran",
 		Recovery: &notebook.RecoveryReport{Stage: "commit.cas", RemoteAccepted: notebook.RemoteAcceptedYes, Resynchronized: true},
 	}
@@ -205,5 +268,24 @@ func TestRedactPreservesConflictPaths(t *testing.T) {
 	got := Redact("Resolve notes/today.md before continuing")
 	if !strings.Contains(got, "notes/today.md") {
 		t.Fatalf("Redact() changed a conflict path: %q", got)
+	}
+}
+
+// TestRedactPreservesReasonTokens checks reason and action tokens are copied
+// verbatim and survive Redact.
+func TestRedactPreservesReasonTokens(t *testing.T) {
+	if got := Redact("MESSAGE_BLANK and READ_ONLY_PATH stay exactly as written"); got != "MESSAGE_BLANK and READ_ONLY_PATH stay exactly as written" {
+		t.Fatalf("Redact() altered token-shaped text: %q", got)
+	}
+	err := &notebook.Error{
+		Code: notebook.CodeInvalidRequest, Reason: notebook.ReasonInvalidContent, Action: notebook.ActionEditFiles,
+		Message: "download pack packs/increments/3-" + "0196c2d0-7f2b-7e00-8000-000000000004" + ".pack failed",
+	}
+	te, _ := MapError(err)
+	if te.Reason != "INVALID_CONTENT" || te.Action != "EDIT_FILES" {
+		t.Fatalf("reason/action = %q/%q, want the tokens unaffected by message redaction", te.Reason, te.Action)
+	}
+	if strings.Contains(te.Message, "packs/increments") {
+		t.Fatalf("message = %q, want the pack key redacted", te.Message)
 	}
 }

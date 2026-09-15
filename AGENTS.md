@@ -259,7 +259,9 @@ lives in [`docs/running.md`](docs/running.md) and in the `helpText` of
 `internal/app/config.go`, which `slivingdoc serve -h` prints — that code
 copy is the authoritative one. Behavior worth remembering: `--bucket` is
 required, `--private-root` must not be at or below the workspace root,
-and `--commit-retries` exhaustion is `REMOTE_BUSY`.
+`--commit-retries` exhaustion is `REMOTE_BUSY`, and an invalid
+`--read-only-paths` entry refuses startup before any native or S3
+dependency loads.
 
 The `serve`, `pull`, and `commit` commands share every flag. The
 subcommand comes first. `slivingdoc version` and `-h` on any command exit
@@ -416,12 +418,22 @@ architecture, and a change that touches one of them updates
   change the result of the commit that scheduled them.
 - A failure after local mutation began returns `RECOVERY_FAILURE`, attempts
   an authoritative resync, and never returns `OK` for that call.
+- A process configured with `--read-only-paths` never publishes a change
+  under a read-only path: a violating commit is refused and the touched
+  files are reset to the baseline, and a pull always restores those paths
+  from the accepted remote state.
 
 **Error taxonomy.** The categories are stable API: `INVALID_REQUEST`,
 `CONTENT_CONFLICT`, `REMOTE_BUSY`, `STORAGE_FAILURE`, `STORAGE_INTEGRITY`,
 `RECOVERY_FAILURE`, `INCOMPATIBLE_STORE`. Error text can change. The
 category, the retryable flag, and the structured conflict paths must not
-change.
+change. Every domain error also carries a stable `reason` token (one level
+more specific than the category) and a stable `action` token (the
+caller's next step), and every `files[]` entry carries a stable `reason`;
+these are additive fields, present on every error, that let an agent
+branch without parsing message text. Every success and error result also
+carries a `readOnly` array of the process's normalized read-only set,
+additive and always present, empty when nothing is configured.
 An unrecognized internal error maps to retryable `STORAGE_FAILURE` rather
 than leaking. Caller-facing text must never contain a credential, an S3
 key, a private path, a Git object ID, or Git vocabulary.

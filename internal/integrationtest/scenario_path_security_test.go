@@ -42,4 +42,19 @@ func TestScenarioPathSecurityOverlappingRoots(t *testing.T) {
 			}
 		})
 	}
+
+	// Portable row: a path outside the root is PATH_OUTSIDE_ROOT/FIX_INPUT at the MCP boundary.
+	t.Run("request path outside the workspace root", func(t *testing.T) {
+		t.Parallel()
+		h := newFakeHarness(t, HarnessConfig{})
+		outside := filepath.Join(t.TempDir(), "escape")
+		res := h.Pull("", outside)
+		h.assertEnvelope(t, ToolCall{
+			Tool: toolPull, Path: outside,
+			Expect: CallExpectation{
+				ErrorCode: "INVALID_REQUEST", Retryable: new(false),
+				Reason: "PATH_OUTSIDE_ROOT", Action: "FIX_INPUT",
+			},
+		}, res)
+	})
 }

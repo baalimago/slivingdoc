@@ -111,6 +111,21 @@ func ValidateContent(data []byte) error {
 	return nil
 }
 
+// PathCollisionError reports two snapshot paths that collide, exactly or
+// under case folding (Fold). Path is the second occurrence.
+type PathCollisionError struct {
+	First string
+	Path  string
+	Fold  bool // true when the collision is only under case folding
+}
+
+func (e *PathCollisionError) Error() string {
+	if e.Fold {
+		return fmt.Sprintf("invalid snapshot: paths %q and %q collide under Unicode case folding", e.First, e.Path)
+	}
+	return fmt.Sprintf("invalid snapshot: duplicate path %q", e.Path)
+}
+
 // ValidateSnapshot validates every path and content of a snapshot and
 // rejects paths that collide under Unicode case folding. The check runs
 // against the full snapshot because collisions only exist between two
@@ -128,9 +143,9 @@ func ValidateSnapshot(snap Snapshot) error {
 		folded := fold.String(f.Path)
 		if first, ok := seen[folded]; ok {
 			if first != f.Path {
-				return fmt.Errorf("invalid snapshot: paths %q and %q collide under Unicode case folding", first, f.Path)
+				return &PathCollisionError{First: first, Path: f.Path, Fold: true}
 			}
-			return fmt.Errorf("invalid snapshot: duplicate path %q", f.Path)
+			return &PathCollisionError{First: first, Path: f.Path}
 		}
 		seen[folded] = f.Path
 	}

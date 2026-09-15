@@ -61,9 +61,9 @@ func decodeOptionalPath(v strictjson.Value) (string, error) {
 
 // decodeCommit strictly decodes the raw notes_commit arguments: a JSON
 // object with the required "message" and the optional "path", both non-null
-// strings. The message is non-blank UTF-8 of at most 16,384 bytes without
-// U+0000. An omitted or empty path returns the empty string, which the handler
-// resolves to the server's notebook root.
+// strings. The message is checked by notebook.ValidateMessage so it fails
+// with the notebook's own reason. An omitted or empty path returns the
+// empty string, which the handler resolves to the server's notebook root.
 func decodeCommit(raw json.RawMessage) (path, message string, err error) {
 	v, err := strictjson.Parse(raw)
 	if err != nil {
@@ -85,7 +85,7 @@ func decodeCommit(raw json.RawMessage) (path, message string, err error) {
 	if path, err = decodeOptionalPath(v); err != nil {
 		return "", "", err
 	}
-	if err := validateMessage(messageField.Str); err != nil {
+	if err := notebook.ValidateMessage(messageField.Str); err != nil {
 		return "", "", err
 	}
 	return path, messageField.Str, nil
@@ -110,19 +110,4 @@ func validatePath(s string) (string, error) {
 		return "", errors.New("path must be absolute")
 	}
 	return s, nil
-}
-
-// validateMessage applies the message contract: non-blank (not only
-// Unicode white space), valid UTF-8, at most 16,384 bytes, without U+0000.
-func validateMessage(s string) error {
-	if len(s) > maxMessageBytes {
-		return fmt.Errorf("message exceeds %d bytes", maxMessageBytes)
-	}
-	if !utf8.ValidString(s) || strings.ContainsRune(s, 0) {
-		return errors.New("message must be valid UTF-8 without U+0000")
-	}
-	if strings.TrimSpace(s) == "" {
-		return errors.New("message must not be blank")
-	}
-	return nil
 }

@@ -137,6 +137,56 @@ func putJunk(t *testing.T, h *Harness, key string) {
 	}
 }
 
+// tokenEnvelopeResult builds a synthetic error result with the given structured content.
+func tokenEnvelopeResult(content map[string]any) *sdk.CallToolResult {
+	return &sdk.CallToolResult{IsError: true, StructuredContent: content}
+}
+
+// TestDecodeEnvelopeRequiresTokens: the harness decoder refuses an envelope
+// missing reason, action, or a per-file reason. envelopeTokenViolation is
+// called directly because a t.Fatalf inside a subtest would fail the parent.
+func TestDecodeEnvelopeRequiresTokens(t *testing.T) {
+	call := ToolCall{Tool: toolCommit, Path: "/tmp/notebook"}
+	complete := map[string]any{
+		"code": "INVALID_REQUEST", "reason": "MESSAGE_BLANK", "action": "FIX_INPUT",
+		"retryable": false, "message": "commit message must not be blank",
+		"files": []any{}, "readOnly": []any{},
+	}
+	res := tokenEnvelopeResult(complete)
+	env := decodeEnvelope(t, call, res)
+	if env.Reason != "MESSAGE_BLANK" || env.Action != "FIX_INPUT" {
+		t.Fatalf("env = %+v, want the reason and action tokens preserved", env)
+	}
+	if v := envelopeTokenViolation(env); v != "" {
+		t.Fatalf("envelopeTokenViolation(complete) = %q, want no violation", v)
+	}
+
+	tests := []struct {
+		name    string
+		mutate  func(envelope) envelope
+		wantSub string
+	}{
+		{"missing message", func(e envelope) envelope { e.Message = ""; return e }, "empty message"},
+		{"missing reason", func(e envelope) envelope { e.Reason = ""; return e }, "empty reason"},
+		{"missing action", func(e envelope) envelope { e.Action = ""; return e }, "empty action"},
+		{"nil files", func(e envelope) envelope { e.Files = nil; return e }, "no files key"},
+		{"nil readOnly", func(e envelope) envelope { e.ReadOnly = nil; return e }, "no readOnly key"},
+		{"file with no reason", func(e envelope) envelope {
+			e.Files = []envelopeFile{{Path: "notes/a.md"}}
+			return e
+		}, "empty reason"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bad := tt.mutate(env)
+			v := envelopeTokenViolation(bad)
+			if v == "" || !strings.Contains(v, tt.wantSub) {
+				t.Fatalf("envelopeTokenViolation(%+v) = %q, want it to mention %q", bad, v, tt.wantSub)
+			}
+		})
+	}
+}
+
 // objectGone reports whether a raw object is absent. It is called from
 // inside polling closures, so a transient read failure is reported as
 // "not yet gone" and retried rather than aborting the scenario.

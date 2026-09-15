@@ -80,11 +80,19 @@ slivingdoc commit notes -m "meeting summary"
 ```
 
 Success prints the unified result report: the `OK` status, the accepted
-remote generation, per-file insertion and deletion counts, and a totals
-trailer. A domain error exits nonzero and prints a candid report: the
-error category, the retryable verdict, and every conflicted file with its
-line ranges. Colour appears only on a real terminal and is disabled by
-any non-empty `NO_COLOR`.
+remote generation, per-file insertion and deletion counts, a totals
+trailer, and a `read-only: <entries>` trailer when the process has a
+configured read-only set. A domain error exits nonzero and prints a
+candid report: the status line (the error code, a middle dot, and the
+`reason` token), the message, every affected file with its reason and
+line ranges, a `next:` line naming the caller's next step, the retryable
+verdict, and the same read-only trailer when configured. Colour appears
+only on a real terminal and is disabled by any non-empty `NO_COLOR`.
+
+Pass `--read-only-paths docs,faq.md` (or `SLIVINGDOC_READ_ONLY_PATHS`) to
+let a fleet of agents read those notebook paths but never change them: a
+commit that touches one is refused and the files are reset, while a human
+process started without the flag keeps full write access.
 
 ### The git part
 

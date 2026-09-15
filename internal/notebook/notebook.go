@@ -46,6 +46,9 @@ type Config struct {
 	Workspace Workspace
 	// Store is the semantic object-store boundary.
 	Store storage.ObjectStore
+	// ReadOnlyPaths are the notebook-relative read-only entries
+	// (architecture section 2, Read-only paths); New rejects an invalid one.
+	ReadOnlyPaths []string
 	// RetryLimit bounds CAS retries after the first attempt.
 	RetryLimit int
 	// CheckpointPacks triggers one checkpoint effort when the active tail
@@ -95,6 +98,10 @@ const (
 // section 2). The MCP schema advertises the same value.
 const MaxMessageBytes = 16384
 
+// ReadOnlyListSeparator joins read-only entries on every surface that lists
+// them.
+const ReadOnlyListSeparator = ", "
+
 const (
 	minRetryLimit     = 0
 	defaultBackoffMin = 25 * time.Millisecond
@@ -111,6 +118,7 @@ type Notebook struct {
 	retryLimit          int
 	checkpointPacks     int
 	retainedCheckpoints int
+	readOnly            git.ReadOnlySet
 	newID               func() (storage.UUID, error)
 	now                 func() time.Time
 	waiter              BackoffWaiter
@@ -135,6 +143,10 @@ func New(cfg Config) (*Notebook, error) {
 	if cfg.RetainedCheckpoints < 0 || cfg.RetainedCheckpoints > MaxRetainedCheckpoints {
 		return nil, fmt.Errorf("notebook: retained checkpoints %d is outside %d..%d", cfg.RetainedCheckpoints, 0, MaxRetainedCheckpoints)
 	}
+	readOnly, err := git.NormalizeReadOnly(cfg.ReadOnlyPaths)
+	if err != nil {
+		return nil, fmt.Errorf("notebook: %w", err)
+	}
 	newID := cfg.NewID
 	if newID == nil {
 		newID = storage.NewUUIDv7
@@ -153,6 +165,7 @@ func New(cfg Config) (*Notebook, error) {
 		retryLimit:          cfg.RetryLimit,
 		checkpointPacks:     cfg.CheckpointPacks,
 		retainedCheckpoints: cfg.RetainedCheckpoints,
+		readOnly:            readOnly,
 		newID:               newID,
 		now:                 now,
 		waiter:              waiter,
@@ -160,6 +173,9 @@ func New(cfg Config) (*Notebook, error) {
 		metrics:             &Metrics{},
 	}, nil
 }
+
+// ReadOnlyPaths returns the normalized, sorted read-only entries; never nil.
+func (n *Notebook) ReadOnlyPaths() []string { return n.readOnly.Entries() }
 
 // Metrics returns the operational measurements of the notebook.
 func (n *Notebook) Metrics() *Metrics { return n.metrics }
@@ -171,6 +187,7 @@ const (
 	stageCommit   = "commit.accept"
 	stageCAS      = "commit.cas"
 	stageConflict = "merge.materialize"
+	stageReadOnly = "commit.readonly"
 )
 
 // entryRecovery runs the authoritative resynchronization the next MCP call
@@ -212,6 +229,15 @@ func (n *Notebook) failAfterAccept(ctx context.Context, stage string, cause erro
 	return recoveryFailure(report.public(), cause)
 }
 
+// scanErrorFiles names the offending file of a scan rejection when known.
+func scanErrorFiles(err error) []ErrorFile {
+	var se *workspace.ScanError
+	if errors.As(err, &se) && se.Path != "" {
+		return []ErrorFile{{Path: se.Path, Reason: FileReasonInvalidContent}}
+	}
+	return nil
+}
+
 // mapLocalError maps a workspace error that occurred before any local
 // mutation. Invalid visible content is a caller-input error; any other
 // workspace failure is a local-state failure the caller cannot fix by
@@ -221,23 +247,24 @@ func (n *Notebook) mapLocalError(err error) error {
 		errors.Is(err, workspace.ErrSymlink) ||
 		errors.Is(err, workspace.ErrUnsupportedFile) ||
 		errors.Is(err, workspace.ErrInvalidPath) {
-		return &Error{Code: CodeInvalidRequest, Message: "visible files violate the notebook contract", Cause: err}
+		return invalidRequest(ReasonInvalidContent, err, scanErrorFiles(err), "visible files violate the notebook contract")
 	}
-	return &Error{Code: CodeStorageFailure, Message: "local private state operation failed", Cause: err}
+	return storageFailure(ReasonLocalState, err, "local private state operation failed")
 }
 
-// validateMessage applies the notes_commit message contract before any scan
+// ValidateMessage applies the notes_commit message contract before any scan
 // or S3 access: non-blank (not only Unicode white space), at most 16,384
-// bytes, valid UTF-8 without U+0000.
-func validateMessage(message string) error {
+// bytes, valid UTF-8 without U+0000. The MCP decoder calls it too, so both
+// surfaces classify a bad message alike.
+func ValidateMessage(message string) error {
 	if len(message) > MaxMessageBytes {
-		return invalidRequest("commit message exceeds %d bytes", MaxMessageBytes)
+		return invalidRequest(ReasonMessageTooLong, nil, nil, "commit message exceeds %d bytes", MaxMessageBytes)
 	}
 	if strings.TrimSpace(message) == "" {
-		return invalidRequest("commit message must not be blank")
+		return invalidRequest(ReasonMessageBlank, nil, nil, "commit message must not be blank")
 	}
 	if err := git.ValidateCommitMessage(message); err != nil {
-		return &Error{Code: CodeInvalidRequest, Message: "invalid commit message", Cause: err}
+		return invalidRequest(ReasonMessageInvalid, err, nil, "invalid commit message")
 	}
 	return nil
 }
@@ -245,11 +272,11 @@ func validateMessage(message string) error {
 // rejectMarkers returns the conflicted files of a snapshot: every complete
 // conflict-marker block with its exact path and row ranges (architecture
 // section 12). The check runs before any Git or S3 mutation.
-func rejectMarkers(snap git.Snapshot) []ConflictFile {
-	var files []ConflictFile
+func rejectMarkers(snap git.Snapshot) []ErrorFile {
+	var files []ErrorFile
 	for _, f := range snap.Files {
 		if ranges := git.FindConflictBlocks(f.Data); len(ranges) > 0 {
-			files = append(files, ConflictFile{Path: f.Path, Ranges: ranges})
+			files = append(files, ErrorFile{Path: f.Path, Reason: FileReasonUnresolvedMarkers, Ranges: ranges})
 		}
 	}
 	return files

@@ -12,6 +12,7 @@ import (
 	"encoding/hex"
 	"io"
 	"log/slog"
+	"strings"
 	"time"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -33,6 +34,8 @@ const (
 type Service interface {
 	// Root is the notebook directory an omitted request path resolves to.
 	Root() string
+	// ReadOnlyPaths is the normalized, sorted read-only set; never nil.
+	ReadOnlyPaths() []string
 	// Pull writes the current notebook into the resolved path.
 	Pull(ctx context.Context, path string) (notebook.Result, error)
 	// Commit publishes the caller's changes at the resolved path with the
@@ -54,20 +57,21 @@ func NewServer(svc Service, version string, logger *slog.Logger) *Server {
 	if logger == nil {
 		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
+	entries := svc.ReadOnlyPaths()
 	impl := &sdk.Implementation{Name: "slivingdoc", Version: version}
 	s := sdk.NewServer(impl, &sdk.ServerOptions{
-		Instructions: instructions(svc.Root()),
+		Instructions: instructions(svc.Root(), entries),
 		Logger:       sdkLogger(logger),
 	})
 	h := &handler{svc: svc, logger: logger}
 	s.AddTool(&sdk.Tool{
 		Name:        toolPull,
-		Description: pullDescription,
+		Description: pullDescription + readOnlyDescriptionSuffix(entries),
 		InputSchema: pullSchema,
 	}, h.pull)
 	s.AddTool(&sdk.Tool{
 		Name:        toolCommit,
-		Description: commitDescription,
+		Description: commitDescription + readOnlyDescriptionSuffix(entries),
 		InputSchema: commitSchema,
 	}, h.commit)
 	return &Server{sdk: s}
@@ -115,16 +119,16 @@ func (h *handler) pull(ctx context.Context, req *sdk.CallToolRequest) (*sdk.Call
 	requested, err := decodePull(req.Params.Arguments)
 	if err != nil {
 		logger.Warn("tool call completed", "outcome", "invalid_request", "duration", time.Since(start))
-		return errorResult(invalidRequest(err)), nil
+		return h.errorResult(decodeFailureError(err)), nil
 	}
 	path := h.path(requested)
 	result, err := h.svc.Pull(ctx, path)
 	if err != nil {
 		logger.Warn("tool call completed", "outcome", "error", "duration", time.Since(start))
-		return resultFor(err)
+		return h.resultFor(err)
 	}
 	logger.Info("tool call completed", "outcome", "ok", "duration", time.Since(start))
-	return successResult(result, path), nil
+	return h.successResult(result, path), nil
 }
 
 func (h *handler) commit(ctx context.Context, req *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
@@ -134,16 +138,16 @@ func (h *handler) commit(ctx context.Context, req *sdk.CallToolRequest) (*sdk.Ca
 	requested, message, err := decodeCommit(req.Params.Arguments)
 	if err != nil {
 		logger.Warn("tool call completed", "outcome", "invalid_request", "duration", time.Since(start))
-		return errorResult(invalidRequest(err)), nil
+		return h.errorResult(decodeFailureError(err)), nil
 	}
 	path := h.path(requested)
 	result, err := h.svc.Commit(ctx, path, message)
 	if err != nil {
 		logger.Warn("tool call completed", "outcome", "error", "duration", time.Since(start))
-		return resultFor(err)
+		return h.resultFor(err)
 	}
 	logger.Info("tool call completed", "outcome", "ok", "duration", time.Since(start))
-	return successResult(result, path), nil
+	return h.successResult(result, path), nil
 }
 
 // requestLogger derives the request-scoped logger from the server logger:
@@ -172,34 +176,64 @@ func newRequestID() string {
 // becomes an isError tool result with one candid text item and the
 // structured object; any other error (request cancellation) stays a
 // protocol error.
-func resultFor(err error) (*sdk.CallToolResult, error) {
+func (h *handler) resultFor(err error) (*sdk.CallToolResult, error) {
 	te, domain := MapError(err)
 	if !domain {
 		return nil, err
 	}
-	return errorResult(te), nil
+	return h.errorResult(te), nil
 }
 
-// successResult is the success envelope: one text item carrying the
-// resolved notebook directory and the structured SuccessInfo object
-// (architecture section 2). The text item is often the only part a client
-// forwards to its model, so it must tell the caller where to work; the
-// structured path field carries the same value.
-func successResult(result notebook.Result, path string) *sdk.CallToolResult {
+// successResult is the success envelope: one text item and the structured
+// SuccessInfo object (architecture section 2). The text item is often the
+// only part a client forwards to its model, so it names the directory and
+// the read-only set.
+func (h *handler) successResult(result notebook.Result, path string) *sdk.CallToolResult {
+	info := MapSuccess(result, path)
+	info.ReadOnly = h.svc.ReadOnlyPaths()
 	return &sdk.CallToolResult{
-		Content:           []sdk.Content{&sdk.TextContent{Text: path}},
-		StructuredContent: MapSuccess(result, path),
+		Content:           []sdk.Content{&sdk.TextContent{Text: successText(path, info.ReadOnly)}},
+		StructuredContent: info,
 	}
 }
 
-// instructions is the server instruction text. It names the notebook
-// directory, so a caller that omits path still knows where to edit before
-// the first tool call returns.
-func instructions(root string) string {
-	return "The notebook directory is " + root + ". Call notes_pull, edit " +
+// successText is the success text item (architecture section 2, Read-only
+// paths).
+func successText(path string, entries []string) string {
+	if len(entries) == 0 {
+		return path
+	}
+	return path + " (read-only: " + strings.Join(entries, notebook.ReadOnlyListSeparator) + ")"
+}
+
+// instructions is the server instruction text: the notebook directory and,
+// when configured, the read-only set.
+func instructions(root string, entries []string) string {
+	base := "The notebook directory is " + root + ". Call notes_pull, edit " +
 		"UTF-8 text files (without U+0000) there, then call notes_commit to " +
 		"publish. Both tools default to that directory; pass path only to " +
 		"address a subdirectory of it."
+	if len(entries) == 0 {
+		return base
+	}
+	return base + " Read-only paths: " + strings.Join(entries, notebook.ReadOnlyListSeparator) +
+		". notes_commit refuses any change under them, resets those files, and reports READ_ONLY_PATH; write elsewhere."
+}
+
+// readOnlyDescriptionSuffix advertises a non-empty read-only set in a tool
+// description.
+func readOnlyDescriptionSuffix(entries []string) string {
+	if len(entries) == 0 {
+		return ""
+	}
+	return " Read-only paths in this server: " + strings.Join(entries, notebook.ReadOnlyListSeparator) +
+		"; changes under them are refused and reset."
+}
+
+// errorResult attaches the server's read-only set and builds the envelope.
+func (h *handler) errorResult(te *ToolError) *sdk.CallToolResult {
+	te.ReadOnly = h.svc.ReadOnlyPaths()
+	return errorResult(te)
 }
 
 // errorResult is the domain-error envelope: isError, one candid text item,

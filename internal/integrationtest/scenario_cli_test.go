@@ -217,7 +217,11 @@ func TestScenarioCLIMarkerConflictReport(t *testing.T) {
 	if code != 1 {
 		t.Fatalf("commit with markers = exit %d, want 1; stderr: %s", code, stderr)
 	}
-	for _, want := range []string{"CONTENT_CONFLICT", "retryable: false", "a.md: lines 1-5"} {
+	// A marker block before any pull is the pre-merge rejection, not a merge conflict.
+	for _, want := range []string{
+		"CONTENT_CONFLICT · UNRESOLVED_MARKERS", "next: edit the files, then commit",
+		"retryable: false", "a.md  unresolved markers  lines 1-5",
+	} {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("report %q does not contain %q", stdout, want)
 		}
@@ -241,10 +245,13 @@ func TestScenarioCLICommitBeforePull(t *testing.T) {
 	if code != 1 {
 		t.Fatalf("commit before pull = exit %d, want 1; stderr: %s", code, stderr)
 	}
-	for _, want := range []string{"INVALID_REQUEST", "retryable: false"} {
+	for _, want := range []string{"INVALID_REQUEST · PULL_REQUIRED", "next: pull, then continue", "retryable: false"} {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("report %q does not contain %q", stdout, want)
 		}
+	}
+	if strings.Contains(stdout, "read-only:") {
+		t.Fatalf("report %q carries a read-only trailer with no read-only paths configured", stdout)
 	}
 }
 
@@ -315,10 +322,16 @@ func TestScenarioCLISharedRemoteConflict(t *testing.T) {
 	if code != 1 {
 		t.Fatalf("conflicting commit = exit %d, want 1; stdout: %q stderr: %s", code, stdout, stderr)
 	}
-	for _, want := range []string{"CONTENT_CONFLICT", "retryable: false", shared + ": lines 1-5"} {
+	for _, want := range []string{
+		"CONTENT_CONFLICT · MERGE_CONFLICT", "next: edit the files, then commit",
+		"retryable: false", shared + "  conflict  lines 1-5",
+	} {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("conflict report %q does not contain %q", stdout, want)
 		}
+	}
+	if strings.Contains(stdout, "read-only:") {
+		t.Fatalf("conflict report %q carries a read-only trailer with no read-only paths configured", stdout)
 	}
 	if strings.Contains(stdout, root) {
 		t.Fatalf("conflict report %q echoes the absolute workspace root; paths are relative", stdout)
@@ -335,4 +348,59 @@ func TestScenarioCLISharedRemoteConflict(t *testing.T) {
 	if got, err := os.ReadFile(filepath.Join(b, shared)); err != nil || string(got) != "resolved\n" {
 		t.Fatalf("b/%s after the resolution = %q, %v; want exactly the resolved bytes", shared, got, err)
 	}
+}
+
+// TestScenarioCLIReadOnlyCommit: the read-only CLI report over spawned
+// one-shot processes (architecture section 2, CLI report). R is pre-seeded
+// on the real backend because spawned processes cannot share the fake store.
+func TestScenarioCLIReadOnlyCommit(t *testing.T) {
+	t.Parallel()
+	env, root, prefix := realCLIEnv(t, "integrationtest-readonly")
+	env = append(env, "SLIVINGDOC_READ_ONLY_PATHS=docs")
+
+	writer := NewHarness(t, HarnessConfig{Prefix: prefix})
+	seed := writer.Path("seed")
+	writer.WriteFile(filepath.Join(seed, "docs", "faq.md"), "Q: a\nA: 1\n")
+	writer.WriteFile(filepath.Join(seed, "notes", "a.md"), "x\n")
+	writer.assertOK(t, writer.Pull("", seed))
+	writer.assertOK(t, writer.Commit("", seed, "seed"))
+
+	notes := filepath.Join(root, "notes")
+	runCLIExact(t, "real", env,
+		"OK  generation 1  "+notes+"\n"+
+			"  docs/faq.md  +2\n"+
+			"  notes/a.md  +1\n"+
+			"2 files changed, 3 insertions(+), 0 deletions(-)\n"+
+			"read-only: docs\n",
+		"pull", notes)
+
+	writeCLIFile(t, filepath.Join(notes, "docs", "faq.md"), "A: 2\n")
+	writeCLIFile(t, filepath.Join(notes, "notes", "a.md"), "y\n")
+	code, stdout, stderr := runCLI(t, "real", env, "commit", notes, "-m", "m")
+	if code != 1 {
+		t.Fatalf("read-only commit = exit %d, want 1; stderr: %s", code, stderr)
+	}
+	want := "INVALID_REQUEST · READ_ONLY_PATH\n" +
+		"docs is read-only in this server. Your changes there were discarded and the files reset. " +
+		"Write outside the read-only paths, then commit again.\n" +
+		"  docs/faq.md  read-only\n" +
+		"next: edit the files, then commit\n" +
+		"retryable: false\n" +
+		"read-only: docs\n"
+	if stdout != want {
+		t.Fatalf("read-only refusal stdout = %q, want %q", stdout, want)
+	}
+	if got, err := os.ReadFile(filepath.Join(notes, "docs", "faq.md")); err != nil || string(got) != "Q: a\nA: 1\n" {
+		t.Fatalf("docs/faq.md = %q, %v; want the reset published baseline", got, err)
+	}
+	if got, err := os.ReadFile(filepath.Join(notes, "notes", "a.md")); err != nil || string(got) != "y\n" {
+		t.Fatalf("notes/a.md = %q, %v; want the caller's edit preserved outside the read-only path", got, err)
+	}
+
+	runCLIExact(t, "real", env,
+		"OK  generation 2  "+notes+"\n"+
+			"  notes/a.md  +1 -1\n"+
+			"1 files changed, 1 insertions(+), 1 deletions(-)\n"+
+			"read-only: docs\n",
+		"commit", notes, "-m", "m")
 }

@@ -23,6 +23,8 @@ func TestScenarioErrorTaxonomy(t *testing.T) {
 		call    ToolCall
 		result  *sdk.CallToolResult
 		code    string
+		reason  string
+		action  string
 		retry   bool
 		recover bool
 	}
@@ -36,7 +38,7 @@ func TestScenarioErrorTaxonomy(t *testing.T) {
 				h := newFakeHarness(t, HarnessConfig{})
 				path := h.Path("notes")
 				call := ToolCall{Tool: toolCommit, Path: path, Message: "without pull"}
-				return outcome{h: h, call: call, result: h.Commit("", path, call.Message), code: "INVALID_REQUEST"}
+				return outcome{h: h, call: call, result: h.Commit("", path, call.Message), code: "INVALID_REQUEST", reason: "PULL_REQUIRED", action: "PULL"}
 			},
 		},
 		{
@@ -47,7 +49,7 @@ func TestScenarioErrorTaxonomy(t *testing.T) {
 				h.assertOK(t, h.Pull("", path))
 				h.WriteFile(path+"/conflict.md", "<<<<<<< local\nleft\n=======\nright\n>>>>>>> remote\n")
 				call := ToolCall{Tool: toolCommit, Path: path, Message: "markers"}
-				return outcome{h: h, call: call, result: h.Commit("", path, call.Message), code: "CONTENT_CONFLICT"}
+				return outcome{h: h, call: call, result: h.Commit("", path, call.Message), code: "CONTENT_CONFLICT", reason: "UNRESOLVED_MARKERS", action: "EDIT_FILES"}
 			},
 		},
 		{
@@ -59,7 +61,7 @@ func TestScenarioErrorTaxonomy(t *testing.T) {
 				h.WriteFile(path+"/b.md", "beta")
 				h.Faults().FailAlways(OpReplace, storage.CurrentKey, storage.ErrPreconditionFailed)
 				call := ToolCall{Tool: toolCommit, Path: path, Message: "busy"}
-				return outcome{h: h, call: call, result: h.Commit("", path, call.Message), code: "REMOTE_BUSY", retry: true}
+				return outcome{h: h, call: call, result: h.Commit("", path, call.Message), code: "REMOTE_BUSY", reason: "RETRIES_EXHAUSTED", action: "RETRY", retry: true}
 			},
 		},
 		{
@@ -69,9 +71,10 @@ func TestScenarioErrorTaxonomy(t *testing.T) {
 				path := h.Path("notes")
 				commitFirst(t, h, path, "a.md", "alpha", "first")
 				h.WriteFile(path+"/b.md", "beta")
-				h.Faults().UnprovableNext(storage.CurrentKey)
+				// An unlanded CAS with a successful lookup miss is PUBLICATION_UNPROVEN.
+				h.Faults().FailNext(OpReplace, storage.CurrentKey, storage.ErrTransport)
 				call := ToolCall{Tool: toolCommit, Path: path, Message: "unknown acceptance"}
-				return outcome{h: h, call: call, result: h.Commit("", path, call.Message), code: "STORAGE_FAILURE", retry: true}
+				return outcome{h: h, call: call, result: h.Commit("", path, call.Message), code: "STORAGE_FAILURE", reason: "PUBLICATION_UNPROVEN", action: "PULL", retry: true}
 			},
 		},
 		{
@@ -82,7 +85,7 @@ func TestScenarioErrorTaxonomy(t *testing.T) {
 				commitFirst(t, h, path, "a.md", "alpha", "first")
 				h.Faults().CorruptRead(storage.CurrentKey)
 				call := ToolCall{Tool: toolPull, Path: path}
-				return outcome{h: h, call: call, result: h.Pull("", path), code: "STORAGE_INTEGRITY"}
+				return outcome{h: h, call: call, result: h.Pull("", path), code: "STORAGE_INTEGRITY", reason: "MANIFEST_INVALID", action: "OPERATOR"}
 			},
 		},
 		{
@@ -94,7 +97,7 @@ func TestScenarioErrorTaxonomy(t *testing.T) {
 				h.WriteFile(path+"/a.md", "alpha")
 				h.NotebookFailpoints().CAS = func() error { return errors.New("injected recovery") }
 				call := ToolCall{Tool: toolCommit, Path: path, Message: "recover"}
-				return outcome{h: h, call: call, result: h.Commit("", path, call.Message), code: codeRecoveryFailure, retry: true, recover: true}
+				return outcome{h: h, call: call, result: h.Commit("", path, call.Message), code: codeRecoveryFailure, reason: "LOCAL_MUTATION_FAILED", action: "PULL", retry: true, recover: true}
 			},
 		},
 	}
@@ -105,6 +108,9 @@ func TestScenarioErrorTaxonomy(t *testing.T) {
 			env := decodeEnvelope(t, out.call, out.result)
 			if env.Code != out.code || env.Retryable != out.retry {
 				t.Fatalf("envelope = %+v, want code=%s retryable=%v", env, out.code, out.retry)
+			}
+			if env.Reason != out.reason || env.Action != out.action {
+				t.Fatalf("envelope = %+v, want reason=%s action=%s", env, out.reason, out.action)
 			}
 			if (env.Recovery != nil) != out.recover {
 				t.Fatalf("recovery field = %+v, want present=%v", env.Recovery, out.recover)

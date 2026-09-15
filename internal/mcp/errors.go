@@ -21,21 +21,36 @@ const (
 	codeStorageFailure = "STORAGE_FAILURE"
 )
 
+// Reason and action tokens for errors raised before a request reaches the
+// notebook (architecture section 2, Reason tokens by code).
+const (
+	reasonMalformedInput  = "MALFORMED_INPUT"
+	reasonPathOutsideRoot = "PATH_OUTSIDE_ROOT"
+	reasonInternal        = "INTERNAL"
+
+	actionFixInput = "FIX_INPUT"
+	actionRetry    = "RETRY"
+)
+
 // ToolError is the structured error object carried in the MCP tool result.
-// Code, retryable, message, and files are always present; recovery appears
-// only for RECOVERY_FAILURE (architecture section 2). Request paths are
-// absolute; every files[].path is relative to the request path and uses
-// the normalized internal slash form.
+// Code, reason, action, retryable, message, and files are always present;
+// recovery appears only for RECOVERY_FAILURE (architecture section 2).
+// Request paths are absolute; every files[].path is relative to the
+// request path and uses the normalized internal slash form.
 type ToolError struct {
 	Code      string        `json:"code"`
+	Reason    string        `json:"reason"`
+	Action    string        `json:"action"`
 	Retryable bool          `json:"retryable"`
 	Message   string        `json:"message"`
 	Files     []ErrorFile   `json:"files"`
 	Recovery  *RecoveryInfo `json:"recovery,omitempty"`
+	ReadOnly  []string      `json:"readOnly"`
 }
 
 type ErrorFile struct {
 	Path   string       `json:"path"`
+	Reason string       `json:"reason"`
 	Ranges []ErrorRange `json:"ranges"`
 }
 
@@ -65,9 +80,12 @@ func MapError(err error) (*ToolError, bool) {
 	if errors.Is(err, workspace.ErrInvalidPath) || errors.Is(err, workspace.ErrSymlink) {
 		return &ToolError{
 			Code:      codeInvalidRequest,
+			Reason:    reasonPathOutsideRoot,
+			Action:    actionFixInput,
 			Retryable: false,
 			Message:   Redact(invalidPathMessage(err)),
 			Files:     []ErrorFile{},
+			ReadOnly:  []string{},
 		}, true
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -75,9 +93,12 @@ func MapError(err error) (*ToolError, bool) {
 	}
 	return &ToolError{
 		Code:      codeStorageFailure,
+		Reason:    reasonInternal,
+		Action:    actionRetry,
 		Retryable: true,
 		Message:   "the notebook service failed unexpectedly; retry the operation",
 		Files:     []ErrorFile{},
+		ReadOnly:  []string{},
 	}, true
 }
 
@@ -91,13 +112,16 @@ func mapNotebookError(e *notebook.Error) *ToolError {
 		for _, r := range f.Ranges {
 			ranges = append(ranges, ErrorRange{Start: r.Start, End: r.End})
 		}
-		files = append(files, ErrorFile{Path: f.Path, Ranges: ranges})
+		files = append(files, ErrorFile{Path: f.Path, Reason: string(f.Reason), Ranges: ranges})
 	}
 	te := &ToolError{
 		Code:      string(e.Code),
+		Reason:    string(e.Reason),
+		Action:    string(e.Action),
 		Retryable: retryable(e.Code),
 		Message:   Redact(e.Message),
 		Files:     files,
+		ReadOnly:  []string{},
 	}
 	if e.Code == notebook.CodeRecoveryFailure && e.Recovery != nil {
 		te.Recovery = &RecoveryInfo{
@@ -131,14 +155,27 @@ func invalidPathMessage(err error) string {
 	return "the requested path is not a valid notebook path"
 }
 
+// decodeFailureError maps a decode failure: a *notebook.Error (a rejected
+// commit message) keeps its own tokens, anything else is MALFORMED_INPUT.
+func decodeFailureError(err error) *ToolError {
+	var nb *notebook.Error
+	if errors.As(err, &nb) {
+		return mapNotebookError(nb)
+	}
+	return invalidRequest(err)
+}
+
 // invalidRequest builds an INVALID_REQUEST tool error from a strict-decode
 // failure.
 func invalidRequest(cause error) *ToolError {
 	return &ToolError{
 		Code:      codeInvalidRequest,
+		Reason:    reasonMalformedInput,
+		Action:    actionFixInput,
 		Retryable: false,
 		Message:   Redact(cause.Error()),
 		Files:     []ErrorFile{},
+		ReadOnly:  []string{},
 	}
 }
 

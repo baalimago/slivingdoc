@@ -52,9 +52,13 @@ func exerciseOptionalPathSecurity(t *testing.T, h *helperProc, cs *sdk.ClientSes
 	for _, row := range []struct {
 		name string
 		path string
+		// Rows rejecting the request path itself pin PATH_OUTSIDE_ROOT/FIX_INPUT;
+		// the special-file row fails later in the scan and is left unpinned.
+		reason string
+		action string
 	}{
-		{name: "path outside the workspace root", path: filepath.Join(outside, "escape")},
-		{name: "symlinked path component", path: filepath.Join(link, "notes")},
+		{name: "path outside the workspace root", path: filepath.Join(outside, "escape"), reason: "PATH_OUTSIDE_ROOT", action: "FIX_INPUT"},
+		{name: "symlinked path component", path: filepath.Join(link, "notes"), reason: "PATH_OUTSIDE_ROOT", action: "FIX_INPUT"},
 		{name: "special file inside the request path", path: special},
 	} {
 		t.Run(row.name, func(t *testing.T) {
@@ -67,6 +71,12 @@ func exerciseOptionalPathSecurity(t *testing.T, h *helperProc, cs *sdk.ClientSes
 			env := decodeEnvelope(t, ToolCall{Tool: toolPull, Path: row.path}, res)
 			if env.Code != "INVALID_REQUEST" || env.Retryable {
 				t.Fatalf("notes_pull(%s) envelope = %+v, want non-retryable INVALID_REQUEST", row.path, env)
+			}
+			if row.reason != "" && env.Reason != row.reason {
+				t.Fatalf("notes_pull(%s) reason = %q, want %q", row.path, env.Reason, row.reason)
+			}
+			if row.action != "" && env.Action != row.action {
+				t.Fatalf("notes_pull(%s) action = %q, want %q", row.path, env.Action, row.action)
 			}
 		})
 	}

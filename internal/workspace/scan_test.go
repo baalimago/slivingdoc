@@ -206,8 +206,63 @@ func TestScanRejectsCaseFoldingCollision(t *testing.T) {
 		t.Skip("case-folding collisions cannot exist on case-insensitive hosts")
 	}
 	w, _ := scanFixture(t, map[string]string{"Notes.md": "a", "notes.md": "b"})
-	if _, err := w.Snapshot(context.Background()); err == nil {
+	_, err := w.Snapshot(context.Background())
+	if err == nil {
 		t.Fatal("Snapshot() succeeded for a case-folding collision")
+	}
+	var se *ScanError
+	if !errors.As(err, &se) {
+		t.Fatalf("Snapshot() error = %v, want a *ScanError", err)
+	}
+	// Read order is unspecified, so Path may name either entry.
+	if se.Path != "Notes.md" && se.Path != "notes.md" {
+		t.Fatalf("ScanError.Path = %q, want one of the two colliding paths", se.Path)
+	}
+}
+
+// TestScanErrorCarriesPath checks every named scan rejection wraps a *ScanError
+// with the offending path.
+func TestScanErrorCarriesPath(t *testing.T) {
+	t.Run("invalid content", func(t *testing.T) {
+		w, _ := scanFixture(t, map[string]string{"bad.md": string([]byte{0xff, 0xfe})})
+		_, err := w.Snapshot(context.Background())
+		var se *ScanError
+		if !errors.As(err, &se) || se.Path != "bad.md" {
+			t.Fatalf("Snapshot() error = %v, want *ScanError{Path: bad.md}", err)
+		}
+		if !errors.Is(err, ErrInvalidContent) {
+			t.Fatalf("Snapshot() error = %v, want ErrInvalidContent in the chain", err)
+		}
+	})
+
+	t.Run("invalid name", func(t *testing.T) {
+		w, _ := scanFixture(t, map[string]string{"a*b.md": "x"})
+		_, err := w.Snapshot(context.Background())
+		var se *ScanError
+		if !errors.As(err, &se) || se.Path != "a*b.md" {
+			t.Fatalf("Snapshot() error = %v, want *ScanError{Path: a*b.md}", err)
+		}
+		if !errors.Is(err, ErrInvalidPath) {
+			t.Fatalf("Snapshot() error = %v, want ErrInvalidPath in the chain", err)
+		}
+	})
+
+	if runtime.GOOS != "windows" {
+		t.Run("symlink", func(t *testing.T) {
+			w := openWorkspace(t, testConfig(t, newFakeEngine(), "notes"))
+			target := filepath.Join(t.TempDir(), "outside.txt")
+			if err := os.WriteFile(target, []byte("outside"), 0o644); err != nil {
+				t.Fatalf("write target: %v", err)
+			}
+			if err := os.Symlink(target, filepath.Join(w.Path(), "link.md")); err != nil {
+				t.Fatalf("Symlink(): %v", err)
+			}
+			_, err := w.Snapshot(context.Background())
+			var se *ScanError
+			if !errors.As(err, &se) || se.Path != "link.md" {
+				t.Fatalf("Snapshot() error = %v, want *ScanError{Path: link.md}", err)
+			}
+		})
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -122,10 +123,100 @@ func TestCommitReportsMarkerConflict(t *testing.T) {
 	if err == nil || err.Error() != "CONTENT_CONFLICT" {
 		t.Fatalf("Run() = %v, want the terse CONTENT_CONFLICT category", err)
 	}
-	for _, want := range []string{"CONTENT_CONFLICT", "retryable: false", "a.md: lines 1-5"} {
+	// No pull has happened, so this is the pre-merge UNRESOLVED_MARKERS rejection.
+	for _, want := range []string{
+		"CONTENT_CONFLICT · UNRESOLVED_MARKERS", "next: edit the files, then commit",
+		"retryable: false", "a.md  unresolved markers  lines 1-5",
+	} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("report %q does not contain %q", out.String(), want)
 		}
+	}
+}
+
+// TestCommitReportsReadOnlyRefusal checks the refusal report end to end and
+// that the touched file is reset on disk.
+func TestCommitReportsReadOnlyRefusal(t *testing.T) {
+	t.Parallel()
+	store := fake.New("p")
+	workspaceRoot, privateRoot := t.TempDir(), t.TempDir()
+	notes := filepath.Join(workspaceRoot, "notes")
+	pullFirst(t, store, workspaceRoot, privateRoot, notes)
+	if err := os.MkdirAll(filepath.Join(notes, "docs"), 0o755); err != nil {
+		t.Fatalf("MkdirAll() = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(notes, "docs", "faq.md"), []byte("Q: a\nA: 1\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() = %v", err)
+	}
+
+	// Seed docs through a process without the flag.
+	seedOpts, _ := testOptions(t, store, workspaceRoot)
+	seed := Command(git2.New(), seedOpts)
+	seedArgs := append(configArgs(workspaceRoot, privateRoot), "notes", "-m", "seed")
+	if err := seed.Flagset().Parse(seedArgs); err != nil {
+		t.Fatalf("Parse() = %v", err)
+	}
+	if err := seed.Setup(context.Background()); err != nil {
+		t.Fatalf("Setup() = %v", err)
+	}
+	if err := seed.Run(context.Background()); err != nil {
+		t.Fatalf("seed Run() = %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(notes, "docs", "faq.md"), []byte("A: 2\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() = %v", err)
+	}
+
+	opts, out := testOptions(t, store, workspaceRoot)
+	c := Command(git2.New(), opts)
+	args := append(configArgs(workspaceRoot, privateRoot), "--read-only-paths=docs", "notes", "-m", "edit docs")
+	if err := c.Flagset().Parse(args); err != nil {
+		t.Fatalf("Parse() = %v", err)
+	}
+	if err := c.Setup(context.Background()); err != nil {
+		t.Fatalf("Setup() = %v", err)
+	}
+	err := c.Run(context.Background())
+	if err == nil || err.Error() != "INVALID_REQUEST" {
+		t.Fatalf("Run() = %v, want the terse INVALID_REQUEST category", err)
+	}
+	for _, want := range []string{
+		"INVALID_REQUEST · READ_ONLY_PATH",
+		"docs/faq.md  read-only",
+		"next: edit the files, then commit",
+		"retryable: false",
+		"read-only: docs",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("report %q does not contain %q", out.String(), want)
+		}
+	}
+	if got, err := os.ReadFile(filepath.Join(notes, "docs", "faq.md")); err != nil || string(got) != "Q: a\nA: 1\n" {
+		t.Fatalf("docs/faq.md = %q, %v; want the reset published baseline", got, err)
+	}
+}
+
+// TestCommitAcceptsReadOnlyFlag checks --read-only-paths resolves through the
+// shared flag set.
+func TestCommitAcceptsReadOnlyFlag(t *testing.T) {
+	t.Parallel()
+	store := fake.New("p")
+	workspaceRoot, privateRoot := t.TempDir(), t.TempDir()
+	notes := filepath.Join(workspaceRoot, "notes")
+	pullFirst(t, store, workspaceRoot, privateRoot, notes)
+
+	opts, _ := testOptions(t, store, workspaceRoot)
+	c := Command(git2.New(), opts)
+	args := append(configArgs(workspaceRoot, privateRoot), "--read-only-paths=docs", "notes", "-m", "unit commit")
+	if err := c.Flagset().Parse(args); err != nil {
+		t.Fatalf("Parse() = %v", err)
+	}
+	if err := c.Setup(context.Background()); err != nil {
+		t.Fatalf("Setup() = %v", err)
+	}
+	defer c.runtime.Close()
+	if got, want := c.runtime.ReadOnlyPaths(), []string{"docs"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("ReadOnlyPaths() = %v, want %v", got, want)
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -67,6 +68,25 @@ func TestPullPrintsReport(t *testing.T) {
 	}
 	if fi, err := os.Stat(filepath.Join(root, "notes")); err != nil || !fi.IsDir() {
 		t.Fatalf("notebook directory was not materialized: %v", err)
+	}
+}
+
+// TestPullAcceptsReadOnlyFlag checks --read-only-paths resolves through the
+// shared flag set.
+func TestPullAcceptsReadOnlyFlag(t *testing.T) {
+	t.Parallel()
+	opts, _, root := testOptions(t, fake.New("p"))
+	c := Command(git2.New(), opts)
+	args := append(configArgs(t, root), "--read-only-paths=docs", "notes")
+	if err := c.Flagset().Parse(args); err != nil {
+		t.Fatalf("Parse() = %v", err)
+	}
+	if err := c.Setup(context.Background()); err != nil {
+		t.Fatalf("Setup() = %v", err)
+	}
+	defer c.runtime.Close()
+	if got, want := c.runtime.ReadOnlyPaths(), []string{"docs"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("ReadOnlyPaths() = %v, want %v", got, want)
 	}
 }
 

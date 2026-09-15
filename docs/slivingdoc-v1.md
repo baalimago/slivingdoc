@@ -71,16 +71,41 @@ subcommands never take a temporary directory: they address a directory the
 human can still see after the process exits.
 A successful subcommand writes the unified result report to stdout and
 exits zero: the `OK` status token, the accepted remote generation, one
-line per changed file with its insertion and deletion counts, and the
-totals trailer. A domain error writes the same status/detail/trailer
-skeleton as a candid text report to stdout and exits nonzero. The report
-contains the category and message, the retryable verdict, one line per
-conflicted file with its one-based inclusive line ranges, and the recovery
-report when present. Colour is presentation-only: the status tokens, the
-generation summary, and the per-file counts are coloured only when stdout
-is a real terminal, and any non-empty `NO_COLOR` disables the colour even
-there. The report carries the same categories, the same relative file
-paths, and the same redaction guarantees as the MCP envelope.
+line per changed file with its insertion and deletion counts, the totals
+trailer, and a `read-only: <entries>` trailer line naming the configured
+read-only set when it is non-empty. A domain error writes the same
+status/detail/trailer skeleton as a candid text report to stdout and exits
+nonzero: the status line (the code, a middle dot, and the `reason` token),
+the message, one line per file — the path padded to the report's longest
+path plus two spaces, the file's `reason` rendered as lower-case words
+(`TEXT_CONFLICT` as "conflict", `PATH_CONFLICT` as "path conflict",
+`UNRESOLVED_MARKERS` as "unresolved markers", `READ_ONLY` as "read-only",
+`INVALID_CONTENT` as "invalid content"), and its one-based inclusive line
+ranges when present — a `next:` line with the caller's next step for the
+`action` token (`FIX_INPUT` "correct the request, then call again",
+`EDIT_FILES` "edit the files, then commit", `PULL` "pull, then continue",
+`RETRY` "retry the same call", `OPERATOR` "operator attention needed"), the
+retryable verdict, the recovery report when present, and the same
+`read-only:` trailer when the set is non-empty. For example, a commit that
+touches a read-only `docs` entry:
+
+```text
+INVALID_REQUEST · READ_ONLY_PATH
+docs is read-only in this server. Your changes there were discarded and the files reset. Write outside the read-only paths, then commit again.
+  docs/faq.md      read-only
+  docs/pricing.md  read-only
+next: edit the files, then commit
+retryable: false
+read-only: docs, faq.md
+```
+
+Colour is presentation-only: the code is red, the reason token dim, a
+file path yellow, the file reason word dim, `next:` cyan, and
+`read-only:` dim, only when stdout is a real terminal, and any non-empty
+`NO_COLOR` disables the colour even there; stripped of escapes the
+coloured report is byte-identical to the plain form. The report carries
+the same categories, reasons, actions, the same relative file paths, and
+the same redaction guarantees as the MCP envelope.
 
 The caller never receives a Git object ID, pack name, S3 key, or local checkout
 path. These values are internal implementation details.
@@ -115,7 +140,8 @@ structured object:
     { "path": "notes/a.md", "insertions": 1, "deletions": 1 },
     { "path": "notes/c.md", "insertions": 2, "deletions": 0 },
     { "path": "archive/old.md", "insertions": 0, "deletions": 3 }
-  ]
+  ],
+  "readOnly": ["docs", "faq.md"]
 }
 ```
 
@@ -129,7 +155,10 @@ diffstat is the increment the publication added over the observed remote
 parent tree, empty for a no-op synchronization. The `files` paths are the
 same normalized internal slash form used by error files. The success `path`
 is the caller's own visible directory, never private state, and no success
-data contains credentials, S3 keys, private paths, or Git IDs.
+data contains credentials, S3 keys, private paths, or Git IDs. `readOnly` is
+the normalized, sorted read-only path set this server enforces (see "Read-only
+paths" below); it is always present and empty when the server has none
+configured.
 
 A diffstat line is an LF-terminated run of bytes with one trailing CR
 stripped for comparison and counting. A final run without a trailing LF
@@ -145,25 +174,142 @@ text item, and this structured object:
 ```json
 {
   "code": "CONTENT_CONFLICT",
+  "reason": "MERGE_CONFLICT",
+  "action": "EDIT_FILES",
   "retryable": false,
   "message": "Resolve the conflict blocks before notes_commit.",
   "files": [
     {
       "path": "notes/today.md",
+      "reason": "TEXT_CONFLICT",
       "ranges": [{ "start": 12, "end": 18 }]
     }
-  ]
+  ],
+  "readOnly": []
 }
 ```
 
-`code`, `retryable`, `message`, and `files` are always present. Paths are
-normalized internal paths. Ranges are one-based, inclusive, ordered, and
-non-overlapping. A file without a marker range has an empty `ranges` array.
-`RECOVERY_FAILURE` also includes `recovery` with string `stage`, enum
-`remoteAccepted` (`yes`, `no`, or `unknown`), and Boolean `resynchronized`.
-No error text or data contains credentials, S3 keys, private paths, or Git IDs.
-Request `path` is absolute. Every `files[].path` in an error is relative to that
-request path and uses the normalized internal slash form.
+`code`, `reason`, `action`, `retryable`, `message`, `files`, and `readOnly`
+are always present. Paths are normalized internal paths. Ranges are
+one-based, inclusive, ordered, and non-overlapping. A file without a marker
+range has an empty `ranges` array. `RECOVERY_FAILURE` also includes
+`recovery` with string `stage`, enum `remoteAccepted` (`yes`, `no`, or
+`unknown`), and Boolean `resynchronized`. No error text or data contains
+credentials, S3 keys, private paths, or Git IDs. Request `path` is absolute.
+Every `files[].path` in an error is relative to that request path and uses
+the normalized internal slash form.
+
+`reason` is one stable, machine-readable token classifying the error one
+level more specifically than `code`; `action` is one stable token naming
+the caller's next step. Message text can change across releases; `code`,
+`reason`, `action`, and every `files[].reason` cannot. Every domain error
+carries a non-empty `reason` and `action`, and every `files[]` entry
+carries a non-empty `reason`; an agent can branch on these tokens instead
+of parsing message text, and the tokens never leave an agent with no
+next step.
+
+Reason tokens by code (the complete set):
+
+| Code                | Reason                  | Meaning                                                             | Action                                     |
+| ------------------- | ----------------------- | --------------------------------------------------------------------- | ------------------------------------------- |
+| `INVALID_REQUEST`   | `MALFORMED_INPUT`       | strict decode failure: unknown field, null, wrong type, size bound    | `FIX_INPUT`                                |
+| `INVALID_REQUEST`   | `PATH_OUTSIDE_ROOT`     | request path escapes or is not below the workspace root               | `FIX_INPUT`                                |
+| `INVALID_REQUEST`   | `MESSAGE_BLANK`         | commit message only white space                                       | `FIX_INPUT`                                |
+| `INVALID_REQUEST`   | `MESSAGE_TOO_LONG`      | commit message over the byte bound                                    | `FIX_INPUT`                                |
+| `INVALID_REQUEST`   | `MESSAGE_INVALID`       | commit message not valid UTF-8 or contains U+0000                     | `FIX_INPUT`                                |
+| `INVALID_REQUEST`   | `PULL_REQUIRED`         | commit without a managed pull                                         | `PULL`                                     |
+| `INVALID_REQUEST`   | `INVALID_CONTENT`       | a visible file violates the notebook contract; `files` names it       | `EDIT_FILES`                               |
+| `INVALID_REQUEST`   | `READ_ONLY_PATH`        | commit touched a read-only path; the files were reset                 | `EDIT_FILES`                               |
+| `CONTENT_CONFLICT`  | `MERGE_CONFLICT`        | the three-tree merge conflicted; markers were written                 | `EDIT_FILES`                               |
+| `CONTENT_CONFLICT`  | `UNRESOLVED_MARKERS`    | commit found complete marker blocks                                   | `EDIT_FILES`                               |
+| `REMOTE_BUSY`       | `RETRIES_EXHAUSTED`     | the CAS lost every attempt in the bound                                | `RETRY`                                    |
+| `STORAGE_FAILURE`   | `MANIFEST_READ`         | `current` could not be read                                           | `RETRY`                                    |
+| `STORAGE_FAILURE`   | `PACK_DOWNLOAD`         | a referenced pack could not be downloaded                             | `RETRY`                                    |
+| `STORAGE_FAILURE`   | `PACK_UPLOAD`           | the proposal pack could not be uploaded                               | `RETRY`                                    |
+| `STORAGE_FAILURE`   | `PUBLICATION_UNPROVEN`  | the CAS response was lost and acceptance could not be proved          | `PULL`                                     |
+| `STORAGE_FAILURE`   | `MANIFEST_WRITE`        | the manifest CAS failed with a definite error other than a lost precondition | `RETRY`                           |
+| `STORAGE_FAILURE`   | `LOCAL_STATE`           | a private-state operation failed before any mutation                  | `RETRY`                                    |
+| `STORAGE_FAILURE`   | `INTERNAL`              | an unrecognized error; the fallback mapping                           | `RETRY`                                    |
+| `STORAGE_INTEGRITY` | `MANIFEST_INVALID`      | `current` failed strict validation                                    | `OPERATOR`                                 |
+| `STORAGE_INTEGRITY` | `PACK_INVALID`          | a referenced pack is missing, contradicts its descriptor, or fails import | `OPERATOR`                           |
+| `STORAGE_INTEGRITY` | `HISTORY_INVALID`       | the accepted history is missing an object or fails validation         | `OPERATOR`                                 |
+| `STORAGE_INTEGRITY` | `ENGINE_FAILED`         | merge, commit, export, or snapshot read failed inside the engine       | `OPERATOR`                                 |
+| `RECOVERY_FAILURE`  | `LOCAL_MUTATION_FAILED` | a failure after local mutation began; `recovery` carries the report   | `PULL` when `resynchronized`, else `RETRY` |
+
+`INCOMPATIBLE_STORE` is a startup diagnostic that never reaches a tool
+result; it stays outside this envelope.
+
+File reason tokens (the complete set):
+
+| Files reason         | Used by                                | Ranges        |
+| -------------------- | --------------------------------------- | ------------- |
+| `TEXT_CONFLICT`      | `MERGE_CONFLICT` text conflicts         | marker ranges |
+| `PATH_CONFLICT`      | `MERGE_CONFLICT` file-versus-directory  | empty         |
+| `UNRESOLVED_MARKERS` | `UNRESOLVED_MARKERS`                    | marker ranges |
+| `READ_ONLY`          | `READ_ONLY_PATH`                        | empty         |
+| `INVALID_CONTENT`    | `INVALID_CONTENT`                       | empty         |
+
+Action tokens and their meaning (the complete set):
+
+| Action       | Caller meaning                                 |
+| ------------ | ----------------------------------------------- |
+| `FIX_INPUT`  | change the request, then call again             |
+| `EDIT_FILES` | edit the visible files, then commit             |
+| `PULL`       | call pull, then continue                        |
+| `RETRY`      | repeat the same call                            |
+| `OPERATOR`   | stored state is not trusted; a person must act  |
+
+### Read-only paths
+
+An operator can configure one process (`serve`, `pull`, or `commit`) with a
+set of notebook-relative read-only paths (section 17). An entry protects
+itself and every path below it on a segment boundary, matched under the
+same Unicode case folding as snapshot validation, so `docs` protects a file
+named `docs` and every path under `docs/`. Entries are notebook-relative and
+identical for every request `path`; a request that addresses a subdirectory
+of the workspace root still sees the whole notebook, so the set needs no
+translation. The normalized set is sorted by path and joined with `, ` on
+every surface that lists it.
+
+The read-only set is a guardrail at the MCP tool boundary, not a security
+boundary: the serve process holds the S3 credentials, and an agent that can
+read that environment or launch its own slivingdoc process bypasses the
+setting, exactly like the operator's existing sftp model.
+
+A configured process never publishes a change under a read-only path:
+
+- **Commit** checks read-only paths last, after the message, the pulled
+  marker, the snapshot, and conflict markers. A commit that adds, changes,
+  or deletes a file under a read-only path is refused: the server resets
+  every changed file to the baseline's content through the same local
+  mutation mechanism a merge conflict uses, then returns `INVALID_REQUEST`
+  with reason `READ_ONLY_PATH`, one `READ_ONLY` file entry per changed path,
+  and a message naming the violated entries, for example: "docs is
+  read-only in this server. Your changes there were discarded and the files
+  reset. Write outside the read-only paths, then commit again." The refused
+  call never returns `OK` and never mutates remote state. A failure during
+  the reset's local mutation is `RECOVERY_FAILURE` with recovery stage
+  `commit.readonly`, exactly like any other local-mutation failure (section
+  15).
+- **Pull** always materializes read-only paths from the accepted remote
+  state before the merge, so local edits under those paths are silently
+  discarded and the merge takes the remote's side there; every other local
+  edit merges exactly as it does today. The restoration is visible through
+  the ordinary diffstat, since it changed what is on disk. Like every pull,
+  the restore presupposes a workspace that passes the content rules: an
+  invalid file (a binary, a symlink, an invalid name) under a read-only
+  path is refused as `INVALID_CONTENT` naming that file, before the restore
+  runs, and the caller must delete it.
+
+The set is advertised on four surfaces, so a host that drops one still
+leaves the others: the server instructions gain one sentence naming the set
+and the consequence of touching it; both tool descriptions gain one
+sentence naming the set; every success and error result carries a
+`readOnly` array of the normalized entries (always present, empty when
+nothing is configured), and a pull or commit success's text item becomes
+`<path> (read-only: <entries>)` instead of the bare path. A process with no
+read-only set is byte-for-byte unchanged on every surface except the
+always-present empty `readOnly` array.
 
 ## 3. Scope
 
@@ -395,8 +541,12 @@ If P has no accepted baseline, pull uses the canonical empty tree. Existing
 valid text files in L are local additions and merge with R. An add/add conflict
 at the same path uses the normal conflict behavior.
 
-All valid files below L are notebook state. V1 has no ignore file. The caller
-must not modify L while an MCP operation for that path is active.
+All valid files below L are notebook state, except that a file under a
+configured read-only path is ingested from the accepted baseline, not from
+L: pull replaces it with the baseline's content before the merge, and
+commit resets it to the baseline and refuses the call if it differs
+(section 2, "Read-only paths"). V1 has no ignore file. The caller must not
+modify L while an MCP operation for that path is active.
 
 ## 8. Internal Git model
 
@@ -756,6 +906,17 @@ If `current` does not exist, R is the canonical empty tree. Pull retains valid
 local additions in L, records the empty tree as its baseline in P, and does not
 create remote state.
 
+When the process is configured with read-only paths, the merge's local side
+is not L's raw snapshot: every file the set covers is replaced with the
+accepted baseline's content (or removed, if the baseline has no such file)
+before the merge runs, so the merge takes R's side under those paths
+unconditionally. Every other path merges exactly as described above. The
+restoration is not a separate result field; it shows up in the ordinary
+diffstat, computed between the raw local snapshot pull observed and the
+materialized result, because a restored file is a changed file. A process
+with no read-only paths performs this substitution over an empty set, which
+is a no-op.
+
 ## 11. Commit and optimistic publication
 
 ### 11.1 Normal commit
@@ -770,6 +931,19 @@ The caller must run `notes_pull` once for an L path before its first commit.
 Commit does not create P from an unknown L path. It returns `INVALID_REQUEST`
 without S3 mutation when the baseline is absent.
 
+When the process is configured with read-only paths, the check order is
+message, pulled marker, snapshot, conflict markers, then read-only: a marker
+block anywhere in L is reported before a read-only violation in the same
+commit, so the caller sees at most one refusal per call and no read-only
+reset happens while an unresolved marker block remains. The check compares
+the snapshot against the baseline under every read-only entry; an added,
+changed, or deleted file there is a violation. On a violation, the server
+resets every changed file to the baseline's content through the same local
+mutation mechanism a merge conflict uses, and returns `INVALID_REQUEST` /
+`READ_ONLY_PATH` (section 2, "Read-only paths") before building the local
+tree or touching R. A process with no read-only paths performs this check
+over an empty set, which is a no-op.
+
 The operation performs this logical sequence:
 
 ```text
@@ -777,6 +951,9 @@ read and validate text files from L
             |
             v
 reject complete conflict-marker blocks
+            |
+            v
+check read-only paths; reset and refuse on a violation
             |
             v
 build local tree and read R with its ETag
@@ -891,14 +1068,26 @@ The MCP error contains stable structured data:
 ```json
 {
   "code": "CONTENT_CONFLICT",
+  "reason": "MERGE_CONFLICT",
+  "action": "EDIT_FILES",
   "files": [
     {
       "path": "notes/today.md",
+      "reason": "TEXT_CONFLICT",
       "ranges": [{ "start": 12, "end": 18 }]
     }
   ]
 }
 ```
+
+Every `CONTENT_CONFLICT` from a three-tree merge carries `reason`
+`MERGE_CONFLICT`; a conflict block found by `notes_commit` before any merge
+(a complete marker block already present in the visible directory) carries
+`reason` `UNRESOLVED_MARKERS` instead, and both carry `action`
+`EDIT_FILES`. Each file entry names its own `files[].reason`: `TEXT_CONFLICT`
+for a text conflict with marker ranges, `PATH_CONFLICT` for a
+file-versus-directory conflict (always an empty `ranges` array), and
+`UNRESOLVED_MARKERS` for a pre-existing marker block found by `notes_commit`.
 
 The operation does not update `current`. It writes all non-conflicting merge
 results and conflict files to the visible directory.
@@ -920,6 +1109,15 @@ and CRLF line endings and ignores the line terminator during comparison. It
 finds all complete, non-nested blocks in every file. Row numbers are one-based
 and inclusive. Changing one character in any signature makes that block
 ordinary text.
+
+A file under a configured read-only path never carries a `TEXT_CONFLICT` or
+`PATH_CONFLICT`: pull always takes the remote's side there before the merge
+runs (section 10), so the three-tree merge sees identical local and remote
+content under those paths and never reports a conflict for them. A marker
+block found there by `notes_commit` is still rejected as `UNRESOLVED_MARKERS`
+before the read-only check runs (section 11.1), since a caller-written
+marker block is content the read-only reset has not yet had a chance to
+discard.
 
 ## 13. Automatic checkpoints
 
@@ -1099,12 +1297,22 @@ starts, the operation stops normal work, reports `RECOVERY_FAILURE`, and tries
 to reconstruct P and L from authoritative `current`. It reports the failed
 stage, whether remote acceptance is known, and whether resynchronization
 succeeded. A successful repair does not convert the anomalous call to `OK`.
+Every `RECOVERY_FAILURE` carries `reason` `LOCAL_MUTATION_FAILED` and one of
+two actions: `PULL` when the report's `resynchronized` is true (the caller's
+next call needs nothing but a fresh pull), otherwise the conservative
+`RETRY`.
 
 If immediate repair is impossible, P records that recovery is required. The
 next MCP call must retry authoritative resynchronization before it performs new
 pull or commit work. Recovery can replace L because L is not a durability
 boundary; the error must state this candidly. Tests use injectable failpoints at
 operation boundaries to exercise this generic recovery path.
+
+A read-only commit's reset is a local mutation like any other and shares
+this same guarantee: a failure while resetting the violating files to their
+baseline content reports `RECOVERY_FAILURE` with recovery stage
+`commit.readonly` (section 2, "Read-only paths"), never a bare
+`READ_ONLY_PATH` refusal over a half-reset workspace.
 
 ## 16. Concurrency and scaling
 
@@ -1186,6 +1394,7 @@ any native or network dependency is touched.
 | CAS retry limit       | `--commit-retries`       | `SLIVINGDOC_COMMIT_RETRIES`       |
 | Checkpoint pack count | `--checkpoint-packs`     | `SLIVINGDOC_CHECKPOINT_PACKS`     |
 | Retained generations  | `--retained-checkpoints` | `SLIVINGDOC_RETAINED_CHECKPOINTS` |
+| Read-only paths       | `--read-only-paths`      | `SLIVINGDOC_READ_ONLY_PATHS`      |
 
 The bucket is required. The default prefix is `slivingdoc`, and the default
 region is `us-east-1`. The endpoint is empty for normal AWS resolution.
@@ -1250,6 +1459,14 @@ exponential ceiling. The first ceiling is 25 ms, and the maximum is 2 seconds.
 The checkpoint pack-count default is 256 and its minimum is 1. Retained
 checkpoint generations default to 1 and have a valid range of 0 through 64.
 
+`--read-only-paths` (environment `SLIVINGDOC_READ_ONLY_PATHS`) is a
+comma-separated list of notebook-relative read-only entries, empty by
+default. Each entry is trimmed of a trailing slash and validated by the
+same path rules as every notebook file (section 7.1); an invalid entry
+refuses startup before any native or S3 dependency loads, naming the
+entry in the diagnostic since entries are notebook-relative and never
+private. Section 2 "Read-only paths" is the full behavioral contract.
+
 Flags override environment variables, which override defaults. An explicitly
 empty flag value does not fall back to an environment value. Boolean values use
 Go `strconv.ParseBool`. Decimal integer values do not accept a sign.
@@ -1309,6 +1526,11 @@ The service applies the same path rules:
 - reject special files during scans
 - avoid following links during replacement and cleanup
 - use private directories that callers cannot select
+
+A configured read-only entry obeys the same §7.1 path rules as any other
+notebook path (validated with the engine's path validator at startup), so a
+malformed entry refuses process startup like any other configuration error
+rather than silently protecting nothing.
 
 S3 credentials and private repository data remain inside the server process.
 
@@ -1535,6 +1757,9 @@ depend on the internal representation.
 37. The `pull` and `commit` subcommands expose the same two operations to
     humans; they reuse the serve startup surface and print the envelope as a
     candid text report.
+38. Read-only paths are per-process configuration (`--read-only-paths` /
+    `SLIVINGDOC_READ_ONLY_PATHS`), not notebook or manifest state; they are
+    enforced at commit (refuse and reset) and restored at pull.
 
 ## 25. Architecture acceptance
 

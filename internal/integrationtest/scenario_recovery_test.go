@@ -88,6 +88,9 @@ func TestScenarioRecoveryBoundaries(t *testing.T) {
 				Expect: CallExpectation{
 					ErrorCode: codeRecoveryFailure,
 					Retryable: new(true),
+					Reason:    "LOCAL_MUTATION_FAILED",
+					// Every row resynchronizes, so the action is PULL.
+					Action: "PULL",
 					Recovery: &RecoveryExpectation{
 						Stage:          row.stage,
 						RemoteAccepted: row.remoteAccepted,
@@ -168,6 +171,9 @@ func TestScenarioRecoveryRepairImpossible(t *testing.T) {
 		Expect: CallExpectation{
 			ErrorCode: codeRecoveryFailure,
 			Retryable: new(true),
+			Reason:    "LOCAL_MUTATION_FAILED",
+			// The resync failed, so the action falls back to RETRY.
+			Action: "RETRY",
 			Recovery: &RecoveryExpectation{
 				Stage:          "commit.cas",
 				RemoteAccepted: "yes",

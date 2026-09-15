@@ -57,13 +57,20 @@ remote state it observed. A no-op synchronization reports an empty
 stat.
 
 A domain error prints the same status/detail/trailer skeleton to stdout
-and exits nonzero: the error category and message, whether a retry can
-help, every conflicted file with its one-based inclusive line ranges, and
-the recovery report when present:
+and exits nonzero: the status line (the code, a middle dot, and the
+reason token), the message, one line per file with its reason rendered as
+lower-case words and its one-based inclusive line ranges when present, a
+`next:` line naming the caller's next step, whether a retry can help, the
+recovery report when present, and a `read-only:` trailer naming the
+configured read-only set whenever one is configured, on every success and
+error report alike. A commit that conflicts with the remote reports each
+file's reason and the line ranges to resolve:
 
 ```text
-CONTENT_CONFLICT  resolve the conflict blocks, then commit again
-  shared.md: lines 1-5
+CONTENT_CONFLICT · MERGE_CONFLICT
+Resolve the conflict blocks before notes_commit.
+  notes/today.md  conflict  lines 12-18, 40-42
+next: edit the files, then commit
 retryable: false
 ```
 
@@ -96,6 +103,7 @@ reference.
 | CAS retry limit       | `--commit-retries`       | `SLIVINGDOC_COMMIT_RETRIES`       | `8` (0..100)              |
 | Checkpoint pack count | `--checkpoint-packs`     | `SLIVINGDOC_CHECKPOINT_PACKS`     | `256` (minimum 1)         |
 | Retained checkpoints  | `--retained-checkpoints` | `SLIVINGDOC_RETAINED_CHECKPOINTS` | `1` (0..64)               |
+| Read-only paths       | `--read-only-paths`      | `SLIVINGDOC_READ_ONLY_PATHS`      | empty (no read-only path) |
 | Log levels            | `--log-level`            | `LOG_LEVEL`                       | `info`                    |
 | Log timestamps        | `--log-timestamp`        | `SLIVINGDOC_LOG_TIMESTAMP`        | `true`                    |
 
@@ -156,6 +164,71 @@ read-only cache (for example baked into a container image) work as-is.
 
 The directory names make manual cleanup easy: remove a notebook's directory
 when you are done with it, and the next pull simply re-downloads.
+
+## Read-only paths
+
+`--read-only-paths` (environment `SLIVINGDOC_READ_ONLY_PATHS`) marks a
+comma-separated set of notebook-relative paths that one process's commits
+may never change, while a process without the flag keeps full write
+access to the same notebook. An entry protects itself and everything
+below it — `docs` covers a file named `docs` and every path under
+`docs/`. Use it to let a fleet of agents read injected material (FAQ
+answers, reference documentation) without risking that one of them
+overwrites it:
+
+```text
+slivingdoc serve --bucket my-notes --read-only-paths docs,faq.md
+```
+
+Every agent talking to that server sees `docs` and `faq.md` named in the
+server instructions, in both tool descriptions, and in the `readOnly`
+array of every pull and commit result, so an agent learns the rule before
+it edits and again if it forgets. A human without the flag keeps
+publishing changes normally:
+
+```text
+slivingdoc pull notes
+# edit notes/docs/faq.md
+slivingdoc commit notes -m "update the FAQ"
+```
+
+The next pull by any agent picks up that change with no conflict — the
+read-only set is enforced only against the process configured with it,
+not against the notebook itself. If an agent commits a change under
+`docs/` anyway, the commit is refused, the touched files are reset to the
+last accepted content, and the result names the violated entries:
+
+```text
+INVALID_REQUEST · READ_ONLY_PATH
+docs is read-only in this server. Your changes there were discarded and the files reset. Write outside the read-only paths, then commit again.
+  docs/faq.md  read-only
+next: edit the files, then commit
+retryable: false
+read-only: docs
+```
+
+(the MCP structured result an agent decodes carries the same message plus
+the stable `reason: "READ_ONLY_PATH"`, `action: "EDIT_FILES"`, a
+`READ_ONLY` reason on the `docs/faq.md` file entry, and the `readOnly`
+array naming every configured entry.)
+
+The restore on pull applies to a workspace that passes the content rules.
+An invalid file under a read-only path (a binary, a symlink, an invalid
+name) is refused as `INVALID_CONTENT` naming that file, on pull and commit
+alike, and the restore does not run until the file is deleted.
+
+The read-only set is a guardrail at the MCP tool boundary, not a security
+boundary against the agent: the serve process holds the S3 credentials,
+and an agent that can read that environment or launch its own slivingdoc
+process bypasses the setting — exactly like an operator's existing sftp
+model, where the policy lives in the server configuration, never in the
+data.
+
+Like every other shared flag, an explicitly empty `--read-only-paths=`
+clears an inherited `SLIVINGDOC_READ_ONLY_PATHS` environment value
+instead of falling back to it. An invalid entry (an absolute path, a
+`..` or `.git` segment, or a path over the length bound) refuses startup
+before any native or network dependency loads.
 
 ## S3 credentials
 

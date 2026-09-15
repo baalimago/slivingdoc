@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -39,7 +42,8 @@ func TestScenarioToolListing(t *testing.T) {
 
 // TestScenarioStrictSchema proves that every invalid input shape maps to
 // the INVALID_REQUEST envelope before any Git or S3 work (architecture
-// section 2, L26).
+// section 2, L26). Structural decode failures carry MALFORMED_INPUT; the
+// message rows carry the notebook.ValidateMessage reason.
 //
 // The path is pulled first, so it is a managed notebook for the rest of the
 // test. Without that, every notes_commit row is also a
@@ -55,19 +59,20 @@ func TestScenarioStrictSchema(t *testing.T) {
 
 	oversizedPath := "/" + strings.Repeat("a", 4096) // 4,097 bytes
 	rows := []struct {
-		name string
-		tool string
-		args map[string]any
+		name   string
+		tool   string
+		args   map[string]any
+		reason string
 	}{
-		{"unknown field", toolPull, map[string]any{"path": path, "extra": 1}},
-		{"null path", toolPull, map[string]any{"path": nil}},
-		{"relative path", toolPull, map[string]any{"path": "notes"}},
-		{"oversized path", toolPull, map[string]any{"path": oversizedPath}},
-		{"missing message", toolCommit, map[string]any{"path": path}},
-		{"oversized message", toolCommit, map[string]any{"path": path, "message": strings.Repeat("m", 16385)}},
-		{"blank message", toolCommit, map[string]any{"path": path, "message": " \t "}},
-		{"nul in path", toolPull, map[string]any{"path": path + "\x00"}},
-		{"nul in message", toolCommit, map[string]any{"path": path, "message": "m\x00"}},
+		{"unknown field", toolPull, map[string]any{"path": path, "extra": 1}, "MALFORMED_INPUT"},
+		{"null path", toolPull, map[string]any{"path": nil}, "MALFORMED_INPUT"},
+		{"relative path", toolPull, map[string]any{"path": "notes"}, "MALFORMED_INPUT"},
+		{"oversized path", toolPull, map[string]any{"path": oversizedPath}, "MALFORMED_INPUT"},
+		{"missing message", toolCommit, map[string]any{"path": path}, "MALFORMED_INPUT"},
+		{"oversized message", toolCommit, map[string]any{"path": path, "message": strings.Repeat("m", 16385)}, "MESSAGE_TOO_LONG"},
+		{"blank message", toolCommit, map[string]any{"path": path, "message": " \t "}, "MESSAGE_BLANK"},
+		{"nul in path", toolPull, map[string]any{"path": path + "\x00"}, "MALFORMED_INPUT"},
+		{"nul in message", toolCommit, map[string]any{"path": path, "message": "m\x00"}, "MESSAGE_INVALID"},
 	}
 	for _, row := range rows {
 		t.Run(row.name, func(t *testing.T) {
@@ -75,7 +80,7 @@ func TestScenarioStrictSchema(t *testing.T) {
 			h.assertEnvelope(t, ToolCall{
 				Tool:   row.tool,
 				Path:   path,
-				Expect: CallExpectation{ErrorCode: "INVALID_REQUEST"},
+				Expect: CallExpectation{ErrorCode: "INVALID_REQUEST", Reason: row.reason, Action: "FIX_INPUT"},
 			}, res)
 		})
 	}
@@ -139,6 +144,76 @@ func TestScenarioContentRules(t *testing.T) {
 			}
 		})
 	}
+
+	// A binary file and a symlink must name the offending file with INVALID_CONTENT.
+	t.Run("binary file", func(t *testing.T) {
+		t.Parallel()
+		h := newFakeHarness(t, HarnessConfig{})
+		path := h.Path("notes")
+		h.assertOK(t, h.Pull("", path))
+		before := h.Recorder().Snapshot()
+
+		binary := "\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+		h.WriteFile(path+"/bin/blob", binary)
+		res := h.Commit("", path, "publish a binary file")
+		h.assertEnvelope(t, ToolCall{
+			Tool: toolCommit, Path: path, Message: "publish a binary file",
+			Expect: CallExpectation{
+				ErrorCode: "INVALID_REQUEST", Retryable: new(false),
+				Reason: "INVALID_CONTENT", Action: "EDIT_FILES",
+				Files: []FileExpectation{{Path: "bin/blob", Reason: "INVALID_CONTENT", Ranges: []RangeExpectation{}}},
+			},
+		}, res)
+
+		after := h.Recorder().Snapshot()
+		for _, op := range []Op{OpPut, OpCreate, OpReplace, OpDelete} {
+			if after[op] != before[op] {
+				t.Fatalf("a binary file mutated the store: %s %d -> %d", op, before[op], after[op])
+			}
+		}
+		if got := h.ReadFile(path + "/bin/blob"); got != binary {
+			t.Fatalf("L after the refusal = %q, want the caller's bytes untouched", got)
+		}
+	})
+
+	t.Run("symlink", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("symlink creation needs privileges on Windows")
+		}
+		t.Parallel()
+		h := newFakeHarness(t, HarnessConfig{})
+		path := h.Path("notes")
+		h.assertOK(t, h.Pull("", path))
+		before := h.Recorder().Snapshot()
+
+		target := filepath.Join(t.TempDir(), "outside.txt")
+		if err := os.WriteFile(target, []byte("outside"), 0o644); err != nil {
+			t.Fatalf("write symlink target: %v", err)
+		}
+		if err := os.Symlink(target, path+"/link"); err != nil {
+			t.Fatalf("Symlink(): %v", err)
+		}
+		res := h.Commit("", path, "publish a symlink")
+		h.assertEnvelope(t, ToolCall{
+			Tool: toolCommit, Path: path, Message: "publish a symlink",
+			Expect: CallExpectation{
+				ErrorCode: "INVALID_REQUEST", Retryable: new(false),
+				Reason: "INVALID_CONTENT", Action: "EDIT_FILES",
+				Files: []FileExpectation{{Path: "link", Reason: "INVALID_CONTENT", Ranges: []RangeExpectation{}}},
+			},
+		}, res)
+
+		after := h.Recorder().Snapshot()
+		for _, op := range []Op{OpPut, OpCreate, OpReplace, OpDelete} {
+			if after[op] != before[op] {
+				t.Fatalf("a symlink mutated the store: %s %d -> %d", op, before[op], after[op])
+			}
+		}
+		info, err := os.Lstat(path + "/link")
+		if err != nil || info.Mode()&os.ModeSymlink == 0 {
+			t.Fatalf("L after the refusal: symlink missing or replaced (err %v, mode %v)", err, info)
+		}
+	})
 }
 
 // TestScenarioResultShape proves the success envelope of both tools: one
@@ -185,6 +260,8 @@ func TestScenarioResultShape(t *testing.T) {
 // reaches the handler: the SDK reports a protocol-level error and the
 // store stays untouched (a mirror of the mcp-level test through the
 // harness). A dedicated session isolates the frame-level failure.
+// No reason/action is pinned: the SDK client rejects unparsable JSON before
+// any ToolError envelope exists (see TestScenarioStrictSchema for unknown fields).
 func TestScenarioMalformedToolJSON(t *testing.T) {
 	t.Parallel()
 	h := newFakeHarness(t, HarnessConfig{})

@@ -165,7 +165,8 @@ func TestScenarioConfigInvalidAndEarlyExit(t *testing.T) {
 		t.Parallel()
 		h := spawnHelper(t, "bad-store", nil, "serve", "-h")
 		code, stdout, stderr := h.runStdioProcess(t, nil)
-		if code != 0 || !strings.Contains(stdout, "--bucket") || !strings.Contains(stdout, "--retained-checkpoints") {
+		if code != 0 || !strings.Contains(stdout, "--bucket") || !strings.Contains(stdout, "--retained-checkpoints") ||
+			!strings.Contains(stdout, "--read-only-paths") {
 			t.Fatalf("serve -h = exit %d stdout %q, want flag reference", code, stdout)
 		}
 		if stderr != "" {

@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/baalimago/slivingdoc/internal/git"
@@ -34,11 +37,11 @@ func (n *Notebook) Commit(ctx context.Context, message string) (Result, error) {
 			return Result{}, err
 		}
 	}
-	if err := validateMessage(message); err != nil {
+	if err := ValidateMessage(message); err != nil {
 		return Result{}, err
 	}
 	if !n.ws.Pulled() {
-		return Result{}, invalidRequest("commit requires a successful or conflicting pull first")
+		return Result{}, invalidRequest(ReasonPullRequired, nil, nil, "commit requires a successful or conflicting pull first")
 	}
 
 	local, err := n.ws.Snapshot(ctx)
@@ -46,11 +49,14 @@ func (n *Notebook) Commit(ctx context.Context, message string) (Result, error) {
 		return Result{}, n.mapLocalError(err)
 	}
 	if files := rejectMarkers(local); len(files) > 0 {
-		return Result{}, contentConflict("Resolve the conflict blocks before notes_commit.", files)
+		return Result{}, contentConflict(ReasonUnresolvedMarkers, "Resolve the conflict blocks before notes_commit.", files)
+	}
+	if err := n.enforceReadOnly(ctx, local); err != nil {
+		return Result{}, err
 	}
 	localTree, err := git.BuildTree(n.ws.Repo(), local)
 	if err != nil {
-		return Result{}, &Error{Code: CodeInvalidRequest, Message: "visible files cannot be represented as notebook state", Cause: err}
+		return Result{}, invalidRequest(ReasonInvalidContent, err, nil, "visible files cannot be represented as notebook state")
 	}
 
 	baseTree := n.ws.Baseline().Tree
@@ -88,19 +94,19 @@ func (n *Notebook) attemptPublication(ctx context.Context, message string, baseT
 
 	merged, err := git.Merge(n.ws.Repo(), baseTree, localTree, remote.tree)
 	if err != nil {
-		return false, Result{}, &Error{Code: CodeStorageIntegrity, Message: "merge failed", Cause: err}
+		return false, Result{}, storageIntegrity(ReasonEngineFailed, err, "merge failed")
 	}
 	if len(merged.Conflicts) > 0 {
 		tree, err := n.materializeTree(merged)
 		if err != nil {
-			return false, Result{}, &Error{Code: CodeStorageIntegrity, Message: "materialize conflict result", Cause: err}
+			return false, Result{}, storageIntegrity(ReasonEngineFailed, err, "materialize conflict result")
 		}
 		if err := n.applyLocal(ctx, stageConflict, RemoteAcceptedNo, func() error {
 			return n.ws.Materialize(ctx, remote.baseline(), tree)
 		}); err != nil {
 			return false, Result{}, err
 		}
-		return false, Result{}, contentConflict("Resolve the conflict blocks before notes_commit.",
+		return false, Result{}, contentConflict(ReasonMergeConflict, "Resolve the conflict blocks before notes_commit.",
 			contentConflictFiles(merged.Conflicts))
 	}
 
@@ -197,7 +203,7 @@ type proposal struct {
 func (n *Notebook) buildProposal(ctx context.Context, remote remoteState, mergedTree git.OID, message string, attemptStart time.Time) (proposal, error) {
 	pubID, err := n.newID()
 	if err != nil {
-		return proposal{}, &Error{Code: CodeStorageFailure, Message: "generate publication id", Cause: err}
+		return proposal{}, storageFailure(ReasonInternal, err, "generate publication id")
 	}
 	if remote.generation == 0 {
 		return n.buildFirstProposal(ctx, remote, mergedTree, message, attemptStart, pubID)
@@ -211,18 +217,18 @@ func (n *Notebook) buildProposal(ctx context.Context, remote remoteState, merged
 func (n *Notebook) buildFirstProposal(ctx context.Context, remote remoteState, mergedTree git.OID, message string, attemptStart time.Time, pubID storage.UUID) (proposal, error) {
 	head, err := git.CreateCommit(n.ws.Repo(), git.CommitSpec{Message: message, Tree: mergedTree, Time: attemptStart})
 	if err != nil {
-		return proposal{}, &Error{Code: CodeStorageIntegrity, Message: "create the first commit", Cause: err}
+		return proposal{}, storageIntegrity(ReasonEngineFailed, err, "create the first commit")
 	}
 	pack, err := git.ExportCheckpoint(n.ws.Repo(), head)
 	if err != nil {
-		return proposal{}, &Error{Code: CodeStorageIntegrity, Message: "export checkpoint pack", Cause: err}
+		return proposal{}, storageIntegrity(ReasonEngineFailed, err, "export checkpoint pack")
 	}
 	if err := git.MarkShallow(n.ws.Repo(), head); err != nil {
-		return proposal{}, &Error{Code: CodeStorageIntegrity, Message: "record the checkpoint boundary", Cause: err}
+		return proposal{}, storageIntegrity(ReasonEngineFailed, err, "record the checkpoint boundary")
 	}
 	cpID, err := n.newID()
 	if err != nil {
-		return proposal{}, &Error{Code: CodeStorageFailure, Message: "generate checkpoint id", Cause: err}
+		return proposal{}, storageFailure(ReasonInternal, err, "generate checkpoint id")
 	}
 	key := storage.Key{Kind: storage.KindCheckpoint, Generation: 1, ID: cpID}
 	return proposal{
@@ -260,11 +266,11 @@ func (n *Notebook) buildIncrementProposal(ctx context.Context, remote remoteStat
 		Time:    attemptStart,
 	})
 	if err != nil {
-		return proposal{}, &Error{Code: CodeStorageIntegrity, Message: "create commit", Cause: err}
+		return proposal{}, storageIntegrity(ReasonEngineFailed, err, "create commit")
 	}
 	pack, err := git.ExportIncrement(n.ws.Repo(), head, remote.head)
 	if err != nil {
-		return proposal{}, &Error{Code: CodeStorageIntegrity, Message: "export increment pack", Cause: err}
+		return proposal{}, storageIntegrity(ReasonEngineFailed, err, "export increment pack")
 	}
 	// The increment's target generation continues the active increment
 	// chain from the checkpoint cutoff. The manifest generation counter
@@ -304,7 +310,7 @@ func (n *Notebook) buildIncrementProposal(ctx context.Context, remote remoteStat
 func (n *Notebook) publish(ctx context.Context, remote remoteState, p proposal) error {
 	manifestBytes, err := storage.EncodeManifest(p.manifest)
 	if err != nil {
-		return &Error{Code: CodeStorageIntegrity, Message: "encode proposal manifest", Cause: err}
+		return storageIntegrity(ReasonEngineFailed, err, "encode proposal manifest")
 	}
 	if remote.generation == 0 {
 		_, err = n.store.CreateObject(ctx, storage.CurrentKey, manifestBytes)
@@ -326,9 +332,9 @@ func (n *Notebook) publish(ctx context.Context, remote remoteState, p proposal) 
 		if found {
 			return nil
 		}
-		return storageFailure(err, "manifest acceptance cannot be proved; the proposal is not republished")
+		return storageFailure(ReasonPublicationUnproven, err, "manifest acceptance cannot be proved; the proposal is not republished")
 	default:
-		return storageFailure(err, "manifest CAS failed")
+		return storageFailure(ReasonManifestWrite, err, "manifest CAS failed")
 	}
 }
 
@@ -337,7 +343,72 @@ func (n *Notebook) publish(ctx context.Context, remote remoteState, p proposal) 
 // integrity failure; every other upload failure is a storage failure.
 func (n *Notebook) mapUploadError(err error) error {
 	if errors.Is(err, storage.ErrIntegrity) {
-		return &Error{Code: CodeStorageIntegrity, Message: "pack upload collided with different bytes", Cause: err}
+		return storageIntegrity(ReasonPackInvalid, err, "pack upload collided with different bytes")
 	}
-	return storageFailure(err, "pack upload failed")
+	return storageFailure(ReasonPackUpload, err, "pack upload failed")
+}
+
+// enforceReadOnly refuses a commit that changes a covered path, resetting
+// those files to the baseline through applyLocal (architecture section
+// 11.1, Read-only paths).
+func (n *Notebook) enforceReadOnly(ctx context.Context, local git.Snapshot) error {
+	if len(n.readOnly.Entries()) == 0 {
+		return nil
+	}
+	base, err := n.readOnly.ReadCovered(n.ws.Repo(), n.ws.Baseline().Tree)
+	if err != nil {
+		return storageIntegrity(ReasonEngineFailed, err, "read the baseline snapshot for the read-only check")
+	}
+	changed := n.readOnly.ChangedUnder(local, base)
+	if len(changed) == 0 {
+		return nil
+	}
+	pinned := n.readOnly.Pin(local, base)
+	tree, err := git.BuildTree(n.ws.Repo(), pinned)
+	if err != nil {
+		return invalidRequest(ReasonInvalidContent, err, nil, "visible files cannot be represented as notebook state")
+	}
+	if err := n.applyLocal(ctx, stageReadOnly, RemoteAcceptedNo, func() error {
+		return n.ws.Materialize(ctx, n.ws.Baseline(), tree)
+	}); err != nil {
+		return err
+	}
+	return readOnlyRefusal(n.readOnly, changed)
+}
+
+// readOnlyRefusal builds the READ_ONLY_PATH error: one file entry per
+// changed path, and a message naming the violated entries.
+func readOnlyRefusal(set git.ReadOnlySet, changed []string) error {
+	files := make([]ErrorFile, 0, len(changed))
+	for _, path := range changed {
+		files = append(files, ErrorFile{Path: path, Reason: FileReasonReadOnly})
+	}
+	return invalidRequest(ReasonReadOnlyPath, nil, files, "%s", readOnlyMessage(violatedEntries(set, changed)))
+}
+
+// violatedEntries returns, sorted and deduplicated, the entries covering
+// the changed paths.
+func violatedEntries(set git.ReadOnlySet, changed []string) []string {
+	seen := make(map[string]bool, len(changed))
+	var out []string
+	for _, path := range changed {
+		entry, ok := set.CoveringEntry(path)
+		if !ok || seen[entry] {
+			continue
+		}
+		seen[entry] = true
+		out = append(out, entry)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// readOnlyMessage is the refusal text fixed by architecture section 2.
+func readOnlyMessage(entries []string) string {
+	verb := "is"
+	if len(entries) > 1 {
+		verb = "are"
+	}
+	return fmt.Sprintf("%s %s read-only in this server. Your changes there were discarded and the files reset. Write outside the read-only paths, then commit again.",
+		strings.Join(entries, ReadOnlyListSeparator), verb)
 }

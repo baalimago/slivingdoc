@@ -29,6 +29,7 @@ type fakeService struct {
 	commitErr error
 	block     chan struct{}
 	root      string
+	readOnly  []string
 }
 
 type commitCall struct {
@@ -44,6 +45,14 @@ func (f *fakeService) Root() string {
 		return fakeRoot
 	}
 	return f.root
+}
+
+// ReadOnlyPaths returns the configured set, always non-nil.
+func (f *fakeService) ReadOnlyPaths() []string {
+	if f.readOnly == nil {
+		return []string{}
+	}
+	return f.readOnly
 }
 
 func (f *fakeService) Pull(ctx context.Context, path string) (notebook.Result, error) {
@@ -226,6 +235,7 @@ func TestPullSuccessEnvelope(t *testing.T) {
 			{Path: "notes/c.md", Insertions: 2, Deletions: 0},
 			{Path: "archive/old.md", Insertions: 0, Deletions: 3},
 		},
+		ReadOnly: []string{},
 	})
 }
 
@@ -254,6 +264,7 @@ func TestCommitSuccessEnvelope(t *testing.T) {
 			{Path: "notes/c.md", Insertions: 2, Deletions: 0},
 			{Path: "archive/old.md", Insertions: 0, Deletions: 3},
 		},
+		ReadOnly: []string{},
 	})
 	data, err := json.Marshal(res.StructuredContent)
 	if err != nil {
@@ -285,6 +296,7 @@ func TestNoOpCommitReturnsEmptyStatEnvelope(t *testing.T) {
 	assertSuccessInfo(t, res, &SuccessInfo{
 		Path: "/abs/notes",
 		Code: "OK", Generation: 7, FilesChanged: 0, Insertions: 0, Deletions: 0, Files: []ChangeFile{},
+		ReadOnly: []string{},
 	})
 }
 
@@ -304,6 +316,7 @@ func TestZeroResultWithNoErrorNeverPanics(t *testing.T) {
 	assertSuccessInfo(t, res, &SuccessInfo{
 		Path: "/abs/notes",
 		Code: "OK", Generation: 0, FilesChanged: 0, Insertions: 0, Deletions: 0, Files: []ChangeFile{},
+		ReadOnly: []string{},
 	})
 }
 
@@ -372,9 +385,12 @@ func TestConflictDataSurvivesSDKEnvelope(t *testing.T) {
 	if got.Code != "CONTENT_CONFLICT" || got.Retryable {
 		t.Fatalf("structured = %+v, want CONTENT_CONFLICT not retryable", got)
 	}
-	if len(got.Files) != 2 || got.Files[0].Path != "notes/today.md" ||
+	if len(got.Files) != 2 || got.Files[0].Path != "notes/today.md" || got.Files[0].Reason != "TEXT_CONFLICT" ||
 		len(got.Files[0].Ranges) != 2 || got.Files[0].Ranges[0] != (ErrorRange{12, 18}) {
 		t.Fatalf("structured files = %+v, want the exact conflict data", got.Files)
+	}
+	if got.Reason != "MERGE_CONFLICT" || got.Action != "EDIT_FILES" {
+		t.Fatalf("structured reason/action = %q/%q, want MERGE_CONFLICT/EDIT_FILES", got.Reason, got.Action)
 	}
 }
 
@@ -447,7 +463,7 @@ func TestOmittedPathResolvesToNotebookRoot(t *testing.T) {
 		t.Fatalf("CallTool() = %v", err)
 	}
 	assertSuccessInfo(t, res, &SuccessInfo{
-		Path: "/session/notebook", Code: "OK", Files: []ChangeFile{},
+		Path: "/session/notebook", Code: "OK", Files: []ChangeFile{}, ReadOnly: []string{},
 	})
 	commitRes, err := client.CallTool(context.Background(), &sdk.CallToolParams{
 		Name:      toolCommit,
@@ -457,7 +473,7 @@ func TestOmittedPathResolvesToNotebookRoot(t *testing.T) {
 		t.Fatalf("CallTool() = %v", err)
 	}
 	assertSuccessInfo(t, commitRes, &SuccessInfo{
-		Path: "/session/notebook", Code: "OK", Files: []ChangeFile{},
+		Path: "/session/notebook", Code: "OK", Files: []ChangeFile{}, ReadOnly: []string{},
 	})
 	svc.mu.Lock()
 	defer svc.mu.Unlock()

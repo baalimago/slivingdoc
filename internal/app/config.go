@@ -13,6 +13,7 @@ import (
 
 	"github.com/baalimago/go_away_boilerplate/pkg/slogcolor"
 
+	"github.com/baalimago/slivingdoc/internal/git"
 	"github.com/baalimago/slivingdoc/internal/notebook"
 	"github.com/baalimago/slivingdoc/internal/pathutil"
 	"github.com/baalimago/slivingdoc/internal/storage"
@@ -35,6 +36,10 @@ type config struct {
 	commitRetries       int
 	checkpointPacks     int
 	retainedCheckpoints int
+
+	// readOnlyPaths are the read-only entries (architecture section 17),
+	// normalized by finish.
+	readOnlyPaths []string
 
 	// logLevel is the flag-over-environment level spec in the LOG_LEVEL
 	// grammar; empty means the Info default. logTimestamp controls the
@@ -66,6 +71,7 @@ type Flags struct {
 	commitRetries       intFlag
 	checkpointPacks     intFlag
 	retainedCheckpoints intFlag
+	readOnlyPaths       stringFlag
 	logLevel            stringFlag
 	logTimestamp        boolFlag
 }
@@ -88,6 +94,7 @@ func (f *Flags) Bind(fs *flag.FlagSet) {
 	fs.Var(&f.commitRetries, "commit-retries", "CAS retries after the first attempt")
 	fs.Var(&f.checkpointPacks, "checkpoint-packs", "active tail length that schedules a checkpoint")
 	fs.Var(&f.retainedCheckpoints, "retained-checkpoints", "retained previous checkpoint generations")
+	fs.Var(&f.readOnlyPaths, "read-only-paths", "notebook paths agents may read but never change")
 	fs.Var(&f.logLevel, "log-level", "per-module log levels (LOG_LEVEL grammar)")
 	fs.Var(&f.logTimestamp, "log-timestamp", "include the time= field in log records")
 }
@@ -190,6 +197,7 @@ func (f *Flags) resolve(environment []string, cwd, cacheDir string, ephemeral bo
 	if cfg.retainedCheckpoints, err = resolveInt(&f.retainedCheckpoints, env["SLIVINGDOC_RETAINED_CHECKPOINTS"], defaultRetainedCheckpoints); err != nil {
 		return config{}, err
 	}
+	cfg.readOnlyPaths = splitReadOnlyPaths(resolveString(&f.readOnlyPaths, env["SLIVINGDOC_READ_ONLY_PATHS"], ""))
 	cfg.logLevel = resolveString(&f.logLevel, env[logEnvLevel], "")
 	if f.logLevel.set {
 		// An explicit flag value fails fast like every other flag; only the
@@ -252,6 +260,11 @@ func (cfg config) finish(cwd string) (config, error) {
 	if cfg.retainedCheckpoints > maxRetainedCheckpoints {
 		return config{}, fmt.Errorf("retained checkpoints %d is outside 0..%d", cfg.retainedCheckpoints, maxRetainedCheckpoints)
 	}
+	normalized, err := git.NormalizeReadOnly(cfg.readOnlyPaths)
+	if err != nil {
+		return config{}, fmt.Errorf("read-only paths: %w", err)
+	}
+	cfg.readOnlyPaths = normalized.Entries()
 	return cfg, nil
 }
 
@@ -279,6 +292,25 @@ func resolveString(f *stringFlag, env, def string) string {
 		return env
 	}
 	return def
+}
+
+const readOnlySeparator = ","
+
+// splitReadOnlyPaths splits a raw --read-only-paths value, trimming white
+// space and dropping empty pieces; finish validates the result.
+func splitReadOnlyPaths(raw string) []string {
+	if raw == "" {
+		return nil
+	}
+	var out []string
+	for piece := range strings.SplitSeq(raw, readOnlySeparator) {
+		piece = strings.TrimSpace(piece)
+		if piece == "" {
+			continue
+		}
+		out = append(out, piece)
+	}
+	return out
 }
 
 // resolveRoot returns a configured root and whether it was configured at
@@ -490,6 +522,8 @@ const FlagReference = `  --bucket string               S3 bucket (required)     
                                 checkpoint (default 256, minimum 1)
   --retained-checkpoints int    retained previous checkpoint generations     SLIVINGDOC_RETAINED_CHECKPOINTS
                                 (default 1, range 0..64)
+  --read-only-paths string      comma-separated notebook paths agents may    SLIVINGDOC_READ_ONLY_PATHS
+                                read but never change (default: none)
   --log-level string            per-module log levels, for example           LOG_LEVEL
                                 "cli=warn,mcp=debug,info"; a bare level
                                 is the default (default "info")

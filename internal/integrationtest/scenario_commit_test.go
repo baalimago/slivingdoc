@@ -132,7 +132,7 @@ func TestScenarioCommitWithoutPull(t *testing.T) {
 	res := h.Commit("", path, "never pulled")
 	h.assertEnvelope(t, ToolCall{
 		Tool: toolCommit, Path: path, Message: "never pulled",
-		Expect: CallExpectation{ErrorCode: "INVALID_REQUEST"},
+		Expect: CallExpectation{ErrorCode: "INVALID_REQUEST", Reason: "PULL_REQUIRED", Action: "PULL", Files: []FileExpectation{}},
 	}, res)
 	h.assertExpectations(t, Expectations{
 		S3: S3Assertions{Counts: &CountExpectation{AllZero: true}},
@@ -361,7 +361,7 @@ func TestScenarioCommitRetryExhaustion(t *testing.T) {
 	res := h.Commit("", path, "will never win")
 	h.assertEnvelope(t, ToolCall{
 		Tool: toolCommit, Path: path, Message: "will never win",
-		Expect: CallExpectation{ErrorCode: "REMOTE_BUSY", Retryable: new(true)},
+		Expect: CallExpectation{ErrorCode: "REMOTE_BUSY", Reason: "RETRIES_EXHAUSTED", Action: "RETRY", Retryable: new(true)},
 	}, res)
 
 	got := h.FSSnapshot(path)
@@ -422,7 +422,16 @@ func TestScenarioCommitAmbiguousPackUpload(t *testing.T) {
 	h.WriteFile(path+"/c.md", "gamma")
 	res := h.Commit("", path, "c3")
 	env := decodeEnvelope(t, ToolCall{Tool: toolCommit, Path: path, Message: "c3"}, res)
-	if env.Code != "STORAGE_INTEGRITY" && env.Code != "STORAGE_FAILURE" {
+	switch env.Code {
+	case "STORAGE_INTEGRITY":
+		if env.Reason != "PACK_INVALID" || env.Action != "OPERATOR" {
+			t.Fatalf("mismatched read-back reason/action = %q/%q, want PACK_INVALID/OPERATOR", env.Reason, env.Action)
+		}
+	case "STORAGE_FAILURE":
+		if env.Reason != "PACK_UPLOAD" || env.Action != "RETRY" {
+			t.Fatalf("mismatched read-back reason/action = %q/%q, want PACK_UPLOAD/RETRY", env.Reason, env.Action)
+		}
+	default:
 		t.Fatalf("mismatched read-back code = %q, want a refusal category", env.Code)
 	}
 	if got := h.Manifest().Generation; got != 2 {
@@ -464,10 +473,12 @@ func TestScenarioCommitUnprovableCAS(t *testing.T) {
 
 	h.WriteFile(path+"/b.md", "beta")
 	h.Faults().UnprovableNext(storage.CurrentKey)
+	// UnprovableNext also fails the proof read, so this is MANIFEST_READ,
+	// not PUBLICATION_UNPROVEN (see TestScenarioCommitPublicationNotFound).
 	res := h.Commit("", path, "acceptance unprovable")
 	h.assertEnvelope(t, ToolCall{
 		Tool: toolCommit, Path: path, Message: "acceptance unprovable",
-		Expect: CallExpectation{ErrorCode: "STORAGE_FAILURE", Retryable: new(true)},
+		Expect: CallExpectation{ErrorCode: "STORAGE_FAILURE", Reason: "MANIFEST_READ", Action: "RETRY", Retryable: new(true)},
 	}, res)
 
 	got := h.FSSnapshot(path)
@@ -482,5 +493,30 @@ func TestScenarioCommitUnprovableCAS(t *testing.T) {
 	// workspace and the replace count, not the remote generation.
 	if m := h.Manifest(); m.Generation != 2 {
 		t.Fatalf("remote manifest generation = %d, want the landed proposal at 2", m.Generation)
+	}
+}
+
+// TestScenarioCommitPublicationNotFound: a CAS that never lands and a
+// successful lookup that misses the ID is PUBLICATION_UNPROVEN (architecture section 11.3).
+func TestScenarioCommitPublicationNotFound(t *testing.T) {
+	t.Parallel()
+	h := newFakeHarness(t, HarnessConfig{})
+	path := h.Path("notes")
+	commitFirst(t, h, path, "a.md", "alpha", "c1")
+
+	h.WriteFile(path+"/b.md", "beta")
+	h.Faults().FailNext(OpReplace, storage.CurrentKey, storage.ErrTransport)
+	res := h.Commit("", path, "never landed")
+	h.assertEnvelope(t, ToolCall{
+		Tool: toolCommit, Path: path, Message: "never landed",
+		Expect: CallExpectation{ErrorCode: "STORAGE_FAILURE", Reason: "PUBLICATION_UNPROVEN", Action: "PULL", Retryable: new(true)},
+	}, res)
+
+	got := h.FSSnapshot(path)
+	if got["a.md"] != "alpha" || got["b.md"] != "beta" {
+		t.Fatalf("L after the unproven CAS = %v, want the caller's files preserved", got)
+	}
+	if m := h.Manifest(); m.Generation != 1 {
+		t.Fatalf("remote manifest generation = %d, want the unlanded proposal to leave 1", m.Generation)
 	}
 }

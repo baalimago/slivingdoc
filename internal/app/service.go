@@ -28,6 +28,9 @@ type ServiceConfig struct {
 	CommitRetries       int
 	CheckpointPacks     int
 	RetainedCheckpoints int
+	// ReadOnlyPaths are the read-only entries (architecture section 2,
+	// Read-only paths).
+	ReadOnlyPaths []string
 }
 
 // serviceConfig converts the resolved process configuration into the
@@ -45,6 +48,7 @@ func (cfg config) serviceConfig() ServiceConfig {
 		CommitRetries:       cfg.commitRetries,
 		CheckpointPacks:     cfg.checkpointPacks,
 		RetainedCheckpoints: cfg.retainedCheckpoints,
+		ReadOnlyPaths:       cfg.readOnlyPaths,
 	}
 }
 
@@ -64,10 +68,11 @@ type ServiceHooks struct {
 // until Close. Calls for one path serialize on that workspace's operation
 // lock; distinct paths operate independently (architecture section 7.2).
 type Service struct {
-	engine git.Engine
-	store  storage.ObjectStore
-	cfg    ServiceConfig
-	hooks  *ServiceHooks
+	engine   git.Engine
+	store    storage.ObjectStore
+	cfg      ServiceConfig
+	hooks    *ServiceHooks
+	readOnly git.ReadOnlySet
 
 	mu     sync.Mutex // guards opened and closed
 	opened map[string]*openedNotebook
@@ -92,12 +97,17 @@ func NewService(engine git.Engine, store storage.ObjectStore, cfg ServiceConfig,
 	if store == nil {
 		return nil, errors.New("app: store is required")
 	}
+	readOnly, err := git.NormalizeReadOnly(cfg.ReadOnlyPaths)
+	if err != nil {
+		return nil, fmt.Errorf("app: %w", err)
+	}
 	return &Service{
-		engine: engine,
-		store:  store,
-		cfg:    cfg,
-		hooks:  hooks,
-		opened: map[string]*openedNotebook{},
+		engine:   engine,
+		store:    store,
+		cfg:      cfg,
+		hooks:    hooks,
+		readOnly: readOnly,
+		opened:   map[string]*openedNotebook{},
 	}, nil
 }
 
@@ -105,6 +115,9 @@ func NewService(engine git.Engine, store storage.ObjectStore, cfg ServiceConfig,
 // configured workspace root, or the process-owned temporary notebook
 // directory when no root was configured (architecture section 17).
 func (s *Service) Root() string { return s.cfg.WorkspaceRoot }
+
+// ReadOnlyPaths returns the normalized, sorted read-only entries; never nil.
+func (s *Service) ReadOnlyPaths() []string { return s.readOnly.Entries() }
 
 // Pull resolves path to its notebook, pulls it, and returns the operation
 // result: the accepted generation and the pull delta diffstat.
@@ -163,6 +176,7 @@ func (s *Service) notebookFor(ctx context.Context, path string) (*notebook.Noteb
 		RetryLimit:          s.cfg.CommitRetries,
 		CheckpointPacks:     s.cfg.CheckpointPacks,
 		RetainedCheckpoints: s.cfg.RetainedCheckpoints,
+		ReadOnlyPaths:       s.readOnly.Entries(),
 		Failpoints:          nbFailpoints,
 	})
 	if err != nil {

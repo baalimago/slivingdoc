@@ -18,6 +18,7 @@ type SuccessInfo struct {
 	Insertions   int          `json:"insertions"`
 	Deletions    int          `json:"deletions"`
 	Files        []ChangeFile `json:"files"`
+	ReadOnly     []string     `json:"readOnly"`
 }
 
 // ChangeFile is the per-file line-change summary of a success: the
@@ -47,5 +48,6 @@ func MapSuccess(result notebook.Result, path string) *SuccessInfo {
 		Insertions:   result.Stat.Insertions,
 		Deletions:    result.Stat.Deletions,
 		Files:        files,
+		ReadOnly:     []string{},
 	}
 }

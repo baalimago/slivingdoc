@@ -22,11 +22,11 @@ type Result struct {
 func (n *Notebook) diffStat(base, result git.OID) (git.DiffStat, error) {
 	baseSnap, err := git.ReadSnapshot(n.ws.Repo(), base)
 	if err != nil {
-		return git.DiffStat{}, storageIntegrity(err, "read the base snapshot for the change summary")
+		return git.DiffStat{}, storageIntegrity(ReasonEngineFailed, err, "read the base snapshot for the change summary")
 	}
 	resultSnap, err := git.ReadSnapshot(n.ws.Repo(), result)
 	if err != nil {
-		return git.DiffStat{}, storageIntegrity(err, "read the result snapshot for the change summary")
+		return git.DiffStat{}, storageIntegrity(ReasonEngineFailed, err, "read the result snapshot for the change summary")
 	}
 	return git.DiffSnapshots(baseSnap, resultSnap), nil
 }

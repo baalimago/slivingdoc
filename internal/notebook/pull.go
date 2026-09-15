@@ -31,7 +31,7 @@ func (n *Notebook) Pull(ctx context.Context) (Result, error) {
 	}
 	localTree, err := git.BuildTree(n.ws.Repo(), local)
 	if err != nil {
-		return Result{}, &Error{Code: CodeInvalidRequest, Message: "visible files cannot be represented as notebook state", Cause: err}
+		return Result{}, invalidRequest(ReasonInvalidContent, err, nil, "visible files cannot be represented as notebook state")
 	}
 
 	remote, err := n.readRemote(ctx)
@@ -39,16 +39,32 @@ func (n *Notebook) Pull(ctx context.Context) (Result, error) {
 		return Result{}, err
 	}
 
-	merged, err := git.Merge(n.ws.Repo(), n.ws.Baseline().Tree, localTree, remote.tree)
+	// Read-only paths are pinned to the baseline on the local side, so the
+	// merge takes R there and the diffstat (raw local vs. merged) shows the
+	// restore (architecture section 10).
+	mergeTree := localTree
+	if len(n.readOnly.Entries()) > 0 {
+		base, err := n.readOnly.ReadCovered(n.ws.Repo(), n.ws.Baseline().Tree)
+		if err != nil {
+			return Result{}, storageIntegrity(ReasonEngineFailed, err, "read the baseline snapshot for the read-only check")
+		}
+		pinned := n.readOnly.Pin(local, base)
+		mergeTree, err = git.BuildTree(n.ws.Repo(), pinned)
+		if err != nil {
+			return Result{}, invalidRequest(ReasonInvalidContent, err, nil, "visible files cannot be represented as notebook state")
+		}
+	}
+
+	merged, err := git.Merge(n.ws.Repo(), n.ws.Baseline().Tree, mergeTree, remote.tree)
 	if err != nil {
-		return Result{}, &Error{Code: CodeStorageIntegrity, Message: "merge failed", Cause: err}
+		return Result{}, storageIntegrity(ReasonEngineFailed, err, "merge failed")
 	}
 
 	baseline := remote.baseline()
 	if len(merged.Conflicts) > 0 {
 		tree, err := n.materializeTree(merged)
 		if err != nil {
-			return Result{}, &Error{Code: CodeStorageIntegrity, Message: "materialize conflict result", Cause: err}
+			return Result{}, storageIntegrity(ReasonEngineFailed, err, "materialize conflict result")
 		}
 		if err := n.applyLocal(ctx, stageConflict, RemoteAcceptedNo, func() error {
 			return n.ws.Materialize(ctx, baseline, tree)
@@ -60,7 +76,7 @@ func (n *Notebook) Pull(ctx context.Context) (Result, error) {
 		if err := n.ws.MarkPulled(ctx); err != nil {
 			return Result{}, n.mapLocalError(err)
 		}
-		return Result{}, contentConflict("Resolve the conflict blocks in the visible files before continuing.",
+		return Result{}, contentConflict(ReasonMergeConflict, "Resolve the conflict blocks in the visible files before continuing.",
 			contentConflictFiles(merged.Conflicts))
 	}
 

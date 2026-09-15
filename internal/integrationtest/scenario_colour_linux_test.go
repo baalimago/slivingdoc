@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"testing"
 
@@ -22,17 +23,78 @@ import (
 // character device and the exact byte output.
 func TestScenarioCLIColourOnTerminal(t *testing.T) {
 	t.Parallel()
-	env, root := cliRoots(t)
-	notes := filepath.Join(root, "notes")
-	code, stdout := runCLITTY(t, "fake", env, "pull", notes)
-	if code != 0 {
-		t.Fatalf("pull on a terminal = exit %d, want 0; stdout: %q", code, stdout)
-	}
-	want := "\x1b[32mOK\x1b[0m  \x1b[36mgeneration 0\x1b[0m  " + notes + "\n" +
-		"0 files changed, 0 insertions(+), 0 deletions(-)\n"
-	if stdout != want {
-		t.Fatalf("pull on a terminal stdout = %q, want the ANSI report %q", stdout, want)
-	}
+
+	t.Run("success report", func(t *testing.T) {
+		t.Parallel()
+		env, root := cliRoots(t)
+		notes := filepath.Join(root, "notes")
+		code, stdout := runCLITTY(t, "fake", env, "pull", notes)
+		if code != 0 {
+			t.Fatalf("pull on a terminal = exit %d, want 0; stdout: %q", code, stdout)
+		}
+		want := "\x1b[32mOK\x1b[0m  \x1b[36mgeneration 0\x1b[0m  " + notes + "\n" +
+			"0 files changed, 0 insertions(+), 0 deletions(-)\n"
+		if stdout != want {
+			t.Fatalf("pull on a terminal stdout = %q, want the ANSI report %q", stdout, want)
+		}
+	})
+
+	// The read-only refusal on a pseudo-terminal strips to the plain bytes
+	// proven by TestScenarioCLIReadOnlyCommit.
+	t.Run("read-only refusal report", func(t *testing.T) {
+		t.Parallel()
+		env, root, prefix := realCLIEnv(t, "integrationtest-colour-readonly")
+		env = append(env, "SLIVINGDOC_READ_ONLY_PATHS=docs")
+
+		writer := NewHarness(t, HarnessConfig{Prefix: prefix})
+		seed := writer.Path("seed")
+		writer.WriteFile(filepath.Join(seed, "docs", "faq.md"), "Q: a\nA: 1\n")
+		writer.assertOK(t, writer.Pull("", seed))
+		writer.assertOK(t, writer.Commit("", seed, "seed"))
+
+		notes := filepath.Join(root, "notes")
+		runCLIExact(t, "real", env,
+			"OK  generation 1  "+notes+"\n"+
+				"  docs/faq.md  +2\n"+
+				"1 files changed, 2 insertions(+), 0 deletions(-)\n"+
+				"read-only: docs\n",
+			"pull", notes)
+		writeCLIFile(t, filepath.Join(notes, "docs", "faq.md"), "A: 2\n")
+
+		code, stdout := runCLITTY(t, "real", env, "commit", notes, "-m", "m")
+		if code != 1 {
+			t.Fatalf("read-only commit on a terminal = exit %d, want 1; stdout: %q", code, stdout)
+		}
+		want := "\x1b[31mINVALID_REQUEST\x1b[0m · \x1b[2mREAD_ONLY_PATH\x1b[0m\n" +
+			"docs is read-only in this server. Your changes there were discarded and the files reset. " +
+			"Write outside the read-only paths, then commit again.\n" +
+			"  \x1b[33mdocs/faq.md\x1b[0m  \x1b[2mread-only\x1b[0m\n" +
+			"\x1b[36mnext:\x1b[0m edit the files, then commit\n" +
+			"retryable: false\n" +
+			"\x1b[2mread-only:\x1b[0m docs\n"
+		if stdout != want {
+			t.Fatalf("read-only refusal on a terminal stdout = %q, want the ANSI report %q", stdout, want)
+		}
+		plain := stripANSI(stdout)
+		wantPlain := "INVALID_REQUEST · READ_ONLY_PATH\n" +
+			"docs is read-only in this server. Your changes there were discarded and the files reset. " +
+			"Write outside the read-only paths, then commit again.\n" +
+			"  docs/faq.md  read-only\n" +
+			"next: edit the files, then commit\n" +
+			"retryable: false\n" +
+			"read-only: docs\n"
+		if plain != wantPlain {
+			t.Fatalf("stripped read-only refusal = %q, want the plain report %q", plain, wantPlain)
+		}
+	})
+}
+
+// ansiEscapeRE matches one ANSI SGR escape sequence.
+var ansiEscapeRE = regexp.MustCompile("\x1b\\[[0-9;]*m")
+
+// stripANSI removes every ANSI SGR escape sequence from s.
+func stripANSI(s string) string {
+	return ansiEscapeRE.ReplaceAllString(s, "")
 }
 
 // runCLITTY runs one one-shot CLI process whose stdout is a

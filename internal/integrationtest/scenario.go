@@ -31,22 +31,33 @@ type CallExpectation struct {
 	Success *SuccessExpectation
 	// ErrorCode requires the error envelope with this stable category.
 	ErrorCode string
+	// Reason asserts the exact stable reason token when non-empty.
+	Reason string
+	// Action asserts the exact stable next-step action token when
+	// non-empty.
+	Action string
 	// Retryable asserts the exact retryable flag when non-nil.
 	Retryable *bool
 	// Files asserts the exact ordered conflict-file list of the
-	// structured error (relative paths and one-based inclusive ranges).
+	// structured error (relative paths, per-file reason, and one-based
+	// inclusive ranges).
 	Files []FileExpectation
 	// Recovery asserts the RECOVERY_FAILURE report when non-nil.
 	Recovery *RecoveryExpectation
+	// ReadOnly asserts the exact read-only entries on the envelope when
+	// non-nil.
+	ReadOnly []string
 	// NoText forbids substrings anywhere in the result text or the
 	// structured content.
 	NoText []string
 }
 
-// FileExpectation is one structured error file: a relative normalized path
-// and its one-based inclusive marker ranges.
+// FileExpectation is one structured error file: a relative normalized path,
+// its per-file reason, and its one-based inclusive marker ranges.
 type FileExpectation struct {
-	Path   string
+	Path string
+	// Reason asserts the exact stable file-reason token when non-empty.
+	Reason string
 	Ranges []RangeExpectation
 }
 

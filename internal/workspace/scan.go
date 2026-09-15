@@ -28,6 +28,17 @@ var ErrUnsupportedFile = errors.New("workspace: unsupported file")
 // without U+0000 (architecture section 7.1).
 var ErrInvalidContent = errors.New("workspace: invalid text content")
 
+// ScanError names the visible path a scan rejection is about. Unwrap
+// exposes Err so errors.Is against the sentinels above keeps working.
+type ScanError struct {
+	Path string
+	Err  error
+}
+
+func (e *ScanError) Error() string { return e.Err.Error() }
+
+func (e *ScanError) Unwrap() error { return e.Err }
+
 // Snapshot scans the visible directory and returns the complete notebook
 // state: every regular file with valid UTF-8 text content, in normalized
 // slash-separated relative form. Empty files are valid and bytes and line
@@ -64,9 +75,18 @@ func (w *Workspace) scanLocked(ctx context.Context) (git.Snapshot, error) {
 	}
 	snap := git.Snapshot{Files: files}
 	if err := git.ValidateSnapshot(snap); err != nil {
-		return git.Snapshot{}, fmt.Errorf("workspace: scan: %w", err)
+		wrapped := fmt.Errorf("workspace: scan: %w", err)
+		var collision *git.PathCollisionError
+		if errors.As(err, &collision) {
+			return git.Snapshot{}, &ScanError{Path: collision.Path, Err: wrapped}
+		}
+		return git.Snapshot{}, wrapped
 	}
 	return snap, nil
+}
+
+func scanError(path string, err error) error {
+	return &ScanError{Path: path, Err: err}
 }
 
 // scanWalk recursively reads one directory. dirRel is the raw on-disk path
@@ -78,7 +98,7 @@ func (w *Workspace) scanLocked(ctx context.Context) (git.Snapshot, error) {
 func (w *Workspace) scanWalk(ctx context.Context, dirRel, prefix string, files *[]git.File) error {
 	entries, err := w.readDir(dirRel)
 	if err != nil {
-		return fmt.Errorf("workspace: scan %q: %w", dirRel, err)
+		return scanError(dirRel, fmt.Errorf("workspace: scan %q: %w", dirRel, err))
 	}
 	var dirPaths, filePaths map[string]bool
 	for _, e := range entries {
@@ -87,27 +107,30 @@ func (w *Workspace) scanWalk(ctx context.Context, dirRel, prefix string, files *
 		}
 		raw := e.Name()
 		if !utf8.ValidString(raw) {
-			return fmt.Errorf("workspace: scan %q: %w: name is not valid UTF-8", dirRel+"/"+raw, ErrInvalidPath)
+			rawPath := dirRel + "/" + raw
+			return scanError(rawPath, fmt.Errorf("workspace: scan %q: %w: name is not valid UTF-8", rawPath, ErrInvalidPath))
 		}
 		norm := norm.NFC.String(raw)
 		path := prefix + norm
 		if err := git.ValidatePath(path); err != nil {
-			return fmt.Errorf("workspace: scan %q: %w: %w", dirRel+"/"+raw, ErrInvalidPath, err)
+			rawPath := dirRel + "/" + raw
+			return scanError(path, fmt.Errorf("workspace: scan %q: %w: %w", rawPath, ErrInvalidPath, err))
 		}
 		info, err := e.Info() // Lstat semantics: a symlink reports itself
 		if err != nil {
-			return fmt.Errorf("workspace: scan %q: %w", dirRel+"/"+raw, err)
+			rawPath := dirRel + "/" + raw
+			return scanError(path, fmt.Errorf("workspace: scan %q: %w", rawPath, err))
 		}
 		mode := info.Mode()
 		switch {
 		case mode&fs.ModeSymlink != 0:
-			return fmt.Errorf("workspace: scan %q: %w", path, ErrSymlink)
+			return scanError(path, fmt.Errorf("workspace: scan %q: %w", path, ErrSymlink))
 		case mode.IsDir():
 			if filePaths[path] {
-				return fmt.Errorf("workspace: scan %q: %w: path is both a file and a directory", path, ErrInvalidPath)
+				return scanError(path, fmt.Errorf("workspace: scan %q: %w: path is both a file and a directory", path, ErrInvalidPath))
 			}
 			if dirPaths[path] {
-				return fmt.Errorf("workspace: scan %q: duplicate directory", path)
+				return scanError(path, fmt.Errorf("workspace: scan %q: duplicate directory", path))
 			}
 			if dirPaths == nil {
 				dirPaths = map[string]bool{}
@@ -118,10 +141,10 @@ func (w *Workspace) scanWalk(ctx context.Context, dirRel, prefix string, files *
 			}
 		case mode.IsRegular():
 			if dirPaths[path] {
-				return fmt.Errorf("workspace: scan %q: %w: path is both a file and a directory", path, ErrInvalidPath)
+				return scanError(path, fmt.Errorf("workspace: scan %q: %w: path is both a file and a directory", path, ErrInvalidPath))
 			}
 			if filePaths[path] {
-				return fmt.Errorf("workspace: scan %q: duplicate path", path)
+				return scanError(path, fmt.Errorf("workspace: scan %q: duplicate path", path))
 			}
 			if filePaths == nil {
 				filePaths = map[string]bool{}
@@ -133,7 +156,7 @@ func (w *Workspace) scanWalk(ctx context.Context, dirRel, prefix string, files *
 			}
 			*files = append(*files, git.File{Path: path, Data: data})
 		default:
-			return fmt.Errorf("workspace: scan %q: %w (%s)", path, ErrUnsupportedFile, mode)
+			return scanError(path, fmt.Errorf("workspace: scan %q: %w (%s)", path, ErrUnsupportedFile, mode))
 		}
 	}
 	return nil
@@ -147,22 +170,22 @@ func (w *Workspace) scanWalk(ctx context.Context, dirRel, prefix string, files *
 func (w *Workspace) readVisibleFile(ctx context.Context, rawRel, path string) ([]byte, error) {
 	f, err := w.root.OpenFile(rawRel, os.O_RDONLY|noFollowFlag, 0)
 	if err != nil {
-		return nil, fmt.Errorf("workspace: scan %q: %w", path, err)
+		return nil, scanError(path, fmt.Errorf("workspace: scan %q: %w", path, err))
 	}
 	defer f.Close()
 	info, err := f.Stat()
 	if err != nil {
-		return nil, fmt.Errorf("workspace: scan %q: %w", path, err)
+		return nil, scanError(path, fmt.Errorf("workspace: scan %q: %w", path, err))
 	}
 	if !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("workspace: scan %q: %w (%s)", path, ErrUnsupportedFile, info.Mode())
+		return nil, scanError(path, fmt.Errorf("workspace: scan %q: %w (%s)", path, ErrUnsupportedFile, info.Mode()))
 	}
 	data, err := io.ReadAll(f)
 	if err != nil {
-		return nil, fmt.Errorf("workspace: scan %q: %w", path, err)
+		return nil, scanError(path, fmt.Errorf("workspace: scan %q: %w", path, err))
 	}
 	if err := git.ValidateContent(data); err != nil {
-		return nil, fmt.Errorf("workspace: scan %q: %w: %w", path, ErrInvalidContent, err)
+		return nil, scanError(path, fmt.Errorf("workspace: scan %q: %w: %w", path, ErrInvalidContent, err))
 	}
 	return data, nil
 }
