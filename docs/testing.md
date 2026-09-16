@@ -111,6 +111,17 @@ Do not remove the race detector, the count, or the timeout, and do not
 reintroduce a mode that runs a subset. A test too slow for the budget is a
 design problem in the test or in the implementation.
 
+The process scenarios re-execute the race-built test binary as the process
+body. A race-built program sleeps `atexit_sleep_ms` (ThreadSanitizer's
+default is 1000 ms) on every clean exit so goroutines that outlive `main`
+can still report a race. The parent waits on each helper's exit code, so
+that sleep would cost the package about one second per helper, roughly 45
+per `-count=3` run. `spawnHelperIn` therefore sets `GORACE=atexit_sleep_ms=0`
+for helpers only. Race detection of the helper's actual work is unchanged;
+only a race between goroutines leaked past `main` inside that one-second
+window goes unreported, and the `internal/app` package binary, which keeps
+the default sleep, still observes the same shutdown path.
+
 ## Coverage
 
 70 % statement coverage is the floor and 90 % is preferred. `make test`

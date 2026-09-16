@@ -155,6 +155,10 @@ func spawnHelperIn(t *testing.T, dir, mode string, extraEnv []string, args ...st
 		"SLIVINGDOC_PRIVATE_ROOT="+privateRoot,
 	)
 	env = overrideEnv(env, extraEnv)
+	// The race runtime sleeps atexit_sleep_ms (default 1 s) on every clean
+	// exit; the parent waits on that exit, so the suite would pay it per
+	// helper (docs/testing.md, Why the strictness).
+	env = overrideEnv(env, []string{"GORACE=" + strings.TrimSpace(os.Getenv("GORACE")+" atexit_sleep_ms=0")})
 	argv := append([]string{os.Args[0]}, args...)
 	proc, err := os.StartProcess(os.Args[0], argv, &os.ProcAttr{
 		Dir:   dir,
