@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"reflect"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -363,8 +364,16 @@ func TestConflictDataSurvivesSDKEnvelope(t *testing.T) {
 		t.Fatalf("content items = %d, want exactly one", len(res.Content))
 	}
 	text, ok := res.Content[0].(*sdk.TextContent)
-	if !ok || !strings.Contains(text.Text, "Resolve the conflict blocks") {
-		t.Fatalf("text item = %#v, want the candid conflict message", res.Content[0])
+	if !ok {
+		t.Fatalf("text item = %#v, want text content", res.Content[0])
+	}
+	for _, want := range []string{
+		"CONTENT_CONFLICT · MERGE_CONFLICT", "Resolve the conflict blocks",
+		"action: EDIT_FILES", "retryable: false", "diagnosticId:",
+	} {
+		if !strings.Contains(text.Text, want) {
+			t.Fatalf("text item = %q, want %q", text.Text, want)
+		}
 	}
 	if res.StructuredContent == nil {
 		t.Fatal("structured content missing")
@@ -391,6 +400,9 @@ func TestConflictDataSurvivesSDKEnvelope(t *testing.T) {
 	}
 	if got.Reason != "MERGE_CONFLICT" || got.Action != "EDIT_FILES" {
 		t.Fatalf("structured reason/action = %q/%q, want MERGE_CONFLICT/EDIT_FILES", got.Reason, got.Action)
+	}
+	if !regexp.MustCompile(`^[0-9a-f]{16}$`).MatchString(got.DiagnosticID) {
+		t.Fatalf("diagnosticId = %q, want 16 lowercase hex characters", got.DiagnosticID)
 	}
 }
 

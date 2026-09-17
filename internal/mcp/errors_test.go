@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -212,6 +213,90 @@ func TestMapErrorFallback(t *testing.T) {
 	te, domain := MapError(errors.New("unexpected internal failure"))
 	if !domain || te.Code != codeStorageFailure || !te.Retryable {
 		t.Fatalf("MapError() = %+v, %v; want a retryable storage failure", te, domain)
+	}
+}
+
+// engineError wraps cause in the ENGINE_FAILED domain error the notebook
+// raises when a publication cannot be prepared.
+func engineError(cause error) *notebook.Error {
+	return &notebook.Error{
+		Code: notebook.CodeStorageIntegrity, Reason: notebook.ReasonEngineFailed, Action: notebook.ActionOperator,
+		Message: "could not prepare changed files for publication",
+		Cause:   fmt.Errorf("git: export increment: %w", cause),
+	}
+}
+
+// TestMapErrorEngineFailureNamesKnownCauses proves that a cause the engine
+// classified itself reaches the caller as fixed, actionable prose.
+func TestMapErrorEngineFailureNamesKnownCauses(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		cause error
+		want  string
+	}{
+		{"no new objects", git.ErrNoNewObjects, "no changed files"},
+		{"object missing", fmt.Errorf("blob %s: %w", strings.Repeat("a", 40), git.ErrObjectMissing), "notes_pull"},
+		{"empty pack", git.ErrEmptyPack, "was empty"},
+		{"unsupported mode", &git.UnsupportedModeError{Name: "docs/link.md", Mode: 0o120000}, `"docs/link.md"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			te, domain := MapError(engineError(tc.cause))
+			if !domain {
+				t.Fatal("MapError() reported a non-domain error")
+			}
+			if !strings.Contains(te.Detail, tc.want) {
+				t.Fatalf("detail = %q, want it to contain %q", te.Detail, tc.want)
+			}
+			assertNoEngineVocabulary(t, te.Detail)
+		})
+	}
+}
+
+// TestMapErrorEngineFailureDropsUnknownCause proves the allowlist is closed:
+// unbounded driver prose yields no detail at all rather than a sanitized
+// guess. The operator reads the cause from the server log instead.
+func TestMapErrorEngineFailureDropsUnknownCause(t *testing.T) {
+	cause := fmt.Errorf("odb: mmap window failed at /home/user/.cache/slivingdoc/private/repo: EIO")
+	te, domain := MapError(engineError(cause))
+	if !domain {
+		t.Fatal("MapError() reported a non-domain error")
+	}
+	if te.Detail != "" {
+		t.Fatalf("detail = %q, want an unrecognized cause to be dropped", te.Detail)
+	}
+}
+
+// engineVocabulary is the terminology an engine detail may never contain.
+// It is derived from the literals internal/git actually raises, not from the
+// mapper's own implementation, so a new leak fails this test.
+var engineVocabulary = []string{"git:", "blob", "tree", "packfile", "pack ", "object store", "shallow", "commit", "odb", "mmap"}
+
+func assertNoEngineVocabulary(t *testing.T, detail string) {
+	t.Helper()
+	lower := strings.ToLower(detail)
+	for _, word := range engineVocabulary {
+		if strings.Contains(lower, word) {
+			t.Fatalf("detail = %q leaks engine vocabulary %q", detail, word)
+		}
+	}
+	if id := regexp.MustCompile(`\b[0-9a-fA-F]{40}\b`).FindString(detail); id != "" {
+		t.Fatalf("detail = %q leaks the object ID %q", detail, id)
+	}
+	if strings.Contains(detail, "/home/") || strings.Contains(detail, redacted) {
+		t.Fatalf("detail = %q contains a filesystem path", detail)
+	}
+}
+
+// TestRedactValuesKeepsRelativePaths proves the operator-facing log redaction
+// removes absolute paths without destroying the notebook-relative path that
+// names the offending file.
+func TestRedactValuesKeepsRelativePaths(t *testing.T) {
+	got := redactValues(`open /home/user/.cache/slivingdoc/priv/repo: unsupported file mode for "docs/link.md"`)
+	if strings.Contains(got, "/home/user") {
+		t.Fatalf("redactValues() = %q, leaked the private path", got)
+	}
+	if !strings.Contains(got, `"docs/link.md"`) {
+		t.Fatalf("redactValues() = %q, want the relative path preserved", got)
 	}
 }
 

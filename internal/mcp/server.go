@@ -10,6 +10,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"log/slog"
 	"strings"
@@ -113,38 +114,38 @@ func (h *handler) path(requested string) string {
 }
 
 func (h *handler) pull(ctx context.Context, req *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
-	logger, ctx := h.requestLogger(ctx, toolPull)
+	logger, ctx, reqID := h.requestLogger(ctx, toolPull)
 	start := time.Now()
 	logger.Info("tool call started")
 	requested, err := decodePull(req.Params.Arguments)
 	if err != nil {
 		logger.Warn("tool call completed", "outcome", "invalid_request", "duration", time.Since(start))
-		return h.errorResult(decodeFailureError(err)), nil
+		return h.errorResult(decodeFailureError(err), reqID), nil
 	}
 	path := h.path(requested)
 	result, err := h.svc.Pull(ctx, path)
 	if err != nil {
-		logger.Warn("tool call completed", "outcome", "error", "duration", time.Since(start))
-		return h.resultFor(err)
+		logger.Warn("tool call completed", "outcome", "error", "duration", time.Since(start), "cause", redactValues(err.Error()))
+		return h.resultFor(err, reqID)
 	}
 	logger.Info("tool call completed", "outcome", "ok", "duration", time.Since(start))
 	return h.successResult(result, path), nil
 }
 
 func (h *handler) commit(ctx context.Context, req *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
-	logger, ctx := h.requestLogger(ctx, toolCommit)
+	logger, ctx, reqID := h.requestLogger(ctx, toolCommit)
 	start := time.Now()
 	logger.Info("tool call started")
 	requested, message, err := decodeCommit(req.Params.Arguments)
 	if err != nil {
 		logger.Warn("tool call completed", "outcome", "invalid_request", "duration", time.Since(start))
-		return h.errorResult(decodeFailureError(err)), nil
+		return h.errorResult(decodeFailureError(err), reqID), nil
 	}
 	path := h.path(requested)
 	result, err := h.svc.Commit(ctx, path, message)
 	if err != nil {
-		logger.Warn("tool call completed", "outcome", "error", "duration", time.Since(start))
-		return h.resultFor(err)
+		logger.Warn("tool call completed", "outcome", "error", "duration", time.Since(start), "cause", redactValues(err.Error()))
+		return h.resultFor(err, reqID)
 	}
 	logger.Info("tool call completed", "outcome", "ok", "duration", time.Since(start))
 	return h.successResult(result, path), nil
@@ -155,10 +156,10 @@ func (h *handler) commit(ctx context.Context, req *sdk.CallToolRequest) (*sdk.Ca
 // attached to the derived context. The SDK does not expose the wire
 // JSON-RPC request ID to handlers, so the server generates its own
 // 16-hex-char correlation ID per call.
-func (h *handler) requestLogger(ctx context.Context, tool string) (*slog.Logger, context.Context) {
+func (h *handler) requestLogger(ctx context.Context, tool string) (*slog.Logger, context.Context, string) {
 	reqID := newRequestID()
 	logger := h.logger.With("mcpReqID", reqID, "tool", tool)
-	return logger, notebook.WithLogger(ctx, logger)
+	return logger, notebook.WithLogger(ctx, logger), reqID
 }
 
 // newRequestID returns a fresh 16-hex-char correlation ID. A randomness
@@ -176,12 +177,12 @@ func newRequestID() string {
 // becomes an isError tool result with one candid text item and the
 // structured object; any other error (request cancellation) stays a
 // protocol error.
-func (h *handler) resultFor(err error) (*sdk.CallToolResult, error) {
+func (h *handler) resultFor(err error, diagnosticID string) (*sdk.CallToolResult, error) {
 	te, domain := MapError(err)
 	if !domain {
 		return nil, err
 	}
-	return h.errorResult(te), nil
+	return h.errorResult(te, diagnosticID), nil
 }
 
 // successResult is the success envelope: one text item and the structured
@@ -231,8 +232,9 @@ func readOnlyDescriptionSuffix(entries []string) string {
 }
 
 // errorResult attaches the server's read-only set and builds the envelope.
-func (h *handler) errorResult(te *ToolError) *sdk.CallToolResult {
+func (h *handler) errorResult(te *ToolError, diagnosticID string) *sdk.CallToolResult {
 	te.ReadOnly = h.svc.ReadOnlyPaths()
+	te.DiagnosticID = diagnosticID
 	return errorResult(te)
 }
 
@@ -241,9 +243,40 @@ func (h *handler) errorResult(te *ToolError) *sdk.CallToolResult {
 func errorResult(te *ToolError) *sdk.CallToolResult {
 	return &sdk.CallToolResult{
 		IsError:           true,
-		Content:           []sdk.Content{&sdk.TextContent{Text: te.Message}},
+		Content:           []sdk.Content{&sdk.TextContent{Text: errorText(te)}},
 		StructuredContent: te,
 	}
+}
+
+// errorText renders the complete safe error summary for clients that discard
+// StructuredContent and forward only the MCP text item.
+func errorText(te *ToolError) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s · %s\n%s\n", te.Code, te.Reason, te.Message)
+	if te.Detail != "" {
+		fmt.Fprintf(&b, "detail: %s\n", te.Detail)
+	}
+	for _, file := range te.Files {
+		fmt.Fprintf(&b, "file: %s · %s", file.Path, file.Reason)
+		if len(file.Ranges) > 0 {
+			b.WriteString(" · lines ")
+			for i, r := range file.Ranges {
+				if i > 0 {
+					b.WriteString(", ")
+				}
+				fmt.Fprintf(&b, "%d-%d", r.Start, r.End)
+			}
+		}
+		b.WriteByte('\n')
+	}
+	fmt.Fprintf(&b, "action: %s\nretryable: %t\ndiagnosticId: %s", te.Action, te.Retryable, te.DiagnosticID)
+	if rec := te.Recovery; rec != nil {
+		fmt.Fprintf(&b, "\nrecovery: stage=%s remoteAccepted=%s resynchronized=%t", rec.Stage, rec.RemoteAccepted, rec.Resynchronized)
+	}
+	if len(te.ReadOnly) > 0 {
+		fmt.Fprintf(&b, "\nread-only: %s", strings.Join(te.ReadOnly, notebook.ReadOnlyListSeparator))
+	}
+	return b.String()
 }
 
 // Tool descriptions tell the caller to edit UTF-8 text files between pull

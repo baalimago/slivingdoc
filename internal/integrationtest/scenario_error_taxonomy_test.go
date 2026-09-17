@@ -106,6 +106,15 @@ func TestScenarioErrorTaxonomy(t *testing.T) {
 		t.Run(row.name, func(t *testing.T) {
 			out := row.run(t)
 			env := decodeEnvelope(t, out.call, out.result)
+			text, ok := out.result.Content[0].(*sdk.TextContent)
+			if !ok {
+				t.Fatalf("error content = %#v, want text", out.result.Content[0])
+			}
+			for _, want := range []string{out.code + " · " + out.reason, "action: " + out.action, "retryable:"} {
+				if !strings.Contains(text.Text, want) {
+					t.Fatalf("error text = %q, want %q", text.Text, want)
+				}
+			}
 			if env.Code != out.code || env.Retryable != out.retry {
 				t.Fatalf("envelope = %+v, want code=%s retryable=%v", env, out.code, out.retry)
 			}
@@ -133,7 +142,7 @@ var gitObjectID = regexp.MustCompile(`\b[0-9a-f]{40}\b`)
 // instructions are expressed in ordinary file terms: a caller resolves
 // conflicts with a text editor and never runs Git. Each term is
 // unambiguous — none of them occurs in ordinary slivingdoc prose.
-var gitVocabulary = []string{"git ", "rebase", "merge-base", "refs/", "packfile", "checkout"}
+var gitVocabulary = []string{"git ", "git:", "rebase", "merge-base", "refs/", "packfile", "checkout", "blob", "tree ", "shallow"}
 
 // assertTaxonomyRedaction proves that neither the caller-facing envelope nor
 // the harness's own log records leak an S3 key, a private path, or a Git

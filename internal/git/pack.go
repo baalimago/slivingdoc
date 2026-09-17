@@ -28,7 +28,7 @@ func ExportIncrement(repo Repository, head, base OID) (Pack, error) {
 		}
 	}
 	if len(objects) == 0 {
-		return Pack{}, fmt.Errorf("git: export increment: no new objects")
+		return Pack{}, fmt.Errorf("git: export increment: %w", ErrNoNewObjects)
 	}
 	return writePack(repo, objects)
 }
@@ -56,7 +56,7 @@ func ExportCheckpoint(repo Repository, head OID) (Pack, error) {
 // manifest SHA-256 by the storage layer before this call.
 func ImportPack(repo Repository, data []byte) error {
 	if len(data) == 0 {
-		return fmt.Errorf("git: import pack: empty pack")
+		return fmt.Errorf("git: import pack: %w", ErrEmptyPack)
 	}
 	if err := repo.ImportPack(data); err != nil {
 		return fmt.Errorf("git: import pack: %w", err)
@@ -70,7 +70,7 @@ func ImportPack(repo Repository, data []byte) error {
 // exactly that gap.
 func MarkShallow(repo Repository, head OID) error {
 	if head.IsZero() {
-		return fmt.Errorf("git: mark shallow: commit is required")
+		return fmt.Errorf("git: mark shallow: %w", ErrHeadRequired)
 	}
 	if err := repo.MarkShallow(head); err != nil {
 		return fmt.Errorf("git: mark shallow: %w", err)
@@ -198,7 +198,7 @@ func treeClosure(repo Repository, tree OID, set map[OID]struct{}) error {
 			case ModeBlob:
 				set[e.ID] = struct{}{}
 			default:
-				return fmt.Errorf("unsupported file mode %o for %q", e.Mode, e.Name)
+				return &UnsupportedModeError{Name: e.Name, Mode: e.Mode}
 			}
 		}
 	}
@@ -236,11 +236,11 @@ func treeClosureValidate(repo Repository, tree OID, seen map[OID]struct{}) error
 					return fmt.Errorf("blob %s: %w", e.ID, err)
 				}
 				if !present {
-					return fmt.Errorf("blob %s: missing from the object store", e.ID)
+					return fmt.Errorf("blob %s: %w", e.ID, ErrObjectMissing)
 				}
 				seen[e.ID] = struct{}{}
 			default:
-				return fmt.Errorf("unsupported file mode %o for %q", e.Mode, e.Name)
+				return &UnsupportedModeError{Name: e.Name, Mode: e.Mode}
 			}
 		}
 	}

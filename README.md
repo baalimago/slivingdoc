@@ -88,6 +88,10 @@ candid report: the status line (the error code, a middle dot, and the
 line ranges, a `next:` line naming the caller's next step, the retryable
 verdict, and the same read-only trailer when configured. Colour appears
 only on a real terminal and is disabled by any non-empty `NO_COLOR`.
+MCP errors provide the same essential fields in their text item, including a
+diagnostic ID for server-log correlation. An engine failure adds a plain-language
+detail when the engine could name the cause; otherwise the cause stays in the
+server log, which the diagnostic ID points at.
 
 Pass `--read-only-paths docs,faq.md` (or `SLIVINGDOC_READ_ONLY_PATHS`) to
 let a fleet of agents read those notebook paths but never change them: a

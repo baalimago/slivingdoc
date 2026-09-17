@@ -149,7 +149,8 @@ func TestDecodeEnvelopeRequiresTokens(t *testing.T) {
 	call := ToolCall{Tool: toolCommit, Path: "/tmp/notebook"}
 	complete := map[string]any{
 		"code": "INVALID_REQUEST", "reason": "MESSAGE_BLANK", "action": "FIX_INPUT",
-		"retryable": false, "message": "commit message must not be blank",
+		"diagnosticId": "0011223344556677",
+		"retryable":    false, "message": "commit message must not be blank",
 		"files": []any{}, "readOnly": []any{},
 	}
 	res := tokenEnvelopeResult(complete)
@@ -169,6 +170,7 @@ func TestDecodeEnvelopeRequiresTokens(t *testing.T) {
 		{"missing message", func(e envelope) envelope { e.Message = ""; return e }, "empty message"},
 		{"missing reason", func(e envelope) envelope { e.Reason = ""; return e }, "empty reason"},
 		{"missing action", func(e envelope) envelope { e.Action = ""; return e }, "empty action"},
+		{"missing diagnostic id", func(e envelope) envelope { e.DiagnosticID = ""; return e }, "empty diagnosticId"},
 		{"nil files", func(e envelope) envelope { e.Files = nil; return e }, "no files key"},
 		{"nil readOnly", func(e envelope) envelope { e.ReadOnly = nil; return e }, "no readOnly key"},
 		{"file with no reason", func(e envelope) envelope {

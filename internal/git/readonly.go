@@ -204,7 +204,7 @@ func (s ReadOnlySet) walkCovered(repo Repository, tree OID, prefix string, insid
 			}
 			*files = append(*files, File{Path: path, Data: data})
 		default:
-			return fmt.Errorf("unsupported file mode %o for %q", e.Mode, path)
+			return &UnsupportedModeError{Name: path, Mode: e.Mode}
 		}
 	}
 	return nil

@@ -221,7 +221,7 @@ func (n *Notebook) buildFirstProposal(ctx context.Context, remote remoteState, m
 	}
 	pack, err := git.ExportCheckpoint(n.ws.Repo(), head)
 	if err != nil {
-		return proposal{}, storageIntegrity(ReasonEngineFailed, err, "export checkpoint pack")
+		return proposal{}, storageIntegrity(ReasonEngineFailed, err, "could not prepare the full notebook state for publication")
 	}
 	if err := git.MarkShallow(n.ws.Repo(), head); err != nil {
 		return proposal{}, storageIntegrity(ReasonEngineFailed, err, "record the checkpoint boundary")
@@ -270,7 +270,7 @@ func (n *Notebook) buildIncrementProposal(ctx context.Context, remote remoteStat
 	}
 	pack, err := git.ExportIncrement(n.ws.Repo(), head, remote.head)
 	if err != nil {
-		return proposal{}, storageIntegrity(ReasonEngineFailed, err, "export increment pack")
+		return proposal{}, storageIntegrity(ReasonEngineFailed, err, "could not prepare changed files for publication")
 	}
 	// The increment's target generation continues the active increment
 	// chain from the checkpoint cutoff. The manifest generation counter

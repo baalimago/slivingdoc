@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/baalimago/slivingdoc/internal/git"
 	"github.com/baalimago/slivingdoc/internal/notebook"
 	"github.com/baalimago/slivingdoc/internal/workspace"
 )
@@ -33,19 +34,21 @@ const (
 )
 
 // ToolError is the structured error object carried in the MCP tool result.
-// Code, reason, action, retryable, message, and files are always present;
-// recovery appears only for RECOVERY_FAILURE (architecture section 2).
+// Code, reason, action, diagnostic ID, retryable, message, and files are always
+// present; detail and recovery are conditional (architecture section 2).
 // Request paths are absolute; every files[].path is relative to the
 // request path and uses the normalized internal slash form.
 type ToolError struct {
-	Code      string        `json:"code"`
-	Reason    string        `json:"reason"`
-	Action    string        `json:"action"`
-	Retryable bool          `json:"retryable"`
-	Message   string        `json:"message"`
-	Files     []ErrorFile   `json:"files"`
-	Recovery  *RecoveryInfo `json:"recovery,omitempty"`
-	ReadOnly  []string      `json:"readOnly"`
+	Code         string        `json:"code"`
+	Reason       string        `json:"reason"`
+	Action       string        `json:"action"`
+	DiagnosticID string        `json:"diagnosticId"`
+	Retryable    bool          `json:"retryable"`
+	Message      string        `json:"message"`
+	Detail       string        `json:"detail,omitempty"`
+	Files        []ErrorFile   `json:"files"`
+	Recovery     *RecoveryInfo `json:"recovery,omitempty"`
+	ReadOnly     []string      `json:"readOnly"`
 }
 
 type ErrorFile struct {
@@ -103,8 +106,9 @@ func MapError(err error) (*ToolError, bool) {
 }
 
 // mapNotebookError converts one notebook domain error into the stable
-// tool-error shape. Only the notebook's public message reaches the
-// envelope; the wrapped cause stays internal and is never surfaced.
+// tool-error shape. Only the notebook's public message and, for a named
+// engine failure, a fixed safe description of the cause reach the envelope;
+// raw cause text stays internal.
 func mapNotebookError(e *notebook.Error) *ToolError {
 	files := make([]ErrorFile, 0, len(e.Files))
 	for _, f := range e.Files {
@@ -123,6 +127,9 @@ func mapNotebookError(e *notebook.Error) *ToolError {
 		Files:     files,
 		ReadOnly:  []string{},
 	}
+	if e.Reason == notebook.ReasonEngineFailed && e.Cause != nil {
+		te.Detail = safeEngineDetail(e.Cause)
+	}
 	if e.Code == notebook.CodeRecoveryFailure && e.Recovery != nil {
 		te.Recovery = &RecoveryInfo{
 			Stage:          e.Recovery.Stage,
@@ -131,6 +138,37 @@ func mapNotebookError(e *notebook.Error) *ToolError {
 		}
 	}
 	return te
+}
+
+// safeEngineDetail describes an engine failure the engine could name itself.
+// Sanitizing free-form driver prose is not sound — a denylist of terms both
+// mangles the surrounding words and misses every term nobody listed — so the
+// mapping is an allowlist over typed causes and an unrecognized cause yields
+// no detail at all. The operator reads the full cause from the server log,
+// correlated by the result's diagnostic ID.
+func safeEngineDetail(err error) string {
+	var mode *git.UnsupportedModeError
+	switch {
+	case errors.As(err, &mode):
+		return Redact(fmt.Sprintf("%q is not a regular text file; the notebook stores UTF-8 text files only", mode.Name))
+	case errors.Is(err, git.ErrNoNewObjects):
+		return "no changed files were found to publish"
+	case errors.Is(err, git.ErrObjectMissing):
+		return "part of the stored notebook state is missing locally; run notes_pull again to restore it"
+	case errors.Is(err, git.ErrEmptyPack):
+		return "the downloaded notebook state was empty"
+	case errors.Is(err, git.ErrHeadRequired):
+		return "the notebook state to record was empty"
+	default:
+		return ""
+	}
+}
+
+// redactValues removes protected values from operator-facing diagnostic text:
+// everything Redact covers, plus filesystem paths. It leaves vocabulary
+// intact, so it is safe for the server log but never for a tool result.
+func redactValues(s string) string {
+	return strings.TrimSpace(absolutePathRE.ReplaceAllString(Redact(s), "${1}"+redacted))
 }
 
 // retryable reports whether a notebook error category permits a retry.
@@ -186,12 +224,13 @@ func invalidRequest(cause error) *ToolError {
 // object IDs (40 hex), the derived private-directory key (64 hex), and AWS
 // access key IDs (AKIA + 16) are scrubbed as defense in depth.
 var (
-	packKeyRE    = regexp.MustCompile(`packs/(?:checkpoints|increments)/\d+-[0-9a-fA-F-]{36}\.pack`)
-	probeKeyRE   = regexp.MustCompile(`probe/[0-9a-fA-F-]{36}`)
-	gitIDRE      = regexp.MustCompile(`\b[0-9a-fA-F]{40}\b`)
-	derivedKeyRE = regexp.MustCompile(`\b[0-9a-fA-F]{64}\b`)
-	accessKeyRE  = regexp.MustCompile(`\bAKIA[0-9A-Z]{16}\b`)
-	userInfoRE   = regexp.MustCompile(`://[^@/\s]+@`)
+	packKeyRE      = regexp.MustCompile(`packs/(?:checkpoints|increments)/\d+-[0-9a-fA-F-]{36}\.pack`)
+	probeKeyRE     = regexp.MustCompile(`probe/[0-9a-fA-F-]{36}`)
+	gitIDRE        = regexp.MustCompile(`\b[0-9a-fA-F]{40}\b`)
+	derivedKeyRE   = regexp.MustCompile(`\b[0-9a-fA-F]{64}\b`)
+	accessKeyRE    = regexp.MustCompile(`\bAKIA[0-9A-Z]{16}\b`)
+	userInfoRE     = regexp.MustCompile(`://[^@/\s]+@`)
+	absolutePathRE = regexp.MustCompile(`(^|[\s"'(=])((?:[A-Za-z]:\\|/)[^\s:;,()"']*)`)
 )
 
 const redacted = "[redacted]"

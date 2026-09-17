@@ -605,17 +605,19 @@ func (h *Harness) assertEnvelope(t *testing.T, call ToolCall, res *sdk.CallToolR
 }
 
 // envelope is the structured error object of the tool-error shape
-// (architecture section 2): code, reason, action, retryable, message, and
-// files are always present; recovery appears only for RECOVERY_FAILURE.
+// (architecture section 2): code, reason, action, diagnostic ID, retryable,
+// message, and files are always present; recovery appears only for
+// RECOVERY_FAILURE.
 type envelope struct {
-	Code      string            `json:"code"`
-	Reason    string            `json:"reason"`
-	Action    string            `json:"action"`
-	Retryable bool              `json:"retryable"`
-	Message   string            `json:"message"`
-	Files     []envelopeFile    `json:"files"`
-	Recovery  *envelopeRecovery `json:"recovery"`
-	ReadOnly  []string          `json:"readOnly"`
+	Code         string            `json:"code"`
+	Reason       string            `json:"reason"`
+	Action       string            `json:"action"`
+	DiagnosticID string            `json:"diagnosticId"`
+	Retryable    bool              `json:"retryable"`
+	Message      string            `json:"message"`
+	Files        []envelopeFile    `json:"files"`
+	Recovery     *envelopeRecovery `json:"recovery"`
+	ReadOnly     []string          `json:"readOnly"`
 }
 
 type envelopeFile struct {
@@ -645,6 +647,8 @@ func envelopeTokenViolation(env envelope) string {
 		return "carries an empty reason"
 	case env.Action == "":
 		return "carries an empty action"
+	case env.DiagnosticID == "":
+		return "carries an empty diagnosticId"
 	case env.Files == nil:
 		return "carries no files key"
 	case env.ReadOnly == nil:

@@ -102,7 +102,7 @@ func walkTree(repo Repository, tree OID, prefix string, files *[]File) error {
 			}
 			*files = append(*files, File{Path: path, Data: data})
 		default:
-			return fmt.Errorf("unsupported file mode %o for %q", e.Mode, path)
+			return &UnsupportedModeError{Name: path, Mode: e.Mode}
 		}
 	}
 	return nil

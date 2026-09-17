@@ -150,8 +150,8 @@ slivingdoc/
     |                        SeaweedFS) (one container per `go test`
     |                        invocation)
     |-- mcp/                 stdio MCP server: the two strict tool schemas,
-    |                        strict decoding, the stable error envelope, and
-    |                        the mcpReqID request logging
+    |                        strict decoding, self-contained safe error text,
+    |                        the stable error envelope, and mcpReqID logging
     `-- integrationtest/     test-only black-box MCP scenario suite: the
                              behavioral contract of the whole server
 ```
@@ -434,6 +434,10 @@ these are additive fields, present on every error, that let an agent
 branch without parsing message text. Every success and error result also
 carries a `readOnly` array of the process's normalized read-only set,
 additive and always present, empty when nothing is configured.
+Every MCP error also carries a fresh `diagnosticId` in both its structured
+object and candid text item. An engine failure may carry a `detail`
+chosen from a closed set of named causes; raw cause text never crosses the
+tool boundary and is logged against the same ID instead.
 An unrecognized internal error maps to retryable `STORAGE_FAILURE` rather
 than leaking. Caller-facing text must never contain a credential, an S3
 key, a private path, a Git object ID, or Git vocabulary.

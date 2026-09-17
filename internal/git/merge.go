@@ -31,7 +31,7 @@ func Merge(repo Repository, base, local, remote OID) (MergeResult, error) {
 	byPath := make(map[string][]IndexEntry, len(idx.Entries))
 	for _, e := range idx.Entries {
 		if e.Mode != ModeBlob && e.Mode != ModeTree {
-			return MergeResult{}, fmt.Errorf("git: merge: unsupported file mode %o for %q", e.Mode, e.Path)
+			return MergeResult{}, fmt.Errorf("git: merge: %w", &UnsupportedModeError{Name: e.Path, Mode: e.Mode})
 		}
 		byPath[e.Path] = append(byPath[e.Path], e)
 	}

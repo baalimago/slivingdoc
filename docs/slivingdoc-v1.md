@@ -176,6 +176,7 @@ text item, and this structured object:
   "code": "CONTENT_CONFLICT",
   "reason": "MERGE_CONFLICT",
   "action": "EDIT_FILES",
+  "diagnosticId": "0011223344556677",
   "retryable": false,
   "message": "Resolve the conflict blocks before notes_commit.",
   "files": [
@@ -189,8 +190,16 @@ text item, and this structured object:
 }
 ```
 
-`code`, `reason`, `action`, `retryable`, `message`, `files`, and `readOnly`
-are always present. Paths are normalized internal paths. Ranges are
+`code`, `reason`, `action`, `diagnosticId`, `retryable`, `message`, `files`,
+and `readOnly` are always present. `diagnosticId` is a fresh 16-character
+lowercase hexadecimal identifier that correlates the result with the two
+server log records for the tool call. An `ENGINE_FAILED` error can also carry
+an optional `detail`: a fixed description of the cause, selected from a closed
+set that the engine classified itself. A cause outside that set carries no
+`detail` at all, because free-form engine text cannot be made safe by
+filtering. The operator reads the full cause from the server log record for
+the same `diagnosticId`. Paths are
+normalized internal paths. Ranges are
 one-based, inclusive, ordered, and non-overlapping. A file without a marker
 range has an empty `ranges` array. `RECOVERY_FAILURE` also includes
 `recovery` with string `stage`, enum `remoteAccepted` (`yes`, `no`, or
@@ -198,6 +207,11 @@ range has an empty `ranges` array. `RECOVERY_FAILURE` also includes
 credentials, S3 keys, private paths, or Git IDs. Request `path` is absolute.
 Every `files[].path` in an error is relative to that request path and uses
 the normalized internal slash form.
+
+The candid MCP text item repeats the code, reason, message, optional detail,
+affected files, action, retryable verdict, diagnostic ID, recovery report, and
+read-only set. Clients that discard structured content therefore retain the
+complete safe diagnostic rather than only the message.
 
 `reason` is one stable, machine-readable token classifying the error one
 level more specifically than `code`; `action` is one stable token naming
