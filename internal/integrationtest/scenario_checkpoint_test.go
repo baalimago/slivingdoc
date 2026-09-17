@@ -576,3 +576,66 @@ func assertWarning(t *testing.T, h *Harness, msg, attr, value string) {
 		return fmt.Errorf("no warning %q with %s=%q in:\n%s", msg, attr, value, h.Logs())
 	})
 }
+
+// compactedCaller publishes three commits at a threshold of two, leaving the
+// notebook compacted, and returns a second caller whose first pull imports the
+// checkpoint pack alone. That caller's repository is shallow at the checkpoint
+// commit, whose recorded parent the pack omits.
+func compactedCaller(t *testing.T, a *Harness, pathA string) (*Harness, string) {
+	t.Helper()
+	commitFirst(t, a, pathA, "f1.md", "v1", "c1")
+	commitNext(t, a, pathA, "f2.md", "v2", "c2")
+	commitNext(t, a, pathA, "f3.md", "v3", "c3")
+	if m := a.Manifest(); len(m.Increments) != 0 {
+		t.Fatalf("manifest increments = %d, want the compacted empty tail", len(m.Increments))
+	}
+	b := newSharedHarness(t, a.Raw(), a.cfg.Prefix, HarnessConfig{CheckpointPacks: new(1024)})
+	pathB := b.Path("notes")
+	b.assertOK(t, b.Pull("", pathB))
+	return b, pathB
+}
+
+// TestScenarioCommitAfterCheckpointMaterialization proves that a caller
+// materialized from a checkpoint publishes an increment in the process that
+// pulled it. Exporting the increment walks the parent chain of the remote
+// head, so the shallow boundary has to be visible to the handle that imported
+// the pack, not only to a freshly opened one (architecture section 13.3).
+func TestScenarioCommitAfterCheckpointMaterialization(t *testing.T) {
+	t.Parallel()
+	a := newFakeHarness(t, HarnessConfig{CheckpointPacks: new(2)})
+	pathA := a.Path("notes")
+	b, pathB := compactedCaller(t, a, pathA)
+
+	b.WriteFile(pathB+"/b.md", "B")
+	b.assertOK(t, b.Commit("", pathB, "cB"))
+
+	if m := b.Manifest(); len(m.Increments) != 1 {
+		t.Fatalf("manifest increments = %d, want the one published increment", len(m.Increments))
+	}
+	// The publication is a normal increment on the checkpoint: the new content
+	// arrives and the pre-checkpoint content survives it.
+	a.assertOK(t, a.Pull("", pathA))
+	if got := a.ReadFile(pathA + "/b.md"); got != "B" {
+		t.Fatalf("b.md = %q, want the content published from the shallow caller", got)
+	}
+	if got := a.ReadFile(pathA + "/f1.md"); got != "v1" {
+		t.Fatalf("f1.md = %q, want the pre-checkpoint content preserved", got)
+	}
+}
+
+// TestScenarioRepeatedCommitsAfterCheckpointMaterialization proves the shallow
+// boundary keeps holding for the rest of the session: one materialized caller
+// publishes several increments without reopening its repository.
+func TestScenarioRepeatedCommitsAfterCheckpointMaterialization(t *testing.T) {
+	t.Parallel()
+	a := newFakeHarness(t, HarnessConfig{CheckpointPacks: new(2)})
+	b, pathB := compactedCaller(t, a, a.Path("notes"))
+
+	for _, name := range []string{"b1.md", "b2.md", "b3.md"} {
+		b.WriteFile(pathB+"/"+name, name)
+		b.assertOK(t, b.Commit("", pathB, "commit "+name))
+	}
+	if m := b.Manifest(); len(m.Increments) != 3 {
+		t.Fatalf("manifest increments = %d, want the three published increments", len(m.Increments))
+	}
+}

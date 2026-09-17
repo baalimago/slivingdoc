@@ -275,12 +275,12 @@ module that selects its level. Bind a module once per component rather than
 per call: slog consults `Enabled` before it builds a record, so the level can
 only be resolved from a bound attribute.
 
-| Variable | Effect |
-| -------- | ------ |
-| `LOG_LEVEL` | Per-module levels, for example `cli=warn,mcp=debug,info`. A bare level is the default. A malformed value falls back to info and is reported, never fatal. |
-| `SLIVINGDOC_LOG_TIMESTAMP` | `false` removes the `time=` field, for hosts that stamp lines themselves. |
-| `NO_COLOR` | Any non-empty value disables the ANSI level color. |
-| `DEBUG_PERF` | Captures CPU, heap, and execution-trace profiles across the whole command (`internal/app/perf.go`); `1` writes under the system temporary directory, any other value is the base directory. See `docs/running.md`. |
+| Variable                   | Effect                                                                                                                                                                                                             |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `LOG_LEVEL`                | Per-module levels, for example `cli=warn,mcp=debug,info`. A bare level is the default. A malformed value falls back to info and is reported, never fatal.                                                          |
+| `SLIVINGDOC_LOG_TIMESTAMP` | `false` removes the `time=` field, for hosts that stamp lines themselves.                                                                                                                                          |
+| `NO_COLOR`                 | Any non-empty value disables the ANSI level color.                                                                                                                                                                 |
+| `DEBUG_PERF`               | Captures CPU, heap, and execution-trace profiles across the whole command (`internal/app/perf.go`); `1` writes under the system temporary directory, any other value is the base directory. See `docs/running.md`. |
 
 The `--log-level` and `--log-timestamp` flags (shared by `serve`, `pull`,
 and `commit`) override the environment once the flags resolve; `setup`
@@ -315,69 +315,6 @@ implementation, never after.
   same commit. Before you rewrite an assertion, understand what it
   protected. If the breakage is a side effect rather than the feature's
   purpose, it is a regression finding, not a test to silence.
-
-## Function Shape
-
-Prefer many small single-purpose functions sequenced by a thin orchestrator over
-one function that does several things. Two smells drive most refactors here:
-
-- **`and` in a name is a split point.** `fooAndBar` is two functions
-  wearing one name. Name each helper for the single verb it performs and
-  let a caller sequence them. The orchestrator then reads as the outline of
-  the operation.
-- **A growing return tuple wants to be a struct — or wants to not exist at
-  all.** When a function returns three or more values, or when you are
-  tempted to add one more value to carry new data, that is a code smell.
-  Normalize the signature, or remove the extra values.
-
-The example below populates that struct incrementally and captures each
-value at its source. A value set early (timing, telemetry, the raw
-upstream result) survives a later step's failure. It is available on both
-the success and error paths, so the caller reads one field regardless of
-outcome — no per-branch plumbing.
-
-```go
-// Smell: one function, two jobs, a four-value return that only ever grows.
-func (p *P) resolveAndStore(ctx context.Context, req Req) (*Info, Proof, Config, error) { /* ... */ }
-
-// Preferred: a thin orchestrator over single-purpose steps, returning one struct.
-type outcome struct {
-    Info   *Info
-    Proof  Proof
-    Config Config
-    Usage  *Telemetry // set the instant it is known; survives a later step failing
-}
-
-func (p *P) Resolve(ctx context.Context, req Req) (*outcome, error) {
-    out := &outcome{}
-
-    raw, usage, err := p.fetch(ctx, req)
-    out.Usage = usage // captured up front — valid on every return below, success or error
-    if err != nil {
-        return out, err
-    }
-    cand, err := p.assess(raw) // pure: gates + shaping, no I/O
-    if err != nil {
-        return out, err
-    }
-    out.Proof, err = p.verify(ctx, cand)
-    if err != nil {
-        return out, err
-    }
-    out.Info, err = p.persist(ctx, cand)
-    if err != nil {
-        return out, err
-    }
-    out.Config = snapshot(raw)
-    return out, nil
-}
-```
-
-Returning a non-nil `out` alongside a non-nil error is deliberate here:
-the failure path still carries what was gathered before it (the `Usage`
-telemetry). Reserve that shape for structs whose job is to carry
-diagnostics across the outcome boundary. Keep the usual "nil result on
-error" everywhere else.
 
 ## Conventions
 
@@ -461,6 +398,20 @@ Use these principles to decide whether a reported clone needs fixing.
 - **Production code where the same sequence of operations appears verbatim** with different call-site constants. Extract a function.
 - **Identical setup + teardown across >3 tests in the same file.** Extract a test helper (`newTestXxx`) local to that file.
 
+## Code style:
+
+- Encode any failure in expectation as an error. If findData(path) (data, error) does not find data, that is an error. Encode why in the error. Same goes for any abscence.
+- Return types are self-describing. A bare `bool` or a naked `int` beside a value forces the meaning into a comment or into the call site's variable name — return a named type instead: an enum for a classification, a count for a quantity. If a return value needs a comment to explain it, it needs a type.
+- Never "log error and return", always return error. This leave a much more testable solution
+- If in an async routine, create an error channel passed to the parent who then is responsible to manage the error
+- Do not leave bloaty redundant comments. Private functions rarely need any comments at all. Public functions should only describe non-intuitive functionality.
+- Make all public functions intuitive via typed return values (including typed errors).
+- No reusable component should ever log. Return data should be self descriptive via error sand types, described above.
+- If some piece of code is written twice, it should be abstracted
+- Never panic in a funcion which returns an error
+- Return an error on every failure except in utmost circumstances
+- Avoid package level state, always inject dependencies.
+
 ## QA validation
 
 Run `make qa`. It runs `lint`, `test`, and `npm-test`. Before signing off on
@@ -473,15 +424,15 @@ pinned libgit2 and a running Docker daemon are prerequisites of `make test`,
 not optional extras: an unreachable daemon fails the run with an actionable
 diagnostic rather than skipping the storage protocol.
 
-| Tool        | Command                                                       |
-| ----------- | ------------------------------------------------------------- |
-| Format      | `go run mvdan.cc/gofumpt@v0.11.0 -w -l .`                     |
-| Staticcheck | `go run honnef.co/go/tools/cmd/staticcheck@v0.7.0 ./...`      |
-| Lint        | `go vet ./...`                                                |
-| Fix         | `go fix -diff ./...` (must print nothing)                     |
+| Tool        | Command                                                        |
+| ----------- | -------------------------------------------------------------- |
+| Format      | `go run mvdan.cc/gofumpt@v0.11.0 -w -l .`                      |
+| Staticcheck | `go run honnef.co/go/tools/cmd/staticcheck@v0.7.0 ./...`       |
+| Lint        | `go vet ./...`                                                 |
+| Fix         | `go fix -diff ./...` (must print nothing)                      |
 | Test        | `make test` (race, 3 counts, 30 s, coverage with a 70 % floor) |
-| npm         | `npm test --prefix npm/slivingdoc`                            |
-| Dupl        | `go run github.com/mibk/dupl@v1.0.0 -t 80 .`                  |
+| npm         | `npm test --prefix npm/slivingdoc`                             |
+| Dupl        | `go run github.com/mibk/dupl@v1.0.0 -t 80 .`                   |
 
 Run every Go tool in the default CGo mode. There is no `CGO_ENABLED=0` gate:
 `internal/git2` requires CGo, so a pure build fails to compile, and the CGo

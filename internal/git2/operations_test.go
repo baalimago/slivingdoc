@@ -243,8 +243,12 @@ func TestCommitRejectsMissingParentObject(t *testing.T) {
 	tree := buildSnapshotTree(t, repo, map[string]string{"a.txt": "one"})
 	var ghost git.OID
 	ghost[0] = 0xaa
-	if _, err := git.CreateCommit(repo, git.CommitSpec{Message: "x", Tree: tree, Parents: []git.OID{ghost}, Time: fixedTime()}); err == nil {
+	_, err := git.CreateCommit(repo, git.CommitSpec{Message: "x", Tree: tree, Parents: []git.OID{ghost}, Time: fixedTime()})
+	if err == nil {
 		t.Fatal("CreateCommit(missing parent) = nil, want lookup error")
+	}
+	if !errors.Is(err, git.ErrObjectMissing) {
+		t.Fatalf("CreateCommit(missing parent) error = %v, want it to carry git.ErrObjectMissing", err)
 	}
 }
 

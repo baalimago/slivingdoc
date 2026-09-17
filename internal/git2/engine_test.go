@@ -242,6 +242,11 @@ func TestMissingObjectRead(t *testing.T) {
 	if ne.Message == "" {
 		t.Fatal("NativeError must carry the libgit2 error message")
 	}
+	// An absent object is the one native code upstream acts on: the tool
+	// layer turns ErrObjectMissing into an actionable detail.
+	if !errors.Is(err, git.ErrObjectMissing) {
+		t.Fatalf("ReadBlob() error = %v, want it to carry git.ErrObjectMissing", err)
+	}
 
 	if err := repo.Close(); err != nil {
 		t.Fatalf("Close() = %v", err)

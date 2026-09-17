@@ -208,7 +208,7 @@ func libgit2ODBRead(odb *odbHandle, id git.OID) ([]byte, error) {
 	)
 	C.sl_oid_from_bytes(&cid, (*C.uchar)(unsafe.Pointer(&id[0])))
 	if rc := C.git_odb_read(&obj, odb.ptr, &cid); rc < 0 {
-		err := nativeError("read blob") // captures the error before the free below
+		err := nativeLookupError("read blob", rc) // captures the error before the free below
 		if obj != nil {
 			C.git_odb_object_free(obj)
 		}
@@ -281,7 +281,7 @@ func libgit2ReadTree(repo *repoHandle, id git.OID) ([]git.TreeEntry, error) {
 	)
 	C.sl_oid_from_bytes(&cid, (*C.uchar)(unsafe.Pointer(&id[0])))
 	if rc := C.git_tree_lookup(&tree, repo.ptr, &cid); rc < 0 {
-		return nil, nativeError("lookup tree")
+		return nil, nativeLookupError("lookup tree", rc)
 	}
 	defer C.git_tree_free(tree)
 
@@ -327,7 +327,7 @@ func libgit2CreateCommit(repo *repoHandle, spec git.CommitSpec) (git.OID, error)
 		C.sl_oid_from_bytes(&cid, (*C.uchar)(unsafe.Pointer(&pid[0])))
 		if rc := C.git_commit_lookup(&parents[i], repo.ptr, &cid); rc < 0 {
 			freeCommits(parents[:i])
-			return git.OID{}, nativeError("lookup parent commit")
+			return git.OID{}, nativeLookupError("lookup parent commit", rc)
 		}
 	}
 	defer freeCommits(parents)
@@ -359,7 +359,7 @@ func libgit2ReadCommit(repo *repoHandle, id git.OID) (git.Commit, error) {
 	)
 	C.sl_oid_from_bytes(&cid, (*C.uchar)(unsafe.Pointer(&id[0])))
 	if rc := C.git_commit_lookup(&commit, repo.ptr, &cid); rc < 0 {
-		return git.Commit{}, nativeError("lookup commit")
+		return git.Commit{}, nativeLookupError("lookup commit", rc)
 	}
 	defer C.git_commit_free(commit)
 
@@ -531,16 +531,21 @@ func libgit2ImportPack(odb *odbHandle, data []byte) error {
 // libgit2MarkShallow records a commit as a shallow history boundary: its
 // parents can be absent because the checkpoint pack omits pre-checkpoint
 // history. The shallow file lives in the repository git directory, exactly
-// where libgit2 and Git read it; a subsequent read refreshes the in-memory
-// graft table so the current session agrees with a freshly opened repository.
+// where libgit2 and Git read it. Writing the file does not make the boundary
+// visible to this handle; repository.MarkShallow reopens the repository for
+// that.
 func libgit2MarkShallow(repo *repoHandle, oid git.OID) error {
-	path := filepath.Join(C.GoString(C.git_repository_path(repo.ptr)), "shallow")
+	dir, err := libgit2RepoPath(repo)
+	if err != nil {
+		return fmt.Errorf("locate git directory: %w", err)
+	}
+	path := filepath.Join(dir, "shallow")
 	line := oid.String() + "\n"
 
 	switch existing, err := os.ReadFile(path); {
 	case err == nil:
 		if bytes.Contains(existing, []byte(line)) {
-			return refreshShallow(repo)
+			return nil
 		}
 	case !errors.Is(err, fs.ErrNotExist):
 		return fmt.Errorf("read shallow file: %w", err)
@@ -557,17 +562,15 @@ func libgit2MarkShallow(repo *repoHandle, oid git.OID) error {
 	if err := f.Close(); err != nil {
 		return fmt.Errorf("close shallow file: %w", err)
 	}
-	return refreshShallow(repo)
+	return nil
 }
 
-// refreshShallow reloads the shallow file into the repository graft table.
-// git_repository_is_shallow is the public entry point whose implementation
-// reloads grafts; its negative return is the only failure mode.
-func refreshShallow(repo *repoHandle) error {
-	if rc := C.git_repository_is_shallow(repo.ptr); rc < 0 {
-		return nativeError("refresh shallow roots")
+func libgit2RepoPath(repo *repoHandle) (string, error) {
+	path := C.GoString(C.git_repository_path(repo.ptr))
+	if path == "" {
+		return "", &git.NativeError{Op: "repository path", Message: "repository has no git directory"}
 	}
-	return nil
+	return path, nil
 }
 
 // lookupTree loads one tree object from the repository.
@@ -578,7 +581,7 @@ func lookupTree(repo *repoHandle, id git.OID) (*C.git_tree, error) {
 	)
 	C.sl_oid_from_bytes(&cid, (*C.uchar)(unsafe.Pointer(&id[0])))
 	if rc := C.git_tree_lookup(&tree, repo.ptr, &cid); rc < 0 {
-		return nil, nativeError("lookup tree")
+		return nil, nativeLookupError("lookup tree", rc)
 	}
 	return tree, nil
 }
@@ -610,6 +613,17 @@ func exists(data []byte) C.int {
 }
 
 // nativeError captures the libgit2 error detail while it is still valid.
+// nativeLookupError classifies a failed object lookup. GIT_ENOTFOUND is the
+// one native code an upstream caller acts on: it carries git.ErrObjectMissing
+// so the tool layer names a missing object instead of returning no detail.
+func nativeLookupError(op string, rc C.int) error {
+	err := nativeError(op)
+	if rc == C.GIT_ENOTFOUND {
+		return fmt.Errorf("%w: %w", git.ErrObjectMissing, err)
+	}
+	return err
+}
+
 func nativeError(op string) error {
 	class, message := errorLastFn()
 	return &git.NativeError{Op: op, Class: class, Message: message}
