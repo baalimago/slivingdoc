@@ -90,6 +90,28 @@ func TestPullAcceptsReadOnlyFlag(t *testing.T) {
 	}
 }
 
+// TestPullAcceptsWritablePathsFlag checks --writable-paths resolves through
+// the shared flag set beside the read-only one.
+func TestPullAcceptsWritablePathsFlag(t *testing.T) {
+	t.Parallel()
+	opts, _, root := testOptions(t, fake.New("p"))
+	c := Command(git2.New(), opts)
+	args := append(configArgs(t, root), "--read-only-paths=docs", "--writable-paths=docs/open,notes", "notes")
+	if err := c.Flagset().Parse(args); err != nil {
+		t.Fatalf("Parse() = %v", err)
+	}
+	if err := c.Setup(context.Background()); err != nil {
+		t.Fatalf("Setup() = %v", err)
+	}
+	defer c.runtime.Close()
+	if got, want := c.runtime.WritablePaths(), []string{"docs/open", "notes"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("WritablePaths() = %v, want %v", got, want)
+	}
+	if got, want := c.runtime.ReadOnlyPaths(), []string{"docs"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("ReadOnlyPaths() = %v, want %v", got, want)
+	}
+}
+
 // stubEngine records whether the native engine was opened; not opening it
 // proves an argument refusal exits before any startup dependency.
 type stubEngine struct{ opened bool }

@@ -38,8 +38,11 @@ type config struct {
 	retainedCheckpoints int
 
 	// readOnlyPaths are the read-only entries (architecture section 17),
-	// normalized by finish.
+	// normalized by finish. writablePaths are the writable entries,
+	// normalized by the same step; a non-empty writable set makes every
+	// unmatched path read-only (architecture section 2, Read-only paths).
 	readOnlyPaths []string
+	writablePaths []string
 
 	// logLevel is the flag-over-environment level spec in the LOG_LEVEL
 	// grammar; empty means the Info default. logTimestamp controls the
@@ -72,6 +75,7 @@ type Flags struct {
 	checkpointPacks     intFlag
 	retainedCheckpoints intFlag
 	readOnlyPaths       stringFlag
+	writablePaths       stringFlag
 	logLevel            stringFlag
 	logTimestamp        boolFlag
 }
@@ -95,6 +99,7 @@ func (f *Flags) Bind(fs *flag.FlagSet) {
 	fs.Var(&f.checkpointPacks, "checkpoint-packs", "active tail length that schedules a checkpoint")
 	fs.Var(&f.retainedCheckpoints, "retained-checkpoints", "retained previous checkpoint generations")
 	fs.Var(&f.readOnlyPaths, "read-only-paths", "notebook paths agents may read but never change")
+	fs.Var(&f.writablePaths, "writable-paths", "notebook paths agents may change; every other path is then read-only")
 	fs.Var(&f.logLevel, "log-level", "per-module log levels (LOG_LEVEL grammar)")
 	fs.Var(&f.logTimestamp, "log-timestamp", "include the time= field in log records")
 }
@@ -197,7 +202,8 @@ func (f *Flags) resolve(environment []string, cwd, cacheDir string, ephemeral bo
 	if cfg.retainedCheckpoints, err = resolveInt(&f.retainedCheckpoints, env["SLIVINGDOC_RETAINED_CHECKPOINTS"], defaultRetainedCheckpoints); err != nil {
 		return config{}, err
 	}
-	cfg.readOnlyPaths = splitReadOnlyPaths(resolveString(&f.readOnlyPaths, env["SLIVINGDOC_READ_ONLY_PATHS"], ""))
+	cfg.readOnlyPaths = splitPathEntries(resolveString(&f.readOnlyPaths, env["SLIVINGDOC_READ_ONLY_PATHS"], ""))
+	cfg.writablePaths = splitPathEntries(resolveString(&f.writablePaths, env["SLIVINGDOC_WRITABLE_PATHS"], ""))
 	cfg.logLevel = resolveString(&f.logLevel, env[logEnvLevel], "")
 	if f.logLevel.set {
 		// An explicit flag value fails fast like every other flag; only the
@@ -260,12 +266,38 @@ func (cfg config) finish(cwd string) (config, error) {
 	if cfg.retainedCheckpoints > maxRetainedCheckpoints {
 		return config{}, fmt.Errorf("retained checkpoints %d is outside 0..%d", cfg.retainedCheckpoints, maxRetainedCheckpoints)
 	}
-	normalized, err := git.NormalizeReadOnly(cfg.readOnlyPaths)
+	policy, err := resolvePolicy(cfg.readOnlyPaths, cfg.writablePaths)
 	if err != nil {
-		return config{}, fmt.Errorf("read-only paths: %w", err)
+		return config{}, err
 	}
-	cfg.readOnlyPaths = normalized.Entries()
+	// The resolved fields carry the normalized entries, which the service
+	// and the notebook each build a policy from again; the normalization
+	// keeps what resolution needs, so every rebuild answers alike
+	// (architecture section 2, Writable paths).
+	cfg.readOnlyPaths = policy.ReadOnly()
+	cfg.writablePaths = policy.Writable()
 	return cfg, nil
+}
+
+// resolvePolicy normalizes both entry sets and composes them into the
+// process path policy (architecture section 2, Read-only paths). Each side
+// is named by its own setting, so an operator reading the refusal knows
+// which value to edit, and a path named by both names both.
+func resolvePolicy(readOnly, writable []string) (git.PathPolicy, error) {
+	if _, err := git.NormalizeEntries(readOnly); err != nil {
+		return git.PathPolicy{}, fmt.Errorf("read-only paths: %w", err)
+	}
+	policy, err := git.NewPolicy(readOnly, writable)
+	if err != nil {
+		var overlap *git.OverlapError
+		if errors.As(err, &overlap) {
+			return git.PathPolicy{}, fmt.Errorf(
+				"--read-only-paths %q and --writable-paths %q name the same path",
+				overlap.ReadOnly, overlap.Writable)
+		}
+		return git.PathPolicy{}, fmt.Errorf("writable paths: %w", err)
+	}
+	return policy, nil
 }
 
 // environ maps the process environment to a lookup table. The last value
@@ -294,16 +326,17 @@ func resolveString(f *stringFlag, env, def string) string {
 	return def
 }
 
-const readOnlySeparator = ","
+const pathEntrySeparator = ","
 
-// splitReadOnlyPaths splits a raw --read-only-paths value, trimming white
-// space and dropping empty pieces; finish validates the result.
-func splitReadOnlyPaths(raw string) []string {
+// splitPathEntries splits a raw --read-only-paths or --writable-paths
+// value, trimming white space and dropping empty pieces; finish validates
+// the result.
+func splitPathEntries(raw string) []string {
 	if raw == "" {
 		return nil
 	}
 	var out []string
-	for piece := range strings.SplitSeq(raw, readOnlySeparator) {
+	for piece := range strings.SplitSeq(raw, pathEntrySeparator) {
 		piece = strings.TrimSpace(piece)
 		if piece == "" {
 			continue
@@ -524,6 +557,9 @@ const FlagReference = `  --bucket string               S3 bucket (required)     
                                 (default 1, range 0..64)
   --read-only-paths string      comma-separated notebook paths agents may    SLIVINGDOC_READ_ONLY_PATHS
                                 read but never change (default: none)
+  --writable-paths string       comma-separated notebook paths agents may    SLIVINGDOC_WRITABLE_PATHS
+                                change; every other path is then read-only
+                                (default: none, every path is writable)
   --log-level string            per-module log levels, for example           LOG_LEVEL
                                 "cli=warn,mcp=debug,info"; a bare level
                                 is the default (default "info")

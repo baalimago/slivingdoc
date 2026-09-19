@@ -60,6 +60,9 @@ type HarnessConfig struct {
 	RetainedCheckpts *int
 	// ReadOnlyPaths configures the service's read-only set.
 	ReadOnlyPaths []string
+	// WritablePaths configures the service's writable set; a non-empty set
+	// protects every unmatched path.
+	WritablePaths []string
 }
 
 // setting returns the pointed-to override, or def when the field is unset.
@@ -157,6 +160,7 @@ func NewHarness(t *testing.T, cfg HarnessConfig) *Harness {
 		CheckpointPacks:     setting(cfg.CheckpointPacks, notebook.DefaultCheckpointPacks),
 		RetainedCheckpoints: setting(cfg.RetainedCheckpts, notebook.DefaultRetainedCheckpoints),
 		ReadOnlyPaths:       cfg.ReadOnlyPaths,
+		WritablePaths:       cfg.WritablePaths,
 	}
 	hooks := cfg.Hooks
 	if hooks == nil {
@@ -448,23 +452,40 @@ func (h *Harness) assertOK(t *testing.T, res *sdk.CallToolResult) {
 	if got.ReadOnly == nil {
 		t.Fatal("readOnly must always be present")
 	}
+	if got.Writable == nil {
+		t.Fatal("writable must always be present")
+	}
 	if len(res.Content) != 1 {
 		t.Fatalf("content items = %d, want exactly one", len(res.Content))
 	}
 	text, ok := res.Content[0].(*sdk.TextContent)
-	wantText := readOnlyText(got.Path, got.ReadOnly)
+	wantText := pathSetText(got.Path, got.ReadOnly, got.Writable)
 	if !ok || text.Text != wantText {
 		t.Fatalf("text item = %#v, want %q", res.Content[0], wantText)
 	}
 }
 
-// readOnlyText is the expected success text item for a read-only set
-// (architecture section 2, Read-only paths).
-func readOnlyText(path string, entries []string) string {
-	if len(entries) == 0 {
+// pathSetText is the expected success text item for the configured path
+// sets, writable first, and — when both are configured, where the sets can
+// name the same region at different depths — the rule that decides between
+// them (architecture section 2, Writable paths). The wording is written out
+// here rather than taken from the server, so the black-box oracle is an
+// independent expectation.
+func pathSetText(path string, entries, writable []string) string {
+	parts := make([]string, 0, 2)
+	if len(writable) > 0 {
+		parts = append(parts, "writable: "+strings.Join(writable, notebook.ReadOnlyListSeparator))
+	}
+	if len(entries) > 0 {
+		parts = append(parts, "read-only: "+strings.Join(entries, notebook.ReadOnlyListSeparator))
+	}
+	if len(parts) == 2 {
+		parts = append(parts, "longest match decides")
+	}
+	if len(parts) == 0 {
 		return path
 	}
-	return path + " (read-only: " + strings.Join(entries, notebook.ReadOnlyListSeparator) + ")"
+	return path + " (" + strings.Join(parts, "; ") + ")"
 }
 
 // successInfo decodes the structured content of a success result into the
@@ -536,6 +557,12 @@ func (h *Harness) assertEnvelope(t *testing.T, call ToolCall, res *sdk.CallToolR
 				t.Fatalf("call %s(%s) success readOnly = %v, want %v", call.Tool, call.Path, got, exp.ReadOnly)
 			}
 		}
+		if exp.Writable != nil {
+			got := h.successInfo(t, res).Writable
+			if !slices.Equal(got, exp.Writable) {
+				t.Fatalf("call %s(%s) success writable = %v, want %v", call.Tool, call.Path, got, exp.Writable)
+			}
+		}
 		for _, sub := range exp.NoText {
 			text, ok := res.Content[0].(*sdk.TextContent)
 			if !ok || strings.Contains(text.Text, sub) {
@@ -585,6 +612,9 @@ func (h *Harness) assertEnvelope(t *testing.T, call ToolCall, res *sdk.CallToolR
 	if exp.ReadOnly != nil && !slices.Equal(env.ReadOnly, exp.ReadOnly) {
 		t.Fatalf("call %s(%s) error readOnly = %v, want %v", call.Tool, call.Path, env.ReadOnly, exp.ReadOnly)
 	}
+	if exp.Writable != nil && !slices.Equal(env.Writable, exp.Writable) {
+		t.Fatalf("call %s(%s) error writable = %v, want %v", call.Tool, call.Path, env.Writable, exp.Writable)
+	}
 	if exp.Recovery != nil {
 		if env.Recovery == nil {
 			t.Fatalf("call %s(%s) carries no recovery report", call.Tool, call.Path)
@@ -618,6 +648,7 @@ type envelope struct {
 	Files        []envelopeFile    `json:"files"`
 	Recovery     *envelopeRecovery `json:"recovery"`
 	ReadOnly     []string          `json:"readOnly"`
+	Writable     []string          `json:"writable"`
 }
 
 type envelopeFile struct {
@@ -653,6 +684,8 @@ func envelopeTokenViolation(env envelope) string {
 		return "carries no files key"
 	case env.ReadOnly == nil:
 		return "carries no readOnly key"
+	case env.Writable == nil:
+		return "carries no writable key"
 	}
 	for i, f := range env.Files {
 		if f.Reason == "" {

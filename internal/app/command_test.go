@@ -127,7 +127,7 @@ func TestReport(t *testing.T) {
 	t.Run("success writes the OK-prefixed report", func(t *testing.T) {
 		t.Parallel()
 		var out bytes.Buffer
-		if err := Report(&out, successResult(), nil, "/tmp/nb", nil, nil); err != nil {
+		if err := Report(&out, successResult(), nil, "/tmp/nb", nil, nil, nil); err != nil {
 			t.Fatalf("Report(nil) = %v", err)
 		}
 		want := "OK  generation 18  /tmp/nb\n" +
@@ -143,7 +143,7 @@ func TestReport(t *testing.T) {
 	t.Run("success trailer names the read-only set", func(t *testing.T) {
 		t.Parallel()
 		var out bytes.Buffer
-		if err := Report(&out, successResult(), nil, "/tmp/nb", nil, []string{"docs", "faq.md"}); err != nil {
+		if err := Report(&out, successResult(), nil, "/tmp/nb", nil, []string{"docs", "faq.md"}, nil); err != nil {
 			t.Fatalf("Report(nil) = %v", err)
 		}
 		want := "OK  generation 18  /tmp/nb\n" +
@@ -169,7 +169,7 @@ func TestReport(t *testing.T) {
 				{Path: "a.md", Reason: notebook.FileReasonTextConflict, Ranges: []git.MarkerRange{{Start: 1, End: 5}}},
 				{Path: "dir/b.md", Reason: notebook.FileReasonPathConflict, Ranges: nil},
 			},
-		}, "/tmp/nb", nil, nil)
+		}, "/tmp/nb", nil, nil, nil)
 		if err == nil || err.Error() != "CONTENT_CONFLICT" {
 			t.Fatalf("Report() = %v, want the terse category", err)
 		}
@@ -192,7 +192,7 @@ func TestReport(t *testing.T) {
 			Reason:  notebook.ReasonPullRequired,
 			Action:  notebook.ActionPull,
 			Message: "a managed pull must run before commit",
-		}, "/tmp/nb", nil, nil)
+		}, "/tmp/nb", nil, nil, nil)
 		if err == nil || err.Error() != "INVALID_REQUEST" {
 			t.Fatalf("Report() = %v, want the terse category", err)
 		}
@@ -216,7 +216,7 @@ func TestReport(t *testing.T) {
 			Recovery: &notebook.RecoveryReport{
 				Stage: "publish", RemoteAccepted: notebook.RemoteAcceptedUnknown, Resynchronized: false,
 			},
-		}, "/tmp/nb", nil, []string{"docs"})
+		}, "/tmp/nb", nil, []string{"docs"}, nil)
 		if err == nil || err.Error() != "RECOVERY_FAILURE" {
 			t.Fatalf("Report() = %v, want the terse category", err)
 		}
@@ -234,7 +234,7 @@ func TestReport(t *testing.T) {
 	t.Run("non-domain error passes through unprinted", func(t *testing.T) {
 		t.Parallel()
 		var out bytes.Buffer
-		if err := Report(&out, notebook.Result{}, context.Canceled, "/tmp/nb", nil, nil); err != context.Canceled {
+		if err := Report(&out, notebook.Result{}, context.Canceled, "/tmp/nb", nil, nil, nil); err != context.Canceled {
 			t.Fatalf("Report(context.Canceled) = %v, want the unchanged error", err)
 		}
 		if out.Len() != 0 {
@@ -256,7 +256,7 @@ func TestReport(t *testing.T) {
 			_, _ = io.Copy(&b, r)
 			got <- b.String()
 		}()
-		if err := Report(w, successResult(), nil, "/tmp/nb", nil, nil); err != nil {
+		if err := Report(w, successResult(), nil, "/tmp/nb", nil, nil, nil); err != nil {
 			t.Fatalf("Report() = %v", err)
 		}
 		w.Close()
@@ -268,7 +268,7 @@ func TestReport(t *testing.T) {
 	t.Run("NO_COLOR keeps the report plain", func(t *testing.T) {
 		t.Parallel()
 		var out bytes.Buffer
-		if err := Report(&out, successResult(), nil, "/tmp/nb", []string{"NO_COLOR=1"}, nil); err != nil {
+		if err := Report(&out, successResult(), nil, "/tmp/nb", []string{"NO_COLOR=1"}, nil, nil); err != nil {
 			t.Fatalf("Report() = %v", err)
 		}
 		if strings.Contains(out.String(), "\x1b[") {
@@ -463,5 +463,232 @@ func TestActionWording(t *testing.T) {
 				t.Fatalf("actionWording(%q) = %q, want %q", row.action, got, row.want)
 			}
 		})
+	}
+}
+
+// writableInfo is the success envelope of the documented example with both
+// path sets attached, as Report attaches them.
+func writableInfo(readOnly, writable []string) *mcp.SuccessInfo {
+	info := mcp.MapSuccess(notebook.Result{Generation: 1}, "/tmp/nb")
+	info.ReadOnly = readOnly
+	info.Writable = writable
+	return info
+}
+
+// TestReportWritableTrailer proves the writable trailer on both renderers:
+// it names the configured set, precedes the read-only trailer, is absent
+// for an empty set, and its label is dim on a terminal like the existing
+// one.
+func TestReportWritableTrailer(t *testing.T) {
+	t.Parallel()
+	const statusAndTotals = "OK  generation 1  /tmp/nb\n0 files changed, 0 insertions(+), 0 deletions(-)\n"
+
+	t.Run("success names the writable set", func(t *testing.T) {
+		t.Parallel()
+		var out bytes.Buffer
+		if err := Report(&out, notebook.Result{Generation: 1}, nil, "/tmp/nb", nil, nil, []string{"notes", "team.md"}); err != nil {
+			t.Fatalf("Report() = %v", err)
+		}
+		if want := statusAndTotals + "writable: notes, team.md\n"; out.String() != want {
+			t.Fatalf("output = %q, want %q", out.String(), want)
+		}
+	})
+
+	t.Run("success renders writable before read-only", func(t *testing.T) {
+		t.Parallel()
+		var out bytes.Buffer
+		writeSuccess(&out, writableInfo([]string{"docs"}, []string{"notes"}), painter{})
+		if want := statusAndTotals + "writable: notes\nread-only: docs\npath-rule: longest match decides\n"; out.String() != want {
+			t.Fatalf("output = %q, want %q", out.String(), want)
+		}
+	})
+
+	t.Run("empty writable set adds no trailer", func(t *testing.T) {
+		t.Parallel()
+		var out bytes.Buffer
+		writeSuccess(&out, writableInfo(nil, nil), painter{})
+		if out.String() != statusAndTotals {
+			t.Fatalf("output = %q, want %q", out.String(), statusAndTotals)
+		}
+	})
+
+	t.Run("error names the writable set after the existing trailers", func(t *testing.T) {
+		t.Parallel()
+		var out bytes.Buffer
+		err := Report(&out, notebook.Result{}, &notebook.Error{
+			Code:    notebook.CodeInvalidRequest,
+			Reason:  notebook.ReasonReadOnlyPath,
+			Action:  notebook.ActionEditFiles,
+			Message: "Only notes is writable in this server.",
+			Files:   []notebook.ErrorFile{{Path: "team/b.md", Reason: notebook.FileReasonReadOnly}},
+		}, "/tmp/nb", nil, []string{"docs"}, []string{"notes"})
+		if err == nil || err.Error() != "INVALID_REQUEST" {
+			t.Fatalf("Report() = %v, want the terse category", err)
+		}
+		want := "INVALID_REQUEST · READ_ONLY_PATH\n" +
+			"Only notes is writable in this server.\n" +
+			"  team/b.md  read-only\n" +
+			"next: edit the files, then commit\n" +
+			"retryable: false\n" +
+			"writable: notes\n" +
+			"read-only: docs\n" +
+			"path-rule: longest match decides\n"
+		if out.String() != want {
+			t.Fatalf("output = %q, want %q", out.String(), want)
+		}
+	})
+
+	t.Run("the trailer label is dim on a terminal", func(t *testing.T) {
+		t.Parallel()
+		var success bytes.Buffer
+		writeSuccess(&success, writableInfo(nil, []string{"notes"}), painter{on: true})
+		wantSuccess := "\x1b[32mOK\x1b[0m  \x1b[36mgeneration 1\x1b[0m  /tmp/nb\n" +
+			"0 files changed, 0 insertions(+), 0 deletions(-)\n" +
+			"\x1b[2mwritable:\x1b[0m notes\n"
+		if success.String() != wantSuccess {
+			t.Fatalf("coloured success = %q, want %q", success.String(), wantSuccess)
+		}
+		var failure bytes.Buffer
+		writeError(&failure, &mcp.ToolError{
+			Code: "INVALID_REQUEST", Reason: "READ_ONLY_PATH", Action: "EDIT_FILES",
+			Message:  "Only notes is writable in this server.",
+			Files:    []mcp.ErrorFile{},
+			ReadOnly: []string{"docs"}, Writable: []string{"notes"},
+		}, painter{on: true})
+		wantError := "\x1b[31mINVALID_REQUEST\x1b[0m · \x1b[2mREAD_ONLY_PATH\x1b[0m\n" +
+			"Only notes is writable in this server.\n" +
+			"\x1b[36mnext:\x1b[0m edit the files, then commit\n" +
+			"retryable: false\n" +
+			"\x1b[2mwritable:\x1b[0m notes\n" +
+			"\x1b[2mread-only:\x1b[0m docs\n" +
+			"\x1b[2mpath-rule:\x1b[0m longest match decides\n"
+		if failure.String() != wantError {
+			t.Fatalf("coloured error = %q, want %q", failure.String(), wantError)
+		}
+	})
+}
+
+// TestReportWritableTrailerUnstyledOnPipe proves the trailer renders
+// without styling when the report is written to a pipe rather than a
+// terminal, exactly like the existing read-only one.
+func TestReportWritableTrailerUnstyledOnPipe(t *testing.T) {
+	t.Parallel()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("Pipe() = %v", err)
+	}
+	defer r.Close()
+	defer w.Close()
+	got := make(chan string, 1)
+	go func() {
+		var b bytes.Buffer
+		_, _ = io.Copy(&b, r)
+		got <- b.String()
+	}()
+	if err := Report(w, notebook.Result{Generation: 1}, nil, "/tmp/nb", nil, []string{"docs"}, []string{"notes"}); err != nil {
+		t.Fatalf("Report() = %v", err)
+	}
+	w.Close()
+	out := <-got
+	if strings.Contains(out, "\x1b[") {
+		t.Fatalf("piped output = %q, want no ANSI escapes", out)
+	}
+	if !strings.HasSuffix(out, "writable: notes\nread-only: docs\npath-rule: longest match decides\n") {
+		t.Fatalf("piped output = %q, want the plain writable and read-only trailers", out)
+	}
+}
+
+// TestReportNestedSetsStateRule proves the operator report of a
+// three-level configuration reconciles its two trailers: the read-only set
+// names an entry above the writable one and a second below it, so the two
+// lists overlap, and the report states which entry decides rather than
+// leaving the operator to guess (review 2, R2-02).
+func TestReportNestedSetsStateRule(t *testing.T) {
+	t.Parallel()
+	readOnly, writable := []string{"notes", "notes/agent-a/locked"}, []string{"notes/agent-a"}
+	const wantTrailers = "writable: notes/agent-a\n" +
+		"read-only: notes, notes/agent-a/locked\n" +
+		"path-rule: longest match decides\n"
+
+	var success bytes.Buffer
+	if err := Report(&success, notebook.Result{Generation: 1}, nil, "/tmp/nb", nil, readOnly, writable); err != nil {
+		t.Fatalf("Report() = %v", err)
+	}
+	wantSuccess := "OK  generation 1  /tmp/nb\n0 files changed, 0 insertions(+), 0 deletions(-)\n" + wantTrailers
+	if success.String() != wantSuccess {
+		t.Fatalf("success output = %q, want %q", success.String(), wantSuccess)
+	}
+
+	var failure bytes.Buffer
+	err := Report(&failure, notebook.Result{}, &notebook.Error{
+		Code:    notebook.CodeInvalidRequest,
+		Reason:  notebook.ReasonReadOnlyPath,
+		Action:  notebook.ActionEditFiles,
+		Message: "Only notes/agent-a is writable in this server.",
+		Files:   []notebook.ErrorFile{{Path: "notes/agent-a/locked/secret.md", Reason: notebook.FileReasonReadOnly}},
+	}, "/tmp/nb", nil, readOnly, writable)
+	if err == nil || err.Error() != "INVALID_REQUEST" {
+		t.Fatalf("Report() = %v, want the terse category", err)
+	}
+	wantError := "INVALID_REQUEST · READ_ONLY_PATH\n" +
+		"Only notes/agent-a is writable in this server.\n" +
+		"  notes/agent-a/locked/secret.md  read-only\n" +
+		"next: edit the files, then commit\n" +
+		"retryable: false\n" + wantTrailers
+	if failure.String() != wantError {
+		t.Fatalf("error output = %q, want %q", failure.String(), wantError)
+	}
+}
+
+// TestReportReadOnlyTrailerUnchanged proves the existing report lines keep
+// their order and wording: a read-only-only process renders exactly what it
+// renders today, and adding a writable set displaces no existing line.
+func TestReportReadOnlyTrailerUnchanged(t *testing.T) {
+	t.Parallel()
+	var out bytes.Buffer
+	if err := Report(&out, successResult(), nil, "/tmp/nb", nil, []string{"docs", "faq.md"}, nil); err != nil {
+		t.Fatalf("Report() = %v", err)
+	}
+	wantSuccess := "OK  generation 18  /tmp/nb\n" +
+		"  archive/old.md  -3\n" +
+		"  notes/a.md  +1 -1\n" +
+		"  notes/c.md  +2\n" +
+		"3 files changed, 3 insertions(+), 4 deletions(-)\n" +
+		"read-only: docs, faq.md\n"
+	if out.String() != wantSuccess {
+		t.Fatalf("success output = %q, want %q", out.String(), wantSuccess)
+	}
+
+	recovery := &notebook.Error{
+		Code:    notebook.CodeRecoveryFailure,
+		Reason:  notebook.ReasonLocalMutationFailed,
+		Action:  notebook.ActionRetry,
+		Message: "unexpected failure after local mutation started; recovery ran",
+		Recovery: &notebook.RecoveryReport{
+			Stage: "publish", RemoteAccepted: notebook.RemoteAcceptedUnknown, Resynchronized: false,
+		},
+	}
+	const existingLines = "RECOVERY_FAILURE · LOCAL_MUTATION_FAILED\n" +
+		"unexpected failure after local mutation started; recovery ran\n" +
+		"next: retry the same call\n" +
+		"retryable: true\n" +
+		"recovery: stage=publish remoteAccepted=unknown resynchronized=false\n"
+
+	var today bytes.Buffer
+	if err := Report(&today, notebook.Result{}, recovery, "/tmp/nb", nil, []string{"docs"}, nil); err != nil &&
+		err.Error() != "RECOVERY_FAILURE" {
+		t.Fatalf("Report() = %v, want the terse category", err)
+	}
+	if want := existingLines + "read-only: docs\n"; today.String() != want {
+		t.Fatalf("read-only-only error output = %q, want %q", today.String(), want)
+	}
+
+	var withWritable bytes.Buffer
+	if err := Report(&withWritable, notebook.Result{}, recovery, "/tmp/nb", nil, []string{"docs"}, []string{"notes"}); err != nil &&
+		err.Error() != "RECOVERY_FAILURE" {
+		t.Fatalf("Report() = %v, want the terse category", err)
+	}
+	if want := existingLines + "writable: notes\nread-only: docs\npath-rule: longest match decides\n"; withWritable.String() != want {
+		t.Fatalf("both-sets error output = %q, want %q", withWritable.String(), want)
 	}
 }

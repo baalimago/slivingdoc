@@ -47,6 +47,9 @@ type CallExpectation struct {
 	// ReadOnly asserts the exact read-only entries on the envelope when
 	// non-nil.
 	ReadOnly []string
+	// Writable asserts the exact writable entries on the envelope when
+	// non-nil.
+	Writable []string
 	// NoText forbids substrings anywhere in the result text or the
 	// structured content.
 	NoText []string

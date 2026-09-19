@@ -19,6 +19,10 @@ type SuccessInfo struct {
 	Deletions    int          `json:"deletions"`
 	Files        []ChangeFile `json:"files"`
 	ReadOnly     []string     `json:"readOnly"`
+	// Writable is the normalized writable set; a non-empty set makes every
+	// path it does not cover read-only (architecture section 2, Read-only
+	// paths). Always present, empty when nothing is configured.
+	Writable []string `json:"writable"`
 }
 
 // ChangeFile is the per-file line-change summary of a success: the
@@ -49,5 +53,6 @@ func MapSuccess(result notebook.Result, path string) *SuccessInfo {
 		Deletions:    result.Stat.Deletions,
 		Files:        files,
 		ReadOnly:     []string{},
+		Writable:     []string{},
 	}
 }

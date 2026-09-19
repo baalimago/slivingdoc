@@ -29,9 +29,11 @@ type fakeRepository struct {
 	shallow     []OID
 	closed      bool
 
-	// treeReads and presenceChecks count ReadTree and HasObject calls, so
-	// a test can prove the validation walk visits each object once.
+	// treeReads, blobReads, and presenceChecks count ReadTree, ReadBlob,
+	// and HasObject calls, so a test can prove a walk visits each object
+	// once and that a policy walk opens no content.
 	treeReads      int
+	blobReads      int
 	presenceChecks int
 }
 
@@ -53,6 +55,7 @@ func (f *fakeRepository) WriteBlob(data []byte) (OID, error) {
 }
 
 func (f *fakeRepository) ReadBlob(id OID) ([]byte, error) {
+	f.blobReads++
 	data, ok := f.blobs[id]
 	if !ok {
 		return nil, fmt.Errorf("fake: blob %s not found", id)

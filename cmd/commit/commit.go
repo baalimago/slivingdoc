@@ -86,7 +86,7 @@ func (c *command) Run(ctx context.Context) error {
 	}
 	defer c.runtime.Close()
 	result, err := c.runtime.Commit(ctx, c.path, c.message)
-	return app.Report(c.opts.Out(), result, err, c.path, c.opts.Env, c.runtime.ReadOnlyPaths())
+	return app.Report(c.opts.Out(), result, err, c.path, c.opts.Env, c.runtime.ReadOnlyPaths(), c.runtime.WritablePaths())
 }
 
 const helpText = `slivingdoc commit - publish the changes at a notebook directory
@@ -108,12 +108,15 @@ markers and reports every conflicted range.
 Prints the unified result report on stdout. Success shows the OK status
 token, the accepted remote generation, one line per changed file with its
 insertion and deletion counts, and the totals trailer, plus a
-'read-only: <entries>' trailer naming this process's configured
---read-only-paths set when it is non-empty, and exits zero. A domain error
-shows the status line (the code, a middle dot, and the reason token), the
-message, one line per file with its reason and one-based inclusive line
+'writable: <entries>' trailer naming this process's configured
+--writable-paths set and a 'read-only: <entries>' trailer naming its
+--read-only-paths set, each when it is non-empty, followed by a
+'path-rule: longest match decides' trailer when both sets are configured,
+and exits zero. A domain
+error shows the status line (the code, a middle dot, and the reason token),
+the message, one line per file with its reason and one-based inclusive line
 ranges when present, a 'next:' line naming the caller's next step, the
-retryable verdict, and the same read-only trailer when configured, and
+retryable verdict, and the same trailers when configured, and
 exits nonzero. Colour is presentation-only: it appears only on a real
 terminal, and any non-empty NO_COLOR disables it.
 

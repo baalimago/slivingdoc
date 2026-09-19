@@ -219,6 +219,9 @@ func (r *Runtime) Commit(ctx context.Context, path, message string) (notebook.Re
 // ReadOnlyPaths returns the service's normalized, sorted read-only entries.
 func (r *Runtime) ReadOnlyPaths() []string { return r.svc.ReadOnlyPaths() }
 
+// WritablePaths returns the service's normalized, sorted writable entries.
+func (r *Runtime) WritablePaths() []string { return r.svc.WritablePaths() }
+
 // resolve maps an omitted CLI path to the workspace root.
 func (r *Runtime) resolve(path string) string {
 	if path == "" {

@@ -872,3 +872,500 @@ func TestCommitDiffStatReadFailureMapsToIntegrity(t *testing.T) {
 		t.Fatalf("failed commit created %d remote objects, want none", got-objectsBefore)
 	}
 }
+
+// repoCounts are the repository object accesses one operation performed.
+// The policy's no-blob property is a difference, not an absolute: the merge
+// opens baseline blobs for its own reasons, so a test compares a configured
+// run against the identical unconfigured one (README invariant 6).
+type repoCounts struct {
+	blobReads  int
+	treeWrites int
+}
+
+// countingEngine counts across every repository handle it hands out, so the
+// count covers a whole operation rather than one handle.
+type countingEngine struct {
+	*fakeEngine
+	counts *repoCounts
+}
+
+func (e *countingEngine) CreateRepo(path string) (git.Repository, error) {
+	repo, err := e.fakeEngine.CreateRepo(path)
+	if err != nil {
+		return nil, err
+	}
+	return &countingRepo{Repository: repo, counts: e.counts}, nil
+}
+
+func (e *countingEngine) OpenRepo(path string) (git.Repository, error) {
+	repo, err := e.fakeEngine.OpenRepo(path)
+	if err != nil {
+		return nil, err
+	}
+	return &countingRepo{Repository: repo, counts: e.counts}, nil
+}
+
+var _ workspace.Engine = (*countingEngine)(nil)
+
+type countingRepo struct {
+	git.Repository
+	counts *repoCounts
+}
+
+func (r *countingRepo) ReadBlob(id git.OID) ([]byte, error) {
+	r.counts.blobReads++
+	return r.Repository.ReadBlob(id)
+}
+
+func (r *countingRepo) WriteTree(entries []git.TreeEntry) (git.OID, error) {
+	r.counts.treeWrites++
+	return r.Repository.WriteTree(entries)
+}
+
+// newPolicyFixture publishes one protected and one writable file through an
+// unconfigured writer, then returns a notebook under cfg's entry sets whose
+// visible directory holds that accepted state. The seed runs through a
+// second notebook because a configured process pulling a protected path it
+// does not yet hold would restore it away.
+func newPolicyFixture(t *testing.T, cfg nbConfig) (*Notebook, *workspace.Workspace) {
+	t.Helper()
+	seed := cfg
+	seed.readOnly, seed.writable, seed.wsFail, seed.nbFail = nil, nil, nil, nil
+	writer, ww, _ := newNotebook(t, seed)
+	writeLocal(t, ww, map[string]string{"docs/faq.md": "answer: 1\n", "notes/a.md": "x\n"})
+	pullOK(t, writer)
+	commitOK(t, writer, "seed")
+
+	nb, w, _ := newNotebook(t, cfg)
+	pullOK(t, nb)
+	return nb, w
+}
+
+// policyAccess runs one operation over an identical fixture — the accepted
+// baseline plus one edit to the writable file — and returns the repository
+// accesses of the measured call alone. The entry sets are the only
+// difference between two runs.
+func policyAccess(t *testing.T, readOnly, writable []string, op func(*Notebook) error) repoCounts {
+	t.Helper()
+	counts := &repoCounts{}
+	nb, w := newPolicyFixture(t, nbConfig{
+		store:    fake.New(""),
+		ids:      &testIDSource{},
+		engine:   &countingEngine{fakeEngine: newFakeEngine(), counts: counts},
+		readOnly: readOnly,
+		writable: writable,
+	})
+	writeLocal(t, w, map[string]string{"notes/a.md": "y\n"})
+
+	*counts = repoCounts{}
+	if err := op(nb); err != nil {
+		t.Fatalf("measured operation = %v", err)
+	}
+	return *counts
+}
+
+// TestCommitCleanCommitPolicyAddsNoBlobRead proves a commit that changed no
+// protected path opens exactly the blobs the same commit opens with no
+// policy configured: detection compares tree objects and the restore never
+// runs.
+func TestCommitCleanCommitPolicyAddsNoBlobRead(t *testing.T) {
+	commit := func(nb *Notebook) error { return errOnly(nb.Commit(context.Background(), "writable edit")) }
+	configured := policyAccess(t, []string{"docs"}, []string{"notes"}, commit)
+	unconfigured := policyAccess(t, nil, nil, commit)
+	if configured.blobReads != unconfigured.blobReads {
+		t.Fatalf("configured commit read %d blobs, want the unconfigured commit's %d", configured.blobReads, unconfigured.blobReads)
+	}
+}
+
+// TestCommitWritePolicyResetRecoveryFailure proves a failure inside the
+// reset is RECOVERY_FAILURE at the existing commit.readonly stage and never
+// returns success.
+func TestCommitWritePolicyResetRecoveryFailure(t *testing.T) {
+	wsFail := &workspace.Failpoints{}
+	nb, w := newPolicyFixture(t, nbConfig{
+		store: fake.New(""), ids: &testIDSource{},
+		writable: []string{"notes"}, wsFail: wsFail,
+	})
+	writeLocal(t, w, map[string]string{"docs/faq.md": "answer: 2\n"})
+
+	// The failpoint fires once, so the recovery's own resync succeeds.
+	fired := false
+	wsFail.Replace = func() error {
+		if fired {
+			return nil
+		}
+		fired = true
+		return errors.New("injected policy reset failure")
+	}
+
+	res, err := nb.Commit(context.Background(), "protected edit")
+	ne := assertErrorCode(t, err, CodeRecoveryFailure)
+	assertZeroResult(t, res)
+	if ne.Recovery == nil || ne.Recovery.Stage != stageReadOnly || ne.Recovery.RemoteAccepted != RemoteAcceptedNo {
+		t.Fatalf("recovery report = %+v, want %s / no", ne.Recovery, stageReadOnly)
+	}
+	if got := readLocal(t, w, "docs/faq.md"); got != "answer: 1\n" {
+		t.Fatalf("docs/faq.md after recovery = %q, want the resynchronized baseline", got)
+	}
+}
+
+// TestCommitDetectionFailureIsIntegrity proves a tree read that fails
+// during detection is STORAGE_INTEGRITY/ENGINE_FAILED with no local
+// mutation begun, so the call is not a recovery failure.
+func TestCommitDetectionFailureIsIntegrity(t *testing.T) {
+	target := new(git.OID) // armed after the baseline is established below
+	nb, w := newPolicyFixture(t, nbConfig{
+		store: fake.New(""), ids: &testIDSource{},
+		engine:   &dynamicReadFailEngine{fakeEngine: newFakeEngine(), target: target},
+		writable: []string{"notes"},
+	})
+	writeLocal(t, w, map[string]string{"docs/faq.md": "answer: 2\n"})
+	*target = w.Baseline().Tree
+	before := localSnapshot(t, w)
+
+	res, err := nb.Commit(context.Background(), "protected edit")
+	ne := assertErrorCode(t, err, CodeStorageIntegrity)
+	assertZeroResult(t, res)
+	if ne.Reason != ReasonEngineFailed {
+		t.Fatalf("reason = %s, want %s", ne.Reason, ReasonEngineFailed)
+	}
+	if ne.Recovery != nil {
+		t.Fatalf("recovery report = %+v, want none: no local mutation began", ne.Recovery)
+	}
+	if got := localSnapshot(t, w); !reflect.DeepEqual(got, before) {
+		t.Fatalf("L changed by the failed detection: %v -> %v", before, got)
+	}
+}
+
+// blobHook replaces the outcome of ReadBlob while it is armed. The restore
+// is the first blob the commit path opens after the local tree is built, so
+// arming it just before the call breaks exactly that read. write does the
+// same for WriteBlob, which the local tree build is the first to call.
+type blobHook struct {
+	fn    func([]byte, error) ([]byte, error)
+	write func(git.OID, error) (git.OID, error)
+}
+
+type blobHookEngine struct {
+	*fakeEngine
+	hook *blobHook
+}
+
+func (e *blobHookEngine) CreateRepo(path string) (git.Repository, error) {
+	repo, err := e.fakeEngine.CreateRepo(path)
+	if err != nil {
+		return nil, err
+	}
+	return &blobHookRepo{Repository: repo, hook: e.hook}, nil
+}
+
+func (e *blobHookEngine) OpenRepo(path string) (git.Repository, error) {
+	repo, err := e.fakeEngine.OpenRepo(path)
+	if err != nil {
+		return nil, err
+	}
+	return &blobHookRepo{Repository: repo, hook: e.hook}, nil
+}
+
+var _ workspace.Engine = (*blobHookEngine)(nil)
+
+type blobHookRepo struct {
+	git.Repository
+	hook *blobHook
+}
+
+func (r *blobHookRepo) ReadBlob(id git.OID) ([]byte, error) {
+	data, err := r.Repository.ReadBlob(id)
+	if r.hook.fn == nil {
+		return data, err
+	}
+	return r.hook.fn(data, err)
+}
+
+func (r *blobHookRepo) WriteBlob(data []byte) (git.OID, error) {
+	id, err := r.Repository.WriteBlob(data)
+	if r.hook.write == nil {
+		return id, err
+	}
+	return r.hook.write(id, err)
+}
+
+// newBlobHookFixture leaves one protected edit on disk over a hooked
+// engine, ready for the commit the armed hook breaks.
+func newBlobHookFixture(t *testing.T) (*Notebook, *workspace.Workspace, *blobHook) {
+	t.Helper()
+	hook := &blobHook{}
+	nb, w := newPolicyFixture(t, nbConfig{
+		store: fake.New(""), ids: &testIDSource{},
+		engine:   &blobHookEngine{fakeEngine: newFakeEngine(), hook: hook},
+		writable: []string{"notes"},
+	})
+	writeLocal(t, w, map[string]string{"docs/faq.md": "answer: 2\n"})
+	return nb, w, hook
+}
+
+// TestCommitRestoreReadFailureIsIntegrity proves a blob read that fails
+// during the restore is STORAGE_INTEGRITY/ENGINE_FAILED with no local
+// mutation begun.
+func TestCommitRestoreReadFailureIsIntegrity(t *testing.T) {
+	nb, w, hook := newBlobHookFixture(t)
+	before := localSnapshot(t, w)
+	hook.fn = func([]byte, error) ([]byte, error) {
+		return nil, errors.New("injected restore read failure")
+	}
+
+	res, err := nb.Commit(context.Background(), "protected edit")
+	ne := assertErrorCode(t, err, CodeStorageIntegrity)
+	assertZeroResult(t, res)
+	if ne.Reason != ReasonEngineFailed {
+		t.Fatalf("reason = %s, want %s", ne.Reason, ReasonEngineFailed)
+	}
+	if ne.Recovery != nil {
+		t.Fatalf("recovery report = %+v, want none: no local mutation began", ne.Recovery)
+	}
+	if got := localSnapshot(t, w); !reflect.DeepEqual(got, before) {
+		t.Fatalf("L changed by the failed restore: %v -> %v", before, got)
+	}
+}
+
+// TestCommitRestoredSnapshotInvalid proves a restored snapshot the notebook
+// cannot represent is INVALID_REQUEST/INVALID_CONTENT, the reason the
+// current path returns for the same failure.
+func TestCommitRestoredSnapshotInvalid(t *testing.T) {
+	nb, w, hook := newBlobHookFixture(t)
+	before := localSnapshot(t, w)
+	hook.fn = func([]byte, error) ([]byte, error) {
+		return []byte("answer\x00"), nil // U+0000 is not notebook content
+	}
+
+	res, err := nb.Commit(context.Background(), "protected edit")
+	ne := assertErrorCode(t, err, CodeInvalidRequest)
+	assertZeroResult(t, res)
+	if ne.Reason != ReasonInvalidContent {
+		t.Fatalf("reason = %s, want %s", ne.Reason, ReasonInvalidContent)
+	}
+	if got := localSnapshot(t, w); !reflect.DeepEqual(got, before) {
+		t.Fatalf("L changed by the refused restore: %v -> %v", before, got)
+	}
+}
+
+// TestCommitInvalidContentRefusedBeforeTreeBuild pins the reachability of
+// the tree build's content failure: the workspace scan applies the same
+// content rules one step earlier, so a commit that both breaks them and
+// changed a protected path returns the scan's refusal. The scan names the
+// offending file and the tree-build mapping names none, which is what tells
+// the two apart.
+func TestCommitInvalidContentRefusedBeforeTreeBuild(t *testing.T) {
+	nb, w := newPolicyFixture(t, nbConfig{
+		store: fake.New(""), ids: &testIDSource{},
+		writable: []string{"notes"},
+	})
+	writeLocal(t, w, map[string]string{"docs/faq.md": "answer: 2\n", "docs/blob": "\x00\x01binary"})
+
+	res, err := nb.Commit(context.Background(), "invalid content beside a protected edit")
+	ne := assertErrorCode(t, err, CodeInvalidRequest)
+	assertZeroResult(t, res)
+	if ne.Reason != ReasonInvalidContent {
+		t.Fatalf("reason = %s, want %s", ne.Reason, ReasonInvalidContent)
+	}
+	want := []ErrorFile{{Path: "docs/blob", Reason: FileReasonInvalidContent}}
+	if !reflect.DeepEqual(ne.Files, want) {
+		t.Fatalf("files = %+v, want the scan's %+v: the tree build names no file", ne.Files, want)
+	}
+	if got := readLocal(t, w, "docs/faq.md"); got != "answer: 2\n" {
+		t.Fatalf("docs/faq.md = %q, want the untouched edit: the refusal precedes the reset", got)
+	}
+}
+
+// TestCommitTreeBuildWriteFailureIsInvalidContent pins the other way the
+// local tree build fails: a repository write fault, which maps to the same
+// INVALID_CONTENT as unrepresentable content and names no file. Whether an
+// I/O fault deserves that category is not this phase's to decide; nothing is
+// published either way and no local mutation begins.
+func TestCommitTreeBuildWriteFailureIsInvalidContent(t *testing.T) {
+	nb, w, hook := newBlobHookFixture(t)
+	before := localSnapshot(t, w)
+	hook.write = func(git.OID, error) (git.OID, error) {
+		return git.OID{}, errors.New("injected blob write failure")
+	}
+
+	res, err := nb.Commit(context.Background(), "protected edit")
+	ne := assertErrorCode(t, err, CodeInvalidRequest)
+	assertZeroResult(t, res)
+	if ne.Reason != ReasonInvalidContent {
+		t.Fatalf("reason = %s, want %s", ne.Reason, ReasonInvalidContent)
+	}
+	if len(ne.Files) != 0 {
+		t.Fatalf("files = %+v, want none: the tree build names no file", ne.Files)
+	}
+	if ne.Recovery != nil {
+		t.Fatalf("recovery report = %+v, want none: no local mutation began", ne.Recovery)
+	}
+	if got := localSnapshot(t, w); !reflect.DeepEqual(got, before) {
+		t.Fatalf("L changed by the failed tree build: %v -> %v", before, got)
+	}
+}
+
+// refuseProtectedCommit edits the protected file of the fixture and returns
+// the refusal.
+func refuseProtectedCommit(t *testing.T, readOnly, writable []string) *Error {
+	t.Helper()
+	nb, w := newPolicyFixture(t, nbConfig{
+		store: fake.New(""), ids: &testIDSource{},
+		readOnly: readOnly, writable: writable,
+	})
+	writeLocal(t, w, map[string]string{"docs/faq.md": "answer: 2\n"})
+	return assertErrorCode(t, errOnly(nb.Commit(context.Background(), "protected edit")), CodeInvalidRequest)
+}
+
+// TestWritePolicyRefusalNamesWritableEntries proves a refusal under a
+// writable set names where the caller may write, since the protected region
+// is nearly the whole notebook.
+func TestWritePolicyRefusalNamesWritableEntries(t *testing.T) {
+	ne := refuseProtectedCommit(t, nil, []string{"notes", "team"})
+	want := "Only notes, team are writable in this server. Your changes elsewhere were discarded and the files reset. Write under the writable paths, then commit again."
+	if ne.Message != want {
+		t.Fatalf("refusal message = %q, want %q", ne.Message, want)
+	}
+}
+
+// TestWritePolicyRefusalReadOnlyWordingUnchanged proves a read-only-only
+// configuration keeps today's wording byte-for-byte.
+func TestWritePolicyRefusalReadOnlyWordingUnchanged(t *testing.T) {
+	ne := refuseProtectedCommit(t, []string{"docs"}, nil)
+	want := "docs is read-only in this server. Your changes there were discarded and the files reset. Write outside the read-only paths, then commit again."
+	if ne.Message != want {
+		t.Fatalf("refusal message = %q, want %q", ne.Message, want)
+	}
+}
+
+// TestWritePolicyRefusalComposedNamesWritable proves the writable entries
+// stay the actionable list when both sets are configured.
+func TestWritePolicyRefusalComposedNamesWritable(t *testing.T) {
+	ne := refuseProtectedCommit(t, []string{"docs"}, []string{"notes"})
+	want := "Only notes is writable in this server. Your changes elsewhere were discarded and the files reset. Write under the writable paths, then commit again."
+	if ne.Message != want {
+		t.Fatalf("refusal message = %q, want %q", ne.Message, want)
+	}
+}
+
+// TestWritePolicyRefusalTokensUnchanged proves the refusal keeps the
+// existing category, reason, action, and per-file reason whichever set
+// protects the path.
+func TestWritePolicyRefusalTokensUnchanged(t *testing.T) {
+	for _, tt := range []struct {
+		name               string
+		readOnly, writable []string
+	}{
+		{name: "read-only set only", readOnly: []string{"docs"}},
+		{name: "writable set only", writable: []string{"notes"}},
+		{name: "both sets", readOnly: []string{"docs"}, writable: []string{"notes"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ne := refuseProtectedCommit(t, tt.readOnly, tt.writable)
+			if ne.Reason != ReasonReadOnlyPath {
+				t.Fatalf("reason = %s, want %s", ne.Reason, ReasonReadOnlyPath)
+			}
+			if ne.Action != ActionEditFiles {
+				t.Fatalf("action = %s, want %s", ne.Action, ActionEditFiles)
+			}
+			want := []ErrorFile{{Path: "docs/faq.md", Reason: FileReasonReadOnly}}
+			if !reflect.DeepEqual(ne.Files, want) {
+				t.Fatalf("files = %+v, want %+v", ne.Files, want)
+			}
+		})
+	}
+}
+
+// TestReadOnlyRefusalSetMatchesPolicyEntries pins the one entry set the
+// notebook still holds beside the policy. violatedEntries resolves over
+// git.NormalizeEntries(ReadOnlyPaths), which collapses the read-only set on
+// its own, while the policy collapses each set against the other. The two
+// agree wherever the retained set is read: with no writable set nothing can
+// split a read-only entry from its own-set ancestor, and with one the
+// refusal names the writable entries instead.
+func TestReadOnlyRefusalSetMatchesPolicyEntries(t *testing.T) {
+	entries := []string{"notes", "notes/agent-a/locked"}
+
+	retained, err := git.NormalizeEntries(entries)
+	if err != nil {
+		t.Fatalf("NormalizeEntries(%v) = %v", entries, err)
+	}
+	alone, err := git.NewPolicy(entries, nil)
+	if err != nil {
+		t.Fatalf("NewPolicy(%v, nil) = %v", entries, err)
+	}
+	if got, want := retained.Entries(), alone.ReadOnly(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("retained set = %v, want the policy's %v: the read-only refusal would name another entry", got, want)
+	}
+
+	split, err := git.NewPolicy(entries, []string{"notes/agent-a"})
+	if err != nil {
+		t.Fatalf("NewPolicy(%v, [notes/agent-a]) = %v", entries, err)
+	}
+	if reflect.DeepEqual(retained.Entries(), split.ReadOnly()) {
+		t.Fatalf("retained set %v equals the policy's %v: the divergence guarded below no longer exists",
+			retained.Entries(), split.ReadOnly())
+	}
+	ne := refuseProtectedCommit(t, entries, []string{"notes/agent-a"})
+	if want := writableMessage([]string{"notes/agent-a"}); ne.Message != want {
+		t.Fatalf("refusal message = %q, want %q: the retained set must not be read where it diverges", ne.Message, want)
+	}
+}
+
+// TestNewNotebookWritablePaths proves the writable accessor sits beside the
+// read-only one, returns a normalized non-nil set, and that a policy the two
+// sets cannot express fails Notebook construction naming the offending path.
+func TestNewNotebookWritablePaths(t *testing.T) {
+	store := fake.New("")
+	ids := &testIDSource{}
+	_, w, _ := newNotebook(t, nbConfig{store: store, ids: ids})
+	base := Config{
+		Workspace: w, Store: store, RetryLimit: DefaultRetryLimit,
+		CheckpointPacks: DefaultCheckpointPacks, RetainedCheckpoints: DefaultRetainedCheckpoints,
+		NewID: ids.next,
+	}
+
+	valid := base
+	valid.WritablePaths = []string{"notes/", "notes/sub", "team.md"}
+	nb, err := New(valid)
+	if err != nil {
+		t.Fatalf("New(valid writable paths) = %v", err)
+	}
+	if got, want := nb.WritablePaths(), []string{"notes", "team.md"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("WritablePaths() = %v, want the normalized set %v", got, want)
+	}
+	if got := nb.ReadOnlyPaths(); got == nil || len(got) != 0 {
+		t.Fatalf("ReadOnlyPaths() = %v, want an empty non-nil slice", got)
+	}
+
+	empty := base
+	nbEmpty, err := New(empty)
+	if err != nil {
+		t.Fatalf("New(no writable paths) = %v", err)
+	}
+	if got := nbEmpty.WritablePaths(); got == nil || len(got) != 0 {
+		t.Fatalf("WritablePaths() = %v, want an empty non-nil slice", got)
+	}
+
+	for _, tt := range []struct {
+		name               string
+		readOnly, writable []string
+		names              string
+	}{
+		{name: "exact overlap", readOnly: []string{"docs"}, writable: []string{"docs"}, names: "docs"},
+		{name: "invalid writable entry", writable: []string{"../escape"}, names: "../escape"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := base
+			cfg.ReadOnlyPaths, cfg.WritablePaths = tt.readOnly, tt.writable
+			_, err := New(cfg)
+			if err == nil {
+				t.Fatal("New(unbuildable policy) = nil, want error")
+			}
+			if !strings.Contains(err.Error(), tt.names) {
+				t.Fatalf("New() error = %v, want it to name %q", err, tt.names)
+			}
+		})
+	}
+}

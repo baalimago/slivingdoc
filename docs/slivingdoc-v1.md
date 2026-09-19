@@ -72,8 +72,12 @@ human can still see after the process exits.
 A successful subcommand writes the unified result report to stdout and
 exits zero: the `OK` status token, the accepted remote generation, one
 line per changed file with its insertion and deletion counts, the totals
-trailer, and a `read-only: <entries>` trailer line naming the configured
-read-only set when it is non-empty. A domain error writes the same
+trailer, a `writable: <entries>` trailer line naming the configured
+writable set when it is non-empty, a `read-only: <entries>` trailer
+line naming the configured read-only set when it is non-empty, and a
+`path-rule: longest match decides` trailer line when both sets are
+non-empty, because the two sets can name the same region at different
+depths. A domain error writes the same
 status/detail/trailer skeleton as a candid text report to stdout and exits
 nonzero: the status line (the code, a middle dot, and the `reason` token),
 the message, one line per file — the path padded to the report's longest
@@ -86,8 +90,11 @@ ranges when present — a `next:` line with the caller's next step for the
 `EDIT_FILES` "edit the files, then commit", `PULL` "pull, then continue",
 `RETRY` "retry the same call", `OPERATOR` "operator attention needed"), the
 retryable verdict, the recovery report when present, and the same
-`read-only:` trailer when the set is non-empty. For example, a commit that
-touches a read-only `docs` entry:
+`writable:`, `read-only:` and `path-rule:` trailers under the same
+conditions. The writable trailer precedes the read-only one on both
+reports: the writable region is the frame and the read-only entries are the
+exceptions inside it.
+For example, a commit that touches a read-only `docs` entry:
 
 ```text
 INVALID_REQUEST · READ_ONLY_PATH
@@ -101,7 +108,7 @@ read-only: docs, faq.md
 
 Colour is presentation-only: the code is red, the reason token dim, a
 file path yellow, the file reason word dim, `next:` cyan, and
-`read-only:` dim, only when stdout is a real terminal, and any non-empty
+`writable:`, `read-only:` and `path-rule:` dim, only when stdout is a real terminal, and any non-empty
 `NO_COLOR` disables the colour even there; stripped of escapes the
 coloured report is byte-identical to the plain form. The report carries
 the same categories, reasons, actions, the same relative file paths, and
@@ -141,7 +148,8 @@ structured object:
     { "path": "notes/c.md", "insertions": 2, "deletions": 0 },
     { "path": "archive/old.md", "insertions": 0, "deletions": 3 }
   ],
-  "readOnly": ["docs", "faq.md"]
+  "readOnly": ["docs", "faq.md"],
+  "writable": []
 }
 ```
 
@@ -158,7 +166,10 @@ is the caller's own visible directory, never private state, and no success
 data contains credentials, S3 keys, private paths, or Git IDs. `readOnly` is
 the normalized, sorted read-only path set this server enforces (see "Read-only
 paths" below); it is always present and empty when the server has none
-configured.
+configured. `writable` is the normalized, sorted writable path set of the same
+configuration (see "Writable paths" below), always present and empty when the
+server has none; it never appears in `readOnly`, which keeps carrying the
+read-only entries alone.
 
 A diffstat line is an LF-terminated run of bytes with one trailing CR
 stripped for comparison and counting. A final run without a trailing LF
@@ -186,12 +197,13 @@ text item, and this structured object:
       "ranges": [{ "start": 12, "end": 18 }]
     }
   ],
-  "readOnly": []
+  "readOnly": [],
+  "writable": []
 }
 ```
 
 `code`, `reason`, `action`, `diagnosticId`, `retryable`, `message`, `files`,
-and `readOnly` are always present. `diagnosticId` is a fresh 16-character
+`readOnly`, and `writable` are always present. `diagnosticId` is a fresh 16-character
 lowercase hexadecimal identifier that correlates the result with the two
 server log records for the tool call. An `ENGINE_FAILED` error can also carry
 an optional `detail`: a fixed description of the cause, selected from a closed
@@ -210,7 +222,9 @@ the normalized internal slash form.
 
 The candid MCP text item repeats the code, reason, message, optional detail,
 affected files, action, retryable verdict, diagnostic ID, recovery report, and
-read-only set. Clients that discard structured content therefore retain the
+both path sets — the writable set first, then the read-only set, and, when
+both are configured, the `path-rule:` line naming the rule that decides
+between them. Clients that discard structured content therefore retain the
 complete safe diagnostic rather than only the message.
 
 `reason` is one stable, machine-readable token classifying the error one
@@ -304,7 +318,11 @@ A configured process never publishes a change under a read-only path:
   call never returns `OK` and never mutates remote state. A failure during
   the reset's local mutation is `RECOVERY_FAILURE` with recovery stage
   `commit.readonly`, exactly like any other local-mutation failure (section
-  15).
+  15). A protected path the accepted state holds as a file and the visible
+  directory holds as a directory is one such failure: one path cannot hold
+  both shapes, so the reset fails and the recovery resynchronizes the
+  visible directory to the accepted state, taking every local file below
+  that path with the directory — including one a writable entry names.
 - **Pull** always materializes read-only paths from the accepted remote
   state before the merge, so local edits under those paths are silently
   discarded and the merge takes the remote's side there; every other local
@@ -321,9 +339,80 @@ and the consequence of touching it; both tool descriptions gain one
 sentence naming the set; every success and error result carries a
 `readOnly` array of the normalized entries (always present, empty when
 nothing is configured), and a pull or commit success's text item becomes
-`<path> (read-only: <entries>)` instead of the bare path. A process with no
-read-only set is byte-for-byte unchanged on every surface except the
-always-present empty `readOnly` array.
+`<path> (read-only: <entries>)` instead of the bare path. A process with
+neither path set configured is byte-for-byte unchanged on every surface
+except the always-present empty `readOnly` and `writable` arrays.
+
+### Writable paths
+
+An operator can configure the same process with a set of notebook-relative
+writable paths (section 17), the complement of the read-only set. An entry
+covers itself and everything below it on a segment boundary under the same
+Unicode case folding, and the normalized set is sorted and joined with `, `
+on every surface exactly as the read-only set is.
+
+The two sets compose into one policy, and the longest matching entry wins,
+so a read-only region can hold a writable subdirectory and a writable region
+can hold a read-only subdirectory. A path with no matching entry resolves by
+the unmatched default: writable while the writable set is empty — which is
+today's behavior — and protected as soon as the writable set is non-empty.
+That inversion is what confines a process to a directory: a file at the
+notebook root, and a directory that did not exist at startup, are protected
+without being named, which listing read-only entries cannot express. A path
+named exactly by both settings has no unambiguous resolution; it is a
+configuration error that refuses startup, naming the path and both settings,
+before the native engine and the object store are touched (section 17). The
+entries compared are the ones the operator wrote, so an entry that also sits
+below another entry of its own set is refused just the same.
+
+Resolution answers from the written entries too. A set drops an entry covered
+by another entry of the same set only where that ancestor decides every path
+the covered entry decides; where an entry of the *other* set lies between the
+two, the covered entry is kept, so adding a broader entry to one setting can
+never make a narrower entry of the same setting stop applying. The normalized
+set every surface advertises can therefore hold an entry below another one,
+and the most specific entry is the one that decides. Because the collapse
+keeps every entry resolution needs, the normalized sets are also a faithful
+input to the policy: a process that carries its two sets as entries and
+builds its policy from them again protects exactly the same paths.
+
+Enforcement is the read-only enforcement above, evaluated against the
+composed policy: a commit that adds, changes, or deletes a file at a
+protected path is refused with `INVALID_REQUEST`, reason `READ_ONLY_PATH`,
+and one `READ_ONLY` file entry per changed path, the touched files are reset
+to the baseline content, and a pull restores those paths from the accepted
+remote state. A failure during the reset is `RECOVERY_FAILURE` with recovery
+stage `commit.readonly`, unchanged. The refusal names where the process
+*may* write — "Only notes is writable in this server. Your changes elsewhere
+were discarded and the files reset. Write under the writable paths, then
+commit again." — because under a writable set the protected region is nearly
+the whole notebook, so naming it would be both useless to the caller and
+enormous on every surface.
+
+The same rule governs the advertisement. Each surface that lists a set names
+the actionable list: the server instructions gain one sentence naming the
+writable set and the consequence of writing elsewhere; both tool
+descriptions gain one sentence naming it; every success and error result
+carries a `writable` array of the normalized entries beside the `readOnly`
+array, both always present and empty when their set is unconfigured; a
+success text item becomes `<path> (writable: <entries>)`; and the CLI report
+gains a `writable: <entries>` trailer on both the success and the error
+report.
+
+When both sets are configured, every surface names both with the writable
+set first and states the rule that reconciles them, because the sets can
+nest: a sentence that named one set alone would tell the caller to write
+where the other forbids it. The read-only sentence therefore ends in "where
+the two sets nest, the longest matching entry decides" instead of "write
+elsewhere" — which a non-empty writable set makes false, since it protects
+everything it does not cover — the tool descriptions end in the same rule,
+the success text item becomes
+`<path> (writable: <entries>; read-only: <entries>; longest match decides)`,
+the error text item carries the writable trailer above the read-only one
+followed by `path-rule: longest match decides`, and the CLI report renders
+that same `path-rule:` trailer below its two set trailers. The `readOnly` array
+keeps meaning exactly what it means today — the normalized read-only set —
+and never stands in for the protected region.
 
 ## 3. Scope
 
@@ -1409,6 +1498,7 @@ any native or network dependency is touched.
 | Checkpoint pack count | `--checkpoint-packs`     | `SLIVINGDOC_CHECKPOINT_PACKS`     |
 | Retained generations  | `--retained-checkpoints` | `SLIVINGDOC_RETAINED_CHECKPOINTS` |
 | Read-only paths       | `--read-only-paths`      | `SLIVINGDOC_READ_ONLY_PATHS`      |
+| Writable paths        | `--writable-paths`       | `SLIVINGDOC_WRITABLE_PATHS`       |
 
 The bucket is required. The default prefix is `slivingdoc`, and the default
 region is `us-east-1`. The endpoint is empty for normal AWS resolution.
@@ -1480,6 +1570,16 @@ same path rules as every notebook file (section 7.1); an invalid entry
 refuses startup before any native or S3 dependency loads, naming the
 entry in the diagnostic since entries are notebook-relative and never
 private. Section 2 "Read-only paths" is the full behavioral contract.
+
+`--writable-paths` (environment `SLIVINGDOC_WRITABLE_PATHS`) is the
+complementary comma-separated list of writable entries, empty by default
+and split, trimmed, and validated exactly as the read-only value is. A
+non-empty writable set makes every path it does not cover read-only for
+that process. The two sets compose by longest match, so a writable entry
+below a read-only entry opens that subtree; a path named by both settings
+has no unambiguous resolution and refuses startup, naming the path and
+both settings, at the same point an invalid entry refuses. Section 2
+"Read-only paths" is the full behavioral contract.
 
 Flags override environment variables, which override defaults. An explicitly
 empty flag value does not fall back to an environment value. Boolean values use
@@ -1773,7 +1873,11 @@ depend on the internal representation.
     candid text report.
 38. Read-only paths are per-process configuration (`--read-only-paths` /
     `SLIVINGDOC_READ_ONLY_PATHS`), not notebook or manifest state; they are
-    enforced at commit (refuse and reset) and restored at pull.
+    enforced at commit (refuse and reset) and restored at pull. Writable
+    paths (`--writable-paths` / `SLIVINGDOC_WRITABLE_PATHS`) are the same
+    kind of configuration: the two sets resolve by longest match, a
+    non-empty writable set protects every unmatched path, and both are
+    advertised on every surface that lists a set.
 
 ## 25. Architecture acceptance
 

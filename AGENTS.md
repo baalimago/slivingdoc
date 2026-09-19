@@ -260,8 +260,9 @@ lives in [`docs/running.md`](docs/running.md) and in the `helpText` of
 copy is the authoritative one. Behavior worth remembering: `--bucket` is
 required, `--private-root` must not be at or below the workspace root,
 `--commit-retries` exhaustion is `REMOTE_BUSY`, and an invalid
-`--read-only-paths` entry refuses startup before any native or S3
-dependency loads.
+`--read-only-paths` or `--writable-paths` entry refuses startup before any
+native or S3 dependency loads — as does a path named by both settings,
+which is a configuration error rather than a precedence rule.
 
 The `serve`, `pull`, and `commit` commands share every flag. The
 subcommand comes first. `slivingdoc version` and `-h` on any command exit
@@ -359,6 +360,13 @@ architecture, and a change that touches one of them updates
   under a read-only path: a violating commit is refused and the touched
   files are reset to the baseline, and a pull always restores those paths
   from the accepted remote state.
+- A process configured with either path set never publishes a change to a
+  path the composed policy protects. The two sets resolve by longest match
+  over `--read-only-paths` and `--writable-paths` as the operator wrote
+  them — so adding a broader entry to one setting never makes a narrower
+  entry of that setting stop applying — a non-empty writable set makes
+  every unmatched path protected, and the refusal and the pull restore are
+  the read-only ones above evaluated against that policy.
 
 **Error taxonomy.** The categories are stable API: `INVALID_REQUEST`,
 `CONTENT_CONFLICT`, `REMOTE_BUSY`, `STORAGE_FAILURE`, `STORAGE_INTEGRITY`,
@@ -369,8 +377,10 @@ more specific than the category) and a stable `action` token (the
 caller's next step), and every `files[]` entry carries a stable `reason`;
 these are additive fields, present on every error, that let an agent
 branch without parsing message text. Every success and error result also
-carries a `readOnly` array of the process's normalized read-only set,
-additive and always present, empty when nothing is configured.
+carries a `readOnly` array of the process's normalized read-only set and a
+`writable` array of its normalized writable set, both additive and always
+present, empty when that set is not configured. `readOnly` keeps carrying
+the read-only entries alone; it never stands in for the protected region.
 Every MCP error also carries a fresh `diagnosticId` in both its structured
 object and candid text item. An engine failure may carry a `detail`
 chosen from a closed set of named causes; raw cause text never crosses the

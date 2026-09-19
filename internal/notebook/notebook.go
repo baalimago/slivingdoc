@@ -49,6 +49,10 @@ type Config struct {
 	// ReadOnlyPaths are the notebook-relative read-only entries
 	// (architecture section 2, Read-only paths); New rejects an invalid one.
 	ReadOnlyPaths []string
+	// WritablePaths are the notebook-relative writable entries. A non-empty
+	// set protects every unmatched path (architecture section 2, Read-only
+	// paths); New rejects an invalid entry and a path named by both sets.
+	WritablePaths []string
 	// RetryLimit bounds CAS retries after the first attempt.
 	RetryLimit int
 	// CheckpointPacks triggers one checkpoint effort when the active tail
@@ -102,6 +106,12 @@ const MaxMessageBytes = 16384
 // them.
 const ReadOnlyListSeparator = ", "
 
+// PathSetsNestRule is the terse form of the composition rule, carried by
+// every surface that lists both sets: each set's own sentence is complete
+// only against the other, because the sets may nest (architecture section
+// 2, Writable paths).
+const PathSetsNestRule = "longest match decides"
+
 const (
 	minRetryLimit     = 0
 	defaultBackoffMin = 25 * time.Millisecond
@@ -118,12 +128,20 @@ type Notebook struct {
 	retryLimit          int
 	checkpointPacks     int
 	retainedCheckpoints int
-	readOnly            git.ReadOnlySet
-	newID               func() (storage.UUID, error)
-	now                 func() time.Time
-	waiter              BackoffWaiter
-	failpoints          *Failpoints
-	metrics             *Metrics
+	policy              git.PathPolicy
+	// readOnly resolves the most specific entry a violated path falls
+	// under, which the read-only refusal wording names; the policy answers
+	// everything else. It collapses the read-only set on its own, so it can
+	// hold a broader entry than the policy resolves over — but only where a
+	// writable entry splits a read-only entry from its ancestor, and the
+	// refusal names the writable set instead there (architecture section 2,
+	// Writable paths).
+	readOnly   git.EntrySet
+	newID      func() (storage.UUID, error)
+	now        func() time.Time
+	waiter     BackoffWaiter
+	failpoints *Failpoints
+	metrics    *Metrics
 }
 
 // New validates the configuration and returns a ready notebook.
@@ -143,7 +161,11 @@ func New(cfg Config) (*Notebook, error) {
 	if cfg.RetainedCheckpoints < 0 || cfg.RetainedCheckpoints > MaxRetainedCheckpoints {
 		return nil, fmt.Errorf("notebook: retained checkpoints %d is outside %d..%d", cfg.RetainedCheckpoints, 0, MaxRetainedCheckpoints)
 	}
-	readOnly, err := git.NormalizeReadOnly(cfg.ReadOnlyPaths)
+	policy, err := git.NewPolicy(cfg.ReadOnlyPaths, cfg.WritablePaths)
+	if err != nil {
+		return nil, fmt.Errorf("notebook: %w", err)
+	}
+	readOnly, err := git.NormalizeEntries(cfg.ReadOnlyPaths)
 	if err != nil {
 		return nil, fmt.Errorf("notebook: %w", err)
 	}
@@ -165,6 +187,7 @@ func New(cfg Config) (*Notebook, error) {
 		retryLimit:          cfg.RetryLimit,
 		checkpointPacks:     cfg.CheckpointPacks,
 		retainedCheckpoints: cfg.RetainedCheckpoints,
+		policy:              policy,
 		readOnly:            readOnly,
 		newID:               newID,
 		now:                 now,
@@ -175,7 +198,10 @@ func New(cfg Config) (*Notebook, error) {
 }
 
 // ReadOnlyPaths returns the normalized, sorted read-only entries; never nil.
-func (n *Notebook) ReadOnlyPaths() []string { return n.readOnly.Entries() }
+func (n *Notebook) ReadOnlyPaths() []string { return n.policy.ReadOnly() }
+
+// WritablePaths returns the normalized, sorted writable entries; never nil.
+func (n *Notebook) WritablePaths() []string { return n.policy.Writable() }
 
 // Metrics returns the operational measurements of the notebook.
 func (n *Notebook) Metrics() *Metrics { return n.metrics }

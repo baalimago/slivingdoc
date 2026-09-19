@@ -59,6 +59,8 @@ func (fakeService) Root() string { return "/fake/notebook" }
 
 func (fakeService) ReadOnlyPaths() []string { return []string{} }
 
+func (fakeService) WritablePaths() []string { return []string{} }
+
 func (fakeService) Pull(context.Context, string) (notebook.Result, error) {
 	return notebook.Result{}, nil
 }
@@ -78,6 +80,8 @@ type blockingService struct {
 func (b *blockingService) Root() string { return "/fake/notebook" }
 
 func (b *blockingService) ReadOnlyPaths() []string { return []string{} }
+
+func (b *blockingService) WritablePaths() []string { return []string{} }
 
 func (b *blockingService) Pull(context.Context, string) (notebook.Result, error) {
 	close(b.started)
@@ -100,6 +104,8 @@ type cancelingService struct {
 func (c *cancelingService) Root() string { return "/fake/notebook" }
 
 func (c *cancelingService) ReadOnlyPaths() []string { return []string{} }
+
+func (c *cancelingService) WritablePaths() []string { return []string{} }
 
 func (c *cancelingService) Pull(ctx context.Context, _ string) (notebook.Result, error) {
 	close(c.started)

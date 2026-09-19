@@ -51,12 +51,12 @@ func (n *Notebook) Commit(ctx context.Context, message string) (Result, error) {
 	if files := rejectMarkers(local); len(files) > 0 {
 		return Result{}, contentConflict(ReasonUnresolvedMarkers, "Resolve the conflict blocks before notes_commit.", files)
 	}
-	if err := n.enforceReadOnly(ctx, local); err != nil {
-		return Result{}, err
-	}
 	localTree, err := git.BuildTree(n.ws.Repo(), local)
 	if err != nil {
 		return Result{}, invalidRequest(ReasonInvalidContent, err, nil, "visible files cannot be represented as notebook state")
+	}
+	if err := n.enforcePolicy(ctx, local, localTree); err != nil {
+		return Result{}, err
 	}
 
 	baseTree := n.ws.Baseline().Tree
@@ -348,47 +348,116 @@ func (n *Notebook) mapUploadError(err error) error {
 	return storageFailure(ReasonPackUpload, err, "pack upload failed")
 }
 
-// enforceReadOnly refuses a commit that changes a covered path, resetting
-// those files to the baseline through applyLocal (architecture section
-// 11.1, Read-only paths).
-func (n *Notebook) enforceReadOnly(ctx context.Context, local git.Snapshot) error {
-	if len(n.readOnly.Entries()) == 0 {
+// enforcePolicy refuses a commit that changed a protected path, resetting
+// exactly those files to the baseline through applyLocal (architecture
+// section 11.1, Read-only paths). localTree is the tree the commit already
+// built, so detection builds none of its own.
+func (n *Notebook) enforcePolicy(ctx context.Context, local git.Snapshot, localTree git.OID) error {
+	if !n.policy.Configured() {
 		return nil
 	}
-	base, err := n.readOnly.ReadCovered(n.ws.Repo(), n.ws.Baseline().Tree)
+	baseline := n.ws.Baseline()
+	changed, err := n.policy.ChangedProtected(n.ws.Repo(), localTree, baseline.Tree)
 	if err != nil {
 		return storageIntegrity(ReasonEngineFailed, err, "read the baseline snapshot for the read-only check")
 	}
-	changed := n.readOnly.ChangedUnder(local, base)
 	if len(changed) == 0 {
 		return nil
 	}
-	pinned := n.readOnly.Pin(local, base)
-	tree, err := git.BuildTree(n.ws.Repo(), pinned)
+	restored, err := n.restoreProtected(baseline.Tree, local, changed)
+	if err != nil {
+		return err
+	}
+	tree, err := git.BuildTree(n.ws.Repo(), restored)
 	if err != nil {
 		return invalidRequest(ReasonInvalidContent, err, nil, "visible files cannot be represented as notebook state")
 	}
 	if err := n.applyLocal(ctx, stageReadOnly, RemoteAcceptedNo, func() error {
-		return n.ws.Materialize(ctx, n.ws.Baseline(), tree)
+		return n.ws.Materialize(ctx, baseline, tree)
 	}); err != nil {
 		return err
 	}
-	return readOnlyRefusal(n.readOnly, changed)
+	return n.policyRefusal(changed)
 }
 
-// readOnlyRefusal builds the READ_ONLY_PATH error: one file entry per
-// changed path, and a message naming the violated entries.
-func readOnlyRefusal(set git.ReadOnlySet, changed []string) error {
+// restoreProtected reads the baseline content of the changed paths and maps
+// the two failures the policy can return: a repository read failure is an
+// engine failure, while a restored snapshot the notebook cannot represent is
+// caller-visible invalid content. The reader records the read failure, since
+// only the boundary it crossed separates the two.
+func (n *Notebook) restoreProtected(baseTree git.OID, local git.Snapshot, changed []string) (git.Snapshot, error) {
+	reader := &readErrorRepo{Repository: n.ws.Repo()}
+	restored, err := n.policy.RestoreProtected(reader, baseTree, local, changed)
+	switch {
+	case err == nil:
+		return restored, nil
+	case reader.err != nil:
+		return git.Snapshot{}, storageIntegrity(ReasonEngineFailed, err, "read the baseline snapshot for the read-only check")
+	default:
+		return git.Snapshot{}, invalidRequest(ReasonInvalidContent, err, nil, "visible files cannot be represented as notebook state")
+	}
+}
+
+// readErrorRepo records the first read failure of the wrapped repository.
+type readErrorRepo struct {
+	git.Repository
+	err error
+}
+
+func (r *readErrorRepo) ReadTree(id git.OID) ([]git.TreeEntry, error) {
+	entries, err := r.Repository.ReadTree(id)
+	r.record(err)
+	return entries, err
+}
+
+func (r *readErrorRepo) ReadBlob(id git.OID) ([]byte, error) {
+	data, err := r.Repository.ReadBlob(id)
+	r.record(err)
+	return data, err
+}
+
+func (r *readErrorRepo) record(err error) {
+	if err != nil && r.err == nil {
+		r.err = err
+	}
+}
+
+// policyRefusal builds the READ_ONLY_PATH error: one file entry per changed
+// path, and a message naming where the caller may write.
+func (n *Notebook) policyRefusal(changed []string) error {
 	files := make([]ErrorFile, 0, len(changed))
 	for _, path := range changed {
 		files = append(files, ErrorFile{Path: path, Reason: FileReasonReadOnly})
 	}
-	return invalidRequest(ReasonReadOnlyPath, nil, files, "%s", readOnlyMessage(violatedEntries(set, changed)))
+	return invalidRequest(ReasonReadOnlyPath, nil, files, "%s", n.refusalMessage(changed))
 }
 
-// violatedEntries returns, sorted and deduplicated, the entries covering
-// the changed paths.
-func violatedEntries(set git.ReadOnlySet, changed []string) []string {
+// refusalMessage names the writable entries when the operator declared any,
+// since a default-protected policy protects nearly the whole notebook and
+// only the writable set is a list the caller can act on (architecture
+// section 2, Read-only paths). With no writable set the wording is the
+// read-only one.
+func (n *Notebook) refusalMessage(changed []string) string {
+	if writable := n.policy.Writable(); len(writable) > 0 {
+		return writableMessage(writable)
+	}
+	return readOnlyMessage(violatedEntries(n.readOnly, changed))
+}
+
+// writableMessage is the refusal text of a policy with a writable set.
+func writableMessage(entries []string) string {
+	verb := "is"
+	if len(entries) > 1 {
+		verb = "are"
+	}
+	return fmt.Sprintf("Only %s %s writable in this server. Your changes elsewhere were discarded and the files reset. Write under the writable paths, then commit again.",
+		strings.Join(entries, ReadOnlyListSeparator), verb)
+}
+
+// violatedEntries returns, sorted and deduplicated, the most specific
+// entry covering each changed path, since a set can hold an entry below
+// another (architecture section 2, Writable paths).
+func violatedEntries(set git.EntrySet, changed []string) []string {
 	seen := make(map[string]bool, len(changed))
 	var out []string
 	for _, path := range changed {

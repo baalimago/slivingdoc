@@ -2,12 +2,14 @@ package app
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/baalimago/slivingdoc/internal/git"
 	"github.com/baalimago/slivingdoc/internal/storage"
 	"github.com/baalimago/slivingdoc/internal/storage/fake"
 )
@@ -56,6 +58,7 @@ func TestLoadConfigDefaults(t *testing.T) {
 		checkpointPacks:     256,
 		retainedCheckpoints: 1,
 		readOnlyPaths:       []string{},
+		writablePaths:       []string{},
 		logTimestamp:        true,
 	}
 	// config holds a slice, so compare with reflect.DeepEqual.
@@ -676,4 +679,354 @@ func TestLoadConfigReadOnlyPathsInvalid(t *testing.T) {
 			}
 		})
 	}
+}
+
+// refusingEngine fails on every call and records that it was touched. A
+// startup refusal that happens before the engine opens therefore fails the
+// test rather than passing quietly.
+type refusingEngine struct{ touched bool }
+
+var errEngineMustNotBeTouched = errors.New("app test: the native engine must not be touched")
+
+func (e *refusingEngine) Open() error  { e.touched = true; return errEngineMustNotBeTouched }
+func (e *refusingEngine) Close() error { e.touched = true; return errEngineMustNotBeTouched }
+
+func (e *refusingEngine) Version() (string, error) {
+	e.touched = true
+	return "", errEngineMustNotBeTouched
+}
+
+func (e *refusingEngine) Features() (git.Features, error) {
+	e.touched = true
+	return git.Features{}, errEngineMustNotBeTouched
+}
+
+func (e *refusingEngine) CreateRepo(string) (git.Repository, error) {
+	e.touched = true
+	return nil, errEngineMustNotBeTouched
+}
+
+func (e *refusingEngine) OpenRepo(string) (git.Repository, error) {
+	e.touched = true
+	return nil, errEngineMustNotBeTouched
+}
+
+// refusingProcess is testProcess with an engine and a store factory that
+// fail when they are called at all, so the ordering of a startup refusal is
+// asserted directly rather than inferred.
+func refusingProcess(env []string, args ...string) (process, *refusingEngine, *bool) {
+	p := testProcess(env, args...)
+	engine := &refusingEngine{}
+	built := false
+	p.engine = engine
+	p.storeFactory = func(context.Context, config) (storage.ObjectStore, error) {
+		built = true
+		return nil, errors.New("app test: the object store must not be constructed")
+	}
+	return p, engine, &built
+}
+
+// TestFlagsWritablePathsResolution checks the documented precedence of the
+// writable set: the flag beats the environment, which beats the empty
+// default (architecture section 17).
+func TestFlagsWritablePathsResolution(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		env  []string
+		args []string
+		want []string
+	}{
+		{
+			name: "flag set, environment set",
+			env:  []string{"SLIVINGDOC_WRITABLE_PATHS=docs"},
+			args: []string{"--writable-paths=notes"},
+			want: []string{"notes"},
+		},
+		{
+			name: "flag unset, environment set",
+			env:  []string{"SLIVINGDOC_WRITABLE_PATHS=docs"},
+			want: []string{"docs"},
+		},
+		{
+			name: "flag unset, environment unset",
+			want: []string{},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			env := append([]string{"SLIVINGDOC_BUCKET=b"}, tt.env...)
+			cfg, err := loadConfig(testProcess(env, tt.args...))
+			if err != nil {
+				t.Fatalf("loadConfig() = %v", err)
+			}
+			if !reflect.DeepEqual(cfg.writablePaths, tt.want) {
+				t.Fatalf("writablePaths = %v, want %v", cfg.writablePaths, tt.want)
+			}
+		})
+	}
+}
+
+// TestFlagsWritablePathsExplicitEmptyIgnoresEnvironment checks the idiom a
+// caller uses to defeat an inherited environment value: an explicitly empty
+// flag resolves to the empty set instead of falling through to the
+// environment, which would silently confine a process that asked not to be.
+func TestFlagsWritablePathsExplicitEmptyIgnoresEnvironment(t *testing.T) {
+	cfg, err := loadConfig(testProcess([]string{
+		"SLIVINGDOC_BUCKET=b", "SLIVINGDOC_WRITABLE_PATHS=notes",
+	}, "--writable-paths="))
+	if err != nil {
+		t.Fatalf("loadConfig() = %v", err)
+	}
+	if got := cfg.writablePaths; len(got) != 0 {
+		t.Fatalf("writablePaths = %v, want the empty set, not the inherited environment value", got)
+	}
+}
+
+// TestFlagsWritablePathsSplitting checks the value splits on the comma
+// exactly as the read-only value does: surrounding white space trimmed,
+// empty pieces dropped, a trailing slash trimmed, covered entries
+// collapsed, and a value that is entirely separators resolving to the empty
+// set rather than to an invalid entry.
+func TestFlagsWritablePathsSplitting(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		value string
+		want  []string
+	}{
+		{
+			name:  "trimmed, non-empty entries; nested entries collapse",
+			value: "notes, docs/ ,docs/faq.md, ,",
+			want:  []string{"docs", "notes"},
+		},
+		{name: "entirely separators", value: ",,,", want: []string{}},
+		{name: "entirely white space", value: "  ,  ", want: []string{}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg, err := loadConfig(testProcess([]string{"SLIVINGDOC_BUCKET=b"}, "--writable-paths="+tt.value))
+			if err != nil {
+				t.Fatalf("loadConfig(--writable-paths=%q) = %v", tt.value, err)
+			}
+			if !reflect.DeepEqual(cfg.writablePaths, tt.want) {
+				t.Fatalf("writablePaths = %v, want %v", cfg.writablePaths, tt.want)
+			}
+		})
+	}
+}
+
+// TestSetupRejectsInvalidWritableEntry checks an entry that fails path
+// validation refuses startup, naming the entry and the setting it came
+// from, before the engine opens and before the store is built.
+func TestSetupRejectsInvalidWritableEntry(t *testing.T) {
+	for _, tt := range []struct{ name, value string }{
+		{name: "dot-dot segment", value: ".."},
+		{name: "absolute path", value: "/abs"},
+		{name: "git segment", value: "docs/.git"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			p, engine, built := refusingProcess([]string{"SLIVINGDOC_BUCKET=b"}, "--writable-paths="+tt.value)
+			rt, err := setup(p)
+			if err == nil {
+				_ = rt.Close()
+				t.Fatalf("setup(--writable-paths=%s) = nil, want a refusal", tt.value)
+			}
+			for _, want := range []string{"writable paths:", "invalid writable path", tt.value} {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("setup() error = %v, want it to name %q", err, want)
+				}
+			}
+			if strings.Contains(err.Error(), "git:") {
+				t.Fatalf("setup() error = %v, want no `git:` package prefix", err)
+			}
+			assertUntouched(t, engine, built)
+		})
+	}
+}
+
+// TestSetupRejectsInvalidEntryFromEnvironment checks a value inherited from
+// the environment refuses startup with the same message as the flag path:
+// the entry text identifies the source, and the setting is named either way.
+func TestSetupRejectsInvalidEntryFromEnvironment(t *testing.T) {
+	fromFlag, _, _ := refusingProcess([]string{"SLIVINGDOC_BUCKET=b"}, "--writable-paths=..")
+	flagErr := setupRefusal(t, fromFlag)
+
+	p, engine, built := refusingProcess([]string{"SLIVINGDOC_BUCKET=b", "SLIVINGDOC_WRITABLE_PATHS=.."})
+	envErr := setupRefusal(t, p)
+	if envErr != flagErr {
+		t.Fatalf("environment refusal = %q, want the flag refusal %q", envErr, flagErr)
+	}
+	assertUntouched(t, engine, built)
+}
+
+// TestSetupRejectsOverlapNamingBothSettings checks a path named by both
+// sets refuses startup before the engine and the store, with a message
+// naming the path and both settings so the operator knows which to change.
+func TestSetupRejectsOverlapNamingBothSettings(t *testing.T) {
+	p, engine, built := refusingProcess([]string{"SLIVINGDOC_BUCKET=b"},
+		"--read-only-paths=docs,notes", "--writable-paths=notes")
+	err := setupRefusal(t, p)
+	for _, want := range []string{"notes", "--read-only-paths", "--writable-paths", "name the same path"} {
+		if !strings.Contains(err, want) {
+			t.Fatalf("setup() error = %q, want it to name %q", err, want)
+		}
+	}
+	assertUntouched(t, engine, built)
+}
+
+// TestSetupRejectsCaseFoldedOverlap checks entries differing only in letter
+// case are the same overlap, since the policy matches under case folding,
+// and that both written forms reach the operator.
+func TestSetupRejectsCaseFoldedOverlap(t *testing.T) {
+	p, engine, built := refusingProcess([]string{"SLIVINGDOC_BUCKET=b"},
+		"--read-only-paths=Notes", "--writable-paths=notes")
+	err := setupRefusal(t, p)
+	for _, want := range []string{"Notes", "notes", "--read-only-paths", "--writable-paths"} {
+		if !strings.Contains(err, want) {
+			t.Fatalf("setup() error = %q, want it to name %q", err, want)
+		}
+	}
+	assertUntouched(t, engine, built)
+}
+
+// TestSetupRefusesBeforeEngineAndProbe checks the refusal ordering directly:
+// every configuration failure of the two sets happens before the native
+// engine opens and before the object store is built and probed. The last
+// three rows are the overlap an operator also covered by an ancestor of its
+// own setting: the entries compared are the ones written, so the refusal
+// does not depend on which unrelated ancestors sit beside them, and with
+// several overlaps the pair named is the first written read-only entry
+// (architecture section 2, Writable paths).
+func TestSetupRefusesBeforeEngineAndProbe(t *testing.T) {
+	for _, tt := range []struct {
+		name        string
+		args        []string
+		wantMessage string
+	}{
+		{name: "invalid writable entry", args: []string{"--writable-paths=.."}},
+		{name: "invalid read-only entry", args: []string{"--read-only-paths=.."}},
+		{name: "exact overlap", args: []string{"--read-only-paths=docs", "--writable-paths=docs"}},
+		{name: "case-folded overlap", args: []string{"--read-only-paths=Docs", "--writable-paths=docs"}},
+		{
+			name:        "overlap covered by an ancestor of the read-only set",
+			args:        []string{"--read-only-paths=docs,docs/open", "--writable-paths=docs/open"},
+			wantMessage: `--read-only-paths "docs/open" and --writable-paths "docs/open" name the same path`,
+		},
+		{
+			name:        "overlap covered by an ancestor of the writable set",
+			args:        []string{"--read-only-paths=docs/open", "--writable-paths=docs,docs/open"},
+			wantMessage: `--read-only-paths "docs/open" and --writable-paths "docs/open" name the same path`,
+		},
+		{
+			name:        "several overlaps name the first written pair",
+			args:        []string{"--read-only-paths=notes,docs", "--writable-paths=docs,notes"},
+			wantMessage: `--read-only-paths "notes" and --writable-paths "notes" name the same path`,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			p, engine, built := refusingProcess([]string{"SLIVINGDOC_BUCKET=b"}, tt.args...)
+			refusal := setupRefusal(t, p)
+			if tt.wantMessage != "" && !strings.Contains(refusal, tt.wantMessage) {
+				t.Fatalf("setup() error = %q, want it to carry %q", refusal, tt.wantMessage)
+			}
+			assertUntouched(t, engine, built)
+		})
+	}
+}
+
+// setupRefusal runs setup, requires a refusal, and returns its text.
+func setupRefusal(t *testing.T, p process) string {
+	t.Helper()
+	rt, err := setup(p)
+	if err == nil {
+		_ = rt.Close()
+		t.Fatal("setup() = nil, want a startup refusal")
+	}
+	return err.Error()
+}
+
+// assertUntouched proves the refusal preceded both startup dependencies.
+func assertUntouched(t *testing.T, engine *refusingEngine, built *bool) {
+	t.Helper()
+	if engine.touched {
+		t.Fatal("the refusal happened after the native engine was touched")
+	}
+	if *built {
+		t.Fatal("the refusal happened after the object store was constructed")
+	}
+}
+
+// TestSetupValidPolicyProceeds checks that a configuration the two sets can
+// express is no refusal at all: startup continues into the engine and the
+// store exactly as it does with neither set configured.
+func TestSetupValidPolicyProceeds(t *testing.T) {
+	p := testProcess([]string{"SLIVINGDOC_BUCKET=b"}, "--read-only-paths=docs", "--writable-paths=docs/open,notes")
+	rt, err := setup(p)
+	if err != nil {
+		t.Fatalf("setup() = %v", err)
+	}
+	defer rt.Close()
+	if engine, ok := p.engine.(*fakeEngine); !ok || !engine.opened {
+		t.Fatal("setup() returned without opening the native engine")
+	}
+}
+
+// TestSetupPassesBothSetsToNotebook checks the resolved entries reach the
+// service configuration the notebook is built from, normalized and with the
+// composition kept: a writable entry below a read-only entry is not
+// collapsed away.
+func TestSetupPassesBothSetsToNotebook(t *testing.T) {
+	p := testProcess([]string{"SLIVINGDOC_BUCKET=b"},
+		"--read-only-paths=docs/,team", "--writable-paths=docs/open,notes/")
+	rt, err := setup(p)
+	if err != nil {
+		t.Fatalf("setup() = %v", err)
+	}
+	defer rt.Close()
+	wantReadOnly, wantWritable := []string{"docs", "team"}, []string{"docs/open", "notes"}
+	if got := rt.svc.cfg.ReadOnlyPaths; !reflect.DeepEqual(got, wantReadOnly) {
+		t.Fatalf("service config ReadOnlyPaths = %v, want %v", got, wantReadOnly)
+	}
+	if got := rt.svc.cfg.WritablePaths; !reflect.DeepEqual(got, wantWritable) {
+		t.Fatalf("service config WritablePaths = %v, want %v", got, wantWritable)
+	}
+	if got := rt.ReadOnlyPaths(); !reflect.DeepEqual(got, wantReadOnly) {
+		t.Fatalf("ReadOnlyPaths() = %v, want %v", got, wantReadOnly)
+	}
+	if got := rt.WritablePaths(); !reflect.DeepEqual(got, wantWritable) {
+		t.Fatalf("WritablePaths() = %v, want %v", got, wantWritable)
+	}
+}
+
+// TestHelpTextWritablePathsLine checks the help text — the authoritative
+// copy of the flag table — carries the flag in the existing column layout:
+// the description and the environment variable start in the same columns as
+// the read-only line above it.
+func TestHelpTextWritablePathsLine(t *testing.T) {
+	const want = `  --writable-paths string       comma-separated notebook paths agents may    SLIVINGDOC_WRITABLE_PATHS
+                                change; every other path is then read-only
+                                (default: none, every path is writable)`
+	if !strings.Contains(FlagReference, want) {
+		t.Fatalf("FlagReference = %q, want it to carry\n%s", FlagReference, want)
+	}
+	if !strings.Contains(HelpText, want) {
+		t.Fatal("HelpText does not embed the flag reference line")
+	}
+	readOnly := flagReferenceLine(t, "--read-only-paths")
+	writable := flagReferenceLine(t, "--writable-paths")
+	if got, wantCol := strings.Index(writable, "comma-separated"), strings.Index(readOnly, "comma-separated"); got != wantCol {
+		t.Fatalf("description column = %d, want the existing layout column %d", got, wantCol)
+	}
+	if got, wantCol := strings.Index(writable, "SLIVINGDOC_"), strings.Index(readOnly, "SLIVINGDOC_"); got != wantCol {
+		t.Fatalf("environment column = %d, want the existing layout column %d", got, wantCol)
+	}
+}
+
+// flagReferenceLine returns the first help line declaring flag.
+func flagReferenceLine(t *testing.T, flag string) string {
+	t.Helper()
+	for line := range strings.SplitSeq(FlagReference, "\n") {
+		if strings.HasPrefix(line, "  "+flag+" ") {
+			return line
+		}
+	}
+	t.Fatalf("FlagReference declares no %s line", flag)
+	return ""
 }

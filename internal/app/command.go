@@ -126,19 +126,21 @@ func actionWording(action string) string {
 // unified status/detail/trailer skeleton shared by success and domain
 // errors (architecture section 2 CLI report): a status token and summary,
 // one indented line per file the result is about, and a trailer. path is
-// the resolved notebook directory the success line reports. readOnly is
-// attached to the envelope exactly as the MCP handler does. Colour is
+// the resolved notebook directory the success line reports. readOnly and
+// writable are attached to the envelope exactly as the MCP handler does.
+// Colour is
 // presentation-only: it appears only when out is a real terminal and
 // NO_COLOR is unset or empty, and the success output stays prefixed with
 // the OK token for script compatibility. The returned error is nil on
 // success, the terse category for a domain error — the router echoes it
 // and exits nonzero — or the unchanged error when it is not a domain
 // error (cancellation).
-func Report(out io.Writer, result notebook.Result, err error, path string, env []string, readOnly []string) error {
+func Report(out io.Writer, result notebook.Result, err error, path string, env []string, readOnly, writable []string) error {
 	p := painter{on: colourEnabled(out, env)}
 	if err == nil {
 		info := mcp.MapSuccess(result, path)
 		info.ReadOnly = readOnly
+		info.Writable = writable
 		writeSuccess(out, info, p)
 		return nil
 	}
@@ -147,6 +149,7 @@ func Report(out io.Writer, result notebook.Result, err error, path string, env [
 		return err
 	}
 	te.ReadOnly = readOnly
+	te.Writable = writable
 	writeError(out, te, p)
 	return errors.New(te.Code)
 }
@@ -154,8 +157,8 @@ func Report(out io.Writer, result notebook.Result, err error, path string, env [
 // writeSuccess renders the success report: the OK status token, the
 // accepted generation, and the resolved notebook directory, one line per
 // changed file with its insertion and deletion counts (a zero-count side
-// is omitted), the totals trailer, and the read-only trailer when the set
-// is non-empty.
+// is omitted), the totals trailer, and the writable and read-only trailers
+// when those sets are non-empty.
 func writeSuccess(out io.Writer, info *mcp.SuccessInfo, p painter) {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s  %s  %s\n", p.green("OK"), p.cyan(fmt.Sprintf("generation %d", info.Generation)), info.Path)
@@ -171,15 +174,13 @@ func writeSuccess(out io.Writer, info *mcp.SuccessInfo, p painter) {
 	}
 	fmt.Fprintf(&b, "%d files changed, %d insertions(+), %d deletions(-)\n",
 		info.FilesChanged, info.Insertions, info.Deletions)
-	if len(info.ReadOnly) > 0 {
-		fmt.Fprintf(&b, "%s %s\n", p.dim("read-only:"), strings.Join(info.ReadOnly, notebook.ReadOnlyListSeparator))
-	}
+	writePathSets(&b, info.Writable, info.ReadOnly, p)
 	io.WriteString(out, b.String())
 }
 
 // writeError renders the domain-error report (architecture section 2 CLI
 // report): status line, message, one aligned line per file, then the next,
-// retryable, recovery, and read-only trailers.
+// retryable, recovery, writable, and read-only trailers.
 func writeError(out io.Writer, te *mcp.ToolError, p painter) {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s%s%s\n", p.red(te.Code), statusSeparator, p.dim(te.Reason))
@@ -202,10 +203,26 @@ func writeError(out io.Writer, te *mcp.ToolError, p painter) {
 		fmt.Fprintf(&b, "recovery: stage=%s remoteAccepted=%s resynchronized=%t\n",
 			rec.Stage, rec.RemoteAccepted, rec.Resynchronized)
 	}
-	if len(te.ReadOnly) > 0 {
-		fmt.Fprintf(&b, "%s %s\n", p.dim("read-only:"), strings.Join(te.ReadOnly, notebook.ReadOnlyListSeparator))
-	}
+	writePathSets(&b, te.Writable, te.ReadOnly, p)
 	io.WriteString(out, b.String())
+}
+
+// writePathSets renders the trailer of each configured path set, writable
+// first, so an operator reads where the process may write before the
+// exceptions inside that region. An empty set has no trailer. Two
+// non-empty sets may name the same region at different depths, so they are
+// followed by the rule that reconciles them (architecture section 2,
+// Writable paths).
+func writePathSets(b *strings.Builder, writable, readOnly []string, p painter) {
+	if len(writable) > 0 {
+		fmt.Fprintf(b, "%s %s\n", p.dim("writable:"), strings.Join(writable, notebook.ReadOnlyListSeparator))
+	}
+	if len(readOnly) > 0 {
+		fmt.Fprintf(b, "%s %s\n", p.dim("read-only:"), strings.Join(readOnly, notebook.ReadOnlyListSeparator))
+	}
+	if len(writable) > 0 && len(readOnly) > 0 {
+		fmt.Fprintf(b, "%s %s\n", p.dim("path-rule:"), notebook.PathSetsNestRule)
+	}
 }
 
 // longestErrorFilePath is the widest file path in runes, for column

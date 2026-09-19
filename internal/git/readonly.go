@@ -9,39 +9,77 @@ import (
 	"golang.org/x/text/cases"
 )
 
-// ReadOnlySet is a normalized, sorted set of read-only notebook paths
-// (architecture section 2, Read-only paths). An entry covers itself and
-// every path below it, matched under the same case folding as
-// ValidateSnapshot. The zero value is the empty set.
-type ReadOnlySet struct {
+// EntrySet is a normalized, sorted set of notebook path entries, held by
+// one side of a PathPolicy (architecture section 2, Read-only paths). An
+// entry covers itself and every path below it, matched under the same case
+// folding as ValidateSnapshot. The zero value is the empty set.
+type EntrySet struct {
 	entries []string
 	folded  []string
 }
 
-var readOnlyFold = cases.Fold()
+var entryFold = cases.Fold()
 
-// NormalizeReadOnly validates each entry with ValidatePath after trimming
+// entryKind names the policy side an entry came from, so a refusal can
+// point at the setting the operator wrote.
+type entryKind string
+
+const (
+	kindReadOnly entryKind = "read-only"
+	kindWritable entryKind = "writable"
+)
+
+// NormalizeEntries validates each entry with ValidatePath after trimming
 // one trailing slash, drops entries covered by another entry, and sorts the
 // rest. The error names the invalid entry.
-func NormalizeReadOnly(entries []string) (ReadOnlySet, error) {
-	type item struct{ raw, folded string }
-	items := make([]item, 0, len(entries))
+func NormalizeEntries(entries []string) (EntrySet, error) {
+	return normalizeEntries(entries, kindReadOnly)
+}
+
+// entryItem is one entry as the operator wrote it, trimmed and validated,
+// beside the folded form every comparison uses.
+type entryItem struct{ raw, folded string }
+
+func normalizeEntries(entries []string, kind entryKind) (EntrySet, error) {
+	items, err := validateEntries(entries, kind)
+	if err != nil {
+		return EntrySet{}, err
+	}
+	return collapseEntries(items, nil), nil
+}
+
+// validateEntries trims one trailing slash and validates each entry,
+// keeping every written entry. Coverage within the set is collapsed only by
+// collapseEntries, so a caller comparing two sets can still see an entry
+// the operator wrote in both (architecture section 2, Writable paths).
+func validateEntries(entries []string, kind entryKind) ([]entryItem, error) {
+	items := make([]entryItem, 0, len(entries))
 	for _, raw := range entries {
 		trimmed := strings.TrimSuffix(raw, "/")
 		if err := ValidatePath(trimmed); err != nil {
-			return ReadOnlySet{}, fmt.Errorf("invalid read-only path %q: %w", raw, err)
+			return nil, fmt.Errorf("invalid %s path %q: %w", kind, raw, err)
 		}
-		items = append(items, item{raw: trimmed, folded: readOnlyFold.String(trimmed)})
+		items = append(items, entryItem{raw: trimmed, folded: entryFold.String(trimmed)})
 	}
+	return items, nil
+}
 
-	var kept []item
+// collapseEntries drops an entry made redundant by another entry of the
+// same set, de-duplicates, and sorts. An entry is redundant only when its
+// own-set ancestor decides every path it decides: if an entry of the other
+// set lies strictly between the two, the ancestor loses the longest match
+// there and the covered entry is kept, so the collapse normalizes what is
+// advertised without deciding resolution (architecture section 2, Writable
+// paths). other is nil for a set normalized on its own.
+func collapseEntries(items, other []entryItem) EntrySet {
+	var kept []entryItem
 	for _, it := range items {
 		covered := false
-		for _, other := range items {
-			if other.folded == it.folded {
+		for _, anc := range items {
+			if anc.folded == it.folded {
 				continue
 			}
-			if isReadOnlyAncestor(other.folded, it.folded) {
+			if isEntryAncestor(anc.folded, it.folded) && !entryBetween(anc.folded, it.folded, other) {
 				covered = true
 				break
 			}
@@ -62,50 +100,73 @@ func NormalizeReadOnly(entries []string) (ReadOnlySet, error) {
 	}
 	sort.Slice(kept, func(i, j int) bool { return kept[i].raw < kept[j].raw })
 
-	set := ReadOnlySet{entries: make([]string, len(kept)), folded: make([]string, len(kept))}
+	set := EntrySet{entries: make([]string, len(kept)), folded: make([]string, len(kept))}
 	for i, k := range kept {
 		set.entries[i] = k.raw
 		set.folded[i] = k.folded
 	}
-	return set, nil
+	return set
 }
 
-// isReadOnlyAncestor reports whether foldedPath is a proper descendant of
+// entryBetween reports whether an entry of other is a proper descendant of
+// foldedAncestor and a proper ancestor of foldedEntry, which is the case in
+// which foldedAncestor cannot stand for foldedEntry.
+func entryBetween(foldedAncestor, foldedEntry string, other []entryItem) bool {
+	for _, o := range other {
+		if isEntryAncestor(foldedAncestor, o.folded) && isEntryAncestor(o.folded, foldedEntry) {
+			return true
+		}
+	}
+	return false
+}
+
+// isEntryAncestor reports whether foldedPath is a proper descendant of
 // foldedAncestor on a segment boundary.
-func isReadOnlyAncestor(foldedAncestor, foldedPath string) bool {
+func isEntryAncestor(foldedAncestor, foldedPath string) bool {
 	return len(foldedPath) > len(foldedAncestor) &&
 		strings.HasPrefix(foldedPath, foldedAncestor) &&
 		foldedPath[len(foldedAncestor)] == '/'
 }
 
 // Entries returns a copy of the sorted entries; never nil.
-func (s ReadOnlySet) Entries() []string {
+func (s EntrySet) Entries() []string {
 	out := make([]string, len(s.entries))
 	copy(out, s.entries)
 	return out
 }
 
 // Covers reports whether the set protects path.
-func (s ReadOnlySet) Covers(path string) bool {
+func (s EntrySet) Covers(path string) bool {
 	_, ok := s.CoveringEntry(path)
 	return ok
 }
 
-// CoveringEntry returns the entry that covers path. Normalization keeps
-// entries disjoint, so at most one can match.
-func (s ReadOnlySet) CoveringEntry(path string) (string, bool) {
-	folded := readOnlyFold.String(path)
+// CoveringEntry returns the longest entry covering path. A set can hold an
+// entry below another when the other policy set splits them, so the most
+// specific match is the one that decides.
+func (s EntrySet) CoveringEntry(path string) (string, bool) {
+	raw, _, ok := s.covering(path)
+	return raw, ok
+}
+
+// covering returns the raw and folded longest entry covering path. The
+// folded form carries the match length the policy resolves longest-match on.
+func (s EntrySet) covering(path string) (raw, folded string, ok bool) {
+	foldedPath := entryFold.String(path)
 	for i, e := range s.folded {
-		if folded == e || isReadOnlyAncestor(e, folded) {
-			return s.entries[i], true
+		if foldedPath != e && !isEntryAncestor(e, foldedPath) {
+			continue
+		}
+		if !ok || len(e) > len(folded) {
+			raw, folded, ok = s.entries[i], e, true
 		}
 	}
-	return "", false
+	return raw, folded, ok
 }
 
 // ChangedUnder returns, sorted, every covered path that differs between
 // local and base (added, removed, or different bytes).
-func (s ReadOnlySet) ChangedUnder(local, base Snapshot) []string {
+func (s EntrySet) ChangedUnder(local, base Snapshot) []string {
 	if len(s.entries) == 0 {
 		return nil
 	}
@@ -138,7 +199,7 @@ func (s ReadOnlySet) ChangedUnder(local, base Snapshot) []string {
 
 // Pin returns local with its covered files replaced by base's covered
 // files, sorted by path.
-func (s ReadOnlySet) Pin(local, base Snapshot) Snapshot {
+func (s EntrySet) Pin(local, base Snapshot) Snapshot {
 	if len(s.entries) == 0 {
 		return local
 	}
@@ -160,7 +221,7 @@ func (s ReadOnlySet) Pin(local, base Snapshot) Snapshot {
 // ReadCovered reads only the covered files of tree, descending into a
 // subtree only when it is covered or contains an entry, and validates the
 // result like ReadSnapshot.
-func (s ReadOnlySet) ReadCovered(repo Repository, tree OID) (Snapshot, error) {
+func (s EntrySet) ReadCovered(repo Repository, tree OID) (Snapshot, error) {
 	if len(s.entries) == 0 {
 		return Snapshot{}, nil
 	}
@@ -178,7 +239,7 @@ func (s ReadOnlySet) ReadCovered(repo Repository, tree OID) (Snapshot, error) {
 
 // walkCovered is ReadCovered's tree walk; inside is true below a covered
 // ancestor.
-func (s ReadOnlySet) walkCovered(repo Repository, tree OID, prefix string, inside bool, files *[]File) error {
+func (s EntrySet) walkCovered(repo Repository, tree OID, prefix string, inside bool, files *[]File) error {
 	entries, err := repo.ReadTree(tree)
 	if err != nil {
 		return fmt.Errorf("tree %s: %w", tree, err)
@@ -211,10 +272,10 @@ func (s ReadOnlySet) walkCovered(repo Repository, tree OID, prefix string, insid
 }
 
 // hasEntryBelow reports whether some entry lies strictly below path.
-func (s ReadOnlySet) hasEntryBelow(path string) bool {
-	folded := readOnlyFold.String(path)
+func (s EntrySet) hasEntryBelow(path string) bool {
+	folded := entryFold.String(path)
 	for _, e := range s.folded {
-		if isReadOnlyAncestor(folded, e) {
+		if isEntryAncestor(folded, e) {
 			return true
 		}
 	}

@@ -151,7 +151,7 @@ func TestDecodeEnvelopeRequiresTokens(t *testing.T) {
 		"code": "INVALID_REQUEST", "reason": "MESSAGE_BLANK", "action": "FIX_INPUT",
 		"diagnosticId": "0011223344556677",
 		"retryable":    false, "message": "commit message must not be blank",
-		"files": []any{}, "readOnly": []any{},
+		"files": []any{}, "readOnly": []any{}, "writable": []any{},
 	}
 	res := tokenEnvelopeResult(complete)
 	env := decodeEnvelope(t, call, res)
@@ -173,6 +173,7 @@ func TestDecodeEnvelopeRequiresTokens(t *testing.T) {
 		{"missing diagnostic id", func(e envelope) envelope { e.DiagnosticID = ""; return e }, "empty diagnosticId"},
 		{"nil files", func(e envelope) envelope { e.Files = nil; return e }, "no files key"},
 		{"nil readOnly", func(e envelope) envelope { e.ReadOnly = nil; return e }, "no readOnly key"},
+		{"nil writable", func(e envelope) envelope { e.Writable = nil; return e }, "no writable key"},
 		{"file with no reason", func(e envelope) envelope {
 			e.Files = []envelopeFile{{Path: "notes/a.md"}}
 			return e

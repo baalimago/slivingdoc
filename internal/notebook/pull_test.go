@@ -597,3 +597,29 @@ func TestPullDownloadsPacksConcurrently(t *testing.T) {
 		t.Fatalf("L = %v, want the accepted head content", got)
 	}
 }
+
+// TestPullCleanPullPolicyAddsNoBlobRead proves a pull that changed no
+// protected path opens exactly the blobs the same pull opens with no policy
+// configured. The merge takes the baseline tree as its base side and opens
+// baseline blobs of its own accord, so the oracle is the difference the
+// policy makes, not an absolute.
+func TestPullCleanPullPolicyAddsNoBlobRead(t *testing.T) {
+	pull := func(nb *Notebook) error { return errOnly(nb.Pull(context.Background())) }
+	configured := policyAccess(t, []string{"docs"}, []string{"notes"}, pull)
+	unconfigured := policyAccess(t, nil, nil, pull)
+	if configured.blobReads != unconfigured.blobReads {
+		t.Fatalf("configured pull read %d blobs, want the unconfigured pull's %d", configured.blobReads, unconfigured.blobReads)
+	}
+}
+
+// TestPullCleanPullBuildsNoExtraTree proves the pin is skipped when nothing
+// protected changed: the merge takes the local tree, so the configured pull
+// writes no tree the unconfigured pull does not.
+func TestPullCleanPullBuildsNoExtraTree(t *testing.T) {
+	pull := func(nb *Notebook) error { return errOnly(nb.Pull(context.Background())) }
+	configured := policyAccess(t, []string{"docs"}, []string{"notes"}, pull)
+	unconfigured := policyAccess(t, nil, nil, pull)
+	if configured.treeWrites != unconfigured.treeWrites {
+		t.Fatalf("configured pull wrote %d trees, want the unconfigured pull's %d", configured.treeWrites, unconfigured.treeWrites)
+	}
+}

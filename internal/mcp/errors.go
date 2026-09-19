@@ -49,6 +49,7 @@ type ToolError struct {
 	Files        []ErrorFile   `json:"files"`
 	Recovery     *RecoveryInfo `json:"recovery,omitempty"`
 	ReadOnly     []string      `json:"readOnly"`
+	Writable     []string      `json:"writable"`
 }
 
 type ErrorFile struct {
@@ -89,6 +90,7 @@ func MapError(err error) (*ToolError, bool) {
 			Message:   Redact(invalidPathMessage(err)),
 			Files:     []ErrorFile{},
 			ReadOnly:  []string{},
+			Writable:  []string{},
 		}, true
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -102,6 +104,7 @@ func MapError(err error) (*ToolError, bool) {
 		Message:   "the notebook service failed unexpectedly; retry the operation",
 		Files:     []ErrorFile{},
 		ReadOnly:  []string{},
+		Writable:  []string{},
 	}, true
 }
 
@@ -126,6 +129,7 @@ func mapNotebookError(e *notebook.Error) *ToolError {
 		Message:   Redact(e.Message),
 		Files:     files,
 		ReadOnly:  []string{},
+		Writable:  []string{},
 	}
 	if e.Reason == notebook.ReasonEngineFailed && e.Cause != nil {
 		te.Detail = safeEngineDetail(e.Cause)
@@ -214,6 +218,7 @@ func invalidRequest(cause error) *ToolError {
 		Message:   Redact(cause.Error()),
 		Files:     []ErrorFile{},
 		ReadOnly:  []string{},
+		Writable:  []string{},
 	}
 }
 

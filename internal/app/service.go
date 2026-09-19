@@ -31,6 +31,9 @@ type ServiceConfig struct {
 	// ReadOnlyPaths are the read-only entries (architecture section 2,
 	// Read-only paths).
 	ReadOnlyPaths []string
+	// WritablePaths are the writable entries; a non-empty set protects
+	// every unmatched path (architecture section 2, Read-only paths).
+	WritablePaths []string
 }
 
 // serviceConfig converts the resolved process configuration into the
@@ -49,6 +52,7 @@ func (cfg config) serviceConfig() ServiceConfig {
 		CheckpointPacks:     cfg.checkpointPacks,
 		RetainedCheckpoints: cfg.retainedCheckpoints,
 		ReadOnlyPaths:       cfg.readOnlyPaths,
+		WritablePaths:       cfg.writablePaths,
 	}
 }
 
@@ -68,11 +72,11 @@ type ServiceHooks struct {
 // until Close. Calls for one path serialize on that workspace's operation
 // lock; distinct paths operate independently (architecture section 7.2).
 type Service struct {
-	engine   git.Engine
-	store    storage.ObjectStore
-	cfg      ServiceConfig
-	hooks    *ServiceHooks
-	readOnly git.ReadOnlySet
+	engine git.Engine
+	store  storage.ObjectStore
+	cfg    ServiceConfig
+	hooks  *ServiceHooks
+	policy git.PathPolicy
 
 	mu     sync.Mutex // guards opened and closed
 	opened map[string]*openedNotebook
@@ -97,17 +101,17 @@ func NewService(engine git.Engine, store storage.ObjectStore, cfg ServiceConfig,
 	if store == nil {
 		return nil, errors.New("app: store is required")
 	}
-	readOnly, err := git.NormalizeReadOnly(cfg.ReadOnlyPaths)
+	policy, err := git.NewPolicy(cfg.ReadOnlyPaths, cfg.WritablePaths)
 	if err != nil {
 		return nil, fmt.Errorf("app: %w", err)
 	}
 	return &Service{
-		engine:   engine,
-		store:    store,
-		cfg:      cfg,
-		hooks:    hooks,
-		readOnly: readOnly,
-		opened:   map[string]*openedNotebook{},
+		engine: engine,
+		store:  store,
+		cfg:    cfg,
+		hooks:  hooks,
+		policy: policy,
+		opened: map[string]*openedNotebook{},
 	}, nil
 }
 
@@ -117,7 +121,10 @@ func NewService(engine git.Engine, store storage.ObjectStore, cfg ServiceConfig,
 func (s *Service) Root() string { return s.cfg.WorkspaceRoot }
 
 // ReadOnlyPaths returns the normalized, sorted read-only entries; never nil.
-func (s *Service) ReadOnlyPaths() []string { return s.readOnly.Entries() }
+func (s *Service) ReadOnlyPaths() []string { return s.policy.ReadOnly() }
+
+// WritablePaths returns the normalized, sorted writable entries; never nil.
+func (s *Service) WritablePaths() []string { return s.policy.Writable() }
 
 // Pull resolves path to its notebook, pulls it, and returns the operation
 // result: the accepted generation and the pull delta diffstat.
@@ -170,13 +177,18 @@ func (s *Service) notebookFor(ctx context.Context, path string) (*notebook.Noteb
 	if err != nil {
 		return nil, err
 	}
+	// The notebook builds its own policy from the entry sets: each layer
+	// validates what it is configured with, and the normalized entries
+	// resolve exactly as the written ones do (architecture section 2,
+	// Writable paths).
 	nb, err := notebook.New(notebook.Config{
 		Workspace:           ws,
 		Store:               s.store,
 		RetryLimit:          s.cfg.CommitRetries,
 		CheckpointPacks:     s.cfg.CheckpointPacks,
 		RetainedCheckpoints: s.cfg.RetainedCheckpoints,
-		ReadOnlyPaths:       s.readOnly.Entries(),
+		ReadOnlyPaths:       s.policy.ReadOnly(),
+		WritablePaths:       s.policy.Writable(),
 		Failpoints:          nbFailpoints,
 	})
 	if err != nil {

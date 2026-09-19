@@ -67,10 +67,12 @@ func runCLI(t *testing.T, mode string, env []string, args ...string) (int, strin
 // runCLIOK runs one one-shot CLI process and asserts the success
 // contract: exit zero and the plain OK-prefixed result report on stdout —
 // the status token and generation summary, one indented line per changed
-// file with its insertion and deletion counts, and the totals trailer as
-// the final line — with no ANSI escapes, because the spawned process
-// writes to a pipe.
-func runCLIOK(t *testing.T, mode string, env []string, args ...string) {
+// file with its insertion and deletion counts, and the totals trailer
+// followed by exactly the trailers lines, in that order and no other —
+// with no ANSI escapes, because the spawned process writes to a pipe. A
+// process configured with neither path set passes nil, which forbids every
+// path-set trailer rather than tolerating one (review 1, R1-07).
+func runCLIOK(t *testing.T, mode string, env []string, trailers []string, args ...string) {
 	t.Helper()
 	code, stdout, stderr := runCLI(t, mode, env, args...)
 	if code != 0 {
@@ -79,9 +81,13 @@ func runCLIOK(t *testing.T, mode string, env []string, args ...string) {
 	if !strings.HasPrefix(stdout, "OK  generation ") {
 		t.Fatalf("%v stdout = %q, want the OK-prefixed result report", args, stdout)
 	}
-	trailer := regexp.MustCompile(`\n\d+ files changed, \d+ insertions\(\+\), \d+ deletions\(-\)\n$`)
-	if !trailer.MatchString(stdout) {
-		t.Fatalf("%v stdout = %q, want the totals trailer as the final line", args, stdout)
+	var want strings.Builder
+	want.WriteString(`\n\d+ files changed, \d+ insertions\(\+\), \d+ deletions\(-\)\n`)
+	for _, line := range trailers {
+		want.WriteString(regexp.QuoteMeta(line + "\n"))
+	}
+	if !regexp.MustCompile(want.String() + `$`).MatchString(stdout) {
+		t.Fatalf("%v stdout = %q, want the totals line followed by exactly the trailers %q", args, stdout, trailers)
 	}
 	if strings.Contains(stdout, "\x1b[") {
 		t.Fatalf("%v stdout = %q, want no ANSI escapes on a pipe", args, stdout)
@@ -145,7 +151,7 @@ func TestScenarioCLIPullKeepsDirectoryIdentity(t *testing.T) {
 	commitFirst(t, writer, notes, "note.md", "first\n", "first")
 
 	reader := filepath.Join(root, "reader")
-	runCLIOK(t, "real", env, "pull", reader)
+	runCLIOK(t, "real", env, nil, "pull", reader)
 	before, err := os.Stat(reader)
 	if err != nil {
 		t.Fatalf("stat after the first pull: %v", err)
@@ -162,7 +168,7 @@ func TestScenarioCLIPullKeepsDirectoryIdentity(t *testing.T) {
 	writer.WriteFile(filepath.Join(notes, "note.md"), "second\n")
 	writer.WriteFile(filepath.Join(notes, "added.md"), "added\n")
 	writer.assertOK(t, writer.Commit("", notes, "second"))
-	runCLIOK(t, "real", env, "pull", reader)
+	runCLIOK(t, "real", env, nil, "pull", reader)
 
 	if got, err := os.ReadFile(filepath.Join(reader, "note.md")); err != nil || string(got) != "second\n" {
 		t.Fatalf("reader/note.md = %q, %v; want the republished bytes", got, err)
@@ -210,7 +216,7 @@ func TestScenarioCLIMarkerConflictReport(t *testing.T) {
 	t.Parallel()
 	env, root := cliRoots(t)
 	notes := filepath.Join(root, "notes")
-	runCLIOK(t, "fake", env, "pull", notes)
+	runCLIOK(t, "fake", env, nil, "pull", notes)
 
 	writeCLIFile(t, filepath.Join(notes, "a.md"), "<<<<<<< local\na\n=======\nb\n>>>>>>> remote\n")
 	code, stdout, stderr := runCLI(t, "fake", env, "commit", notes, "-m", "markers")
@@ -305,16 +311,16 @@ func TestScenarioCLISharedRemoteConflict(t *testing.T) {
 	a, b := filepath.Join(root, "a"), filepath.Join(root, "b")
 	shared := "shared.md"
 
-	runCLIOK(t, "real", env, "pull", a)
+	runCLIOK(t, "real", env, nil, "pull", a)
 	writeCLIFile(t, filepath.Join(a, shared), "base\n")
-	runCLIOK(t, "real", env, "commit", a, "-m", "first")
+	runCLIOK(t, "real", env, nil, "commit", a, "-m", "first")
 
-	runCLIOK(t, "real", env, "pull", b)
+	runCLIOK(t, "real", env, nil, "pull", b)
 	if got, err := os.ReadFile(filepath.Join(b, shared)); err != nil || string(got) != "base\n" {
 		t.Fatalf("b/%s after pull = %q, %v; want the published base", shared, got, err)
 	}
 	writeCLIFile(t, filepath.Join(b, shared), "B-v2\n")
-	runCLIOK(t, "real", env, "commit", b, "-m", "second")
+	runCLIOK(t, "real", env, nil, "commit", b, "-m", "second")
 
 	// The divergent edit conflicts against the moved remote.
 	writeCLIFile(t, filepath.Join(a, shared), "A-v2\n")
@@ -343,8 +349,8 @@ func TestScenarioCLISharedRemoteConflict(t *testing.T) {
 	// Resolving the markers publishes, and the other workspace observes
 	// exactly the resolved bytes.
 	writeCLIFile(t, filepath.Join(a, shared), "resolved\n")
-	runCLIOK(t, "real", env, "commit", a, "-m", "resolved")
-	runCLIOK(t, "real", env, "pull", b)
+	runCLIOK(t, "real", env, nil, "commit", a, "-m", "resolved")
+	runCLIOK(t, "real", env, nil, "pull", b)
 	if got, err := os.ReadFile(filepath.Join(b, shared)); err != nil || string(got) != "resolved\n" {
 		t.Fatalf("b/%s after the resolution = %q, %v; want exactly the resolved bytes", shared, got, err)
 	}

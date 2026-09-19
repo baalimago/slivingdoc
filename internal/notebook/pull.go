@@ -39,20 +39,13 @@ func (n *Notebook) Pull(ctx context.Context) (Result, error) {
 		return Result{}, err
 	}
 
-	// Read-only paths are pinned to the baseline on the local side, so the
-	// merge takes R there and the diffstat (raw local vs. merged) shows the
-	// restore (architecture section 10).
-	mergeTree := localTree
-	if len(n.readOnly.Entries()) > 0 {
-		base, err := n.readOnly.ReadCovered(n.ws.Repo(), n.ws.Baseline().Tree)
-		if err != nil {
-			return Result{}, storageIntegrity(ReasonEngineFailed, err, "read the baseline snapshot for the read-only check")
-		}
-		pinned := n.readOnly.Pin(local, base)
-		mergeTree, err = git.BuildTree(n.ws.Repo(), pinned)
-		if err != nil {
-			return Result{}, invalidRequest(ReasonInvalidContent, err, nil, "visible files cannot be represented as notebook state")
-		}
+	// A changed protected path is pinned to the baseline on the local side,
+	// so the merge takes R there and the diffstat (raw local vs. merged)
+	// shows the restore (architecture section 10). With nothing changed the
+	// pinned tree would equal the local tree, so no pin is built.
+	mergeTree, err := n.pinProtected(local, localTree)
+	if err != nil {
+		return Result{}, err
 	}
 
 	merged, err := git.Merge(n.ws.Repo(), n.ws.Baseline().Tree, mergeTree, remote.tree)
@@ -96,4 +89,30 @@ func (n *Notebook) Pull(ctx context.Context) (Result, error) {
 		return Result{}, n.mapLocalError(err)
 	}
 	return Result{Generation: remote.generation, Stat: stat}, nil
+}
+
+// pinProtected returns the tree the merge takes as its local side: the
+// local tree when no protected path changed, and otherwise the local
+// snapshot with those paths restored from the baseline.
+func (n *Notebook) pinProtected(local git.Snapshot, localTree git.OID) (git.OID, error) {
+	if !n.policy.Configured() {
+		return localTree, nil
+	}
+	baseTree := n.ws.Baseline().Tree
+	changed, err := n.policy.ChangedProtected(n.ws.Repo(), localTree, baseTree)
+	if err != nil {
+		return git.OID{}, storageIntegrity(ReasonEngineFailed, err, "read the baseline snapshot for the read-only check")
+	}
+	if len(changed) == 0 {
+		return localTree, nil
+	}
+	pinned, err := n.restoreProtected(baseTree, local, changed)
+	if err != nil {
+		return git.OID{}, err
+	}
+	tree, err := git.BuildTree(n.ws.Repo(), pinned)
+	if err != nil {
+		return git.OID{}, invalidRequest(ReasonInvalidContent, err, nil, "visible files cannot be represented as notebook state")
+	}
+	return tree, nil
 }

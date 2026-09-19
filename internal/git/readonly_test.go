@@ -24,12 +24,12 @@ func TestNormalizeReadOnly(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got, err := NormalizeReadOnly(c.entries)
+			got, err := NormalizeEntries(c.entries)
 			if err != nil {
-				t.Fatalf("NormalizeReadOnly(%v) = %v, want nil", c.entries, err)
+				t.Fatalf("NormalizeEntries(%v) = %v, want nil", c.entries, err)
 			}
 			if !reflect.DeepEqual(got.Entries(), c.want) {
-				t.Fatalf("NormalizeReadOnly(%v).Entries() = %v, want %v", c.entries, got.Entries(), c.want)
+				t.Fatalf("NormalizeEntries(%v).Entries() = %v, want %v", c.entries, got.Entries(), c.want)
 			}
 		})
 	}
@@ -37,8 +37,8 @@ func TestNormalizeReadOnly(t *testing.T) {
 	t.Run("invalid entries", func(t *testing.T) {
 		invalid := []string{"..", "/abs", ".git/x", "", "a/../b"}
 		for _, entry := range invalid {
-			if _, err := NormalizeReadOnly([]string{entry}); err == nil {
-				t.Errorf("NormalizeReadOnly([%q]) = nil, want error", entry)
+			if _, err := NormalizeEntries([]string{entry}); err == nil {
+				t.Errorf("NormalizeEntries([%q]) = nil, want error", entry)
 			}
 		}
 	})
@@ -46,14 +46,14 @@ func TestNormalizeReadOnly(t *testing.T) {
 
 // TestNormalizeReadOnlyEmptyEntriesNonNil checks Entries never returns nil.
 func TestNormalizeReadOnlyEmptyEntriesNonNil(t *testing.T) {
-	set, err := NormalizeReadOnly(nil)
+	set, err := NormalizeEntries(nil)
 	if err != nil {
-		t.Fatalf("NormalizeReadOnly(nil) = %v", err)
+		t.Fatalf("NormalizeEntries(nil) = %v", err)
 	}
 	if got := set.Entries(); got == nil {
 		t.Fatal("Entries() = nil, want an empty non-nil slice")
 	}
-	var zero ReadOnlySet
+	var zero EntrySet
 	if got := zero.Entries(); got == nil {
 		t.Fatal("zero value Entries() = nil, want an empty non-nil slice")
 	}
@@ -61,9 +61,9 @@ func TestNormalizeReadOnlyEmptyEntriesNonNil(t *testing.T) {
 
 // TestReadOnlyCovers checks segment-boundary matching under case folding.
 func TestReadOnlyCovers(t *testing.T) {
-	set, err := NormalizeReadOnly([]string{"docs", "faq.md"})
+	set, err := NormalizeEntries([]string{"docs", "faq.md"})
 	if err != nil {
-		t.Fatalf("NormalizeReadOnly() = %v", err)
+		t.Fatalf("NormalizeEntries() = %v", err)
 	}
 	cases := map[string]bool{
 		"docs":            true,
@@ -86,9 +86,9 @@ func TestReadOnlyCovers(t *testing.T) {
 
 // TestReadOnlyCoveringEntry checks the kept entry covering a path is returned.
 func TestReadOnlyCoveringEntry(t *testing.T) {
-	set, err := NormalizeReadOnly([]string{"docs", "faq.md"})
+	set, err := NormalizeEntries([]string{"docs", "faq.md"})
 	if err != nil {
-		t.Fatalf("NormalizeReadOnly() = %v", err)
+		t.Fatalf("NormalizeEntries() = %v", err)
 	}
 	cases := []struct {
 		path      string
@@ -115,9 +115,9 @@ func TestReadOnlyCoveringEntry(t *testing.T) {
 // TestReadOnlyChangedUnder checks added, changed, and deleted covered files are
 // reported sorted.
 func TestReadOnlyChangedUnder(t *testing.T) {
-	set, err := NormalizeReadOnly([]string{"docs"})
+	set, err := NormalizeEntries([]string{"docs"})
 	if err != nil {
-		t.Fatalf("NormalizeReadOnly() = %v", err)
+		t.Fatalf("NormalizeEntries() = %v", err)
 	}
 	base := fakeSnapshot(map[string]string{
 		"docs/a.md":  "a",
@@ -152,7 +152,7 @@ func TestReadOnlyChangedUnder(t *testing.T) {
 
 // TestReadOnlyChangedUnderEmptySet checks an empty set reports nothing.
 func TestReadOnlyChangedUnderEmptySet(t *testing.T) {
-	var set ReadOnlySet
+	var set EntrySet
 	local := fakeSnapshot(map[string]string{"docs/a.md": "changed"})
 	base := fakeSnapshot(map[string]string{"docs/a.md": "base"})
 	if got := set.ChangedUnder(local, base); got != nil {
@@ -163,9 +163,9 @@ func TestReadOnlyChangedUnderEmptySet(t *testing.T) {
 // TestReadOnlyPin checks covered files are replaced by the baseline's and the
 // rest kept.
 func TestReadOnlyPin(t *testing.T) {
-	set, err := NormalizeReadOnly([]string{"docs"})
+	set, err := NormalizeEntries([]string{"docs"})
 	if err != nil {
-		t.Fatalf("NormalizeReadOnly() = %v", err)
+		t.Fatalf("NormalizeEntries() = %v", err)
 	}
 	base := fakeSnapshot(map[string]string{
 		"docs/a.md":  "base-a",
@@ -185,7 +185,7 @@ func TestReadOnlyPin(t *testing.T) {
 		t.Fatalf("Pin() = %+v, want %+v", got, want)
 	}
 
-	var empty ReadOnlySet
+	var empty EntrySet
 	if got := empty.Pin(local, base); !reflect.DeepEqual(got, local) {
 		t.Fatalf("Pin(empty set) = %+v, want local unchanged %+v", got, local)
 	}
@@ -222,9 +222,9 @@ func TestReadOnlyReadCovered(t *testing.T) {
 	}
 
 	t.Run("covered files only, no uncovered blob read", func(t *testing.T) {
-		set, err := NormalizeReadOnly([]string{"docs", "deep/er/docs"})
+		set, err := NormalizeEntries([]string{"docs", "deep/er/docs"})
 		if err != nil {
-			t.Fatalf("NormalizeReadOnly() = %v", err)
+			t.Fatalf("NormalizeEntries() = %v", err)
 		}
 		counting := &blobCountingRepo{Repository: repo}
 		got, err := set.ReadCovered(counting, tree)
@@ -247,7 +247,7 @@ func TestReadOnlyReadCovered(t *testing.T) {
 
 	t.Run("empty set reads nothing", func(t *testing.T) {
 		counting := &blobCountingRepo{Repository: repo}
-		got, err := ReadOnlySet{}.ReadCovered(counting, tree)
+		got, err := EntrySet{}.ReadCovered(counting, tree)
 		if err != nil {
 			t.Fatalf("ReadCovered() = %v", err)
 		}
@@ -257,7 +257,7 @@ func TestReadOnlyReadCovered(t *testing.T) {
 	})
 
 	t.Run("unreadable tree is an error", func(t *testing.T) {
-		set, _ := NormalizeReadOnly([]string{"docs"})
+		set, _ := NormalizeEntries([]string{"docs"})
 		if _, err := set.ReadCovered(repo, OID{}); err == nil {
 			t.Fatal("ReadCovered(missing tree) = nil, want error")
 		}

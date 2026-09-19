@@ -61,9 +61,12 @@ and exits nonzero: the status line (the code, a middle dot, and the
 reason token), the message, one line per file with its reason rendered as
 lower-case words and its one-based inclusive line ranges when present, a
 `next:` line naming the caller's next step, whether a retry can help, the
-recovery report when present, and a `read-only:` trailer naming the
-configured read-only set whenever one is configured, on every success and
-error report alike. A commit that conflicts with the remote reports each
+recovery report when present, and a `writable:` trailer naming the
+configured writable set followed by a `read-only:` trailer naming the
+configured read-only set, each whenever that set is configured, on every
+success and error report alike. With both sets configured a third
+`path-rule: longest match decides` trailer follows them, because the two
+sets can name the same region at different depths. A commit that conflicts with the remote reports each
 file's reason and the line ranges to resolve:
 
 ```text
@@ -104,6 +107,7 @@ reference.
 | Checkpoint pack count | `--checkpoint-packs`     | `SLIVINGDOC_CHECKPOINT_PACKS`     | `256` (minimum 1)         |
 | Retained checkpoints  | `--retained-checkpoints` | `SLIVINGDOC_RETAINED_CHECKPOINTS` | `1` (0..64)               |
 | Read-only paths       | `--read-only-paths`      | `SLIVINGDOC_READ_ONLY_PATHS`      | empty (no read-only path) |
+| Writable paths        | `--writable-paths`       | `SLIVINGDOC_WRITABLE_PATHS`       | empty (no confinement)    |
 | Log levels            | `--log-level`            | `LOG_LEVEL`                       | `info`                    |
 | Log timestamps        | `--log-timestamp`        | `SLIVINGDOC_LOG_TIMESTAMP`        | `true`                    |
 
@@ -229,6 +233,75 @@ clears an inherited `SLIVINGDOC_READ_ONLY_PATHS` environment value
 instead of falling back to it. An invalid entry (an absolute path, a
 `..` or `.git` segment, or a path over the length bound) refuses startup
 before any native or network dependency loads.
+
+## Writable paths
+
+`--writable-paths` (environment `SLIVINGDOC_WRITABLE_PATHS`) is the other
+half of the same setting. It marks the comma-separated notebook-relative
+paths one process's commits *may* change, and every path it does not cover
+becomes read-only for that process. Use it to confine a fleet of agents to
+a directory each, where listing what they must not touch is not possible:
+a directory that did not exist at startup, and a file at the notebook
+root, would otherwise stay writable.
+
+```text
+slivingdoc serve --bucket my-notes --writable-paths agents/scout
+```
+
+The two settings compose, and the longest matching entry wins, so a
+protected region can hold a writable subdirectory:
+
+```text
+slivingdoc serve --bucket my-notes --read-only-paths docs --writable-paths docs/drafts
+```
+
+That process may write under `docs/drafts` and nowhere else. The writable
+set is non-empty, so the unmatched default is protected: `notes/`, files at
+the notebook root, and directories that do not exist yet are read-only for
+it too, not only the `docs` named by `--read-only-paths`.
+
+Entries follow the read-only rules unchanged: an entry covers itself and
+everything below it, matched on segment boundaries. A path named by both
+settings is a configuration error rather than a silent precedence rule.
+Startup refuses, naming the path and both settings, before any native or
+network dependency loads — the same point at which an invalid entry in
+either set refuses. The entries compared are the ones you wrote, so an
+entry that also sits below another entry of its own setting is refused just
+the same.
+
+Nesting can go deeper than one level, and the entries you wrote decide
+there too:
+
+```text
+slivingdoc serve --bucket my-notes \
+  --read-only-paths notes,notes/agent-a/locked --writable-paths notes/agent-a
+```
+
+That process may write under `notes/agent-a`, except under
+`notes/agent-a/locked`, which the longer read-only entry protects again.
+Listing the broader `notes` beside it changes nothing about the narrower
+entry: adding an entry to a setting never makes a narrower entry of the
+same setting stop applying.
+
+Every surface the process advertises says so. With both settings
+configured, the server instructions, both tool descriptions, the result
+text item and the report name both sets and end with the rule that decides
+between them — the read-only sentence says "where the two sets nest, the
+longest matching entry decides" rather than "write elsewhere", which a
+non-empty writable set makes false — so an agent is never told to write
+only under an entry and, in the next sentence, that changes under it are
+refused.
+
+Enforcement is the read-only enforcement above, evaluated against the
+composed policy: a commit that changes a protected path is refused and the
+touched files are reset to the last accepted content, and a pull restores
+those paths from the accepted remote state. The refusal names where the
+process *may* write, because under a writable set the protected region is
+nearly the whole notebook.
+
+Like every other shared flag, an explicitly empty `--writable-paths=`
+clears an inherited `SLIVINGDOC_WRITABLE_PATHS` environment value instead
+of falling back to it. That is how a process asks not to be confined.
 
 ## S3 credentials
 

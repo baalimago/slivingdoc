@@ -37,6 +37,9 @@ type Service interface {
 	Root() string
 	// ReadOnlyPaths is the normalized, sorted read-only set; never nil.
 	ReadOnlyPaths() []string
+	// WritablePaths is the normalized, sorted writable set; never nil. A
+	// non-empty set makes every path it does not cover read-only.
+	WritablePaths() []string
 	// Pull writes the current notebook into the resolved path.
 	Pull(ctx context.Context, path string) (notebook.Result, error)
 	// Commit publishes the caller's changes at the resolved path with the
@@ -59,20 +62,21 @@ func NewServer(svc Service, version string, logger *slog.Logger) *Server {
 		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
 	entries := svc.ReadOnlyPaths()
+	writable := svc.WritablePaths()
 	impl := &sdk.Implementation{Name: "slivingdoc", Version: version}
 	s := sdk.NewServer(impl, &sdk.ServerOptions{
-		Instructions: instructions(svc.Root(), entries),
+		Instructions: instructions(svc.Root(), entries, writable),
 		Logger:       sdkLogger(logger),
 	})
 	h := &handler{svc: svc, logger: logger}
 	s.AddTool(&sdk.Tool{
 		Name:        toolPull,
-		Description: pullDescription + readOnlyDescriptionSuffix(entries),
+		Description: pullDescription + writableDescriptionSuffix(writable) + readOnlyDescriptionSuffix(entries, writable),
 		InputSchema: pullSchema,
 	}, h.pull)
 	s.AddTool(&sdk.Tool{
 		Name:        toolCommit,
-		Description: commitDescription + readOnlyDescriptionSuffix(entries),
+		Description: commitDescription + writableDescriptionSuffix(writable) + readOnlyDescriptionSuffix(entries, writable),
 		InputSchema: commitSchema,
 	}, h.commit)
 	return &Server{sdk: s}
@@ -188,52 +192,92 @@ func (h *handler) resultFor(err error, diagnosticID string) (*sdk.CallToolResult
 // successResult is the success envelope: one text item and the structured
 // SuccessInfo object (architecture section 2). The text item is often the
 // only part a client forwards to its model, so it names the directory and
-// the read-only set.
+// the configured path sets.
 func (h *handler) successResult(result notebook.Result, path string) *sdk.CallToolResult {
 	info := MapSuccess(result, path)
 	info.ReadOnly = h.svc.ReadOnlyPaths()
+	info.Writable = h.svc.WritablePaths()
 	return &sdk.CallToolResult{
-		Content:           []sdk.Content{&sdk.TextContent{Text: successText(path, info.ReadOnly)}},
+		Content:           []sdk.Content{&sdk.TextContent{Text: successText(path, info.ReadOnly, info.Writable)}},
 		StructuredContent: info,
 	}
 }
 
 // successText is the success text item (architecture section 2, Read-only
-// paths).
-func successText(path string, entries []string) string {
-	if len(entries) == 0 {
+// paths). It names the actionable list: the writable set first, because a
+// non-empty one is the frame the read-only entries are exceptions inside.
+func successText(path string, entries, writable []string) string {
+	parts := make([]string, 0, 2)
+	if len(writable) > 0 {
+		parts = append(parts, "writable: "+strings.Join(writable, notebook.ReadOnlyListSeparator))
+	}
+	if len(entries) > 0 {
+		parts = append(parts, "read-only: "+strings.Join(entries, notebook.ReadOnlyListSeparator))
+	}
+	if len(parts) == 2 {
+		parts = append(parts, notebook.PathSetsNestRule)
+	}
+	if len(parts) == 0 {
 		return path
 	}
-	return path + " (read-only: " + strings.Join(entries, notebook.ReadOnlyListSeparator) + ")"
+	return path + " (" + strings.Join(parts, "; ") + ")"
 }
 
 // instructions is the server instruction text: the notebook directory and,
-// when configured, the read-only set.
-func instructions(root string, entries []string) string {
+// when configured, the writable set and the read-only set.
+func instructions(root string, entries, writable []string) string {
 	base := "The notebook directory is " + root + ". Call notes_pull, edit " +
 		"UTF-8 text files (without U+0000) there, then call notes_commit to " +
 		"publish. Both tools default to that directory; pass path only to " +
 		"address a subdirectory of it."
+	if len(writable) > 0 {
+		base += " Writable paths: " + strings.Join(writable, notebook.ReadOnlyListSeparator) +
+			". notes_commit refuses any change elsewhere, resets those files, and reports READ_ONLY_PATH; write only under them."
+	}
 	if len(entries) == 0 {
 		return base
 	}
+	// "write elsewhere" is true only while the writable set is empty: a
+	// non-empty one protects everything it does not cover, and the two
+	// sets may nest, so the rule that reconciles them replaces it.
+	tail := "; write elsewhere."
+	if len(writable) > 0 {
+		tail = "; where the two sets nest, the longest matching entry decides."
+	}
 	return base + " Read-only paths: " + strings.Join(entries, notebook.ReadOnlyListSeparator) +
-		". notes_commit refuses any change under them, resets those files, and reports READ_ONLY_PATH; write elsewhere."
+		". notes_commit refuses any change under them, resets those files, and reports READ_ONLY_PATH" + tail
 }
 
 // readOnlyDescriptionSuffix advertises a non-empty read-only set in a tool
-// description.
-func readOnlyDescriptionSuffix(entries []string) string {
+// description. It takes the writable set because the two may nest, and a
+// read-only sentence that does not say so contradicts the writable one.
+func readOnlyDescriptionSuffix(entries, writable []string) string {
 	if len(entries) == 0 {
 		return ""
 	}
+	tail := "."
+	if len(writable) > 0 {
+		tail = ", and where the two sets nest the longest matching entry decides."
+	}
 	return " Read-only paths in this server: " + strings.Join(entries, notebook.ReadOnlyListSeparator) +
-		"; changes under them are refused and reset."
+		"; changes under them are refused and reset" + tail
 }
 
-// errorResult attaches the server's read-only set and builds the envelope.
+// writableDescriptionSuffix advertises a non-empty writable set in a tool
+// description. It precedes the read-only suffix: the writable set is the
+// region, the read-only entries are the exceptions inside it.
+func writableDescriptionSuffix(writable []string) string {
+	if len(writable) == 0 {
+		return ""
+	}
+	return " Writable paths in this server: " + strings.Join(writable, notebook.ReadOnlyListSeparator) +
+		"; changes elsewhere are refused and reset."
+}
+
+// errorResult attaches the server's path sets and builds the envelope.
 func (h *handler) errorResult(te *ToolError, diagnosticID string) *sdk.CallToolResult {
 	te.ReadOnly = h.svc.ReadOnlyPaths()
+	te.Writable = h.svc.WritablePaths()
 	te.DiagnosticID = diagnosticID
 	return errorResult(te)
 }
@@ -273,8 +317,14 @@ func errorText(te *ToolError) string {
 	if rec := te.Recovery; rec != nil {
 		fmt.Fprintf(&b, "\nrecovery: stage=%s remoteAccepted=%s resynchronized=%t", rec.Stage, rec.RemoteAccepted, rec.Resynchronized)
 	}
+	if len(te.Writable) > 0 {
+		fmt.Fprintf(&b, "\nwritable: %s", strings.Join(te.Writable, notebook.ReadOnlyListSeparator))
+	}
 	if len(te.ReadOnly) > 0 {
 		fmt.Fprintf(&b, "\nread-only: %s", strings.Join(te.ReadOnly, notebook.ReadOnlyListSeparator))
+	}
+	if len(te.Writable) > 0 && len(te.ReadOnly) > 0 {
+		fmt.Fprintf(&b, "\npath-rule: %s", notebook.PathSetsNestRule)
 	}
 	return b.String()
 }

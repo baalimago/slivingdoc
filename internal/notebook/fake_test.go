@@ -725,6 +725,7 @@ type nbConfig struct {
 	wsFail          *workspace.Failpoints
 	nbFail          *Failpoints
 	readOnly        []string
+	writable        []string
 }
 
 // newNotebook builds one real workspace over the engine and one notebook
@@ -777,6 +778,7 @@ func newNotebook(tb testing.TB, cfg nbConfig) (*Notebook, *workspace.Workspace, 
 		CheckpointPacks:     checkpointPacks,
 		RetainedCheckpoints: retained,
 		ReadOnlyPaths:       cfg.readOnly,
+		WritablePaths:       cfg.writable,
 		NewID:               cfg.ids.next,
 		Now:                 func() time.Time { return testNow },
 		Waiter:              noSleepWaiter(),
