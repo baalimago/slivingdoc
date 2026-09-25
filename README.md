@@ -3,13 +3,18 @@ Test coverage: 84.6% 😍👌
 [![slivingdoc banner](img/banner.svg)](https://slivingdoc.dev)
 
 <div align="center">
-  <p>Distributed durable notebook built for high scale agents.</p>
+  <p>Shared notes for people and agents.</p>
+  <p>
+    Pull and commit through MCP or the CLI. slivingdoc merges
+    non-conflicting concurrent changes and stores the durable notebook in
+    your S3-compatible bucket.
+  </p>
 </div>
 
 ## Features
 
 - **Gitlike semantics:** `slivingdoc` uses terminology we (and agents) all know, designed for ease of use
-- **Automatic conflict resolution:** commit without fear, trust that all conflicts must be resolved before being accepted
+- **Merge-safe concurrent writes:** non-conflicting changes merge; overlapping edits return a conflict instead of being overwritten
 - **High speed processing:** the solution is quite simple conceptually, allowing for very high scale and parallelism
 - **Plug-and-play:** setup the bucket, point at it, and start syncing notes!
 
@@ -18,7 +23,7 @@ contract behind these guarantees.
 
 ## Get started
 
-Add it to your agentic harness:
+Connect an MCP host or use the CLI directly:
 
 ```json
 {
