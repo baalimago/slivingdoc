@@ -5,7 +5,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -337,19 +336,10 @@ func validateHosted(cfg config) error {
 	if err != nil {
 		return errors.New("endpoint is not a valid URL")
 	}
-	if u.Scheme != "https" && !isLoopback(u.Hostname()) {
+	if u.Scheme != "https" && !httpstore.IsLoopback(u.Hostname()) {
 		return errors.New("the hosted endpoint must use https so the token is never sent in clear text")
 	}
 	return nil
-}
-
-// isLoopback reports whether host names this machine.
-func isLoopback(host string) bool {
-	if host == "localhost" {
-		return true
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
 }
 
 // environ maps the process environment to a lookup table. The last value

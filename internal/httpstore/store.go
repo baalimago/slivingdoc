@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -119,9 +120,8 @@ var _ storage.ObjectStore = (*Store)(nil)
 // New validates the configuration and returns a store. It makes no request;
 // CheckAccess proves the server and the token before first use.
 func New(cfg Config) (*Store, error) {
-	u, err := url.Parse(cfg.Endpoint)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return nil, errors.New("httpstore: endpoint must be an absolute http or https URL")
+	if err := ValidateEndpoint(cfg.Endpoint); err != nil {
+		return nil, err
 	}
 	if err := ValidateSpace(cfg.Space); err != nil {
 		return nil, err
@@ -134,7 +134,12 @@ func New(cfg Config) (*Store, error) {
 	}
 	client := cfg.Client
 	if client == nil {
-		client = &http.Client{}
+		// Never follow a redirect: Go would turn a PUT into a body-less
+		// GET whose 2xx looks like a stored write, and would forward the
+		// token. A 3xx answer is a refusal instead.
+		client = &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		}}
 	}
 	retries := cfg.Retries
 	if retries == 0 {
@@ -156,6 +161,28 @@ func New(cfg Config) (*Store, error) {
 		retries:   retries,
 		backoff:   backoff,
 	}, nil
+}
+
+// ValidateEndpoint accepts an absolute https URL, or http to this machine
+// only, so the token is never sent in clear text over a network.
+func ValidateEndpoint(endpoint string) error {
+	u, err := url.Parse(endpoint)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return errors.New("httpstore: endpoint must be an absolute http or https URL")
+	}
+	if u.Scheme != "https" && !IsLoopback(u.Hostname()) {
+		return errors.New("httpstore: the endpoint must use https so the token is never sent in clear text")
+	}
+	return nil
+}
+
+// IsLoopback reports whether host names this machine.
+func IsLoopback(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // serverInfo is the GET /v1 description.
@@ -180,7 +207,12 @@ func (s *Store) CheckAccess(ctx context.Context) error {
 	}
 	if resp.StatusCode != http.StatusOK {
 		defer drain(resp)
-		return fmt.Errorf("httpstore: describe server: %w: %w", s.statusError(resp), storage.ErrIncompatible)
+		err := s.statusError(resp)
+		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
+			// The server is busy or down, not a different kind of server.
+			return fmt.Errorf("httpstore: describe server: %w", err)
+		}
+		return fmt.Errorf("httpstore: describe server: %w: %w", err, storage.ErrIncompatible)
 	}
 	var info serverInfo
 	err = decodeJSON(resp, &info)
@@ -273,22 +305,14 @@ func (s *Store) CreateObject(ctx context.Context, key string, data []byte) (stor
 }
 
 func (s *Store) ReplaceObject(ctx context.Context, key string, etag storage.ETag, data []byte) (storage.ETag, error) {
+	// The API answers If-Match on an absent object with 412, so a 404
+	// here means the space is gone or the grant was revoked.
 	next, err := s.putSmall(ctx, key, data, "If-Match", string(etag))
-	if errors.Is(err, errWriteNotFound) {
-		// The storage contract reports a replace of an absent object as a
-		// lost precondition: the observed state does not hold and nothing
-		// changed. The startup check already proved the space exists.
-		return "", fmt.Errorf("httpstore: replace %s: object absent: %w", key, storage.ErrPreconditionFailed)
-	}
 	if err != nil {
 		return "", fmt.Errorf("httpstore: replace %s: %w", key, err)
 	}
 	return next, nil
 }
-
-// errWriteNotFound marks a 404 answer to a write, which the API gives for
-// both an unknown space and, on a replace, an absent object.
-var errWriteNotFound = errors.New("httpstore: write target not found")
 
 func (s *Store) putSmall(ctx context.Context, key string, data []byte, condition, value string) (storage.ETag, error) {
 	req, err := s.request(ctx, http.MethodPut, s.objectURL(key), bytes.NewReader(data), true)
@@ -302,9 +326,6 @@ func (s *Store) putSmall(ctx context.Context, key string, data []byte, condition
 		return "", err
 	}
 	defer drain(resp)
-	if resp.StatusCode == http.StatusNotFound {
-		return "", fmt.Errorf("%w: %w", errWriteNotFound, s.writeError(resp))
-	}
 	if !success(resp.StatusCode) {
 		return "", s.writeError(resp)
 	}
@@ -325,6 +346,7 @@ func (s *Store) ListObjects(ctx context.Context, prefix string, fn func(key stri
 	full := storage.JoinKey(s.prefix, prefix)
 	strip := storage.JoinKey(s.prefix, "")
 	cursor := ""
+	seen := map[string]bool{}
 	for {
 		q := url.Values{"prefix": {full}}
 		if cursor != "" {
@@ -356,9 +378,10 @@ func (s *Store) ListObjects(ctx context.Context, prefix string, fn func(key stri
 		if page.Cursor == nil || *page.Cursor == "" {
 			return nil
 		}
-		if *page.Cursor == cursor {
-			return fmt.Errorf("httpstore: list %s: server repeated its cursor: %w", prefix, storage.ErrTransport)
+		if seen[*page.Cursor] {
+			return fmt.Errorf("httpstore: list %s: server repeated a cursor: %w", prefix, storage.ErrTransport)
 		}
+		seen[*page.Cursor] = true
 		cursor = *page.Cursor
 	}
 }
@@ -403,6 +426,13 @@ func (s *Store) DeleteObjects(ctx context.Context, keys []string) error {
 func (s *Store) objectURL(key string) string {
 	segments := strings.Split(storage.JoinKey(s.prefix, key), "/")
 	for i, seg := range segments {
+		if seg == "." || seg == ".." {
+			// Keys never hold dot segments; escape them so no proxy or
+			// server resolves one out of the space.
+			seg = strings.ReplaceAll(seg, ".", "%2E")
+			segments[i] = seg
+			continue
+		}
 		segments[i] = url.PathEscape(seg)
 	}
 	return s.space + "/objects/" + strings.Join(segments, "/")
@@ -416,6 +446,9 @@ func (s *Store) request(ctx context.Context, method, target string, body io.Read
 	if auth {
 		req.Header.Set("Authorization", "Bearer "+s.token)
 	}
+	// Ask for the stored bytes: a transparently decompressed body would
+	// lose its length and differ from the pack descriptor.
+	req.Header.Set("Accept-Encoding", "identity")
 	if s.userAgent != "" {
 		req.Header.Set("User-Agent", s.userAgent)
 	}

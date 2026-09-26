@@ -157,8 +157,8 @@ func TestCheckStoreHosted(t *testing.T) {
 
 	g.RefuseNextWithReason(http.MethodGet, http.StatusTooManyRequests, "rate_limited", "slow_reads")
 	err = checkStore(context.Background(), newStore(t, hostedTestToken))
-	if err == nil || !strings.Contains(err.Error(), "hosted storage check failed") {
-		t.Fatalf("checkStore at the request limit = %v, want a check failure", err)
+	if err == nil || !strings.Contains(err.Error(), "hosted storage check failed") || strings.Contains(err.Error(), "INCOMPATIBLE_STORE") {
+		t.Fatalf("checkStore while throttled = %v, want a check failure that is not INCOMPATIBLE_STORE", err)
 	}
 }
 

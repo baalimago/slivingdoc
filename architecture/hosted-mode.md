@@ -30,7 +30,11 @@ A non-empty `SLIVINGDOC_TOKEN` selects hosted mode (`config.hosted()` in
   not appear in a process listing. It must be printable ASCII without white
   space (`httpstore.ValidateToken`).
 - The endpoint must be `https`, except to a loopback address (for tests and
-  local gateways). The token travels only in the `Authorization` header.
+  local gateways). `httpstore.ValidateEndpoint` enforces this in the adapter
+  too. The token travels only in the `Authorization` header.
+- The client never follows a redirect. Followed, a `PUT` would become a
+  body-less `GET` whose success looks like a stored write, and the token
+  would travel with it. A 3xx answer is a plain refusal.
 
 ## Startup check
 
@@ -40,7 +44,8 @@ does not run the S3 write probe (`storage.Probe`). `checkStore` in
 
 1. `GET /v1` without the token. The answer must carry `api`
    `slivingdoc-storage`, `version` 1, and `conditionalWrites` true; anything
-   else is `INCOMPATIBLE_STORE`.
+   else is `INCOMPATIBLE_STORE`, except a 429 or 5xx, which is a busy server
+   and fails startup as a plain check failure.
 2. `GET /v1/spaces/{space}/usage` with the token. This is read-only, so a
    read-only token passes. 401, 403 or 404 is a startup refusal that names
    `SLIVINGDOC_TOKEN` and `--bucket`.
@@ -58,8 +63,8 @@ and the reason pick the category.
 | 429 `rate_limited`                             | `ErrRateLimited`        | `RATE_LIMITED`     | `RETRY`    | yes       |
 | 401, 403                                       | `ErrAccessDenied`       | `ACCESS_DENIED`    | `OPERATOR` | no        |
 | 404 on a read                                  | `ErrNotFound`           | (protocol)         |            |           |
-| 404 on a write                                 | `ErrAccessDenied`       | `ACCESS_DENIED`    | `OPERATOR` | no        |
-| 404 or 412 on an `If-Match` replace            | `ErrPreconditionFailed` | (protocol)         |            |           |
+| 404 on a write, list or delete                 | `ErrAccessDenied`       | `ACCESS_DENIED`    | `OPERATOR` | no        |
+| 412 (also `If-Match` on an absent object)      | `ErrPreconditionFailed` | (protocol)         |            |           |
 | 413                                            | `ErrTooLarge`           | `OBJECT_TOO_LARGE` | `OPERATOR` | no        |
 | other 5xx                                      | `ErrTransport`          | (protocol)         |            |           |
 

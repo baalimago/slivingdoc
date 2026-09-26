@@ -212,12 +212,70 @@ func TestClientErrorIsNotTransport(t *testing.T) {
 	}
 }
 
-func TestReplaceMissingObjectIsPreconditionFailure(t *testing.T) {
+// The API answers If-Match on an absent object with 412, so a 404 on a
+// replace means the space is gone or the grant was revoked.
+func TestReplaceAnswered404IsAccessDenied(t *testing.T) {
 	s, g := newGatewayStore(t)
 	g.RefuseNext(http.MethodPut, http.StatusNotFound, "not_found")
 	_, err := s.ReplaceObject(context.Background(), storage.CurrentKey, "etag", []byte("v2"))
+	if !errors.Is(err, storage.ErrAccessDenied) {
+		t.Fatalf("replace answered 404 = %v, want ErrAccessDenied", err)
+	}
+}
+
+func TestReplaceMissingObjectIsPreconditionFailure(t *testing.T) {
+	s, _ := newGatewayStore(t)
+	_, err := s.ReplaceObject(context.Background(), storage.CurrentKey, "\"etag\"", []byte("v2"))
 	if !errors.Is(err, storage.ErrPreconditionFailed) {
-		t.Fatalf("replace answered 404 = %v, want ErrPreconditionFailed", err)
+		t.Fatalf("replace of an absent object = %v, want ErrPreconditionFailed", err)
+	}
+}
+
+// A redirect is never followed: a followed PUT becomes a body-less GET whose
+// 2xx would look like a stored write, and the token would travel with it.
+func TestRedirectIsARefusal(t *testing.T) {
+	var followed atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/elsewhere" {
+			followed.Add(1)
+			w.Header().Set("ETag", `"fake"`)
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		http.Redirect(w, r, "/elsewhere", http.StatusFound)
+	}))
+	t.Cleanup(srv.Close)
+	s, err := New(Config{Endpoint: srv.URL, Space: testSpace, Token: testToken})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := s.CreateObject(ctx, storage.CurrentKey, []byte("v1")); err == nil {
+		t.Fatal("create answered with a redirect succeeded")
+	}
+	data := []byte("pack")
+	key, meta := packFixture(t, data, 1)
+	if err := s.PutObject(ctx, key.String(), bytes.NewReader(data), meta); err == nil {
+		t.Fatal("put answered with a redirect succeeded")
+	}
+	if n := followed.Load(); n != 0 {
+		t.Fatalf("the client followed %d redirects", n)
+	}
+}
+
+// A busy or failing server at startup is not an incompatible one.
+func TestCheckAccessBusyServerIsNotIncompatible(t *testing.T) {
+	for _, status := range []int{http.StatusTooManyRequests, http.StatusServiceUnavailable} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			s, g := newGatewayStore(t)
+			for range 3 {
+				g.RefuseNext(http.MethodGet, status, "busy")
+			}
+			err := s.CheckAccess(context.Background())
+			if err == nil || errors.Is(err, storage.ErrIncompatible) {
+				t.Fatalf("CheckAccess against a busy server = %v, want a non-incompatible error", err)
+			}
+		})
 	}
 }
 
@@ -364,6 +422,20 @@ func TestMisbehavingServer(t *testing.T) {
 			want: storage.ErrTransport,
 		},
 		{
+			name: "list cursor cycles",
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				next := "a"
+				if r.URL.Query().Get("cursor") == "a" {
+					next = "b"
+				}
+				_, _ = io.WriteString(w, `{"keys":[],"cursor":"`+next+`"}`)
+			},
+			call: func(s *Store) error {
+				return s.ListObjects(context.Background(), "packs/", func(string) error { return nil })
+			},
+			want: storage.ErrTransport,
+		},
+		{
 			name: "list answer is not json",
 			handler: func(w http.ResponseWriter, _ *http.Request) {
 				_, _ = io.WriteString(w, `nope`)
@@ -479,6 +551,8 @@ func TestNewRejectsInvalidConfig(t *testing.T) {
 	}{
 		{"relative endpoint", func(c *Config) { c.Endpoint = "api.example.test" }},
 		{"ftp endpoint", func(c *Config) { c.Endpoint = "ftp://api.example.test" }},
+		{"plain http to a remote host", func(c *Config) { c.Endpoint = "http://api.example.test" }},
+		{"plain http to a loopback-looking name", func(c *Config) { c.Endpoint = "http://localhost.example.test" }},
 		{"uppercase space", func(c *Config) { c.Space = "Notes" }},
 		{"trailing hyphen space", func(c *Config) { c.Space = "notes-" }},
 		{"long space", func(c *Config) { c.Space = strings.Repeat("a", 64) }},
