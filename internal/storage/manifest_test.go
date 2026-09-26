@@ -16,7 +16,7 @@ import (
 // fixtureManifest builds a valid manifest that exercises every descriptor
 // shape: an active checkpoint with a two-increment tail and one retained
 // generation whose tail ends in the publication ID the active checkpoint
-// copied (the allowed cross-chain repetition of architecture section 9.2).
+// copied (the allowed cross-chain repetition in architecture/storage.md).
 func fixtureManifest() Manifest {
 	h := oid
 	cp0, cp1 := uuidv7(1), uuidv7(2)

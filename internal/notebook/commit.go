@@ -15,7 +15,7 @@ import (
 )
 
 // Commit publishes the caller's changes and incorporates concurrent,
-// non-conflicting changes (architecture section 11). It requires a
+// non-conflicting changes (architecture/commit.md). It requires a
 // non-blank message and a managed pull, validates every visible file and
 // rejects complete conflict-marker blocks before any Git or S3 work, then
 // merges the accepted baseline, L, and R. A clean result creates a commit
@@ -158,8 +158,8 @@ func (n *Notebook) attemptPublication(ctx context.Context, message string, baseT
 
 	// The commit is accepted. Checkpoint scheduling is opportunistic:
 	// when the accepted tail reached the threshold, run one bounded
-	// effort whose failure never changes this OK result (architecture
-	// section 13.1).
+	// effort whose failure never changes this OK result
+	// (architecture/checkpoints.md).
 	n.recordTail(proposal.manifest)
 	if len(proposal.manifest.Increments) >= n.checkpointPacks {
 		n.runCheckpoint(ctx, proposal.manifest)
@@ -213,7 +213,7 @@ func (n *Notebook) buildProposal(ctx context.Context, remote remoteState, merged
 
 // buildFirstProposal creates the root commit, the state-complete
 // checkpoint pack, the shallow boundary, and the generation-1 manifest with
-// an empty incremental tail (architecture section 11.1).
+// an empty incremental tail (architecture/commit.md).
 func (n *Notebook) buildFirstProposal(ctx context.Context, remote remoteState, mergedTree git.OID, message string, attemptStart time.Time, pubID storage.UUID) (proposal, error) {
 	head, err := git.CreateCommit(n.ws.Repo(), git.CommitSpec{Message: message, Tree: mergedTree, Time: attemptStart})
 	if err != nil {
@@ -275,7 +275,7 @@ func (n *Notebook) buildIncrementProposal(ctx context.Context, remote remoteStat
 	// The increment's target generation continues the active increment
 	// chain from the checkpoint cutoff. The manifest generation counter
 	// also advances on every checkpoint replacement, so it is not the
-	// chain position (architecture sections 9.2 and 13.3): after a
+	// chain position (architecture/commit.md and checkpoints.md): after a
 	// checkpoint through generation N with a tail of M increments, the
 	// next increment is generation N+M+1.
 	incGeneration := remote.manifest.Checkpoint.ThroughGeneration + uint64(len(remote.manifest.Increments)) + 1
@@ -305,7 +305,7 @@ func (n *Notebook) buildIncrementProposal(ctx context.Context, remote remoteStat
 // for the first publication, exact-ETag replacement otherwise. A
 // precondition failure returns errCASLost; a lost response is resolved by
 // reading current and searching for the proposal's publication ID
-// (architecture section 11.3). Success is returned only when acceptance is
+// (architecture/commit.md). Success is returned only when acceptance is
 // proved.
 func (n *Notebook) publish(ctx context.Context, remote remoteState, p proposal) error {
 	manifestBytes, err := storage.EncodeManifest(p.manifest)
@@ -349,9 +349,11 @@ func (n *Notebook) mapUploadError(err error) error {
 }
 
 // enforcePolicy refuses a commit that changed a protected path, resetting
-// exactly those files to the baseline through applyLocal (architecture
-// section 11.1, Read-only paths). localTree is the tree the commit already
-// built, so detection builds none of its own.
+// exactly those files to the baseline through applyLocal
+// (architecture/commit.md, Local validation;
+// architecture/product-contract.md, Read-only and writable paths).
+// localTree is the tree the commit already built, so detection builds none
+// of its own.
 func (n *Notebook) enforcePolicy(ctx context.Context, local git.Snapshot, localTree git.OID) error {
 	if !n.policy.Configured() {
 		return nil
@@ -434,9 +436,9 @@ func (n *Notebook) policyRefusal(changed []string) error {
 
 // refusalMessage names the writable entries when the operator declared any,
 // since a default-protected policy protects nearly the whole notebook and
-// only the writable set is a list the caller can act on (architecture
-// section 2, Read-only paths). With no writable set the wording is the
-// read-only one.
+// only the writable set is a list the caller can act on
+// (architecture/product-contract.md, Read-only and writable paths). With no
+// writable set the wording is the read-only one.
 func (n *Notebook) refusalMessage(changed []string) string {
 	if writable := n.policy.Writable(); len(writable) > 0 {
 		return writableMessage(writable)
@@ -456,7 +458,7 @@ func writableMessage(entries []string) string {
 
 // violatedEntries returns, sorted and deduplicated, the most specific
 // entry covering each changed path, since a set can hold an entry below
-// another (architecture section 2, Writable paths).
+// another (architecture/product-contract.md, Read-only and writable paths).
 func violatedEntries(set git.EntrySet, changed []string) []string {
 	seen := make(map[string]bool, len(changed))
 	var out []string
@@ -472,7 +474,7 @@ func violatedEntries(set git.EntrySet, changed []string) []string {
 	return out
 }
 
-// readOnlyMessage is the refusal text fixed by architecture section 2.
+// readOnlyMessage is the refusal text fixed in architecture/product-contract.md.
 func readOnlyMessage(entries []string) string {
 	verb := "is"
 	if len(entries) > 1 {

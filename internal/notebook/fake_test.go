@@ -627,7 +627,7 @@ func parseCommit(data []byte) (git.Commit, error) {
 }
 
 // formatConflictMarkers renders a text conflict with the exact marker
-// grammar of architecture section 12 and the full local and remote sides
+// grammar in architecture/conflicts.md and the full local and remote sides
 // between the markers.
 func formatConflictMarkers(local, remote []byte) []byte {
 	var b bytes.Buffer

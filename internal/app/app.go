@@ -3,7 +3,7 @@
 // environment, opens the pinned native engine, proves the S3 compatibility
 // probe, and serves the two MCP tools over stdio until the client
 // disconnects or a termination signal starts the bounded shutdown
-// (architecture sections 2, 17, and 18).
+// (architecture/cli.md, product-contract.md, config.md, and security.md).
 package app
 
 import (
@@ -58,9 +58,9 @@ type ProcessOptions struct {
 	ShutdownDeadline time.Duration
 
 	// Ephemeral asks for process-owned temporary roots when neither the
-	// workspace root nor the private root is configured (architecture
-	// section 17). The serve command sets it; the one-shot subcommands
-	// address a real directory and leave it false.
+	// workspace root nor the private root is configured
+	// (architecture/config.md). The serve command sets it; the one-shot
+	// subcommands address a real directory and leave it false.
 	Ephemeral bool
 
 	// NewSessionDir creates the ephemeral session directory. Nil uses the
@@ -322,7 +322,7 @@ func buildService(p process, cfg config) (*Service, error) {
 // is cancelled, or a termination signal arrives. Either cancellation stops
 // new requests, cancels in-flight request contexts, and starts the bounded
 // shutdown; the server must stop within the shutdown deadline, or the
-// process reports a forced shutdown (architecture section 17).
+// process reports a forced shutdown (architecture/cli.md).
 func serve(parent context.Context, p process, srv *mcp.Server, logger *slog.Logger) error {
 	transport := p.transport
 	if transport == nil {

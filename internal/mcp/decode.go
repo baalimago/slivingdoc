@@ -13,9 +13,10 @@ import (
 	"github.com/baalimago/slivingdoc/internal/strictjson"
 )
 
-// The documented byte bounds of the tool inputs (architecture section 2):
-// path holds 1 through 4,096 bytes after a leading home abbreviation is
-// expanded; message holds at most 16,384 bytes.
+// The documented byte bounds of the tool inputs
+// (architecture/product-contract.md): path holds 1 through 4,096 bytes
+// after a leading home abbreviation is expanded; message holds at most
+// 16,384 bytes.
 const (
 	maxPathBytes    = 4096
 	maxMessageBytes = notebook.MaxMessageBytes

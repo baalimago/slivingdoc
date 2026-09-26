@@ -11,7 +11,8 @@
 #   check-deps-linux.sh --check <dep...>  check an explicit dependency list
 set -euo pipefail
 
-# The baseline matches the architecture section 21 list. libgit2.so,
+# architecture/build.md documents this C-runtime baseline (release
+# binaries are built fully static). libgit2.so,
 # libz.so, and libpcre2 are deliberately absent: the pinned build bundles
 # zlib and pcre2 and links libgit2 statically.
 allowed='^(linux-vdso\.so|libc\.so|ld-linux|libpthread\.so|libdl\.so|librt\.so|libm\.so)'

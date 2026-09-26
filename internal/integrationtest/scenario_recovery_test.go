@@ -14,8 +14,8 @@ import (
 // TestScenarioRecoveryBoundaries drives failures at each mutation boundary
 // that can leave L or P partially changed. Each result is observed only
 // through the MCP envelope; the following pull proves that a completed
-// authoritative resynchronization leaves the notebook usable (architecture
-// sections 15 (L958) and 18 (L1115)).
+// authoritative resynchronization leaves the notebook usable
+// (architecture/guarantees.md).
 func TestScenarioRecoveryBoundaries(t *testing.T) {
 	t.Parallel()
 	rows := []struct {
@@ -114,8 +114,8 @@ func TestScenarioRecoveryBoundaries(t *testing.T) {
 // TestScenarioRecoveryConflictMaterialization proves recovery also protects
 // the path that writes a merge result with conflict markers. The failed
 // materialization is not reported as an ordinary conflict, because the
-// server must first restore authoritative state (architecture sections 10
-// (L603), 12 (L763), and 15 (L958)).
+// server must first restore authoritative state (architecture/pull.md,
+// conflicts.md, and guarantees.md).
 func TestScenarioRecoveryConflictMaterialization(t *testing.T) {
 	t.Parallel()
 	a := newFakeHarness(t, HarnessConfig{})
@@ -155,7 +155,7 @@ func TestScenarioRecoveryConflictMaterialization(t *testing.T) {
 // TestScenarioRecoveryRepairImpossible proves the second failure guarantee:
 // a failed immediate resynchronization is reported candidly and P remains in
 // recovery-required mode. After removing the fault, the next MCP call runs
-// entry recovery before normal work (architecture section 15, L958).
+// entry recovery before normal work (architecture/guarantees.md).
 func TestScenarioRecoveryRepairImpossible(t *testing.T) {
 	t.Parallel()
 	h := newRecoveryHarness(t)
@@ -197,8 +197,8 @@ func TestScenarioRecoveryRepairImpossible(t *testing.T) {
 // TestScenarioRecoveryNoMutationBoundaries proves the other half of the
 // generic recovery contract: a failure at a boundary that has not begun
 // mutating L or P is NOT reported as RECOVERY_FAILURE, leaves the visible
-// directory untouched, and does not mark P recovery-required (architecture
-// section 15, L958).
+// directory untouched, and does not mark P recovery-required
+// (architecture/guarantees.md).
 //
 // The scan and stage boundaries are documented as no-mutation points. If
 // either starts reporting a recovery failure, callers are told to

@@ -11,7 +11,7 @@ import (
 	"golang.org/x/text/unicode/norm"
 )
 
-// Path limits from architecture section 7.1. Limits are byte counts of the
+// Path limits in architecture/git-engine.md. Limits are byte counts of the
 // UTF-8 encoding, not rune counts.
 const (
 	maxPathBytes    = 4096
@@ -99,7 +99,7 @@ func isWindowsDeviceName(seg string) bool {
 }
 
 // ValidateContent rejects content that is not valid UTF-8 text without the
-// U+0000 character (architecture section 7.1). Bytes and line endings are
+// U+0000 character (architecture/workspace.md). Bytes and line endings are
 // preserved; nothing is normalized.
 func ValidateContent(data []byte) error {
 	switch {

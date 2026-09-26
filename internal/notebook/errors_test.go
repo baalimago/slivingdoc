@@ -13,7 +13,8 @@ import (
 	"github.com/baalimago/slivingdoc/internal/workspace"
 )
 
-// allReasons lists every Reason token under its owning code (architecture section 2).
+// allReasons lists every Reason token under its owning code
+// (architecture/product-contract.md).
 var allReasons = []struct {
 	code   Code
 	reason Reason

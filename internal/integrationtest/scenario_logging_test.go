@@ -21,7 +21,7 @@ func logLines(t *testing.T, h *helperProc) []string {
 
 // TestScenarioLoggingRecordShape proves the process writes structured,
 // timestamped, module-tagged records to stderr and nothing but protocol to
-// stdout (architecture section 17, L1093). The record shape is the
+// stdout (architecture/logging.md). The record shape is the
 // operator's only view of a server an MCP host started.
 func TestScenarioLoggingRecordShape(t *testing.T) {
 	t.Parallel()

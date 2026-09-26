@@ -8,7 +8,7 @@ import (
 )
 
 // Marker signature lines at column zero, in order, form one complete
-// conflict-marker block (architecture section 12). The labels are exact.
+// conflict-marker block (architecture/conflicts.md). The labels are exact.
 const (
 	markerOpen  = "<<<<<<< local"
 	markerSep   = "======="

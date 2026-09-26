@@ -15,13 +15,14 @@ import (
 	"github.com/baalimago/slivingdoc/internal/workspace"
 )
 
-// The load harness measures the planning workload of architecture section
-// 16: concurrent writers that each add approximately 1 kB of new note
-// content, with either distributed timing (the once-per-minute cadence) or
-// one synchronized burst. It runs against the deterministic fake store and
-// fake engine, so the measured CAS contention and conflict counts are
-// reproducible without Docker, network, or CI noise; the real S3 backend
-// suite separately proves the same operations over real HTTP.
+// The load harness measures the planning workload in
+// architecture/guarantees.md: concurrent writers that each add
+// approximately 1 kB of new note content, with either distributed timing
+// (the once-per-minute cadence) or one synchronized burst. It runs against
+// the deterministic fake store and fake engine, so the measured CAS
+// contention and conflict counts are reproducible without Docker, network,
+// or CI noise; the real S3 backend suite separately proves the same
+// operations over real HTTP.
 
 // loadSchedule selects the arrival pattern of one load run.
 type loadSchedule int
@@ -86,7 +87,7 @@ func (r loadResult) throughput() float64 {
 }
 
 // casPerCommit is the manifest CAS attempts per accepted commit: the
-// publication-efficiency measure of architecture section 16.
+// publication-efficiency measure in architecture/guarantees.md.
 func (r loadResult) casPerCommit() float64 {
 	if r.commits == 0 {
 		return 0

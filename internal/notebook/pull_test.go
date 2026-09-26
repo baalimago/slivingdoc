@@ -312,8 +312,8 @@ func TestPullCorruptPackRejected(t *testing.T) {
 	}
 }
 
-// TestPullStalePackRestartSucceeds proves the stale-observation restart of
-// architecture section 10: a pack that disappeared during cleanup discards
+// TestPullStalePackRestartSucceeds proves the stale-observation restart in
+// architecture/pull.md: a pack that disappeared during cleanup discards
 // the observation; when current moved and the pack is back, the pull
 // restarts and succeeds.
 func TestPullStalePackRestartSucceeds(t *testing.T) {

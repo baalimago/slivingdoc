@@ -50,7 +50,7 @@ func TestNewRejectsInvalidReadOnlyPaths(t *testing.T) {
 }
 
 // TestCommitMarkersBeforeReadOnly checks markers are rejected before the
-// read-only check (architecture section 11.1).
+// read-only check (architecture/commit.md).
 func TestCommitMarkersBeforeReadOnly(t *testing.T) {
 	store := fake.New("")
 	ids := &testIDSource{}

@@ -5,7 +5,7 @@ name: qa
 #   npm  the zero-dependency launcher suite
 # There is no separate integration job: the Docker-backed S3 suites are
 # part of `make test`, and an unreachable daemon fails it.
-# Actions are pinned by full commit SHA (architecture section 21).
+# Actions are pinned by full commit SHA (architecture/build.md).
 
 on:
   push:

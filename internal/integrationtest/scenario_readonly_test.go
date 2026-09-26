@@ -35,7 +35,8 @@ func newReadOnlyAgent(t *testing.T, writer *Harness, entries []string) (agent *H
 }
 
 // TestScenarioReadOnlyCommitRefusedAndReset: a commit touching a read-only
-// path is refused and reset without remote mutation (architecture section 2, Read-only paths).
+// path is refused and reset without remote mutation
+// (architecture/product-contract.md, Read-only and writable paths).
 func TestScenarioReadOnlyCommitRefusedAndReset(t *testing.T) {
 	t.Parallel()
 	writer, _ := seedReadOnlyBaseline(t)
@@ -194,7 +195,8 @@ func TestScenarioReadOnlyCaseFoldedEntry(t *testing.T) {
 }
 
 // TestScenarioReadOnlyPullRestores: pull restores covered files and keeps
-// other local edits, for an existing and a fresh workspace (architecture section 10).
+// other local edits, for an existing and a fresh workspace
+// (architecture/pull.md).
 func TestScenarioReadOnlyPullRestores(t *testing.T) {
 	t.Parallel()
 	writer, _ := seedReadOnlyBaseline(t)
@@ -466,7 +468,7 @@ func TestScenarioReadOnlyEmptySetUnchanged(t *testing.T) {
 }
 
 // TestScenarioReadOnlyResetFailureIsRecovery: a failure inside the reset is
-// RECOVERY_FAILURE at stage commit.readonly (architecture section 15).
+// RECOVERY_FAILURE at stage commit.readonly (architecture/guarantees.md).
 func TestScenarioReadOnlyResetFailureIsRecovery(t *testing.T) {
 	t.Parallel()
 	writer, _ := seedReadOnlyBaseline(t)
@@ -535,7 +537,8 @@ func TestScenarioReadOnlyFlagProcess(t *testing.T) {
 }
 
 // TestScenarioReadOnlyEnvPrecedence: the environment variable configures a
-// spawned process and an explicitly empty flag clears it (architecture section 17).
+// spawned process and an explicitly empty flag clears it
+// (architecture/config.md).
 func TestScenarioReadOnlyEnvPrecedence(t *testing.T) {
 	t.Parallel()
 	t.Run("environment alone configures the set", func(t *testing.T) {
@@ -574,7 +577,7 @@ func TestScenarioReadOnlyEnvPrecedence(t *testing.T) {
 }
 
 // TestScenarioReadOnlyInvalidFlagRefusesStartup: an invalid entry refuses
-// startup before any backend call (architecture section 17).
+// startup before any backend call (architecture/config.md).
 func TestScenarioReadOnlyInvalidFlagRefusesStartup(t *testing.T) {
 	t.Parallel()
 	for _, row := range []struct{ name, value string }{

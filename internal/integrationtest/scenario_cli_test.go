@@ -357,8 +357,9 @@ func TestScenarioCLISharedRemoteConflict(t *testing.T) {
 }
 
 // TestScenarioCLIReadOnlyCommit: the read-only CLI report over spawned
-// one-shot processes (architecture section 2, CLI report). R is pre-seeded
-// on the real backend because spawned processes cannot share the fake store.
+// one-shot processes (architecture/product-contract.md, CLI report). R is
+// pre-seeded on the real backend because spawned processes cannot share the
+// fake store.
 func TestScenarioCLIReadOnlyCommit(t *testing.T) {
 	t.Parallel()
 	env, root, prefix := realCLIEnv(t, "integrationtest-readonly")

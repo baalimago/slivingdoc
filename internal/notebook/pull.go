@@ -8,11 +8,11 @@ import (
 
 // Pull validates and ingests the visible directory, reads and validates the
 // authoritative manifest, downloads only missing packs, imports the
-// accepted state, and merges the accepted baseline, L, and R (architecture
-// section 10). L is rewritten with the full merge result and R becomes the
-// new baseline. A conflicting pull writes the markers and non-conflicting
-// results to L, records R as the baseline, and returns the exact conflicted
-// paths and ranges; it never reverts L.
+// accepted state, and merges the accepted baseline, L, and R
+// (architecture/pull.md). L is rewritten with the full merge result and R
+// becomes the new baseline. A conflicting pull writes the markers and
+// non-conflicting results to L, records R as the baseline, and returns the
+// exact conflicted paths and ranges; it never reverts L.
 //
 // The returned Result reports the accepted remote generation and the
 // diffstat of the on-disk delta between the visible state the pull
@@ -41,7 +41,7 @@ func (n *Notebook) Pull(ctx context.Context) (Result, error) {
 
 	// A changed protected path is pinned to the baseline on the local side,
 	// so the merge takes R there and the diffstat (raw local vs. merged)
-	// shows the restore (architecture section 10). With nothing changed the
+	// shows the restore (architecture/pull.md). With nothing changed the
 	// pinned tree would equal the local tree, so no pin is built.
 	mergeTree, err := n.pinProtected(local, localTree)
 	if err != nil {

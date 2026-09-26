@@ -35,7 +35,7 @@ type Workspace interface {
 // the first (the application resolves the default; the notebook validates
 // the range 0..100, where 0 means a single attempt). CheckpointPacks is the
 // active-tail length that triggers one checkpoint effort (the application
-// resolves the default 1,024; the notebook requires at least 1, so an
+// resolves the default 256; the notebook requires at least 1, so an
 // explicitly configured zero fails). RetainedCheckpoints is the number of
 // previous checkpoint generations kept as cleanup roots (the application
 // resolves the default 1; the notebook validates 0..64). NewID and Now
@@ -47,11 +47,13 @@ type Config struct {
 	// Store is the semantic object-store boundary.
 	Store storage.ObjectStore
 	// ReadOnlyPaths are the notebook-relative read-only entries
-	// (architecture section 2, Read-only paths); New rejects an invalid one.
+	// (architecture/product-contract.md, Read-only and writable paths); New
+	// rejects an invalid one.
 	ReadOnlyPaths []string
 	// WritablePaths are the notebook-relative writable entries. A non-empty
-	// set protects every unmatched path (architecture section 2, Read-only
-	// paths); New rejects an invalid entry and a path named by both sets.
+	// set protects every unmatched path (architecture/product-contract.md,
+	// Read-only and writable paths); New rejects an invalid entry and a
+	// path named by both sets.
 	WritablePaths []string
 	// RetryLimit bounds CAS retries after the first attempt.
 	RetryLimit int
@@ -89,7 +91,7 @@ const DefaultCheckpointPacks = 256
 const DefaultRetainedCheckpoints = 1
 
 // MaxRetryLimit, MinCheckpointPacks, and MaxRetainedCheckpoints are the
-// documented operational ranges (architecture section 17). The application
+// documented operational ranges (architecture/config.md). The application
 // package validates its flags against the same values, so the two range
 // checks cannot drift.
 const (
@@ -98,8 +100,8 @@ const (
 	MaxRetainedCheckpoints = 64
 )
 
-// MaxMessageBytes is the notes_commit message byte bound (architecture
-// section 2). The MCP schema advertises the same value.
+// MaxMessageBytes is the notes_commit message byte bound
+// (architecture/product-contract.md). The MCP schema advertises the same value.
 const MaxMessageBytes = 16384
 
 // ReadOnlyListSeparator joins read-only entries on every surface that lists
@@ -108,8 +110,8 @@ const ReadOnlyListSeparator = ", "
 
 // PathSetsNestRule is the terse form of the composition rule, carried by
 // every surface that lists both sets: each set's own sentence is complete
-// only against the other, because the sets may nest (architecture section
-// 2, Writable paths).
+// only against the other, because the sets may nest
+// (architecture/product-contract.md, Read-only and writable paths).
 const PathSetsNestRule = "longest match decides"
 
 const (
@@ -121,7 +123,7 @@ const (
 // Notebook executes pull and commit against one workspace and one store.
 // All methods are safe for concurrent use; per-path serialization comes
 // from the workspace operation lock. Checkpoint scheduling is opportunistic
-// and never determines commit success (architecture section 13).
+// and never determines commit success (architecture/checkpoints.md).
 type Notebook struct {
 	ws                  Workspace
 	store               storage.ObjectStore
@@ -134,8 +136,8 @@ type Notebook struct {
 	// everything else. It collapses the read-only set on its own, so it can
 	// hold a broader entry than the policy resolves over — but only where a
 	// writable entry splits a read-only entry from its ancestor, and the
-	// refusal names the writable set instead there (architecture section 2,
-	// Writable paths).
+	// refusal names the writable set instead there
+	// (architecture/product-contract.md, Read-only and writable paths).
 	readOnly   git.EntrySet
 	newID      func() (storage.UUID, error)
 	now        func() time.Time
@@ -218,7 +220,7 @@ const (
 
 // entryRecovery runs the authoritative resynchronization the next MCP call
 // must perform before any pull or commit work when P requires recovery
-// (architecture section 15). A successful repair clears the flag and the
+// (architecture/guarantees.md). A successful repair clears the flag and the
 // caller proceeds; a failed repair returns RECOVERY_FAILURE.
 func (n *Notebook) entryRecovery(ctx context.Context) error {
 	report, err := n.recoverState(ctx, stageEntry, RemoteAcceptedUnknown)
@@ -248,8 +250,8 @@ func (n *Notebook) applyLocal(ctx context.Context, stage string, accepted Remote
 // failAfterAccept handles a failure between the proved manifest acceptance
 // and the local acceptance: the remote accepted the proposal, so the
 // generic recovery path runs unconditionally and the call reports
-// RECOVERY_FAILURE even when resynchronization succeeds (architecture
-// section 15).
+// RECOVERY_FAILURE even when resynchronization succeeds
+// (architecture/guarantees.md).
 func (n *Notebook) failAfterAccept(ctx context.Context, stage string, cause error) error {
 	report, _ := n.recoverState(ctx, stage, RemoteAcceptedYes)
 	return recoveryFailure(report.public(), cause)
@@ -296,8 +298,9 @@ func ValidateMessage(message string) error {
 }
 
 // rejectMarkers returns the conflicted files of a snapshot: every complete
-// conflict-marker block with its exact path and row ranges (architecture
-// section 12). The check runs before any Git or S3 mutation.
+// conflict-marker block with its exact path and row ranges
+// (architecture/conflicts.md). The check runs before any Git or S3
+// mutation.
 func rejectMarkers(snap git.Snapshot) []ErrorFile {
 	var files []ErrorFile
 	for _, f := range snap.Files {

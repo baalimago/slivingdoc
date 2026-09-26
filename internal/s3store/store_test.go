@@ -81,7 +81,7 @@ func TestWithDefaults(t *testing.T) {
 
 // TestFullKeyJoin proves that the adapter owns the prefix join: protocol
 // keys stay relative and the configured prefix is joined with one slash
-// (architecture section 9.1).
+// (architecture/storage.md).
 func TestFullKeyJoin(t *testing.T) {
 	if got := (&Store{prefix: "nb"}).fullKey(storage.CurrentKey); got != "nb/current" {
 		t.Fatalf("fullKey = %q, want %q", got, "nb/current")

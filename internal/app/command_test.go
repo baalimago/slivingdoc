@@ -368,7 +368,7 @@ func TestWriteErrorColoured(t *testing.T) {
 }
 
 // TestWriteErrorReadOnly checks the plain read-only refusal report byte for
-// byte (architecture section 2).
+// byte (architecture/product-contract.md).
 func TestWriteErrorReadOnly(t *testing.T) {
 	t.Parallel()
 	te := &mcp.ToolError{

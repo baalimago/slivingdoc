@@ -9,7 +9,7 @@ import (
 	"github.com/baalimago/slivingdoc/internal/storage"
 )
 
-// emptyTreeID is the canonical empty Git tree (architecture section 10, L603):
+// emptyTreeID is the canonical empty Git tree (architecture/pull.md):
 // the first-pull baseline and the generation-0 remote tree.
 const emptyTreeID = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
@@ -17,7 +17,7 @@ const emptyTreeID = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 // directory against an empty remote: OK with an empty success stat (the
 // local additions are retained unchanged, so nothing changed on disk),
 // local additions retained, the empty-tree generation-0 baseline recorded,
-// and no remote state created (architecture section 10, L603).
+// and no remote state created (architecture/pull.md).
 func TestScenarioPullFirstPull(t *testing.T) {
 	t.Parallel()
 	h := newFakeHarness(t, HarnessConfig{})
@@ -56,7 +56,7 @@ func TestScenarioPullFirstPull(t *testing.T) {
 
 // TestScenarioPullWarmPull proves that a pull with no local changes and an
 // unchanged remote advances the baseline and reuses the cached pack bytes:
-// a second pull performs no pack download (architecture section 10, L603).
+// a second pull performs no pack download (architecture/pull.md).
 func TestScenarioPullWarmPull(t *testing.T) {
 	t.Parallel()
 	h := newFakeHarness(t, HarnessConfig{})
@@ -84,7 +84,7 @@ func TestScenarioPullWarmPull(t *testing.T) {
 
 // TestScenarioPullAfterRemoteAdvance proves that a pull rebases local
 // additions, modifications, and deletions on the remote head without
-// discarding any mergeable local change (architecture section 10, L603).
+// discarding any mergeable local change (architecture/pull.md).
 func TestScenarioPullAfterRemoteAdvance(t *testing.T) {
 	t.Parallel()
 	h := newFakeHarness(t, HarnessConfig{})
@@ -114,7 +114,7 @@ func TestScenarioPullAfterRemoteAdvance(t *testing.T) {
 
 // TestScenarioPullColdPull proves that a cold pull downloads only the
 // missing descriptor packs and never reconstructs state by LIST
-// (architecture section 10, L603): the list counter stays zero.
+// (architecture/pull.md): the list counter stays zero.
 func TestScenarioPullColdPull(t *testing.T) {
 	t.Parallel()
 	h := newFakeHarness(t, HarnessConfig{})
@@ -145,7 +145,7 @@ func TestScenarioPullColdPull(t *testing.T) {
 // TestScenarioPullConflict proves a conflicting pull: CONTENT_CONFLICT with
 // the exact relative path and marker ranges, markers materialized into L,
 // R recorded as the new baseline, local-only files preserved, and L never
-// reverted (architecture section 10, L603).
+// reverted (architecture/pull.md).
 func TestScenarioPullConflict(t *testing.T) {
 	t.Parallel()
 	h := newFakeHarness(t, HarnessConfig{})
@@ -187,10 +187,10 @@ func TestScenarioPullConflict(t *testing.T) {
 	assertPulledMarker(t, b, pathB)
 }
 
-// TestScenarioPullStaleReader proves the stale-reader restart (architecture
-// section 10, L603): a reader blocked on a pack GET observes the pack deleted
-// by a concurrent writer's checkpoint cleanup, rereads current, restarts,
-// and completes with the current head. The barrier keeps the race
+// TestScenarioPullStaleReader proves the stale-reader restart
+// (architecture/pull.md): a reader blocked on a pack GET observes the pack
+// deleted by a concurrent writer's checkpoint cleanup, rereads current,
+// restarts, and completes with the current head. The barrier keeps the race
 // deterministic over the real S3 backend.
 func TestScenarioPullStaleReader(t *testing.T) {
 	t.Parallel()
@@ -242,7 +242,7 @@ func TestScenarioPullStaleReader(t *testing.T) {
 
 // TestScenarioPullCacheCorruption proves that a corrupt cached pack is
 // never a false hit: the next pull discards it, re-downloads the verified
-// bytes, and heals the cache (architecture section 8.3, L369).
+// bytes, and heals the cache (architecture/pull.md).
 func TestScenarioPullCacheCorruption(t *testing.T) {
 	t.Parallel()
 	h := newFakeHarness(t, HarnessConfig{})

@@ -112,8 +112,8 @@ func (f *faultStore) AmbiguousNextOp(op Op) { f.faults.AmbiguousNextOp(op) }
 
 // UnprovableNext makes the next ReplaceObject on key land but report a
 // transport error, and makes the immediately following read of key fail
-// too, so a publication lookup cannot prove acceptance (architecture
-// section 11.3, L733).
+// too, so a publication lookup cannot prove acceptance
+// (architecture/commit.md).
 func (f *faultStore) UnprovableNext(key string) {
 	f.faults.AmbiguousNext(OpReplace, key)
 	f.mu.Lock()

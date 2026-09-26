@@ -1,7 +1,8 @@
 // Package integrationtest is the black-box behavioral contract of the
-// slivingdoc server (architecture sections 2 (L26), 7 (L186), 10-18
-// (L603-L1115), and 20 (L1169)). One scenario per architecture usecase
-// drives the implementation exclusively through the public MCP API:
+// slivingdoc server (architecture/product-contract.md, workspace.md,
+// pull.md, commit.md, conflicts.md, checkpoints.md, guarantees.md,
+// config.md, security.md, and testing.md). One scenario per architecture
+// usecase drives the implementation exclusively through the public MCP API:
 // initialize, tool listing, and the two tool calls. The scenarios are the
 // spec: where prose and a passing scenario disagree, the scenario wins.
 //

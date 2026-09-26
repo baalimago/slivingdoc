@@ -85,7 +85,7 @@ func resolvePath(cwd, path string) (string, error) {
 }
 
 // statusSeparator sits between the code and the reason token on the CLI
-// status line (architecture section 2 CLI report).
+// status line (architecture/product-contract.md, CLI report).
 const statusSeparator = " · "
 
 // fileReasonWords is the CLI wording of each notebook.FileReason token.
@@ -124,17 +124,16 @@ func actionWording(action string) string {
 
 // Report writes the candid result of one CLI operation to out as the
 // unified status/detail/trailer skeleton shared by success and domain
-// errors (architecture section 2 CLI report): a status token and summary,
-// one indented line per file the result is about, and a trailer. path is
-// the resolved notebook directory the success line reports. readOnly and
-// writable are attached to the envelope exactly as the MCP handler does.
-// Colour is
-// presentation-only: it appears only when out is a real terminal and
-// NO_COLOR is unset or empty, and the success output stays prefixed with
-// the OK token for script compatibility. The returned error is nil on
-// success, the terse category for a domain error — the router echoes it
-// and exits nonzero — or the unchanged error when it is not a domain
-// error (cancellation).
+// errors (architecture/product-contract.md, CLI report): a status token and
+// summary, one indented line per file the result is about, and a trailer.
+// path is the resolved notebook directory the success line reports.
+// readOnly and writable are attached to the envelope exactly as the MCP
+// handler does. Colour is presentation-only: it appears only when out is a
+// real terminal and NO_COLOR is unset or empty, and the success output
+// stays prefixed with the OK token for script compatibility. The returned
+// error is nil on success, the terse category for a domain error — the
+// router echoes it and exits nonzero — or the unchanged error when it is
+// not a domain error (cancellation).
 func Report(out io.Writer, result notebook.Result, err error, path string, env []string, readOnly, writable []string) error {
 	p := painter{on: colourEnabled(out, env)}
 	if err == nil {
@@ -178,9 +177,10 @@ func writeSuccess(out io.Writer, info *mcp.SuccessInfo, p painter) {
 	io.WriteString(out, b.String())
 }
 
-// writeError renders the domain-error report (architecture section 2 CLI
-// report): status line, message, one aligned line per file, then the next,
-// retryable, recovery, writable, and read-only trailers.
+// writeError renders the domain-error report
+// (architecture/product-contract.md, CLI report): status line, message, one
+// aligned line per file, then the next, retryable, recovery, writable, and
+// read-only trailers.
 func writeError(out io.Writer, te *mcp.ToolError, p painter) {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s%s%s\n", p.red(te.Code), statusSeparator, p.dim(te.Reason))
@@ -211,8 +211,8 @@ func writeError(out io.Writer, te *mcp.ToolError, p painter) {
 // first, so an operator reads where the process may write before the
 // exceptions inside that region. An empty set has no trailer. Two
 // non-empty sets may name the same region at different depths, so they are
-// followed by the rule that reconciles them (architecture section 2,
-// Writable paths).
+// followed by the rule that reconciles them
+// (architecture/product-contract.md, Read-only and writable paths).
 func writePathSets(b *strings.Builder, writable, readOnly []string, p painter) {
 	if len(writable) > 0 {
 		fmt.Fprintf(b, "%s %s\n", p.dim("writable:"), strings.Join(writable, notebook.ReadOnlyListSeparator))

@@ -582,7 +582,7 @@ func TestConfigErrorIsRedacted(t *testing.T) {
 }
 
 // TestLoadConfigReadOnlyPaths checks precedence, splitting, trimming, and
-// empty-piece rules (architecture section 17).
+// empty-piece rules (architecture/config.md).
 func TestLoadConfigReadOnlyPaths(t *testing.T) {
 	cases := []struct {
 		name string
@@ -728,7 +728,7 @@ func refusingProcess(env []string, args ...string) (process, *refusingEngine, *b
 
 // TestFlagsWritablePathsResolution checks the documented precedence of the
 // writable set: the flag beats the environment, which beats the empty
-// default (architecture section 17).
+// default (architecture/config.md).
 func TestFlagsWritablePathsResolution(t *testing.T) {
 	for _, tt := range []struct {
 		name string
@@ -893,7 +893,7 @@ func TestSetupRejectsCaseFoldedOverlap(t *testing.T) {
 // own setting: the entries compared are the ones written, so the refusal
 // does not depend on which unrelated ancestors sit beside them, and with
 // several overlaps the pair named is the first written read-only entry
-// (architecture section 2, Writable paths).
+// (architecture/product-contract.md, Read-only and writable paths).
 func TestSetupRefusesBeforeEngineAndProbe(t *testing.T) {
 	for _, tt := range []struct {
 		name        string

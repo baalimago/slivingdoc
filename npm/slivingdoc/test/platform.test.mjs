@@ -19,7 +19,7 @@ test("maps every supported platform to the release grammar", () => {
 	}
 });
 
-test("the supported matrix is exactly the architecture section 21 targets", () => {
+test("the supported matrix is exactly the targets in architecture/build.md", () => {
 	assert.deepEqual(
 		SUPPORTED_TARGETS,
 		[

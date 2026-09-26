@@ -21,12 +21,12 @@ import (
 var ErrIntegrity = errors.New("storage: integrity failure")
 
 // CurrentKey is the protocol key of the only authoritative state index
-// (architecture section 9.2). An absent current object is the implicit
+// (architecture/storage.md). An absent current object is the implicit
 // empty-notebook state at generation 0.
 const CurrentKey = "current"
 
 // Manifest is a validated manifest version 1 value. Field order and names
-// follow the normative shape in architecture section 9.2 exactly; the
+// follow the normative shape in architecture/storage.md exactly; the
 // encoder writes compact JSON with HTML escaping disabled and no trailing
 // newline.
 type Manifest struct {
@@ -75,7 +75,7 @@ type Retained struct {
 // DecodeManifest strictly decodes and validates a stored manifest. It
 // rejects unknown fields, duplicate names, missing required fields, and
 // explicit null at every object level, and applies every cross-field rule
-// of architecture section 9.2 before returning. Any failure is an
+// in architecture/storage.md before returning. Any failure is an
 // ErrIntegrity error; the caller must not touch referenced packs.
 func DecodeManifest(data []byte) (Manifest, error) {
 	root, err := strictjson.Parse(data)
@@ -395,8 +395,8 @@ func integrityErr(err error) error {
 	return fmt.Errorf("storage: manifest: %w: %w", ErrIntegrity, err)
 }
 
-// validateManifest applies the cross-field rules of architecture section
-// 9.2 to an already schema-valid manifest.
+// validateManifest applies the cross-field rules in architecture/storage.md to
+// an already schema-valid manifest.
 func validateManifest(m *Manifest) error {
 	if m.Generation == 0 {
 		return errors.New("generation must be at least 1")

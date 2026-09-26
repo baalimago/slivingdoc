@@ -17,7 +17,7 @@ import (
 )
 
 // ErrSymlink reports a symbolic link encountered in the visible directory
-// (architecture section 7.1). Symlinks are rejected on every host.
+// (architecture/workspace.md). Symlinks are rejected on every host.
 var ErrSymlink = errors.New("workspace: symbolic link rejected")
 
 // ErrUnsupportedFile reports a visible entry that is not a regular file or
@@ -25,7 +25,7 @@ var ErrSymlink = errors.New("workspace: symbolic link rejected")
 var ErrUnsupportedFile = errors.New("workspace: unsupported file")
 
 // ErrInvalidContent reports visible content that is not valid UTF-8 text
-// without U+0000 (architecture section 7.1).
+// without U+0000 (architecture/workspace.md).
 var ErrInvalidContent = errors.New("workspace: invalid text content")
 
 // ScanError names the visible path a scan rejection is about. Unwrap

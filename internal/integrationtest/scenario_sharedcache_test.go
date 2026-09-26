@@ -7,7 +7,7 @@ import (
 )
 
 // TestScenarioSharedPackCacheReuse proves the shared pack cache
-// (architecture section 8.3): the first cold puller populates the
+// (architecture/pull.md and config.md): the first cold puller populates the
 // identity-selected shared directory, and a second cold puller with its own
 // workspace and private state imports the same state with zero pack
 // downloads. Only verified pack bytes are shared; every harness keeps its
@@ -90,7 +90,7 @@ func TestScenarioSharedPackCacheUnwritable(t *testing.T) {
 // TestScenarioSharedPackCacheCorruption proves that a corrupt shared entry
 // is never a false hit across agents: the next pull discards it,
 // re-downloads the verified bytes, and heals the shared directory for
-// every other agent (architecture section 8.3).
+// every other agent (architecture/pull.md and config.md).
 func TestScenarioSharedPackCacheCorruption(t *testing.T) {
 	t.Parallel()
 	cacheRoot := t.TempDir()

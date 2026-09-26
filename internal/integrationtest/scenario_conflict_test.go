@@ -5,7 +5,7 @@ import (
 )
 
 // TestScenarioConflictMarkerGrammar proves the marker-rejection contract
-// (architecture section 12, L763): complete marker blocks are CONTENT_CONFLICT
+// (architecture/conflicts.md): complete marker blocks are CONTENT_CONFLICT
 // with the exact path and ranges before any S3 mutation; near matches and
 // indented blocks are ordinary text and publish. Every row runs on a fresh
 // harness so the zero-mutation counter is exact per row.
@@ -68,8 +68,8 @@ func TestScenarioConflictMarkerGrammar(t *testing.T) {
 
 // TestScenarioConflictResolutionAndRepublish proves that resolving the
 // markers and committing again publishes the resolution, and a fresh pull
-// observes exactly the resolved bytes with no markers in R (architecture
-// section 12, L763).
+// observes exactly the resolved bytes with no markers in R
+// (architecture/conflicts.md).
 func TestScenarioConflictResolutionAndRepublish(t *testing.T) {
 	t.Parallel()
 	h := newFakeHarness(t, HarnessConfig{})
@@ -105,7 +105,7 @@ func TestScenarioConflictResolutionAndRepublish(t *testing.T) {
 // TestScenarioConflictAfterRemoteMovement proves the second-merge retry:
 // the remote moves between a conflict and its resolution, and the resolved
 // commit merges again against the moved remote, accepting the resolution
-// and the concurrent additions (architecture section 12, L763).
+// and the concurrent additions (architecture/conflicts.md).
 func TestScenarioConflictAfterRemoteMovement(t *testing.T) {
 	t.Parallel()
 	h := newFakeHarness(t, HarnessConfig{})

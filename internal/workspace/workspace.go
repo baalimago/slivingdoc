@@ -1,6 +1,6 @@
 // Package workspace implements managed caller directories: path policy,
 // deterministic private state, visible-file snapshots, and local operation
-// serialization (architecture sections 7 and 18.2).
+// serialization (architecture/workspace.md and security.md).
 //
 // A Workspace binds one canonical visible path L to one notebook storage
 // identity and one private repository directory P under the private root.
@@ -31,7 +31,7 @@ import (
 )
 
 // lockRetryInterval is the retry interval for the local operation lock
-// (architecture section 7.2): wait until the request context ends.
+// (architecture/workspace.md): wait until the request context ends.
 const lockRetryInterval = 50 * time.Millisecond
 
 // Engine is the workspace's narrow view of the native Git engine: it
@@ -45,7 +45,7 @@ type Engine interface {
 
 // Config binds one workspace. WorkspaceRoot, Path, and PrivateRoot must be
 // absolute; Path must stay at or below WorkspaceRoot, and PrivateRoot must
-// not be at or below WorkspaceRoot (architecture section 17).
+// not be at or below WorkspaceRoot (architecture/config.md).
 type Config struct {
 	// WorkspaceRoot is the absolute configured workspace root.
 	WorkspaceRoot string
@@ -148,7 +148,7 @@ func Open(ctx context.Context, cfg Config) (*Workspace, error) {
 
 	// Create P and its records under the local operation lock so two
 	// server processes cannot initialize the same private directory at
-	// once (architecture section 7.2).
+	// once (architecture/workspace.md).
 	fl := flock.New(filepath.Join(privDir, operationLockName))
 	locked, err := fl.TryLockContext(ctx, lockRetryInterval)
 	if err != nil {
@@ -391,7 +391,7 @@ func (w *Workspace) Diff(ctx context.Context) (Diff, error) {
 
 // Replace rewrites the visible directory to the target tree without
 // changing the accepted baseline. It is the conflict materialization path:
-// a semantic conflict intentionally rewrites L (architecture section 7.3).
+// a semantic conflict intentionally rewrites L (architecture/workspace.md).
 func (w *Workspace) Replace(ctx context.Context, tree git.OID) error {
 	return w.withOpLock(ctx, false, func() error {
 		return w.applyLocked(ctx, tree, nil)
@@ -410,8 +410,9 @@ func (w *Workspace) Accept(ctx context.Context, baseline Baseline) error {
 // Materialize rewrites the visible directory to the target tree and durably
 // records the baseline as the accepted state in one failure-atomic
 // operation. It is the conflict and pull path: L must show the merged
-// result while P records the remote state the merge observed (architecture
-// sections 10 and 12), which the two trees can express only together.
+// result while P records the remote state the merge observed
+// (architecture/pull.md and conflicts.md), which the two trees can express
+// only together.
 func (w *Workspace) Materialize(ctx context.Context, baseline Baseline, tree git.OID) error {
 	return w.withOpLock(ctx, false, func() error {
 		return w.applyLocked(ctx, tree, &baseline)
@@ -432,7 +433,7 @@ func (w *Workspace) CacheDir() string {
 }
 
 // Pulled reports whether a successful or conflicting pull has initialized P
-// for this workspace (architecture section 11.1). The durable marker is
+// for this workspace (architecture/commit.md). The durable marker is
 // notebook policy, not state schema: a fresh workspace and a pulled-empty
 // workspace produce identical state records, so commit's baseline check
 // uses the marker instead.
@@ -494,7 +495,7 @@ func (w *Workspace) Recover(ctx context.Context, baseline Baseline) error {
 // honors the request context) and across server processes (the advisory
 // lock file in P), waiting until the request context ends. The OS releases
 // the advisory lock when a process exits; no PID or stale-lock recovery is
-// stored (architecture section 7.2). Normal operations refuse while the
+// stored (architecture/workspace.md). Normal operations refuse while the
 // workspace requires recovery; allowRecovery is true only for Recover.
 func (w *Workspace) withOpLock(ctx context.Context, allowRecovery bool, fn func() error) error {
 	select {

@@ -30,7 +30,7 @@ var ErrInvalidKey = errors.New("storage: invalid protocol key")
 var ErrInvalidPrefix = errors.New("storage: invalid prefix")
 
 // Key is a validated protocol object key relative to the configured S3
-// prefix (architecture section 9.1):
+// prefix (architecture/storage.md):
 //
 //	packs/checkpoints/<throughGeneration>-<checkpoint-id>.pack
 //	packs/increments/<generation>-<publication-id>.pack
@@ -155,7 +155,7 @@ func ValidatePrefix(prefix string) error {
 }
 
 // JoinKey joins a validated prefix and a protocol key with one slash
-// (architecture section 9.1). The object-store adapter owns this join; a
+// (architecture/storage.md). The object-store adapter owns this join; a
 // nonempty prefix and a protocol key never produce an escaped key.
 func JoinKey(prefix, key string) string {
 	if prefix == "" {

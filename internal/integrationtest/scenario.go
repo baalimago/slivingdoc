@@ -1,6 +1,6 @@
 package integrationtest
 
-// Tool names of the public API (architecture section 2). The catalog
+// Tool names of the public API (architecture/product-contract.md). The catalog
 // entries reference exactly these two tools.
 const (
 	toolPull   = "notes_pull"

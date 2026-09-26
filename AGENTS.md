@@ -1,12 +1,42 @@
 # AGENTS.md — slivingdoc
 
+## Architecture docs
+
+`architecture/` holds one doc per command and subsystem: an overview, the
+product contract, pull, commit, conflicts, checkpoints, the notebook, the Git
+engine, the workspace, storage, the S3 store, the CLI, the
+MCP server, configuration, errors, logging, security, guarantees,
+testing, build, releasing, running, and recorded decisions. Start at
+[architecture/README.md](architecture/README.md): it indexes every doc
+with a one-line summary and suggests a reading order per task. Open the
+doc for your concern before scanning the code; it lists the files and
+symbols to read.
+
+Keep them true. The docs are only useful if an agent can trust them
+without re-checking the code:
+
+- A change that alters behavior, a flow, a file's role, a public name, a
+  flag, an error code, an invariant, or a rule described in an
+  architecture doc updates that doc in the same commit.
+- A new command or subsystem gets a new `architecture/<concern>.md` in
+  the same shape (intro with "Read this when", Key files, Flow, Behavior,
+  Gotchas, Related) and a line in `architecture/README.md`. A removed or
+  renamed file or symbol is removed or renamed in every doc that cites
+  it.
+- Code comments cite a doc by path (`architecture/commit.md`), never by
+  section number or line.
+- Cite files and symbols, never line numbers. Describe only what the code
+  does; plans go in worklogs or issues.
+- If you find a doc that disagrees with the code, the code wins: fix the
+  doc in your change, or say so if you cannot.
+
 ## Architecture
 
 slivingdoc is a standalone MCP server that gives many agents one shared
 directory of UTF-8 text notes, stored durably in S3-compatible object storage.
 It uses Git data structures and merge behavior internally but never invokes a
-Git executable and never exposes a Git repository. The full contract is
-[`docs/slivingdoc-v1.md`](docs/slivingdoc-v1.md). Three states
+Git executable and never exposes a Git repository. The contract is split
+by concern under [`architecture/`](architecture/README.md). Three states
 shape every operation. **L** is the caller-controlled visible directory.
 **P** is the server-owned private state (repository, baseline, locks).
 **R** is the accepted remote state indexed by the S3 object `current`.
@@ -73,7 +103,7 @@ Runtime layout (implemented):
 ```text
 L  visible directory       caller path; UTF-8 text files only
 P  <private-root>/<key>/   state.json, operation.lock, repo/, staging/,
-                           backup/, pulled, pack-cache/ (--shared-pack-cache
+                           pulled, pack-cache/ (--shared-pack-cache
                            relocates pack-cache to one identity-keyed dir
                            under <user-cache-dir>/slivingdoc/pack-cache/)
 R  <bucket>/<prefix>/      current                manifest v1, strict; the only
@@ -110,8 +140,8 @@ slivingdoc/
 |                            verified download, cache, exec forwarding
 |-- .github/workflows/       ci.yml (qa, npm, readme-coverage caller);
 |                            release.yml (caller for the reusable pipeline)
-|-- docs/                    slivingdoc-v1.md (the accepted contract),
-|                            build.md, testing.md
+|-- architecture/            one doc per command and subsystem; index in
+|                            README.md (the accepted contract)
 |-- terraform/               reusable AWS module: bucket, IAM user, keys
 |-- examples/seaweedfs/      isolated local SeaweedFS walkthrough
 |-- examples/terraform/      debug configuration calling the module
@@ -142,13 +172,14 @@ slivingdoc/
     |                        UploadUnique
     |   |-- contract/        one contract suite for every ObjectStore
     |   `-- fake/            deterministic in-memory ObjectStore
-    |-- s3store/             the ONLY AWS SDK package: S3 adapter, prefix
+    |-- s3store/             the ONLY production AWS SDK package: S3 adapter, prefix
     |                        join, multipart upload, semantic error mapping
     |-- strictjson/          neutral strict JSON value tree (manifest and
     |                        state.json)
     |-- tests3/              testcontainers S3 backend helper (currently
     |                        SeaweedFS) (one container per `go test`
     |                        invocation)
+    |-- pathutil/            ExpandHome: ~ expansion for notebook paths and roots
     |-- mcp/                 stdio MCP server: the two strict tool schemas,
     |                        strict decoding, self-contained safe error text,
     |                        the stable error envelope, and mcpReqID logging
@@ -203,7 +234,7 @@ Commit(ctx, message)
       accepted tail >= checkpointPacks
         --> runCheckpoint (best-effort; never fails the commit)
 
-Background efforts (same call path, best-effort)
+Checkpoint and cleanup (synchronous inside the triggering commit, best-effort)
   runCheckpoint: compact the stable accepted prefix --> CAS the new manifest
   cleanup: LIST --> delete only unreferenced objects at or before the cutoff
 ```
@@ -223,7 +254,7 @@ directory, and flags can follow the path. Both commands run the same
 startup refusal surface through `app.Setup` and call `Runtime.Pull` /
 `Runtime.Commit`. `app.Report` prints the candid result: the `OK` status
 line with the generation and the resolved notebook path on stdout, or the
-structured `mcp.ToolError.Report` text (category, retryable, files with
+structured error report from `app.Report`/`writeError` (code and reason, retryable, files with
 line ranges) with a nonzero exit. `commit` requires
 `-m`/`--message`.
 
@@ -255,7 +286,8 @@ line ranges) with a nonzero exit. `commit` requires
 ### Key Flags
 
 Flags beat environment variables, which beat defaults. The full table
-lives in [`docs/running.md`](docs/running.md) and in the `helpText` of
+lives in [`architecture/running.md`](architecture/running.md) and in `HelpText` and
+`FlagReference` of
 `internal/app/config.go`, which `slivingdoc serve -h` prints — that code
 copy is the authoritative one. Behavior worth remembering: `--bucket` is
 required, `--private-root` must not be at or below the workspace root,
@@ -281,7 +313,7 @@ only be resolved from a bound attribute.
 | `LOG_LEVEL`                | Per-module levels, for example `cli=warn,mcp=debug,info`. A bare level is the default. A malformed value falls back to info and is reported, never fatal.                                                          |
 | `SLIVINGDOC_LOG_TIMESTAMP` | `false` removes the `time=` field, for hosts that stamp lines themselves.                                                                                                                                          |
 | `NO_COLOR`                 | Any non-empty value disables the ANSI level color.                                                                                                                                                                 |
-| `DEBUG_PERF`               | Captures CPU, heap, and execution-trace profiles across the whole command (`internal/app/perf.go`); `1` writes under the system temporary directory, any other value is the base directory. See `docs/running.md`. |
+| `DEBUG_PERF`               | Captures CPU, heap, and execution-trace profiles across the whole command (`internal/app/perf.go`); `1` writes under the system temporary directory, any other value is the base directory. See `architecture/running.md`. |
 
 The `--log-level` and `--log-timestamp` flags (shared by `serve`, `pull`,
 and `commit`) override the environment once the flags resolve; `setup`
@@ -334,12 +366,12 @@ demoted to DEBUG with empty-string attributes dropped (`sdkLogger` in
 
 **Invariants that a change must not break.** These come from the accepted
 architecture, and a change that touches one of them updates
-`docs/slivingdoc-v1.md` in the same commit:
+the matching doc under `architecture/` in the same commit:
 
 - MCP and the one-shot `pull`/`commit` subcommands are the only public
   APIs, and both expose exactly the same two operations. The process never
   invokes Git and never imports `git2go`.
-- All CGo and libgit2 types stay inside `internal/git2`. All AWS SDK use
+- All CGo and libgit2 types stay inside `internal/git2`. All production AWS SDK use
   stays inside `internal/s3store`.
 - `current` is the only accepted-state authority. State is never inferred
   from object names, and `LIST` is a cleanup tool, not a read path.
@@ -352,7 +384,7 @@ architecture, and a change that touches one of them updates
   and no special files.
 - Commit rejects a complete conflict-marker block, so no accepted state can
   contain an unresolved conflict.
-- Checkpoint and cleanup are best-effort background efforts. They must not
+- Checkpoint and cleanup are best-effort (synchronous inside the triggering commit). They must not
   change the result of the commit that scheduled them.
 - A failure after local mutation began returns `RECOVERY_FAILURE`, attempts
   an authoritative resync, and never returns `OK` for that call.
@@ -465,5 +497,5 @@ capability the host cannot provide, and it must name that capability.
 `make test` fails below the 70 % floor. `make cover` opens the profile from
 the last run.
 
-[`docs/testing.md`](docs/testing.md) records the test layers, the
+[`architecture/testing.md`](architecture/testing.md) records the test layers, the
 concurrency and timeout rationale, and the coverage measurement details.

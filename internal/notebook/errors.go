@@ -1,8 +1,9 @@
 // Package notebook composes workspaces, Git state, and storage into the
-// safe pull and optimistic commit operations of architecture sections 10-15.
-// It is the only consumer of the storage protocol besides cleanup: Pull
-// reads and validates the authoritative manifest and imports packs; Commit
-// builds proposals, uploads immutable packs before their manifest CAS, and
+// safe pull and optimistic commit operations in architecture/pull.md,
+// commit.md, conflicts.md, checkpoints.md, and guarantees.md. It is the
+// only consumer of the storage protocol besides cleanup: Pull reads and
+// validates the authoritative manifest and imports packs; Commit builds
+// proposals, uploads immutable packs before their manifest CAS, and
 // resolves contention, ambiguity, and recovery.
 //
 // The package consumes narrow consumer-owned interfaces (Workspace and the
@@ -49,8 +50,8 @@ const (
 	CodeRecoveryFailure Code = "RECOVERY_FAILURE"
 )
 
-// Reason classifies a domain error one level below Code (architecture
-// section 2, Reason tokens by code).
+// Reason classifies a domain error one level below Code
+// (architecture/product-contract.md, Reason and action tokens).
 type Reason string
 
 const (
@@ -106,8 +107,9 @@ type codeReason struct {
 	reason Reason
 }
 
-// actionForPairing is the code/reason to action table of architecture
-// section 2; CodeRecoveryFailure branches on the recovery report instead.
+// actionForPairing is the code/reason to action table in
+// architecture/product-contract.md; CodeRecoveryFailure branches on the
+// recovery report instead.
 var actionForPairing = map[codeReason]Action{
 	{CodeInvalidRequest, ReasonMalformedInput}:      ActionFixInput,
 	{CodeInvalidRequest, ReasonPathOutsideRoot}:     ActionFixInput,
@@ -152,7 +154,7 @@ func actionFor(code Code, reason Reason, report *RecoveryReport) (Action, error)
 }
 
 // ErrorFile names one conflicted or rejected path, its reason, and the
-// one-based inclusive marker ranges inside it (architecture section 12).
+// one-based inclusive marker ranges inside it (architecture/conflicts.md).
 type ErrorFile struct {
 	Path   string
 	Reason FileReason
@@ -169,18 +171,19 @@ const (
 	RemoteAcceptedUnknown RemoteAccepted = "unknown"
 )
 
-// RecoveryReport describes one generic recovery run (architecture section
-// 15): the failed stage, whether remote acceptance is known, and whether
-// resynchronization from authoritative current succeeded.
+// RecoveryReport describes one generic recovery run
+// (architecture/guarantees.md): the failed stage, whether remote acceptance
+// is known, and whether resynchronization from authoritative current
+// succeeded.
 type RecoveryReport struct {
 	Stage          string
 	RemoteAccepted RemoteAccepted
 	Resynchronized bool
 }
 
-// Error is a notebook domain error (architecture section 2). Recovery is
-// set only for CodeRecoveryFailure. Cause keeps the underlying failure for
-// diagnostics and errors.Is.
+// Error is a notebook domain error (architecture/product-contract.md).
+// Recovery is set only for CodeRecoveryFailure. Cause keeps the underlying
+// failure for diagnostics and errors.Is.
 type Error struct {
 	Code     Code
 	Reason   Reason

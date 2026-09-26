@@ -2,11 +2,12 @@ package notebook
 
 import "sync/atomic"
 
-// Metrics exposes the operational measurements of architecture sections 13
-// and 16: the active tail shape, checkpoint efforts, and cleanup results.
-// The notebook records every value; tests read them and a later MCP or
-// observability layer can sample them. Values are monotonic counters or
-// last-value gauges, safe for concurrent use.
+// Metrics exposes the operational measurements in
+// architecture/checkpoints.md and guarantees.md: the active tail shape,
+// checkpoint efforts, and cleanup results. The notebook records every
+// value; tests read them and a later MCP or observability layer can sample
+// them. Values are monotonic counters or last-value gauges, safe for
+// concurrent use.
 type Metrics struct {
 	// TailCount is the active increment count of the last observed
 	// authoritative manifest. Retained tails do not count.

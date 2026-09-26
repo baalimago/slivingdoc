@@ -55,7 +55,7 @@ $(BUILD_DIR)/libgit2/.build-stamp: scripts/build-libgit2.sh
 # Every Go source the binary is built from. Without these prerequisites the
 # only thing that rebuilds it is a libgit2 change, so the in-suite release
 # checks and the warmed cache can both be a stale artifact.
-GO_SOURCES := go.mod go.sum $(shell find . -path ./.build -prune -o -path ./.claude -prune -o -name '*.go' -print)
+GO_SOURCES := go.mod go.sum $(shell find . -path ./.build -prune -o -path ./.claude -prune -o -path ./.agents -prune -o -name '*.go' -print)
 
 $(BIN): $(BUILD_DIR)/libgit2/.build-stamp $(GO_SOURCES)
 	CGO_ENABLED=1 $(GO) build -trimpath -ldflags '$(LDFLAGS)' -o $@ .

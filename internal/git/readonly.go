@@ -10,9 +10,10 @@ import (
 )
 
 // EntrySet is a normalized, sorted set of notebook path entries, held by
-// one side of a PathPolicy (architecture section 2, Read-only paths). An
-// entry covers itself and every path below it, matched under the same case
-// folding as ValidateSnapshot. The zero value is the empty set.
+// one side of a PathPolicy (architecture/product-contract.md, Read-only and
+// writable paths). An entry covers itself and every path below it, matched
+// under the same case folding as ValidateSnapshot. The zero value is the
+// empty set.
 type EntrySet struct {
 	entries []string
 	folded  []string
@@ -51,7 +52,8 @@ func normalizeEntries(entries []string, kind entryKind) (EntrySet, error) {
 // validateEntries trims one trailing slash and validates each entry,
 // keeping every written entry. Coverage within the set is collapsed only by
 // collapseEntries, so a caller comparing two sets can still see an entry
-// the operator wrote in both (architecture section 2, Writable paths).
+// the operator wrote in both (architecture/product-contract.md, Read-only
+// and writable paths).
 func validateEntries(entries []string, kind entryKind) ([]entryItem, error) {
 	items := make([]entryItem, 0, len(entries))
 	for _, raw := range entries {
@@ -69,8 +71,9 @@ func validateEntries(entries []string, kind entryKind) ([]entryItem, error) {
 // own-set ancestor decides every path it decides: if an entry of the other
 // set lies strictly between the two, the ancestor loses the longest match
 // there and the covered entry is kept, so the collapse normalizes what is
-// advertised without deciding resolution (architecture section 2, Writable
-// paths). other is nil for a set normalized on its own.
+// advertised without deciding resolution (architecture/product-contract.md,
+// Read-only and writable paths). other is nil for a set normalized on its
+// own.
 func collapseEntries(items, other []entryItem) EntrySet {
 	var kept []entryItem
 	for _, it := range items {

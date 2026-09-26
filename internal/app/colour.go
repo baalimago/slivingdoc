@@ -10,7 +10,8 @@ import (
 // error token and deletions, yellow for conflict paths, cyan for the
 // success generation summary and the next-step label, dim for the reason
 // tokens and the read-only label. Colour is presentation-only; the report
-// keeps its plain form everywhere else (architecture section 2 CLI report).
+// keeps its plain form everywhere else (architecture/product-contract.md,
+// CLI report).
 const (
 	colourGreen  = "\x1b[32m"
 	colourRed    = "\x1b[31m"

@@ -1,7 +1,7 @@
 // Package serve is the slivingdoc server command: it resolves the
 // configuration, opens the pinned native engine, proves the S3
 // compatibility probe, and serves the two MCP tools over stdio
-// (architecture sections 2, 17, and 18).
+// (architecture/cli.md, product-contract.md, config.md, and security.md).
 package serve
 
 import (

@@ -18,7 +18,7 @@ import (
 // spawned process and real stdio pipes. On platforms that support the
 // filesystem attack fixtures it continues with that compatible path-security
 // chain before shutting down, so both contracts share one identical server
-// bootstrap (architecture sections 2 (L26) and 18.1 (L1117)).
+// bootstrap (architecture/product-contract.md and security.md).
 func TestScenarioTransportStdioProcess(t *testing.T) {
 	t.Parallel()
 	h := spawnHelper(t, "fake", nil, "serve")
@@ -57,7 +57,7 @@ func TestScenarioTransportStdioProcess(t *testing.T) {
 		t.Fatalf("stdio process exit = %d, want 0; stderr: %s", code, h.stderrText(t))
 	}
 	assertProtocolOnlyStdout(t, h.record.Bytes())
-	// Logs go to stderr only (architecture section 17, L1040): stdout was proven
+	// Logs go to stderr only (architecture/logging.md): stdout was proven
 	// protocol-only above, so the tool-call records must be on stderr. A
 	// non-empty stderr is also satisfied by an unrelated line, so
 	// assert the correlated records of the calls that were actually made.
@@ -135,7 +135,8 @@ func assertProcessArgsOK(t *testing.T, cs *sdk.ClientSession, tool, path string,
 	if got.Code != "OK" {
 		t.Fatalf("%s(%s) structured code = %q, want OK", tool, path, got.Code)
 	}
-	// A configured read-only set suffixes the text item (architecture section 2).
+	// A configured read-only set suffixes the text item
+	// (architecture/product-contract.md).
 	wantText := got.Path
 	if len(got.ReadOnly) > 0 {
 		wantText = fmt.Sprintf("%s (read-only: %s)", got.Path, strings.Join(got.ReadOnly, ", "))

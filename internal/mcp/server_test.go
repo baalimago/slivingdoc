@@ -747,9 +747,9 @@ func schemaMap(t *testing.T, schema any) map[string]any {
 var _ Service = (*fakeService)(nil)
 
 // The advertisement tests below cover the writable set on every surface an
-// agent reads (architecture section 2, Read-only paths). Each surface names
-// the actionable list: the writable entries when one is configured, the
-// read-only entries otherwise.
+// agent reads (architecture/product-contract.md, Read-only and writable
+// paths). Each surface names the actionable list: the writable entries when
+// one is configured, the read-only entries otherwise.
 const (
 	wantReadOnlyInstructions = " Read-only paths: docs, faq.md. notes_commit refuses any change under them, " +
 		"resets those files, and reports READ_ONLY_PATH; write elsewhere."

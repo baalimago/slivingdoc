@@ -463,7 +463,7 @@ func stripTags(b []byte) []byte {
 	return out
 }
 
-// Metadata header names (architecture section 9.1). The AWS SDK exposes
+// Metadata header names (architecture/storage.md). The AWS SDK exposes
 // user metadata without the x-amz-meta- prefix, in lowercase.
 const (
 	metaSHA256     = "slivingdoc-sha256"
