@@ -105,6 +105,8 @@ func DecodeManifest(data []byte) (Manifest, error) {
 // EncodeManifest validates m and encodes it as compact JSON in the
 // normative field order, with HTML escaping disabled and no trailing
 // newline. An invalid manifest is rejected before any bytes are produced.
+// A nil tail, active or retained, encodes as the empty array the decoder
+// requires; the caller's slices are never modified.
 func EncodeManifest(m Manifest) ([]byte, error) {
 	if m.Increments == nil {
 		m.Increments = []Increment{}
@@ -112,6 +114,7 @@ func EncodeManifest(m Manifest) ([]byte, error) {
 	if m.Retained == nil {
 		m.Retained = []Retained{}
 	}
+	m.Retained = withEmptyRetainedTails(m.Retained)
 	if err := validateManifest(&m); err != nil {
 		return nil, integrityErr(err)
 	}
@@ -122,6 +125,25 @@ func EncodeManifest(m Manifest) ([]byte, error) {
 		return nil, fmt.Errorf("storage: encode manifest: %w", err)
 	}
 	return bytes.TrimSuffix(buf.Bytes(), []byte("\n")), nil
+}
+
+// withEmptyRetainedTails returns retained with every nil increment tail
+// replaced by an empty one, copying the slice only when one is nil.
+func withEmptyRetainedTails(retained []Retained) []Retained {
+	var out []Retained
+	for i, r := range retained {
+		if r.Increments != nil {
+			continue
+		}
+		if out == nil {
+			out = append([]Retained(nil), retained...)
+		}
+		out[i].Increments = []Increment{}
+	}
+	if out == nil {
+		return retained
+	}
+	return out
 }
 
 // decodeManifest converts a validated value tree into a Manifest. Field

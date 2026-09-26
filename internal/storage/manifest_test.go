@@ -153,6 +153,33 @@ func TestManifestRoundTripEmptyTails(t *testing.T) {
 	}
 }
 
+// TestManifestRoundTripNilRetainedTail proves that a retained generation
+// whose chain is its checkpoint alone, built with a nil increment tail,
+// encodes as [] and decodes again, and that the caller's value is left
+// unchanged.
+func TestManifestRoundTripNilRetainedTail(t *testing.T) {
+	m := fixtureManifest()
+	m.Retained[0].Increments = nil
+	m.Retained[0].Head = m.Retained[0].Checkpoint.Head
+	data, err := EncodeManifest(m)
+	if err != nil {
+		t.Fatalf("EncodeManifest() = %v", err)
+	}
+	if bytes.Contains(data, []byte("null")) {
+		t.Fatalf("a nil retained tail must encode as [], got %s", data)
+	}
+	if m.Retained[0].Increments != nil {
+		t.Fatal("EncodeManifest modified the caller's retained tail")
+	}
+	back, err := DecodeManifest(data)
+	if err != nil {
+		t.Fatalf("DecodeManifest() = %v", err)
+	}
+	if len(back.Retained) != 1 || len(back.Retained[0].Increments) != 0 {
+		t.Fatalf("decoded retained = %+v, want one generation with an empty tail", back.Retained)
+	}
+}
+
 func manifestEqual(a, b Manifest) bool {
 	return reflect.DeepEqual(a, b)
 }
