@@ -2,15 +2,18 @@ package notebook
 
 import (
 	"errors"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/baalimago/slivingdoc/internal/git"
+	"github.com/baalimago/slivingdoc/internal/storage"
 	"github.com/baalimago/slivingdoc/internal/workspace"
 )
 
@@ -40,6 +43,11 @@ var allReasons = []struct {
 	{CodeStorageFailure, ReasonManifestWrite, ActionRetry},
 	{CodeStorageFailure, ReasonLocalState, ActionRetry},
 	{CodeStorageFailure, ReasonInternal, ActionRetry},
+	{CodeStorageFailure, ReasonStorageFull, ActionOperator},
+	{CodeStorageFailure, ReasonRequestLimit, ActionOperator},
+	{CodeStorageFailure, ReasonRateLimited, ActionRetry},
+	{CodeStorageFailure, ReasonAccessDenied, ActionOperator},
+	{CodeStorageFailure, ReasonObjectTooLarge, ActionOperator},
 	{CodeStorageIntegrity, ReasonManifestInvalid, ActionOperator},
 	{CodeStorageIntegrity, ReasonPackInvalid, ActionOperator},
 	{CodeStorageIntegrity, ReasonHistoryInvalid, ActionOperator},
@@ -282,5 +290,55 @@ func TestNoErrorLiteralsOutsideErrorsFile(t *testing.T) {
 			t.Errorf("%s:%s: &Error{...} literal outside errors.go", e.Name(), fset.Position(n.Pos()))
 			return true
 		})
+	}
+}
+
+// TestStorageFailureNamesStoreRefusals proves an account-level refusal of
+// the store replaces the operation's reason and message with one that names
+// the fix, keeps the cause for errors.Is, and leaves other causes alone.
+func TestStorageFailureNamesStoreRefusals(t *testing.T) {
+	tests := []struct {
+		cause   error
+		reason  Reason
+		action  Action
+		message string
+	}{
+		{storage.ErrQuotaExceeded, ReasonStorageFull, ActionOperator, "https://slivingdoc.dev"},
+		{storage.ErrRequestLimit, ReasonRequestLimit, ActionOperator, "first of the month"},
+		{storage.ErrRateLimited, ReasonRateLimited, ActionRetry, "wait, then retry"},
+		{storage.ErrAccessDenied, ReasonAccessDenied, ActionOperator, "SLIVINGDOC_TOKEN"},
+		{storage.ErrTooLarge, ReasonObjectTooLarge, ActionOperator, "larger than the storage accepts"},
+		{storage.ErrTransport, ReasonPackUpload, ActionRetry, "pack upload failed"},
+	}
+	for _, tt := range tests {
+		t.Run(string(tt.reason), func(t *testing.T) {
+			cause := fmt.Errorf("httpstore: put: %w", tt.cause)
+			var e *Error
+			if !errors.As(storageFailure(ReasonPackUpload, cause, "pack upload failed"), &e) {
+				t.Fatal("storageFailure did not build a notebook error")
+			}
+			if e.Code != CodeStorageFailure || e.Reason != tt.reason || e.Action != tt.action {
+				t.Fatalf("error = %s/%s/%s, want %s/%s/%s", e.Code, e.Reason, e.Action, CodeStorageFailure, tt.reason, tt.action)
+			}
+			if !strings.Contains(e.Message, tt.message) {
+				t.Fatalf("message = %q, want it to contain %q", e.Message, tt.message)
+			}
+			if !errors.Is(e, tt.cause) {
+				t.Fatal("the error does not wrap its cause")
+			}
+		})
+	}
+}
+
+// The store's own message is written for the person running the client, so
+// it follows the notebook's message as is.
+func TestStorageFailureShowsStoreMessage(t *testing.T) {
+	cause := &storage.Refusal{Err: storage.ErrRequestLimit, Detail: "HTTP 507", Message: "Upgrade at https://slivingdoc.dev/billing."}
+	var e *Error
+	if !errors.As(storageFailure(ReasonPackUpload, fmt.Errorf("put: %w", cause), "pack upload failed"), &e) {
+		t.Fatal("storageFailure did not build a notebook error")
+	}
+	if !strings.HasSuffix(e.Message, ". The storage says: Upgrade at https://slivingdoc.dev/billing.") {
+		t.Fatalf("message = %q, want the store's message at the end", e.Message)
 	}
 }

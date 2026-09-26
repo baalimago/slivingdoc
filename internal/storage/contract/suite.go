@@ -151,7 +151,8 @@ func Run(t *testing.T, factory Factory) {
 		if err := storage.VerifyObject(context.Background(), s, key.String(), meta.Meta.SHA256, meta.Meta.Size+1); !errors.Is(err, storage.ErrIntegrity) {
 			t.Fatalf("verify wrong size error = %v, want ErrIntegrity", err)
 		}
-		if err := storage.VerifyObject(context.Background(), s, "packs/increments/9-missing.pack", meta.Meta.SHA256, meta.Meta.Size); !errors.Is(err, storage.ErrNotFound) {
+		missing := incKey(9, mustUUID(t, "01973e12-8b34-7b01-9e2f-000000000009"))
+		if err := storage.VerifyObject(context.Background(), s, missing.String(), meta.Meta.SHA256, meta.Meta.Size); !errors.Is(err, storage.ErrNotFound) {
 			t.Fatalf("verify missing error = %v, want ErrNotFound", err)
 		}
 	})
@@ -198,19 +199,40 @@ func Run(t *testing.T, factory Factory) {
 		if err := s.PutObject(context.Background(), key.String(), bytes.NewReader(data), metadataFor(t, data, key.Kind, key.Generation).Meta); err != nil {
 			t.Fatalf("put: %v", err)
 		}
-		if err := s.DeleteObjects(context.Background(), []string{key.String(), "packs/increments/9-missing.pack"}); err != nil {
+		missing := incKey(9, mustUUID(t, "01973e12-8b34-7b01-9e2f-000000000009"))
+		if err := s.DeleteObjects(context.Background(), []string{key.String(), missing.String()}); err != nil {
 			t.Fatalf("delete: %v", err)
 		}
 		assertList(t, s, "packs/", nil)
 	})
 
 	t.Run("probe passes and cleans its key", func(t *testing.T) {
-		s := factory(t)
+		s := &createRecorder{ObjectStore: factory(t)}
 		if err := storage.Probe(context.Background(), s); err != nil {
 			t.Fatalf("probe: %v", err)
 		}
-		assertList(t, s, "probe/", nil)
+		if len(s.created) == 0 {
+			t.Fatal("probe created no object")
+		}
+		for _, key := range s.created {
+			if _, _, err := s.ReadObject(context.Background(), key); !errors.Is(err, storage.ErrNotFound) {
+				t.Fatalf("read probe key after probe = %v, want ErrNotFound", err)
+			}
+		}
 	})
+}
+
+// createRecorder records the keys of conditional creates, so the probe
+// cleanup is observable without listing outside packs/, which a hosted
+// store refuses.
+type createRecorder struct {
+	storage.ObjectStore
+	created []string
+}
+
+func (r *createRecorder) CreateObject(ctx context.Context, key string, data []byte) (storage.ETag, error) {
+	r.created = append(r.created, key)
+	return r.ObjectStore.CreateObject(ctx, key, data)
 }
 
 // uploadMeta carries the metadata and the key ID for one fixture pack.

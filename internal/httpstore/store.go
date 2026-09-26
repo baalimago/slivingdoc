@@ -1,0 +1,608 @@
+// Package httpstore implements the semantic object-store boundary over the
+// hosted slivingdoc storage API, version 1: the six ObjectStore operations
+// over HTTPS with a bearer token, addressed to one named space. The package
+// maps HTTP statuses to the storage semantic errors, owns the notebook
+// prefix join, and streams every object upload and download. Nothing in it
+// is specific to one hosting provider.
+package httpstore
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/url"
+	"regexp"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/baalimago/slivingdoc/internal/storage"
+)
+
+// API identifies the protocol this client speaks; GET /v1 must report it.
+const (
+	API     = "slivingdoc-storage"
+	Version = 1
+)
+
+// deleteBatch is the most keys the API accepts in one delete request.
+const deleteBatch = 1000
+
+// errorBodyLimit bounds how much of an error response is read.
+const errorBodyLimit = 4 << 10
+
+var spaceRE = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
+
+// ErrInvalidSpace reports a space name outside the API grammar.
+var ErrInvalidSpace = errors.New("httpstore: invalid space name")
+
+// ErrInvalidToken reports a token that cannot travel in an HTTP header.
+var ErrInvalidToken = errors.New("httpstore: invalid token")
+
+// ValidateSpace reports whether name is a valid space name: lowercase
+// letters, digits, and inner hyphens, 1 to 63 characters.
+func ValidateSpace(name string) error {
+	if !spaceRE.MatchString(name) {
+		return fmt.Errorf("%w: %q must be 1 to 63 lowercase letters, digits, or inner hyphens", ErrInvalidSpace, name)
+	}
+	return nil
+}
+
+// ValidateToken reports whether token is non-empty printable ASCII without
+// white space. The server owns the token grammar; the client only refuses
+// what could not be sent.
+func ValidateToken(token string) error {
+	if token == "" {
+		return fmt.Errorf("%w: empty", ErrInvalidToken)
+	}
+	for i := 0; i < len(token); i++ {
+		if token[i] <= ' ' || token[i] > '~' {
+			return fmt.Errorf("%w: contains white space or a non-printable character", ErrInvalidToken)
+		}
+	}
+	return nil
+}
+
+// Doer sends one HTTP request. *http.Client satisfies it.
+type Doer interface {
+	Do(*http.Request) (*http.Response, error)
+}
+
+// Config binds a store to one space of one server.
+type Config struct {
+	// Endpoint is the normalized server base URL without /v1, for example
+	// https://api.slivingdoc.dev.
+	Endpoint string
+	// Space is the space name, the CLI's --bucket.
+	Space string
+	// Prefix is the notebook prefix inside the space; validated.
+	Prefix string
+	// Token is the API bearer token. It is sent only in the Authorization
+	// header and never appears in an error.
+	Token string
+	// UserAgent is sent with every request; empty sends none of our own.
+	UserAgent string
+	// Client sends the requests; nil uses a default client.
+	Client Doer
+	// Retries bounds extra attempts of an idempotent request after a
+	// transport failure or a 5xx answer. Zero means the default; a negative
+	// value turns retries off.
+	Retries int
+	// Backoff returns the wait before retry attempt n (1-based); nil uses
+	// the default.
+	Backoff func(n int) time.Duration
+}
+
+const defaultRetries = 2
+
+func defaultBackoff(n int) time.Duration { return time.Duration(n) * 200 * time.Millisecond }
+
+// Store is an ObjectStore bound to one space and one notebook prefix. All
+// methods are safe for concurrent use.
+type Store struct {
+	client    Doer
+	root      string // <endpoint>/v1
+	space     string // <endpoint>/v1/spaces/<space>
+	name      string
+	prefix    string
+	token     string
+	userAgent string
+	retries   int
+	backoff   func(int) time.Duration
+}
+
+var _ storage.ObjectStore = (*Store)(nil)
+
+// New validates the configuration and returns a store. It makes no request;
+// CheckAccess proves the server and the token before first use.
+func New(cfg Config) (*Store, error) {
+	if err := ValidateEndpoint(cfg.Endpoint); err != nil {
+		return nil, err
+	}
+	if err := ValidateSpace(cfg.Space); err != nil {
+		return nil, err
+	}
+	if err := storage.ValidatePrefix(cfg.Prefix); err != nil {
+		return nil, err
+	}
+	if err := ValidateToken(cfg.Token); err != nil {
+		return nil, err
+	}
+	client := cfg.Client
+	if client == nil {
+		// Never follow a redirect: Go would turn a PUT into a body-less
+		// GET whose 2xx looks like a stored write, and would forward the
+		// token. A 3xx answer is a refusal instead.
+		client = &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		}}
+	}
+	retries := cfg.Retries
+	if retries == 0 {
+		retries = defaultRetries
+	}
+	backoff := cfg.Backoff
+	if backoff == nil {
+		backoff = defaultBackoff
+	}
+	root := strings.TrimSuffix(cfg.Endpoint, "/") + "/v1"
+	return &Store{
+		client:    client,
+		root:      root,
+		space:     root + "/spaces/" + cfg.Space,
+		name:      cfg.Space,
+		prefix:    cfg.Prefix,
+		token:     cfg.Token,
+		userAgent: cfg.UserAgent,
+		retries:   retries,
+		backoff:   backoff,
+	}, nil
+}
+
+// ValidateEndpoint accepts an absolute https URL, or http to this machine
+// only, so the token is never sent in clear text over a network.
+func ValidateEndpoint(endpoint string) error {
+	u, err := url.Parse(endpoint)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return errors.New("httpstore: endpoint must be an absolute http or https URL")
+	}
+	if u.Scheme != "https" && !IsLoopback(u.Hostname()) {
+		return errors.New("httpstore: the endpoint must use https so the token is never sent in clear text")
+	}
+	return nil
+}
+
+// IsLoopback reports whether host names this machine.
+func IsLoopback(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// serverInfo is the GET /v1 description.
+type serverInfo struct {
+	API               string `json:"api"`
+	Version           int    `json:"version"`
+	ConditionalWrites bool   `json:"conditionalWrites"`
+}
+
+// CheckAccess proves the server speaks this API version with the
+// conditional-write semantics the protocol needs, and that the token
+// reaches the space. It replaces the write probe for hosted stores: the
+// server promises the semantics, and a read-only token could not run the
+// probe. ErrIncompatible reports a server this client does not understand;
+// ErrAccessDenied reports a token that does not reach the space.
+func (s *Store) CheckAccess(ctx context.Context) error {
+	resp, err := s.do(ctx, func() (*http.Request, error) {
+		return s.request(ctx, http.MethodGet, s.root, nil, false)
+	})
+	if err != nil {
+		return fmt.Errorf("httpstore: describe server: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		defer drain(resp)
+		err := s.statusError(resp)
+		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
+			// The server is busy or down, not a different kind of server.
+			return fmt.Errorf("httpstore: describe server: %w", err)
+		}
+		return fmt.Errorf("httpstore: describe server: %w: %w", err, storage.ErrIncompatible)
+	}
+	var info serverInfo
+	err = decodeJSON(resp, &info)
+	if err != nil {
+		return fmt.Errorf("httpstore: describe server: %w: %w", err, storage.ErrIncompatible)
+	}
+	if info.API != API || info.Version != Version {
+		return fmt.Errorf("httpstore: server speaks %q version %d, want %q version %d: %w",
+			info.API, info.Version, API, Version, storage.ErrIncompatible)
+	}
+	if !info.ConditionalWrites {
+		return fmt.Errorf("httpstore: server does not promise conditional writes: %w", storage.ErrIncompatible)
+	}
+	resp, err = s.do(ctx, func() (*http.Request, error) {
+		return s.request(ctx, http.MethodGet, s.space+"/usage", nil, true)
+	})
+	if err != nil {
+		return fmt.Errorf("httpstore: check space %q: %w", s.name, err)
+	}
+	defer drain(resp)
+	switch resp.StatusCode {
+	case http.StatusOK:
+		return nil
+	case http.StatusNotFound:
+		return fmt.Errorf("httpstore: space %q does not exist or the token was not granted it: %w", s.name, storage.ErrAccessDenied)
+	default:
+		return fmt.Errorf("httpstore: check space %q: %w", s.name, s.statusError(resp))
+	}
+}
+
+func (s *Store) ReadObject(ctx context.Context, key string) (io.ReadCloser, storage.ObjectInfo, error) {
+	resp, err := s.do(ctx, func() (*http.Request, error) {
+		return s.request(ctx, http.MethodGet, s.objectURL(key), nil, true)
+	})
+	if err != nil {
+		return nil, storage.ObjectInfo{}, fmt.Errorf("httpstore: get %s: %w", key, err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		defer drain(resp)
+		return nil, storage.ObjectInfo{}, fmt.Errorf("httpstore: get %s: %w", key, s.statusError(resp))
+	}
+	fields := map[string]string{}
+	for _, name := range []string{storage.MetaSHA256, storage.MetaSize, storage.MetaKind, storage.MetaGeneration} {
+		if v := resp.Header.Get(name); v != "" {
+			fields[name] = v
+		}
+	}
+	meta, err := storage.ParseMetadata(fields)
+	if err != nil {
+		drain(resp)
+		return nil, storage.ObjectInfo{}, fmt.Errorf("httpstore: get %s: %w: %w", key, storage.ErrIntegrity, err)
+	}
+	return resp.Body, storage.ObjectInfo{
+		Size: resp.ContentLength,
+		ETag: storage.ETag(resp.Header.Get("ETag")),
+		Meta: meta,
+	}, nil
+}
+
+func (s *Store) PutObject(ctx context.Context, key string, r io.Reader, meta storage.Metadata) error {
+	req, err := s.request(ctx, http.MethodPut, s.objectURL(key), io.NopCloser(r), true)
+	if err != nil {
+		return fmt.Errorf("httpstore: put %s: %w", key, err)
+	}
+	req.ContentLength = int64(meta.Size)
+	if meta.Size == 0 {
+		req.Body = http.NoBody
+	}
+	req.Header.Set("Content-Type", "application/octet-stream")
+	for name, v := range meta.Fields() {
+		req.Header.Set(name, v)
+	}
+	resp, err := s.send(req)
+	if err != nil {
+		return fmt.Errorf("httpstore: put %s: %w", key, err)
+	}
+	defer drain(resp)
+	if !success(resp.StatusCode) {
+		return fmt.Errorf("httpstore: put %s: %w", key, s.writeError(resp))
+	}
+	return nil
+}
+
+func (s *Store) CreateObject(ctx context.Context, key string, data []byte) (storage.ETag, error) {
+	etag, err := s.putSmall(ctx, key, data, "If-None-Match", "*")
+	if err != nil {
+		return "", fmt.Errorf("httpstore: create %s: %w", key, err)
+	}
+	return etag, nil
+}
+
+func (s *Store) ReplaceObject(ctx context.Context, key string, etag storage.ETag, data []byte) (storage.ETag, error) {
+	// The API answers If-Match on an absent object with 412, so a 404
+	// here means the space is gone or the grant was revoked.
+	next, err := s.putSmall(ctx, key, data, "If-Match", string(etag))
+	if err != nil {
+		return "", fmt.Errorf("httpstore: replace %s: %w", key, err)
+	}
+	return next, nil
+}
+
+func (s *Store) putSmall(ctx context.Context, key string, data []byte, condition, value string) (storage.ETag, error) {
+	req, err := s.request(ctx, http.MethodPut, s.objectURL(key), bytes.NewReader(data), true)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/octet-stream")
+	req.Header.Set(condition, value)
+	resp, err := s.send(req)
+	if err != nil {
+		return "", err
+	}
+	defer drain(resp)
+	if !success(resp.StatusCode) {
+		return "", s.writeError(resp)
+	}
+	etag := resp.Header.Get("ETag")
+	if etag == "" {
+		return "", fmt.Errorf("server returned no etag: %w", storage.ErrTransport)
+	}
+	return storage.ETag(etag), nil
+}
+
+// listPage is one GET objects answer.
+type listPage struct {
+	Keys   []string `json:"keys"`
+	Cursor *string  `json:"cursor"`
+}
+
+func (s *Store) ListObjects(ctx context.Context, prefix string, fn func(key string) error) error {
+	full := storage.JoinKey(s.prefix, prefix)
+	strip := storage.JoinKey(s.prefix, "")
+	cursor := ""
+	seen := map[string]bool{}
+	for {
+		q := url.Values{"prefix": {full}}
+		if cursor != "" {
+			q.Set("cursor", cursor)
+		}
+		resp, err := s.do(ctx, func() (*http.Request, error) {
+			return s.request(ctx, http.MethodGet, s.space+"/objects?"+q.Encode(), nil, true)
+		})
+		if err != nil {
+			return fmt.Errorf("httpstore: list %s: %w", prefix, err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			err := s.writeError(resp)
+			drain(resp)
+			return fmt.Errorf("httpstore: list %s: %w", prefix, err)
+		}
+		var page listPage
+		if err := decodeJSON(resp, &page); err != nil {
+			return fmt.Errorf("httpstore: list %s: %w: %w", prefix, err, storage.ErrTransport)
+		}
+		for _, key := range page.Keys {
+			if !strings.HasPrefix(key, full) {
+				return fmt.Errorf("httpstore: list %s: server returned a key outside the prefix: %w", prefix, storage.ErrIntegrity)
+			}
+			if err := fn(strings.TrimPrefix(key, strip)); err != nil {
+				return err
+			}
+		}
+		if page.Cursor == nil || *page.Cursor == "" {
+			return nil
+		}
+		if seen[*page.Cursor] {
+			return fmt.Errorf("httpstore: list %s: server repeated a cursor: %w", prefix, storage.ErrTransport)
+		}
+		seen[*page.Cursor] = true
+		cursor = *page.Cursor
+	}
+}
+
+func (s *Store) DeleteObjects(ctx context.Context, keys []string) error {
+	for start := 0; start < len(keys); start += deleteBatch {
+		end := min(start+deleteBatch, len(keys))
+		full := make([]string, 0, end-start)
+		for _, key := range keys[start:end] {
+			full = append(full, storage.JoinKey(s.prefix, key))
+		}
+		body, err := json.Marshal(struct {
+			Keys []string `json:"keys"`
+		}{full})
+		if err != nil {
+			return fmt.Errorf("httpstore: delete: %w", err)
+		}
+		resp, err := s.do(ctx, func() (*http.Request, error) {
+			req, err := s.request(ctx, http.MethodPost, s.space+"/delete", bytes.NewReader(body), true)
+			if err == nil {
+				req.Header.Set("Content-Type", "application/json")
+			}
+			return req, err
+		})
+		if err != nil {
+			return fmt.Errorf("httpstore: delete: %w", err)
+		}
+		status := resp.StatusCode
+		var werr error
+		if !success(status) {
+			werr = s.writeError(resp)
+		}
+		drain(resp)
+		if werr != nil {
+			return fmt.Errorf("httpstore: delete: %w", werr)
+		}
+	}
+	return nil
+}
+
+// objectURL addresses one object: the joined key, each segment escaped.
+func (s *Store) objectURL(key string) string {
+	segments := strings.Split(storage.JoinKey(s.prefix, key), "/")
+	for i, seg := range segments {
+		if seg == "." || seg == ".." {
+			// Keys never hold dot segments; escape them so no proxy or
+			// server resolves one out of the space.
+			seg = strings.ReplaceAll(seg, ".", "%2E")
+			segments[i] = seg
+			continue
+		}
+		segments[i] = url.PathEscape(seg)
+	}
+	return s.space + "/objects/" + strings.Join(segments, "/")
+}
+
+func (s *Store) request(ctx context.Context, method, target string, body io.Reader, auth bool) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, method, target, body)
+	if err != nil {
+		return nil, fmt.Errorf("build request: %w", err)
+	}
+	if auth {
+		req.Header.Set("Authorization", "Bearer "+s.token)
+	}
+	// Ask for the stored bytes: a transparently decompressed body would
+	// lose its length and differ from the pack descriptor.
+	req.Header.Set("Accept-Encoding", "identity")
+	if s.userAgent != "" {
+		req.Header.Set("User-Agent", s.userAgent)
+	}
+	return req, nil
+}
+
+// send performs one request. A failure before any response is ambiguous
+// for a write: the request may have landed.
+func (s *Store) send(req *http.Request) (*http.Response, error) {
+	resp, err := s.client.Do(req)
+	if err != nil {
+		if ctxErr := req.Context().Err(); ctxErr != nil {
+			return nil, fmt.Errorf("%w: %w", ctxErr, storage.ErrTransport)
+		}
+		return nil, fmt.Errorf("%s: %w", oneLine(err), storage.ErrTransport)
+	}
+	return resp, nil
+}
+
+// do sends an idempotent request, retrying a transport failure or a 5xx
+// answer within the retry bound. The last answer or error is returned.
+func (s *Store) do(ctx context.Context, build func() (*http.Request, error)) (*http.Response, error) {
+	attempts := 1 + s.retries
+	var lastErr error
+	for n := 1; ; n++ {
+		req, err := build()
+		if err != nil {
+			return nil, err
+		}
+		resp, err := s.send(req)
+		retry := n < attempts && ctx.Err() == nil
+		switch {
+		case err != nil && retry:
+			lastErr = err
+		case err != nil:
+			return nil, err
+		case resp.StatusCode >= 500 && resp.StatusCode != http.StatusInsufficientStorage && retry:
+			drain(resp)
+			lastErr = nil
+		default:
+			return resp, nil
+		}
+		timer := time.NewTimer(s.backoff(n))
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			if lastErr != nil {
+				return nil, lastErr
+			}
+			return nil, fmt.Errorf("%w: %w", ctx.Err(), storage.ErrTransport)
+		case <-timer.C:
+		}
+	}
+}
+
+// apiError is the JSON error body of every refusal.
+type apiError struct {
+	Code    string `json:"error"`
+	Reason  string `json:"reason"`
+	Message string `json:"message"`
+}
+
+// statusError maps a refusal to a storage semantic error. The status and
+// the reason decide the category; the server's code and reason are kept as
+// diagnostic text, and its message, which is written for the person running
+// the client, travels as storage.Refusal.Message.
+func (s *Store) statusError(resp *http.Response) error {
+	var body apiError
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, errorBodyLimit))
+	_ = json.Unmarshal(raw, &body)
+	code := strings.ToLower(sanitize(body.Code, 64))
+	reason := strings.ToLower(sanitize(body.Reason, 64))
+	detail := "HTTP " + strconv.Itoa(resp.StatusCode)
+	if code != "" {
+		detail += " " + code
+	}
+	if reason != "" {
+		detail += " (" + reason + ")"
+	}
+	refusal := &storage.Refusal{Detail: detail, Message: sanitize(body.Message, 300)}
+	switch {
+	case (resp.StatusCode == http.StatusInsufficientStorage || code == "quota_exceeded") && reason == "request_limit":
+		refusal.Err = storage.ErrRequestLimit
+	case resp.StatusCode == http.StatusInsufficientStorage || code == "quota_exceeded":
+		refusal.Err = storage.ErrQuotaExceeded
+	case resp.StatusCode == http.StatusTooManyRequests || code == "rate_limited":
+		refusal.Err = storage.ErrRateLimited
+	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
+		refusal.Err = storage.ErrAccessDenied
+	case resp.StatusCode == http.StatusNotFound:
+		refusal.Err = storage.ErrNotFound
+	case resp.StatusCode == http.StatusPreconditionFailed:
+		refusal.Err = storage.ErrPreconditionFailed
+	case resp.StatusCode == http.StatusRequestEntityTooLarge:
+		refusal.Err = storage.ErrTooLarge
+	case resp.StatusCode >= 500:
+		refusal.Err = storage.ErrTransport
+	default:
+		return fmt.Errorf("server refused the request: %s", appendMessage(detail, refusal.Message))
+	}
+	return refusal
+}
+
+func appendMessage(detail, msg string) string {
+	if msg == "" {
+		return detail
+	}
+	return detail + ": " + msg
+}
+
+// writeError maps a refusal of a request addressed to the space. A 404
+// there means the space is unknown to this token, never an absent object.
+func (s *Store) writeError(resp *http.Response) error {
+	err := s.statusError(resp)
+	if errors.Is(err, storage.ErrNotFound) {
+		return fmt.Errorf("space %q does not exist or the token was not granted it: %w", s.name, storage.ErrAccessDenied)
+	}
+	return err
+}
+
+func success(status int) bool { return status >= 200 && status < 300 }
+
+func decodeJSON(resp *http.Response, v any) error {
+	defer drain(resp)
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 16<<20)).Decode(v); err != nil {
+		return fmt.Errorf("decode response: %w", err)
+	}
+	return nil
+}
+
+// drain discards a bounded remainder and closes the body, so the
+// connection can be reused.
+func drain(resp *http.Response) {
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, errorBodyLimit))
+	_ = resp.Body.Close()
+}
+
+// sanitize keeps printable ASCII, collapses white space, and bounds the
+// length, so server text stays one safe diagnostic line.
+func sanitize(s string, limit int) string {
+	var b strings.Builder
+	for _, r := range s {
+		if r >= ' ' && r <= '~' {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte(' ')
+		}
+	}
+	out := strings.Join(strings.Fields(b.String()), " ")
+	if len(out) > limit {
+		out = out[:limit] + "..."
+	}
+	return out
+}
+
+func oneLine(err error) string { return strings.Join(strings.Fields(err.Error()), " ") }

@@ -125,7 +125,7 @@ func mapNotebookError(e *notebook.Error) *ToolError {
 		Code:      string(e.Code),
 		Reason:    string(e.Reason),
 		Action:    string(e.Action),
-		Retryable: retryable(e.Code),
+		Retryable: retryable(e.Code, e.Reason),
 		Message:   Redact(e.Message),
 		Files:     files,
 		ReadOnly:  []string{},
@@ -175,10 +175,20 @@ func redactValues(s string) string {
 	return strings.TrimSpace(absolutePathRE.ReplaceAllString(Redact(s), "${1}"+redacted))
 }
 
-// retryable reports whether a notebook error category permits a retry.
-func retryable(code notebook.Code) bool {
+// retryable reports whether a notebook error permits a retry. Storage
+// failures do, except the store's refusals that repeating cannot change:
+// a full space, a used-up request allowance, denied credentials, and an
+// oversized object.
+func retryable(code notebook.Code, reason notebook.Reason) bool {
 	switch code {
-	case notebook.CodeRemoteBusy, notebook.CodeStorageFailure, notebook.CodeRecoveryFailure:
+	case notebook.CodeStorageFailure:
+		switch reason {
+		case notebook.ReasonStorageFull, notebook.ReasonRequestLimit, notebook.ReasonAccessDenied, notebook.ReasonObjectTooLarge:
+			return false
+		default:
+			return true
+		}
+	case notebook.CodeRemoteBusy, notebook.CodeRecoveryFailure:
 		return true
 	default:
 		return false
@@ -227,13 +237,15 @@ func invalidRequest(cause error) *ToolError {
 // notebook messages never contain credentials, but pack keys (for example
 // "packs/checkpoints/1-<uuid>.pack"), the probe key ("probe/<uuid>"), Git
 // object IDs (40 hex), the derived private-directory key (64 hex), and AWS
-// access key IDs (AKIA + 16) are scrubbed as defense in depth.
+// access key IDs (AKIA + 16), and hosted API tokens (sld_...) are scrubbed
+// as defense in depth.
 var (
 	packKeyRE      = regexp.MustCompile(`packs/(?:checkpoints|increments)/\d+-[0-9a-fA-F-]{36}\.pack`)
 	probeKeyRE     = regexp.MustCompile(`probe/[0-9a-fA-F-]{36}`)
 	gitIDRE        = regexp.MustCompile(`\b[0-9a-fA-F]{40}\b`)
 	derivedKeyRE   = regexp.MustCompile(`\b[0-9a-fA-F]{64}\b`)
 	accessKeyRE    = regexp.MustCompile(`\bAKIA[0-9A-Z]{16}\b`)
+	apiTokenRE     = regexp.MustCompile(`\bsld_[0-9A-Za-z_-]+`)
 	userInfoRE     = regexp.MustCompile(`://[^@/\s]+@`)
 	absolutePathRE = regexp.MustCompile(`(^|[\s"'(=])((?:[A-Za-z]:\\|/)[^\s:;,()"']*)`)
 )
@@ -244,6 +256,9 @@ const redacted = "[redacted]"
 // diagnostic text. The output keeps its structure but never leaks a
 // protected value.
 func Redact(s string) string {
+	// Tokens first: an earlier pattern matching inside a token would cut
+	// the token match short and leave its tail.
+	s = apiTokenRE.ReplaceAllString(s, redacted)
 	s = packKeyRE.ReplaceAllString(s, redacted)
 	s = probeKeyRE.ReplaceAllString(s, redacted)
 	s = gitIDRE.ReplaceAllString(s, redacted)

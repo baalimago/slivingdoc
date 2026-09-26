@@ -45,6 +45,26 @@ func TestMapErrorEveryCategory(t *testing.T) {
 			name: "storage integrity", wantCode: "STORAGE_INTEGRITY", wantReason: "PACK_INVALID", wantAction: "OPERATOR", wantRetry: false,
 			err: &notebook.Error{Code: notebook.CodeStorageIntegrity, Reason: notebook.ReasonPackInvalid, Action: notebook.ActionOperator, Message: "corrupt pack"},
 		},
+		{
+			name: "storage full", wantCode: codeStorageFailure, wantReason: "STORAGE_FULL", wantAction: "OPERATOR", wantRetry: false,
+			err: &notebook.Error{Code: notebook.CodeStorageFailure, Reason: notebook.ReasonStorageFull, Action: notebook.ActionOperator, Message: "the storage space is full"},
+		},
+		{
+			name: "access denied", wantCode: codeStorageFailure, wantReason: "ACCESS_DENIED", wantAction: "OPERATOR", wantRetry: false,
+			err: &notebook.Error{Code: notebook.CodeStorageFailure, Reason: notebook.ReasonAccessDenied, Action: notebook.ActionOperator, Message: "the storage refused the credentials"},
+		},
+		{
+			name: "object too large", wantCode: codeStorageFailure, wantReason: "OBJECT_TOO_LARGE", wantAction: "OPERATOR", wantRetry: false,
+			err: &notebook.Error{Code: notebook.CodeStorageFailure, Reason: notebook.ReasonObjectTooLarge, Action: notebook.ActionOperator, Message: "too large"},
+		},
+		{
+			name: "request limit", wantCode: codeStorageFailure, wantReason: "REQUEST_LIMIT", wantAction: "OPERATOR", wantRetry: false,
+			err: &notebook.Error{Code: notebook.CodeStorageFailure, Reason: notebook.ReasonRequestLimit, Action: notebook.ActionOperator, Message: "request allowance"},
+		},
+		{
+			name: "rate limited", wantCode: codeStorageFailure, wantReason: "RATE_LIMITED", wantAction: "RETRY", wantRetry: true,
+			err: &notebook.Error{Code: notebook.CodeStorageFailure, Reason: notebook.ReasonRateLimited, Action: notebook.ActionRetry, Message: "slowing down"},
+		},
 		{name: "recovery failure", err: recoveryError(), wantCode: "RECOVERY_FAILURE", wantReason: "LOCAL_MUTATION_FAILED", wantAction: "PULL", wantRetry: true, wantReco: true},
 	}
 	for _, tt := range tests {
@@ -330,11 +350,13 @@ func TestRedact(t *testing.T) {
 		"probe/" + probeUUID + " did not create; " +
 		"head " + gitID + " unreadable; " +
 		"private /home/user/.cache/slivingdoc/" + derivedKey + " + " +
-		"key AKIAIOSFODNN7EXAMPLE and endpoint http://user:secret@s3.example.com"
+		"key AKIAIOSFODNN7EXAMPLE and endpoint http://user:secret@s3.example.com " +
+		"token sld_0123456789abcdef_c2VjcmV0LXRva2Vu-_x " +
+		"and sld_0123456789abcdef_ab-AKIAIOSFODNN7EXAMPLE-tailsecret"
 	got := Redact(input)
 	for _, leaked := range []string{
 		"packs/increments", packUUID, "probe/" + probeUUID,
-		gitID, derivedKey, "AKIAIOSFODNN7EXAMPLE", "user:secret",
+		gitID, derivedKey, "AKIAIOSFODNN7EXAMPLE", "user:secret", "sld_", "c2VjcmV0LXRva2Vu", "tailsecret",
 	} {
 		if strings.Contains(got, leaked) {
 			t.Fatalf("Redact() leaked %q in %q", leaked, got)

@@ -20,6 +20,7 @@ import (
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/baalimago/slivingdoc/internal/git"
+	"github.com/baalimago/slivingdoc/internal/httpstore"
 	"github.com/baalimago/slivingdoc/internal/mcp"
 	"github.com/baalimago/slivingdoc/internal/notebook"
 	"github.com/baalimago/slivingdoc/internal/s3store"
@@ -198,6 +199,7 @@ type Runtime struct {
 func (r *Runtime) Serve(ctx context.Context) error {
 	r.logger.Info("serving",
 		"bucket", r.cfg.bucket,
+		"hosted", r.cfg.hosted(),
 		"notebookRoot", r.cfg.workspaceRoot,
 		"ephemeral", r.cfg.sessionDir != "")
 	srv := mcp.NewServer(r.svc, Version, Module(r.base, ModuleMCP))
@@ -310,12 +312,42 @@ func buildService(p process, cfg config) (*Service, error) {
 	}
 	probeCtx, cancel := context.WithTimeout(context.Background(), probeTimeout)
 	defer cancel()
-	if err := storage.Probe(probeCtx, store); err != nil {
-		// The probe names its disposable protocol key; the startup
-		// diagnostic never echoes it.
-		return nil, fmt.Errorf("app: INCOMPATIBLE_STORE: S3 compatibility probe failed: %s", mcp.Redact(err.Error()))
+	if err := checkStore(probeCtx, store); err != nil {
+		return nil, err
 	}
 	return NewService(p.engine, store, cfg.serviceConfig(), p.hooks)
+}
+
+// accessChecker is a store that proves itself without the write probe: a
+// hosted store whose server promises the conditional-write semantics and
+// whose token may be read-only.
+type accessChecker interface {
+	CheckAccess(ctx context.Context) error
+}
+
+// checkStore proves the store before any request is served: the hosted
+// access check when the store offers one, else the S3 compatibility probe.
+func checkStore(ctx context.Context, store storage.ObjectStore) error {
+	checker, ok := store.(accessChecker)
+	if !ok {
+		if err := storage.Probe(ctx, store); err != nil {
+			// The probe names its disposable protocol key; the startup
+			// diagnostic never echoes it.
+			return fmt.Errorf("app: INCOMPATIBLE_STORE: S3 compatibility probe failed: %s", mcp.Redact(err.Error()))
+		}
+		return nil
+	}
+	err := checker.CheckAccess(ctx)
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, storage.ErrAccessDenied):
+		return fmt.Errorf("app: hosted storage refused the token: %s; check SLIVINGDOC_TOKEN and --bucket", mcp.Redact(err.Error()))
+	case errors.Is(err, storage.ErrIncompatible):
+		return fmt.Errorf("app: INCOMPATIBLE_STORE: hosted storage check failed: %s", mcp.Redact(err.Error()))
+	default:
+		return fmt.Errorf("app: hosted storage check failed: %s", mcp.Redact(err.Error()))
+	}
 }
 
 // serve runs the MCP server until the transport ends, the caller's context
@@ -406,10 +438,24 @@ func (t *closeTransport) Close() error {
 }
 
 // realStoreFactory builds the object store from the resolved
-// configuration: region and base endpoint from the configuration,
+// configuration. A token selects the hosted storage API; otherwise it
+// builds the S3 adapter: region and base endpoint from the configuration,
 // path-style addressing per --path-style, and the bucket and prefix join
 // owned by the adapter. The AWS SDK stays inside internal/s3store.
 func realStoreFactory(ctx context.Context, cfg config) (storage.ObjectStore, error) {
+	if cfg.hosted() {
+		store, err := httpstore.New(httpstore.Config{
+			Endpoint:  cfg.endpoint,
+			Space:     cfg.bucket,
+			Prefix:    cfg.prefix,
+			Token:     cfg.token,
+			UserAgent: "slivingdoc/" + Version,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("app: create hosted store: %s", mcp.Redact(err.Error()))
+		}
+		return store, nil
+	}
 	store, err := s3store.New(ctx, s3store.Config{
 		Bucket:   cfg.bucket,
 		Prefix:   cfg.prefix,
