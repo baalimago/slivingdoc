@@ -1,6 +1,8 @@
 package integrationtest
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -65,14 +67,14 @@ func TestScenarioHostedRoundTrip(t *testing.T) {
 // TestScenarioHostedStorageFull proves the over-quota contract: a commit
 // that would take the space past its quota fails with STORAGE_FULL, says
 // how to fix it, is not retryable, keeps the visible edit, and publishes
-// nothing; pulls keep working; a used-up request allowance is
-// REQUEST_LIMIT; and the same commit succeeds once the space has room again.
+// nothing; pulls keep working; deleting notes makes room; a used-up request
+// allowance is REQUEST_LIMIT; and a commit succeeds once there is room.
 func TestScenarioHostedStorageFull(t *testing.T) {
 	t.Parallel()
 	g, env, root := hostedEnv(t, 1<<20)
 	notes := filepath.Join(root, "notes")
 	runCLIOK(t, "real", env, nil, "pull", notes)
-	writeCLIFile(t, filepath.Join(notes, "a.md"), "first\n")
+	writeCLIFile(t, filepath.Join(notes, "a.md"), incompressible(4096))
 	runCLIOK(t, "real", env, nil, "commit", notes, "-m", "fits")
 
 	stored := g.Stored(hostedSpace)
@@ -107,7 +109,23 @@ func TestScenarioHostedStorageFull(t *testing.T) {
 
 	runCLIOK(t, "real", env, nil, "pull", filepath.Join(root, "reader"))
 
+	// Deleting notes makes room: the refused increment is published as a
+	// checkpoint of the smaller state, and the old packs are removed.
+	if err := os.Remove(filepath.Join(notes, "b.md")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(notes, "a.md")); err != nil {
+		t.Fatal(err)
+	}
+	writeCLIFile(t, filepath.Join(notes, "small.md"), "s\n")
+	runCLIOK(t, "real", env, nil, "commit", notes, "-m", "delete to make room")
+	if got := g.Stored(hostedSpace); got >= stored {
+		t.Fatalf("stored bytes after deleting notes = %d, want less than %d", got, stored)
+	}
+	runCLIOK(t, "real", env, nil, "pull", filepath.Join(root, "reader"))
+
 	g.SetQuota(hostedSpace, 1<<20)
+	writeCLIFile(t, filepath.Join(notes, "c.md"), "room again\n")
 	g.RefuseNextWithReason(http.MethodPut, http.StatusInsufficientStorage, "quota_exceeded", "request_limit")
 	code, stdout, stderr = runCLI(t, "real", env, "commit", notes, "-m", "allowance used")
 	if code != 1 || !strings.Contains(stdout, "STORAGE_FAILURE · REQUEST_LIMIT") || !strings.Contains(stdout, "first of the month") {
@@ -207,4 +225,17 @@ func TestScenarioHostedStartupRefusals(t *testing.T) {
 			}
 		})
 	}
+}
+
+// incompressible returns about n bytes of hex text that compression cannot
+// shrink, so pack sizes follow the notes rather than commit metadata.
+func incompressible(n int) string {
+	var b strings.Builder
+	sum := sha256.Sum256([]byte("slivingdoc"))
+	for b.Len() < n {
+		sum = sha256.Sum256(sum[:])
+		b.WriteString(hex.EncodeToString(sum[:]))
+		b.WriteByte('\n')
+	}
+	return b.String()
 }

@@ -97,13 +97,46 @@ A 429 is not retried inside the adapter; the tool result says `RETRY`.
 
 When a commit would take the account past its storage limit, the pack upload
 gets `507 storage_full` before the manifest moves, so nothing is published.
-The edited files stay in place and pulls keep working. The gateway lets
-checkpoint uploads go up to twice the limit, but the client checkpoints only
-every `checkpointPacks` increments (256 by default), and a commit that
-deletes notes still uploads an increment, which the limit refuses. So a full
-space cannot yet shrink itself by deleting notes, and the `STORAGE_FULL`
-message only tells the user to add storage. Compacting on `STORAGE_FULL`
-(checkpoint plus cleanup) would close that gap.
+The edited files stay in place and pulls keep working.
+
+A full space can shrink itself by deleting notes. The gateway lets checkpoint
+uploads take the account up to twice its limit, and the notebook uses that
+(`buildCompactingProposal` and `acceptCompaction` in
+`internal/notebook/commit.go`):
+
+1. The commit's increment upload is refused with `ErrQuotaExceeded`.
+2. The notebook exports the same commit as a checkpoint pack of the whole
+   state. If that pack is not smaller than everything the manifest
+   references (the active checkpoint and tail plus every retained
+   generation), compaction would not shrink the space, so the commit stays
+   refused as `STORAGE_FULL`. Stored bytes are at least that referenced
+   total, so an accepted compaction always shrinks the space, and the 2x
+   checkpoint margin never lifts the limit.
+3. Otherwise it uploads the checkpoint, through the generation the increment
+   would have had, carrying the commit's own publication ID, and publishes a
+   manifest whose active chain is that checkpoint alone. It keeps no retained
+   generation, whatever `--retained-checkpoints` says: the retained packs are
+   the bytes the space needs back, and readers already restart when a pack
+   disappears.
+4. After the manifest CAS accepts it, the notebook records the shallow
+   boundary and runs the normal cleanup, which deletes every pack the
+   manifest no longer references. A failure to record the boundary is
+   logged and does not skip the cleanup.
+
+When the manifest definitely did not accept the compaction (a lost CAS or a
+definite manifest error), the notebook deletes its own checkpoint pack at
+once. An orphan that large could otherwise leave no room under the 2x margin
+for the next compaction. When acceptance is unproven, the pack stays for a
+later cleanup. A lost CAS then retries the whole commit as usual.
+
+Because the compacted manifest keeps no retained generation, another
+writer's publication whose CAS response was lost just before the compaction
+can no longer be found by its publication ID, and that writer reports
+`PUBLICATION_UNPROVEN` for a commit that was accepted. The protocol already
+allows this once descriptors expire; compaction makes the window immediate.
+
+This is a client behaviour for any store that refuses with
+`ErrQuotaExceeded`; S3 never does.
 
 When the account uses its monthly request allowance, writes get
 `507 request_limit` and reads continue slowly until they get

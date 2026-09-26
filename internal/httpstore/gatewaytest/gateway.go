@@ -286,7 +286,13 @@ func (g *Gateway) putPack(w http.ResponseWriter, r *http.Request, sp *space, key
 	for _, n := range sp.stored {
 		stored += n
 	}
-	full := stored+r.ContentLength > sp.quota
+	// As the hosted gateway does, a checkpoint pack may take the space
+	// up to twice its quota, so a full space can compact itself.
+	limit := sp.quota
+	if meta.Kind == storage.KindCheckpoint {
+		limit = 2 * sp.quota
+	}
+	full := stored+r.ContentLength > limit
 	g.mu.Unlock()
 	if full {
 		writeReasonError(w, http.StatusInsufficientStorage, "quota_exceeded", "storage_full")

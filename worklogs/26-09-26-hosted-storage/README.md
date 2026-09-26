@@ -24,16 +24,10 @@ say how to fix it, and reads must keep working.
 | `internal/notebook`, `internal/mcp` | Five `STORAGE_FAILURE` reasons: `STORAGE_FULL`, `REQUEST_LIMIT`, `RATE_LIMITED`, `ACCESS_DENIED`, `OBJECT_TOO_LARGE`. Each message names the fix and, when the server sent one, ends with the server's own message. `retryable` is false for all but `RATE_LIMITED`. `sld_` tokens are redacted. |
 | `internal/app` | `SLIVINGDOC_TOKEN` selects hosted mode. `--bucket` names the space, and `--endpoint` or `SLIVINGDOC_ENDPOINT` names the API, by default `https://api.slivingdoc.dev`. The AWS variables are ignored, and the token is sent only over HTTPS or to loopback. Startup runs `CheckAccess` instead of the write probe. |
 | Contract suite | Missing-key rows use valid protocol keys, and the probe cleanup is observed through the keys the probe created rather than a `LIST` of `probe/`, which a hosted store refuses. |
-| Scenarios | `scenario_hosted_test.go`: round trip, storage full and request limit, read-only token, and startup refusals, all over one-shot CLI processes against the reference server. |
+| Compaction on a full space | `internal/notebook/commit.go`: a commit whose increment is refused as `STORAGE_FULL` publishes as a checkpoint of the whole state when that is smaller than everything the manifest references, retains no previous generation, deletes its own checkpoint if the manifest definitely refused it, and cleans up, so deleting notes frees room. See `architecture/hosted-mode.md`, Quota behaviour. |
+| Scenarios | `scenario_hosted_test.go`: round trip, storage full, deleting to make room, request limit, read-only token, and startup refusals, all over one-shot CLI processes against the reference server. |
 
 ## Open items
 
-1. **Compact on a full space.** The gateway lets checkpoint uploads go up to
-   twice the storage limit, but a commit that deletes notes uploads an
-   increment, which the limit refuses, and the client checkpoints only every
-   `checkpointPacks` increments. So a full space cannot shrink itself yet,
-   and the `STORAGE_FULL` message only tells the owner to add storage. The
-   fix is client side: on `STORAGE_FULL`, publish the commit as a checkpoint
-   and clean up the packs it replaces. Planned as a follow-up.
-2. **No multipart.** Packs larger than the gateway's 95 MiB `maxPackBytes`
+1. **No multipart.** Packs larger than the gateway's 95 MiB `maxPackBytes`
    can't upload. The client reports `OBJECT_TOO_LARGE`.
