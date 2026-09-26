@@ -131,6 +131,31 @@ func TestActionForRecoveryRefusal(t *testing.T) {
 	}
 }
 
+// TestRecoveryRefusalMessagesCoverEveryRefusal checks every refusal reason
+// has a recovery message, and that none claims a publication outcome.
+func TestRecoveryRefusalMessagesCoverEveryRefusal(t *testing.T) {
+	for _, tt := range recoveryRefusals {
+		t.Run(string(tt.reason), func(t *testing.T) {
+			ne := assertErrorCode(t, recoveryFailure(RecoveryReport{}, nil, tt.sentinel), CodeRecoveryFailure)
+			if ne.Reason != tt.reason {
+				t.Fatalf("reason = %s, want %s", ne.Reason, tt.reason)
+			}
+			msg, ok := recoveryRefusalMessages[tt.reason]
+			if !ok || msg == "" || !strings.HasSuffix(ne.Message, msg) {
+				t.Fatalf("message = %q, want it to end with the recovery message %q", ne.Message, msg)
+			}
+			for _, claim := range []string{"published", "commit again"} {
+				if strings.Contains(ne.Message, claim) {
+					t.Fatalf("message = %q claims %q", ne.Message, claim)
+				}
+			}
+		})
+	}
+	if len(recoveryRefusalMessages) != len(recoveryRefusals) {
+		t.Fatalf("recovery messages = %d, want one per refusal reason (%d)", len(recoveryRefusalMessages), len(recoveryRefusals))
+	}
+}
+
 // TestRecoveryFailureKeepsBothCauses checks the resynchronization failure
 // joins the local cause, and that a failure other than a store refusal
 // keeps LOCAL_MUTATION_FAILED.

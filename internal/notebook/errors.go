@@ -120,8 +120,10 @@ type codeReason struct {
 }
 
 // actionForPairing is the code/reason to action table in
-// architecture/product-contract.md; CodeRecoveryFailure branches on the
-// recovery report instead.
+// architecture/product-contract.md. actionFor handles CodeRecoveryFailure
+// itself: a store refusal reason (isRefusalReason) takes the
+// CodeStorageFailure pairing's action, and every other reason branches on
+// the recovery report.
 var actionForPairing = map[codeReason]Action{
 	{CodeInvalidRequest, ReasonMalformedInput}:      ActionFixInput,
 	{CodeInvalidRequest, ReasonPathOutsideRoot}:     ActionFixInput,
@@ -291,11 +293,33 @@ func refusalMessage(cause error) (Reason, string, bool) {
 	if !ok {
 		return "", "", false
 	}
+	return reason, message + storageSays(cause), true
+}
+
+// storageSays is the store's own sanitized line of a refusal, ready to
+// append to a message, or "" when the refusal carries none.
+func storageSays(cause error) string {
 	var refusal *storage.Refusal
 	if errors.As(cause, &refusal) && refusal.Message != "" {
-		message += ". The storage says: " + refusal.Message
+		return ". The storage says: " + refusal.Message
 	}
-	return reason, message, true
+	return ""
+}
+
+// recoveryRefusalMessages tell the caller why the store refused the read
+// that resynchronizes the notebook directory. Unlike storeRefusal's
+// messages they make no claim about publication: after an accepted CAS the
+// commit was published, and at entry acceptance is unknown.
+var recoveryRefusalMessages = map[Reason]string{
+	ReasonStorageFull: "the storage refused the read that repairs the notebook directory because the account that owns this space is full; " +
+		"its owner must add storage (for slivingdoc.dev: upgrade at https://slivingdoc.dev) or delete notes, then pull",
+	ReasonRequestLimit: "the storage refused the read that repairs the notebook directory because the account that owns this space used its " +
+		"request allowance for the month; its owner can raise the allowance (for slivingdoc.dev: upgrade at https://slivingdoc.dev) " +
+		"or wait until it resets on the first of the month (UTC), then pull",
+	ReasonRateLimited: "the storage is slowing down requests from this account, so the notebook directory could not be repaired yet; wait, then pull",
+	ReasonAccessDenied: "the storage refused the credentials for the read that repairs the notebook directory: the token is missing, revoked, " +
+		"or not granted this space. Check SLIVINGDOC_TOKEN and --bucket, then pull",
+	ReasonObjectTooLarge: "the storage refused the read that repairs the notebook directory as larger than it serves; an operator must check the storage",
 }
 
 // isRefusalReason reports whether reason is one storeRefusal produces.
@@ -344,16 +368,17 @@ func remoteBusy(format string, args ...any) error {
 // recoveryFailure builds a RECOVERY_FAILURE error carrying the report, the
 // underlying cause, and the failure of the resynchronization, if any. A
 // nil cause means the resynchronization failure is the cause itself (entry
-// recovery). When the store refused the
-// resynchronizing read, the error keeps its code but takes the refusal's
-// reason, action and message, so the caller sees why recovery could not
-// finish (architecture/guarantees.md).
+// recovery). When the store refused the resynchronizing read, the error
+// keeps its code but takes the refusal's reason and action and a
+// recovery-specific message (recoveryRefusalMessages), so the caller sees
+// why recovery could not finish (architecture/guarantees.md).
 func recoveryFailure(report RecoveryReport, cause, resyncErr error) error {
 	reason := ReasonLocalMutationFailed
 	message := "unexpected failure after local mutation started; recovery ran"
-	if r, m, ok := refusalMessage(resyncErr); ok {
+	if r, _, ok := storeRefusal(resyncErr); ok {
 		reason = r
-		message = "unexpected failure after local mutation started; recovery could not resynchronize the notebook directory: " + m
+		message = "unexpected failure after local mutation started; recovery could not resynchronize the notebook directory: " +
+			recoveryRefusalMessages[r] + storageSays(resyncErr)
 	}
 	switch {
 	case cause == nil:

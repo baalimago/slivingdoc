@@ -173,6 +173,11 @@ func assertRecoveryRefused(t *testing.T, err error, stage string, reason Reason,
 	if !strings.Contains(ne.Message, "could not resynchronize") || !strings.Contains(ne.Message, "The storage says: slow down") {
 		t.Fatalf("message = %q, want the recovery context and the store's own line", ne.Message)
 	}
+	for _, claim := range []string{"nothing was published", "commit again"} {
+		if strings.Contains(ne.Message, claim) {
+			t.Fatalf("message = %q claims %q, which is false after an accepted CAS", ne.Message, claim)
+		}
+	}
 }
 
 // A store refusal of the resynchronizing read surfaces with its own reason
