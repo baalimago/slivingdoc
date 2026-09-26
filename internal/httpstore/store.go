@@ -90,7 +90,8 @@ type Config struct {
 	// Client sends the requests; nil uses a default client.
 	Client Doer
 	// Retries bounds extra attempts of an idempotent request after a
-	// transport failure or a 5xx answer. Zero means the default.
+	// transport failure or a 5xx answer. Zero means the default; a negative
+	// value turns retries off.
 	Retries int
 	// Backoff returns the wait before retry attempt n (1-based); nil uses
 	// the default.

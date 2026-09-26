@@ -578,7 +578,8 @@ func parseUnsigned(s string) (int, error) {
 // commit embed it in their help output.
 const FlagReference = `  --bucket string               S3 bucket, or the hosted space name when     SLIVINGDOC_BUCKET
                                 a token is set (required)
-  --prefix string               S3 object prefix (default "slivingdoc")      SLIVINGDOC_PREFIX
+  --prefix string               object prefix in the bucket or hosted space  SLIVINGDOC_PREFIX
+                                (default "slivingdoc")
   --region string               S3 region (default "us-east-1"; unused       AWS_REGION
                                 with a token)
   --endpoint string             S3-compatible endpoint URL (empty for AWS)   AWS_ENDPOINT_URL_S3
@@ -587,7 +588,7 @@ const FlagReference = `  --bucket string               S3 bucket, or the hosted 
   (environment only)            hosted storage API token; setting it         SLIVINGDOC_TOKEN
                                 stores the notebook in the hosted space
                                 named by --bucket
-  --path-style                  force S3 path-style addressing               SLIVINGDOC_PATH_STYLE
+  --path-style                  force S3 path-style addressing (S3 only)     SLIVINGDOC_PATH_STYLE
   --workspace-root string       visible workspace root (serve default: a     SLIVINGDOC_WORKSPACE_ROOT
                                 per-process temporary directory; pull and
                                 commit default to the working directory)

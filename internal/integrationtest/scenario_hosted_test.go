@@ -1,6 +1,7 @@
 package integrationtest
 
 import (
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -83,7 +84,8 @@ func TestScenarioHostedStorageFull(t *testing.T) {
 	}
 	for _, want := range []string{
 		"STORAGE_FAILURE · STORAGE_FULL",
-		"storage space is full",
+		"account that owns this space is full",
+		"The storage says: refused: quota_exceeded (storage_full)",
 		"https://slivingdoc.dev",
 		"Pulls keep working",
 		"retryable: false",
@@ -106,6 +108,12 @@ func TestScenarioHostedStorageFull(t *testing.T) {
 	runCLIOK(t, "real", env, nil, "pull", filepath.Join(root, "reader"))
 
 	g.SetQuota(hostedSpace, 1<<20)
+	g.RefuseNextWithReason(http.MethodPut, http.StatusInsufficientStorage, "quota_exceeded", "request_limit")
+	code, stdout, stderr = runCLI(t, "real", env, "commit", notes, "-m", "allowance used")
+	if code != 1 || !strings.Contains(stdout, "STORAGE_FAILURE · REQUEST_LIMIT") || !strings.Contains(stdout, "first of the month") {
+		t.Fatalf("commit past the request allowance = exit %d, stdout %q, stderr %s; want REQUEST_LIMIT", code, stdout, stderr)
+	}
+
 	runCLIOK(t, "real", env, nil, "commit", notes, "-m", "room again")
 }
 

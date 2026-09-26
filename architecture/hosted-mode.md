@@ -4,7 +4,7 @@ A process configured with an API token (`SLIVINGDOC_TOKEN`) stores the
 notebook through the slivingdoc hosted storage API instead of S3. The API is
 the six `storage.ObjectStore` operations over HTTPS with a bearer token,
 addressed to one named space. Its contract is `cloud/API.md` in the
-slivingdoc-cloud repository; it names nothing provider-specific. The object
+slivingdoc-cloud repository (formerly slivingdoc-web); it names nothing provider-specific. The object
 layout, the manifest, and the publication protocol are unchanged: hosted mode
 is a second adapter, `internal/httpstore`, below the same notebook code.
 
@@ -25,7 +25,10 @@ A non-empty `SLIVINGDOC_TOKEN` selects hosted mode (`config.hosted()` in
   hyphens).
 - The endpoint is `--endpoint`, else `SLIVINGDOC_ENDPOINT`, else the default.
   `AWS_ENDPOINT_URL_S3`, `AWS_REGION` and the other AWS variables are
-  ignored, so they can never redirect a token.
+  ignored, so they can never redirect a token. The `--endpoint` flag is
+  shared with S3 mode, though: an S3 command line that passes
+  `--endpoint` sends the token to that host if `SLIVINGDOC_TOKEN` is also
+  set. `serve` logs `hosted=true` when a token selected hosted mode.
 - The token is read from the environment only, never from a flag, so it does
   not appear in a process listing. It must be printable ASCII without white
   space (`httpstore.ValidateToken`).
@@ -44,8 +47,8 @@ does not run the S3 write probe (`storage.Probe`). `checkStore` in
 
 1. `GET /v1` without the token. The answer must carry `api`
    `slivingdoc-storage`, `version` 1, and `conditionalWrites` true; anything
-   else is `INCOMPATIBLE_STORE`, except a 429 or 5xx, which is a busy server
-   and fails startup as a plain check failure.
+   else is `INCOMPATIBLE_STORE`, except a 429, a 5xx or an unreachable
+   server, which fail startup as a plain check failure.
 2. `GET /v1/spaces/{space}/usage` with the token. This is read-only, so a
    read-only token passes. 401, 403 or 404 is a startup refusal that names
    `SLIVINGDOC_TOKEN` and `--bucket`.
@@ -53,8 +56,9 @@ does not run the S3 write probe (`storage.Probe`). `checkStore` in
 ## Status mapping
 
 `statusError` in `internal/httpstore/store.go` maps a refusal to a semantic
-storage error. The error body is `{"error", "reason", "message"}`; the status
-and the reason pick the category.
+storage error. The error body is `{"error", "reason", "message"}`. The status or the
+error code picks the category (a `quota_exceeded` code counts as a 507
+whatever its status), and the reason splits the two quota limits.
 
 | Answer                                         | Storage error           | Notebook reason    | Action     | Retryable |
 | ---------------------------------------------- | ----------------------- | ------------------ | ---------- | --------- |
@@ -68,7 +72,9 @@ and the reason pick the category.
 | 413                                            | `ErrTooLarge`           | `OBJECT_TOO_LARGE` | `OPERATOR` | no        |
 | other 5xx                                      | `ErrTransport`          | (protocol)         |            |           |
 
-A 507 without a reason counts as a full space. The notebook reasons are
+A 507 without a reason counts as a full space. Both quota limits belong to
+the account that owns the space, shared by all its spaces, so the messages
+tell the owner to act. The notebook reasons are
 `STORAGE_FAILURE` reasons, set by `storeRefusal` in
 `internal/notebook/errors.go`; `retryable` lives in `internal/mcp/errors.go`.
 

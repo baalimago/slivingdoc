@@ -279,6 +279,34 @@ func TestCheckAccessBusyServerIsNotIncompatible(t *testing.T) {
 	}
 }
 
+// A limit is an answer, not a failure: 429 and 507 are never retried, so
+// the next request is served normally.
+func TestLimitAnswersAreNotRetried(t *testing.T) {
+	for _, tt := range []struct {
+		status int
+		code   string
+		want   error
+	}{
+		{http.StatusTooManyRequests, "rate_limited", storage.ErrRateLimited},
+		{http.StatusInsufficientStorage, "quota_exceeded", storage.ErrQuotaExceeded},
+	} {
+		t.Run(tt.code, func(t *testing.T) {
+			s, g := newGatewayStore(t)
+			if _, err := s.CreateObject(context.Background(), storage.CurrentKey, []byte("v1")); err != nil {
+				t.Fatalf("create: %v", err)
+			}
+			g.RefuseNext(http.MethodGet, tt.status, tt.code)
+			before := g.Requests()
+			if _, _, err := s.ReadObject(context.Background(), storage.CurrentKey); !errors.Is(err, tt.want) {
+				t.Fatalf("read answered %d = %v, want %v", tt.status, err, tt.want)
+			}
+			if n := g.Requests() - before; n != 1 {
+				t.Fatalf("read answered %d made %d requests, want 1", tt.status, n)
+			}
+		})
+	}
+}
+
 func TestIdempotentRequestsRetryServerErrors(t *testing.T) {
 	s, g := newGatewayStore(t)
 	if _, err := s.CreateObject(context.Background(), storage.CurrentKey, []byte("v1")); err != nil {

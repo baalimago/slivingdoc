@@ -255,12 +255,14 @@ const redacted = "[redacted]"
 // diagnostic text. The output keeps its structure but never leaks a
 // protected value.
 func Redact(s string) string {
+	// Tokens first: an earlier pattern matching inside a token would cut
+	// the token match short and leave its tail.
+	s = apiTokenRE.ReplaceAllString(s, redacted)
 	s = packKeyRE.ReplaceAllString(s, redacted)
 	s = probeKeyRE.ReplaceAllString(s, redacted)
 	s = gitIDRE.ReplaceAllString(s, redacted)
 	s = derivedKeyRE.ReplaceAllString(s, redacted)
 	s = accessKeyRE.ReplaceAllString(s, redacted)
-	s = apiTokenRE.ReplaceAllString(s, redacted)
 	s = userInfoRE.ReplaceAllString(s, "://"+redacted+"@")
 	return strings.TrimSpace(s)
 }

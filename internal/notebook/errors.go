@@ -274,12 +274,12 @@ func storageFailure(reason Reason, cause error, format string, args ...any) erro
 func storeRefusal(cause error) (Reason, string, bool) {
 	switch {
 	case errors.Is(cause, storage.ErrQuotaExceeded):
-		return ReasonStorageFull, "the storage space is full, so nothing was published; " +
-			"add storage to the space (for slivingdoc.dev spaces: upgrade at https://slivingdoc.dev), then commit again. " +
+		return ReasonStorageFull, "the storage account that owns this space is full, so nothing was published; " +
+			"its owner must add storage (for slivingdoc.dev: upgrade at https://slivingdoc.dev), then commit again. " +
 			"Pulls keep working", true
 	case errors.Is(cause, storage.ErrRequestLimit):
-		return ReasonRequestLimit, "the storage account used its request allowance for the month, so nothing was published; " +
-			"raise the allowance (for slivingdoc.dev spaces: upgrade at https://slivingdoc.dev) or wait until it resets " +
+		return ReasonRequestLimit, "the storage account that owns this space used its request allowance for the month, " +
+			"so nothing was published; its owner can raise the allowance (for slivingdoc.dev spaces: upgrade at https://slivingdoc.dev) or wait until it resets " +
 			"on the first of the month (UTC), then commit again. Pulls keep working, more slowly", true
 	case errors.Is(cause, storage.ErrRateLimited):
 		return ReasonRateLimited, "the storage is slowing down requests from this account; wait, then retry", true
