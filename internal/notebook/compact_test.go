@@ -203,3 +203,88 @@ func TestCompactionDropsRetainedGenerations(t *testing.T) {
 		t.Fatalf("objects after compaction = %d, want current and the new checkpoint", got)
 	}
 }
+
+// A lost manifest response whose follow-up read also fails leaves
+// acceptance unknown: the compaction checkpoint may be referenced, so it
+// must stay.
+func TestCompactionUnknownAcceptanceKeepsItsCheckpoint(t *testing.T) {
+	store := fake.New("")
+	lossy := &lossyStore{ObjectStore: store}
+	nb, w, _ := newNotebook(t, nbConfig{store: lossy, ids: &testIDSource{}})
+	big := strings.Repeat("large note body\n", 400)
+
+	pullOK(t, nb)
+	writeLocal(t, w, map[string]string{"a.md": "keep\n", "b.md": big})
+	commitOK(t, nb, "first")
+
+	removeLocal(t, w, "b.md")
+	store.FailNext(fake.OpPut, storage.ErrQuotaExceeded)
+	lossy.loseReplace = true
+	if _, err := nb.Commit(context.Background(), "free space"); err == nil {
+		t.Fatal("commit with an unprovable manifest write succeeded")
+	}
+	m := readManifest(t, store)
+	if len(m.Retained) != 0 || m.Checkpoint.ThroughGeneration == 1 {
+		t.Fatalf("manifest = %+v, want the compacted checkpoint accepted", m.Checkpoint)
+	}
+	if rc, _, err := store.ReadObject(context.Background(), m.Checkpoint.Key.String()); err != nil {
+		t.Fatalf("accepted manifest references %s, which is gone: %v", m.Checkpoint.Key, err)
+	} else {
+		rc.Close()
+	}
+}
+
+// The size check counts retained generations: they are freed too, so a
+// checkpoint larger than the active chain alone still compacts.
+func TestCompactionCountsRetainedGenerations(t *testing.T) {
+	store := fake.New("")
+	nb, w, _ := newNotebook(t, nbConfig{store: store, ids: &testIDSource{}, checkpointPacks: 1})
+	big := strings.Repeat("large note body\n", 400)
+
+	pullOK(t, nb)
+	writeLocal(t, w, map[string]string{"a.md": "keep\n", "b.md": big})
+	commitOK(t, nb, "first")
+	removeLocal(t, w, "b.md")
+	writeLocal(t, w, map[string]string{"c.md": "c\n"})
+	commitOK(t, nb, "second")
+	before := readManifest(t, store)
+	if len(before.Retained) != 1 || len(before.Increments) != 0 {
+		t.Fatalf("before = %d retained, %d increments; want one retained and an empty tail", len(before.Retained), len(before.Increments))
+	}
+
+	writeLocal(t, w, map[string]string{"d.md": "d\n"})
+	store.FailNext(fake.OpPut, storage.ErrQuotaExceeded)
+	commitOK(t, nb, "grows a little")
+	m := readManifest(t, store)
+	if m.Checkpoint.Size <= before.Checkpoint.Size {
+		t.Fatalf("new checkpoint %d is not larger than the active one %d; the case needs it to be", m.Checkpoint.Size, before.Checkpoint.Size)
+	}
+	if len(m.Retained) != 0 || store.ObjectCount() != 2 {
+		t.Fatalf("after = %d retained, %d objects; want none retained and two objects", len(m.Retained), store.ObjectCount())
+	}
+}
+
+// lossyStore applies the next manifest replace, then reports a lost
+// response and fails the next read, so acceptance cannot be proved.
+type lossyStore struct {
+	storage.ObjectStore
+	loseReplace bool
+	failRead    bool
+}
+
+func (s *lossyStore) ReplaceObject(ctx context.Context, key string, etag storage.ETag, data []byte) (storage.ETag, error) {
+	next, err := s.ObjectStore.ReplaceObject(ctx, key, etag, data)
+	if err == nil && s.loseReplace {
+		s.loseReplace, s.failRead = false, true
+		return "", storage.ErrTransport
+	}
+	return next, err
+}
+
+func (s *lossyStore) ReadObject(ctx context.Context, key string) (io.ReadCloser, storage.ObjectInfo, error) {
+	if s.failRead {
+		s.failRead = false
+		return nil, storage.ObjectInfo{}, storage.ErrTransport
+	}
+	return s.ObjectStore.ReadObject(ctx, key)
+}

@@ -123,11 +123,18 @@ uploads take the account up to twice its limit, and the notebook uses that
    manifest no longer references. A failure to record the boundary is
    logged and does not skip the cleanup.
 
-When the manifest definitely did not accept the compaction (a lost CAS or a
-definite manifest error), the notebook deletes its own checkpoint pack at
-once. An orphan that large could otherwise leave no room under the 2x margin
-for the next compaction. When acceptance is unproven, the pack stays for a
-later cleanup. A lost CAS then retries the whole commit as usual.
+When the manifest definitely did not accept the compaction (a lost CAS, or a
+definite refusal of the manifest write), the notebook deletes its own
+checkpoint pack at once. An orphan that large could otherwise leave no room
+under the 2x margin for the next compaction. On every other error the pack
+stays, because the manifest may have accepted it (a lost response whose
+follow-up read also failed). A lost CAS then retries the whole commit as
+usual.
+
+Some failures leave dead bytes that only a later checkpoint cleanup removes:
+a kept pack of unknown acceptance, a compaction upload whose response was
+lost, and a cleanup that fails after an accepted compaction. Until then the
+space can stay `STORAGE_FULL` even for a commit that deletes notes.
 
 Because the compacted manifest keeps no retained generation, another
 writer's publication whose CAS response was lost just before the compaction

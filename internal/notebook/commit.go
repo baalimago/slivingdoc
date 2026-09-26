@@ -392,13 +392,16 @@ func (n *Notebook) acceptCompaction(ctx context.Context, p proposal) {
 }
 
 // discardCompaction deletes the checkpoint pack of a compacting proposal
-// the manifest definitely did not accept. The space is full, so an orphan
-// that large could leave no room for the next compaction. When acceptance
-// is unproven the pack may be referenced, so it stays for a later cleanup.
+// the manifest definitely did not accept: a lost CAS, or a definite refusal
+// of the manifest write. The space is full, so an orphan that large could
+// leave no room for the next compaction. Every other error may hide an
+// accepted manifest that references the pack (a lost response whose
+// follow-up read also failed), so the pack stays for a later cleanup.
 // Deletion is best effort.
 func (n *Notebook) discardCompaction(ctx context.Context, p proposal, cause error) {
 	var e *Error
-	if errors.As(cause, &e) && e.Reason == ReasonPublicationUnproven {
+	definite := errors.Is(cause, errCASLost) || (errors.As(cause, &e) && e.Reason == ReasonManifestWrite)
+	if !definite {
 		return
 	}
 	if err := n.store.DeleteObjects(ctx, []string{p.key.String()}); err != nil {
