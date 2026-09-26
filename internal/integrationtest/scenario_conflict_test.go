@@ -142,3 +142,91 @@ func TestScenarioConflictAfterRemoteMovement(t *testing.T) {
 	}
 	assertRemoteGeneration(t, b, pathB, 4)
 }
+
+// TestScenarioFileDirectoryConflictKeepsLocalSide proves a file-versus-
+// directory conflict leaves the caller's side visible in both directions
+// (architecture/conflicts.md): the pull reports one PATH_CONFLICT at the
+// path with empty ranges, and L holds exactly the local files at and below
+// it, never the remote side. Committing that result publishes the local
+// side.
+func TestScenarioFileDirectoryConflictKeepsLocalSide(t *testing.T) {
+	t.Parallel()
+	rows := []struct {
+		name   string
+		base   map[string]string
+		remote map[string]string
+		local  map[string]string
+		remove []string
+	}{
+		{
+			name:   "local directory remote file",
+			remote: map[string]string{"p": "remote file\n"},
+			local:  map[string]string{"p/q.md": "local q\n", "p/sub/r.md": "local r\n"},
+		},
+		{
+			name:   "local file remote directory",
+			remote: map[string]string{"p/q.md": "remote q\n"},
+			local:  map[string]string{"p": "local file\n"},
+		},
+		{
+			// The remote edit below p conflicts with the local deletion,
+			// but only the conflict at p is reported and L keeps the file.
+			name:   "local file replaces a directory the remote side changed",
+			base:   map[string]string{"p/q.md": "base q\n"},
+			remote: map[string]string{"p/q.md": "remote q\n"},
+			local:  map[string]string{"p": "local file\n"},
+			remove: []string{"p/q.md", "p"},
+		},
+	}
+	for _, row := range rows {
+		t.Run(row.name, func(t *testing.T) {
+			h := newFakeHarness(t, HarnessConfig{})
+			b := newSharedHarness(t, h.Raw(), h.cfg.Prefix, HarnessConfig{})
+			pathH, pathB := h.Path("notes"), b.Path("notes")
+
+			commitFirst(t, h, pathH, "base.md", "base\n", "c1")
+			if len(row.base) > 0 {
+				for name, data := range row.base {
+					h.WriteFile(pathH+"/"+name, data)
+				}
+				h.assertOK(t, h.Commit("", pathH, "base side"))
+			}
+			b.assertOK(t, b.Pull("", pathB))
+			for name, data := range row.remote {
+				h.WriteFile(pathH+"/"+name, data)
+			}
+			h.assertOK(t, h.Commit("", pathH, "remote side"))
+			for _, name := range row.remove {
+				b.RemoveFile(pathB + "/" + name)
+			}
+			for name, data := range row.local {
+				b.WriteFile(pathB+"/"+name, data)
+			}
+
+			res := b.Pull("", pathB)
+			b.assertEnvelope(t, ToolCall{
+				Tool: toolPull, Path: pathB,
+				Expect: CallExpectation{
+					ErrorCode: "CONTENT_CONFLICT",
+					Reason:    "MERGE_CONFLICT",
+					Action:    "EDIT_FILES",
+					Files:     []FileExpectation{{Path: "p", Reason: "PATH_CONFLICT", Ranges: []RangeExpectation{}}},
+				},
+			}, res)
+			want := map[string]string{"base.md": "base\n"}
+			for name, data := range row.local {
+				want[name] = data
+			}
+			assertVisibleFiles(t, b, pathB, want)
+
+			// The materialized result is the new local intent against R:
+			// committing it as it stands publishes the local side, which a
+			// fresh reader then observes exactly.
+			b.assertOK(t, b.Commit("", pathB, "keep local side"))
+			c := newSharedHarness(t, h.Raw(), h.cfg.Prefix, HarnessConfig{})
+			pathC := c.Path("notes")
+			c.assertOK(t, c.Pull("", pathC))
+			assertVisibleFiles(t, c, pathC, want)
+		})
+	}
+}

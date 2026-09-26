@@ -161,6 +161,9 @@ func (r *repository) WriteTree(entries []git.TreeEntry) (git.OID, error) {
 	if err := r.usable(); err != nil {
 		return git.OID{}, fmt.Errorf("git2: write tree: %w", err)
 	}
+	if err := git.CheckUniqueNames(entries); err != nil {
+		return git.OID{}, fmt.Errorf("git2: write tree: %w", err)
+	}
 	return writeTreeFn(r.handle, entries)
 }
 

@@ -112,14 +112,20 @@ func ValidateContent(data []byte) error {
 }
 
 // PathCollisionError reports two snapshot paths that collide, exactly or
-// under case folding (Fold). Path is the second occurrence.
+// under case folding (Fold). Path is the second occurrence. With Dir set,
+// First is a file and Path lies below a directory of the same name, so the
+// one name would be both a file and a directory.
 type PathCollisionError struct {
 	First string
 	Path  string
 	Fold  bool // true when the collision is only under case folding
+	Dir   bool // true when First is a file that is also a directory of Path
 }
 
 func (e *PathCollisionError) Error() string {
+	if e.Dir {
+		return fmt.Sprintf("invalid snapshot: %q is a file and a directory of %q", e.First, e.Path)
+	}
 	if e.Fold {
 		return fmt.Sprintf("invalid snapshot: paths %q and %q collide under Unicode case folding", e.First, e.Path)
 	}
@@ -127,9 +133,10 @@ func (e *PathCollisionError) Error() string {
 }
 
 // ValidateSnapshot validates every path and content of a snapshot and
-// rejects paths that collide under Unicode case folding. The check runs
-// against the full snapshot because collisions only exist between two
-// different paths.
+// rejects paths that collide under Unicode case folding, and a file whose
+// exact name is also a directory of another path. The check runs against
+// the full snapshot because collisions only exist between two different
+// paths.
 func ValidateSnapshot(snap Snapshot) error {
 	fold := cases.Fold()
 	seen := make(map[string]string, len(snap.Files)) // folded path -> first path
@@ -148,6 +155,64 @@ func ValidateSnapshot(snap Snapshot) error {
 			return &PathCollisionError{First: first, Path: f.Path}
 		}
 		seen[folded] = f.Path
+	}
+	files := make(map[string]bool, len(snap.Files))
+	for _, f := range snap.Files {
+		files[f.Path] = true
+	}
+	return fileDirectoryCollision(snap, func(dir string) (string, bool) { return dir, files[dir] })
+}
+
+// ValidateFoldedDirectories rejects a file whose name folds, under Unicode
+// case folding, to the name of a directory of another path (`P` beside
+// `p/x.md`). The exact case is ValidateSnapshot's. It applies to new
+// content only: the visible scan runs it, and a commit refuses a merged
+// state that would publish a new pair (FoldedDirectoryPairs), while
+// accepted remote state and merge results are otherwise checked at the
+// exact rule alone, so a notebook an older writer published with such a
+// pair stays readable (architecture/git-engine.md).
+func ValidateFoldedDirectories(snap Snapshot) error {
+	if pairs := FoldedDirectoryPairs(snap); len(pairs) > 0 {
+		return &pairs[0]
+	}
+	return nil
+}
+
+// FoldedDirectoryPairs returns every pair ValidateFoldedDirectories would
+// refuse, in snapshot order: First is the file, Path a path below a
+// directory whose name folds to the file's.
+func FoldedDirectoryPairs(snap Snapshot) []PathCollisionError {
+	fold := cases.Fold()
+	folded := make(map[string]string, len(snap.Files)) // folded path -> path
+	for _, f := range snap.Files {
+		folded[fold.String(f.Path)] = f.Path
+	}
+	var pairs []PathCollisionError
+	for _, f := range snap.Files {
+		for i := 0; i < len(f.Path); i++ {
+			if f.Path[i] != '/' {
+				continue
+			}
+			if first, ok := folded[fold.String(f.Path[:i])]; ok {
+				pairs = append(pairs, PathCollisionError{First: first, Path: f.Path, Fold: first != f.Path[:i], Dir: true})
+			}
+		}
+	}
+	return pairs
+}
+
+// fileDirectoryCollision reports the first path of snap below a directory
+// that lookup names as a file.
+func fileDirectoryCollision(snap Snapshot, lookup func(dir string) (file string, found bool)) error {
+	for _, f := range snap.Files {
+		for i := 0; i < len(f.Path); i++ {
+			if f.Path[i] != '/' {
+				continue
+			}
+			if first, ok := lookup(f.Path[:i]); ok {
+				return &PathCollisionError{First: first, Path: f.Path, Fold: first != f.Path[:i], Dir: true}
+			}
+		}
 	}
 	return nil
 }

@@ -341,9 +341,10 @@ func rejectMarkers(snap git.Snapshot) []ErrorFile {
 
 // materializeTree converts a conflicted merge result into a tree the
 // workspace can materialize: the full result with markers, resolved blobs,
-// and local file/directory sides.
-func (n *Notebook) materializeTree(merged git.MergeResult) (git.OID, error) {
-	snap, err := git.MaterializeTree(n.ws.Repo(), merged)
+// and local file/directory sides read from local, the tree merged as the
+// local side.
+func (n *Notebook) materializeTree(merged git.MergeResult, local git.OID) (git.OID, error) {
+	snap, err := git.MaterializeTree(n.ws.Repo(), merged, local)
 	if err != nil {
 		return git.OID{}, fmt.Errorf("notebook: materialize merge result: %w", err)
 	}

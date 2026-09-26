@@ -72,7 +72,7 @@ func (n *Notebook) pull(ctx context.Context) (Result, error) {
 
 	baseline := remote.baseline()
 	if len(merged.Conflicts) > 0 {
-		tree, err := n.materializeTree(merged)
+		tree, err := n.materializeTree(merged, mergeTree)
 		if err != nil {
 			return Result{}, storageIntegrity(ReasonEngineFailed, err, "materialize conflict result")
 		}

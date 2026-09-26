@@ -8,7 +8,7 @@ Read this when: changing merge semantics, marker format or detection, file-versu
 
 | File | Purpose |
 |------|---------|
-| `internal/git/merge.go` | `Merge`, `materializeConflict`, `formatDeleteConflict`, `isDirFileConflict`, `belowDirFileConflict`, `MaterializeTree`, `FindConflictBlocks`, marker constants `markerOpen`/`markerSep`/`markerClose` |
+| `internal/git/merge.go` | `Merge`, `dropBelowLocalFiles`, `materializeConflict`, `formatDeleteConflict`, `isDirFileConflict`, `belowDirFileConflict`, `MaterializeTree`, `FindConflictBlocks`, marker constants `markerOpen`/`markerSep`/`markerClose` |
 | `internal/git/types.go` | `MergeIndex`, `IndexEntry` (stages 0..3), `MergeFileResult`, `MergeResult`, `Conflict`, `MarkerRange` |
 | `internal/git2/native.go` | `libgit2MergeTrees` (`git_merge_trees`, flags 0), `libgit2MergeFile` via C `sl_merge_file` (labels `base`/`local`/`remote`) |
 | `internal/notebook/pull.go` | Conflict branch of `Pull` |
@@ -30,10 +30,12 @@ git.Merge(repo, base, local, remote)
        else materializeConflict:
             a side missing (modify/delete) → formatDeleteConflict → FindConflictBlocks
             else repo.MergeFile(base, local, remote) → Content; FindConflictBlocks only if !Automergeable
+  → dropBelowLocalFiles: a file/directory conflict whose local side is a file (read from the local tree)
+       drops the text conflicts below it
   → no conflicts: MergeResult{Tree, Index}; else MergeResult{Index, Conflicts} (Tree zero)
 
 Notebook (pull or commit attempt), on len(Conflicts) > 0:
-  materializeTree → git.MaterializeTree → git.BuildTree
+  materializeTree(merged, local side) → git.MaterializeTree → git.BuildTree
   → applyLocal(stageConflict, ws.Materialize(remote.baseline(), tree))
   → [pull only] ws.MarkPulled
   → contentConflict(ReasonMergeConflict, msg, contentConflictFiles(conflicts))
@@ -71,8 +73,8 @@ the accepted remote text
 ### What lands in L (`MaterializeTree`)
 
 - A conflicted merge is always materialized in full: resolved paths get their merged blobs, text conflicts get marker content, and nothing is left out except as below. Pull never reverts L.
-- File versus directory (one side has a file at `p`, the other has a directory `p/…`): reported as a `PATH_CONFLICT` with no content and no ranges. libgit2 represents it as a lone blob stage at `p` plus index entries below it (the directory side's files). At `p` and below, `MaterializeTree` writes only stage-2 (local) blob entries and omits every other entry, so the result depends on the direction. Local file versus remote directory: the local file stays and the remote directory is omitted, assuming the index shape `internal/git/merge_test.go` builds (stage 2 at `p`, stage 0 below). `TestMergeFileDirectoryConflict` in `internal/git2/operations_test.go` proves natively only that this conflict is reported without markers. Local directory versus remote file: the local subtree survives only if its entries carry stage 2; `TestMaterializeTreeFileDirectoryKeepsLocalSide` in `internal/git/merge_test.go` and the notebook fake assume that with a hand-built index, and no native test covers this direction. When the local side survives, the omitted side is the remote one and is still in R; if real libgit2 does not stage the local directory's entries as 2, the local subtree is dropped and is not recoverable from R.
-- `ValidateSnapshot` runs on the result, so a materialized conflict is still valid notebook content.
+- File versus directory (one side has a file at `p`, the other has a directory `p/…`): reported as a `PATH_CONFLICT` with no content and no ranges. libgit2 represents it as the file side's stages at `p` and the directory side's one-sided entries resolved to stage 0 below it, whichever side holds the directory, so the index stages cannot tell the sides apart. `MaterializeTree` therefore takes the local side from the local tree it is given (the tree merged as the local side: `mergeTree` in pull, `localTree` in commit): every local file at `p` or below it, except a path below `p` that is itself a text conflict, which keeps its marker content. Every index entry at or below `p` is skipped. Local file versus remote directory leaves the local file; local directory versus remote file leaves every file of the local directory. When the local side of `p` is a file, a text conflict below `p` (the remote side edited a file of the directory the local side replaced) cannot sit beside that file, so `Merge` drops it from `Conflicts` (`dropBelowLocalFiles`, also reading the local tree) and only the `PATH_CONFLICT` at `p` is reported; L keeps the local file. The remote side is omitted from L and stays only in R: since the baseline becomes R, committing the result as it stands publishes the local side in its place. `TestMaterializeFileDirectoryConflictKeepsLocalSide` in `internal/git2/operations_test.go` proves both directions against the real index; `TestFileDirectoryConflictKeepsLocalSide` (notebook) and `TestScenarioFileDirectoryConflictKeepsLocalSide` cover pull and commit.
+- `ValidateSnapshot` runs on the result, so a materialized conflict is still valid notebook content; a result holding a file and a directory of one name fails there as `STORAGE_INTEGRITY`/`ENGINE_FAILED` instead of losing either.
 - `Materialize` records `remote.baseline()` as the new baseline in the same failure-atomic operation. On the retry, the resolved directory is the new local intent against that R; if R moved again another three-tree merge runs. `current` is never updated by a conflicting call.
 
 ### How conflicts surface

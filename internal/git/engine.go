@@ -49,7 +49,8 @@ type Repository interface {
 	// ReadTree returns the entries of a tree in Git tree order.
 	ReadTree(id OID) ([]TreeEntry, error)
 	// WriteTree writes a tree from its entries. Entries must use modes
-	// accepted by the native boundary; the boundary sorts defensively.
+	// accepted by the native boundary and distinct names (CheckUniqueNames);
+	// the boundary sorts defensively.
 	WriteTree(entries []TreeEntry) (OID, error)
 	// CreateCommit writes a commit with the fixed slivingdoc identity and
 	// the spec time in UTC with one-second precision and offset zero.

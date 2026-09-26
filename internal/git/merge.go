@@ -20,7 +20,9 @@ const (
 // base -> remote, and the result merges both. When the merge is
 // conflict-free it returns the merged tree; otherwise it returns structured
 // conflicts with conflict-marker content and one-based marker ranges for
-// every text conflict. A conflict never creates a commit.
+// every text conflict. A text conflict below a file/directory conflict
+// whose local side is a file is not reported (dropBelowLocalFiles). A
+// conflict never creates a commit.
 func Merge(repo Repository, base, local, remote OID) (MergeResult, error) {
 	idx, err := repo.MergeTrees(base, local, remote)
 	if err != nil {
@@ -72,6 +74,11 @@ func Merge(repo Repository, base, local, remote OID) (MergeResult, error) {
 		conflicts = append(conflicts, c)
 	}
 
+	conflicts, err = dropBelowLocalFiles(repo, local, conflicts)
+	if err != nil {
+		return MergeResult{}, fmt.Errorf("git: merge: %w", err)
+	}
+
 	if len(conflicts) == 0 {
 		if idx.Tree.IsZero() {
 			return MergeResult{}, fmt.Errorf("git: merge: conflict-free index produced no tree")
@@ -79,6 +86,44 @@ func Merge(repo Repository, base, local, remote OID) (MergeResult, error) {
 		return MergeResult{Tree: idx.Tree, Index: idx}, nil
 	}
 	return MergeResult{Index: idx, Conflicts: conflicts}, nil
+}
+
+// dropBelowLocalFiles removes the text conflicts that lie below a
+// file/directory conflict whose local side is a file. Such a path cannot
+// exist beside the local file in L, so materializing its markers would
+// either lose the file or the markers; the file/directory conflict at the
+// path already reports it. The local tree decides which side is the file.
+func dropBelowLocalFiles(repo Repository, local OID, conflicts []Conflict) ([]Conflict, error) {
+	dfPaths := make(map[string]bool)
+	for _, c := range conflicts {
+		if c.Content == nil {
+			dfPaths[c.Path] = true
+		}
+	}
+	if len(dfPaths) == 0 {
+		return conflicts, nil
+	}
+	localSide, err := ReadSnapshot(repo, local)
+	if err != nil {
+		return nil, fmt.Errorf("read local side: %w", err)
+	}
+	localFiles := make(map[string]bool)
+	for _, f := range localSide.Files {
+		if dfPaths[f.Path] {
+			localFiles[f.Path] = true
+		}
+	}
+	if len(localFiles) == 0 {
+		return conflicts, nil
+	}
+	kept := make([]Conflict, 0, len(conflicts))
+	for _, c := range conflicts {
+		if c.Content != nil && belowDirFileConflict(c.Path, localFiles) {
+			continue
+		}
+		kept = append(kept, c)
+	}
+	return kept, nil
 }
 
 // materializeConflict produces the conflict-marker content for one conflicted
@@ -166,10 +211,11 @@ func formatDeleteConflict(local, remote []byte) []byte {
 }
 
 // isDirFileConflict reports whether a conflicted path is a file-versus-
-// directory replacement: the merge index carries resolved entries below the
-// path, which only happens when the other side occupies the path as a
-// directory. libgit2 represents such conflicts with a lone blob stage at
-// the path plus resolved stage-0 entries under it.
+// directory replacement: the merge index carries entries below the path,
+// which only happens when a side occupies the path as a directory. libgit2
+// represents such conflicts with the file side's stages at the path and the
+// directory side's one-sided entries resolved to stage 0 under it, whichever
+// side holds the directory.
 func isDirFileConflict(path string, byPath map[string][]IndexEntry) bool {
 	prefix := path + "/"
 	for other := range byPath {
@@ -181,8 +227,7 @@ func isDirFileConflict(path string, byPath map[string][]IndexEntry) bool {
 }
 
 // belowDirFileConflict reports whether path lies below a file/directory
-// conflict path. Entries below the conflict belong to the directory side and
-// keep only their local variants during materialization.
+// conflict path. Materialization takes such paths from the local tree.
 func belowDirFileConflict(path string, dfPaths map[string]bool) bool {
 	for i := 0; i < len(path); i++ {
 		if path[i] == '/' && dfPaths[path[:i]] {
@@ -195,12 +240,15 @@ func belowDirFileConflict(path string, dfPaths map[string]bool) bool {
 // MaterializeTree builds the complete materialized snapshot of a merge
 // result. A conflict-free result reads its merged tree. A conflicted result
 // materializes the full index: resolved stage-0 entries keep their merged
-// blobs, text conflicts carry their marker content, and file/directory
-// conflicts keep the local file side while omitting the remote directory
-// subtree (the subtree survives in R and returns after resolution). The
+// blobs and text conflicts carry their marker content. A file/directory
+// conflict shows the local side in both directions, read from the local
+// tree rather than from index stages: the local file when the remote side
+// made the path a directory, the local subtree when the local side did. The
+// remote side is omitted there and stays only in R. local is the tree that
+// was merged as the local side. The
 // returned snapshot is the exact visible state a caller must see, so a
-// conflict never loses the caller's local intent.
-func MaterializeTree(repo Repository, res MergeResult) (Snapshot, error) {
+// conflict never loses the caller's local intent (architecture/conflicts.md).
+func MaterializeTree(repo Repository, res MergeResult, local OID) (Snapshot, error) {
 	if !res.Tree.IsZero() {
 		snap, err := ReadSnapshot(repo, res.Tree)
 		if err != nil {
@@ -210,9 +258,9 @@ func MaterializeTree(repo Repository, res MergeResult) (Snapshot, error) {
 	}
 
 	// A conflicted path without marker content is a file/directory
-	// replacement: the local file side stays visible, the remote directory
-	// subtree is omitted. Every path below such a conflict keeps only its
-	// local entries.
+	// replacement. libgit2 resolves the directory side's one-sided entries
+	// to stage 0 whichever side holds the directory, so the stages cannot
+	// tell the local side from the remote one: the local tree does.
 	dfPaths := make(map[string]bool)
 	text := make(map[string][]byte)
 	for _, c := range res.Conflicts {
@@ -240,18 +288,7 @@ func MaterializeTree(repo Repository, res MergeResult) (Snapshot, error) {
 			continue
 		}
 		if dfPaths[path] || belowDirFileConflict(path, dfPaths) {
-			// Keep only the local (stage 2) file entries of the conflicted
-			// path and of the local directory subtree.
-			for _, e := range byPath[path] {
-				if e.Stage == 2 && e.Mode == ModeBlob {
-					data, err := repo.ReadBlob(e.ID)
-					if err != nil {
-						return Snapshot{}, fmt.Errorf("git: materialize tree: %q: %w", path, err)
-					}
-					files = append(files, File{Path: path, Data: data})
-				}
-			}
-			continue
+			continue // the local side is read from the local tree below
 		}
 		// A resolved path has exactly one stage-0 blob entry.
 		entries := byPath[path]
@@ -263,6 +300,22 @@ func MaterializeTree(repo Repository, res MergeResult) (Snapshot, error) {
 			return Snapshot{}, fmt.Errorf("git: materialize tree: %q: %w", path, err)
 		}
 		files = append(files, File{Path: path, Data: data})
+	}
+
+	if len(dfPaths) > 0 {
+		localSide, err := ReadSnapshot(repo, local)
+		if err != nil {
+			return Snapshot{}, fmt.Errorf("git: materialize tree: read local side: %w", err)
+		}
+		for _, f := range localSide.Files {
+			if _, marked := text[f.Path]; marked {
+				continue
+			}
+			if dfPaths[f.Path] || belowDirFileConflict(f.Path, dfPaths) {
+				files = append(files, f)
+			}
+		}
+		sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
 	}
 
 	snap := Snapshot{Files: files}

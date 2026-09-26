@@ -8,7 +8,7 @@ Read this when: changing commit validation order, proposal construction, the man
 
 | File | Purpose |
 |------|---------|
-| `internal/notebook/commit.go` | `Commit`, `attemptPublication`, `proposal`, `buildProposal`, `buildFirstProposal`, `buildIncrementProposal`, `uploadProposal`, `publish`, `mapUploadError`, `enforcePolicy`, `restoreProtected`, `policyRefusal` |
+| `internal/notebook/commit.go` | `Commit`, `attemptPublication`, `proposal`, `buildProposal`, `buildFirstProposal`, `buildIncrementProposal`, `uploadProposal`, `publish`, `mapUploadError`, `enforcePolicy`, `restoreProtected`, `policyRefusal`, `rejectNewFoldedPairs`, `newFoldedPairFiles` |
 | `internal/notebook/remote.go` | `readRemote`, `lookupPublication` |
 | `internal/notebook/notebook.go` | `ValidateMessage`, `rejectMarkers`, `applyLocal`, `failAfterAccept` |
 | `internal/notebook/backoff.go` | `exponentialBackoff.Wait` |
@@ -40,6 +40,7 @@ Notebook.Commit(ctx, message)
            conflict  → materializeTree → applyLocal(Materialize(R baseline, tree)) → CONTENT_CONFLICT
            merged == remote.tree → applyLocal(Accept(R baseline)) → Result{R gen, empty stat}
            diffStat(remote.tree, merged.Tree)
+           rejectNewFoldedPairs(remote.tree, merged.Tree) → INVALID_REQUEST/INVALID_CONTENT for a new case-folded file/directory pair
            buildProposal: gen 0 → buildFirstProposal | else buildIncrementProposal
            uploadProposal → storage.UploadUnique
            publish: EncodeManifest → CreateObject (gen 0) | ReplaceObject(etag)
@@ -71,6 +72,7 @@ Notebook.Commit(ctx, message)
 - **Commit metadata.** Author and committer are `slivingdoc <slivingdoc@localhost>` (`git.AuthorName`, `git.AuthorEmail`); time is the operation-attempt start (`attemptStart`, taken once per `Commit`), UTC, offset zero, one-second precision.
 - **Pack before manifest.** `UploadUnique` writes the pack with `slivingdoc` metadata (SHA-256, size, kind, generation) before any manifest names it. A pack alone publishes nothing; an unreferenced pack is an orphan proposal that cleanup may delete once a later checkpoint's cutoff is at or above its key generation.
 - **Diffstat.** Computed from R's tree to the merged tree before the upload, so a read failure aborts with no remote or local change.
+- **Case-folded file/directory pairs.** A clean merge can pair a file from one writer with a directory from another whose names differ only in case (`P` from this caller, `p/x.md` from R). Before the upload, `rejectNewFoldedPairs` reads the merged snapshot and runs `git.FoldedDirectoryPairs`; every pair R does not already hold whole is refused as `INVALID_REQUEST`/`INVALID_CONTENT` (action `EDIT_FILES`) naming both paths of each pair, sorted (`newFoldedPairFiles`). Nothing was uploaded and L and P are unchanged, so the caller renames one side and commits again. A pair R already holds is tolerated; see [git-engine.md](./git-engine.md) for how such a pair reaches L and how an operator repairs one under a protected path. The check reads the merged snapshot on every publishing attempt, and R's only when the merged state holds a pair.
 
 ### Compare-and-swap
 

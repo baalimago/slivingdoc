@@ -177,6 +177,9 @@ func (f *fakeRepository) WriteTree(entries []git.TreeEntry) (git.OID, error) {
 	if f.closed {
 		return git.OID{}, errors.New("fake: repository closed")
 	}
+	if err := git.CheckUniqueNames(entries); err != nil {
+		return git.OID{}, fmt.Errorf("fake: %w", err)
+	}
 	sorted := append([]git.TreeEntry(nil), entries...)
 	git.SortTreeEntries(sorted)
 	raw := serializeTreeEntries(sorted)
@@ -226,10 +229,10 @@ func (f *fakeRepository) ReadCommit(id git.OID) (git.Commit, error) {
 // MergeTrees performs a real file-level three-tree merge: identical sides
 // resolve, one-sided changes win, and differing two-sided changes become
 // index conflicts with stages 1/2/3. A file-versus-directory replacement
-// keeps the file side's stage at the path and the directory side's content
-// below it (local stage 2, remote stage 0), mirroring the index shapes the
-// policy structures. A conflict-free merge builds its tree from the
-// resolved stage-0 blobs.
+// keeps the file side's stage at the path, and the paths below it merge
+// like any other path, so the directory side's one-sided entries resolve to
+// stage 0: libgit2's index shape. A conflict-free merge builds its tree
+// from the resolved stage-0 blobs.
 func (f *fakeRepository) MergeTrees(base, local, remote git.OID) (git.MergeIndex, error) {
 	if f.closed {
 		return git.MergeIndex{}, errors.New("fake: repository closed")
@@ -263,7 +266,6 @@ func (f *fakeRepository) MergeTrees(base, local, remote git.OID) (git.MergeIndex
 	}
 	sort.Strings(sorted)
 
-	dfAny := map[string]bool{}   // file-versus-directory conflict paths
 	var entries []git.IndexEntry // resolved and conflicted entries
 	conflicted := false
 
@@ -276,7 +278,6 @@ func (f *fakeRepository) MergeTrees(base, local, remote git.OID) (git.MergeIndex
 			// File-versus-directory replacement: the file side stays a
 			// conflicted entry at its own stage.
 			conflicted = true
-			dfAny[p] = true
 			switch {
 			case hasL:
 				entries = append(entries, git.IndexEntry{Path: p, Mode: l.Mode, ID: l.ID, Stage: 2})
@@ -284,18 +285,6 @@ func (f *fakeRepository) MergeTrees(base, local, remote git.OID) (git.MergeIndex
 				entries = append(entries, git.IndexEntry{Path: p, Mode: r.Mode, ID: r.ID, Stage: 3})
 			default:
 				entries = append(entries, git.IndexEntry{Path: p, Mode: b.Mode, ID: b.ID, Stage: 1})
-			}
-			continue
-		}
-		if belowDirFileConflict(p, dfAny) {
-			// Directory content below a file-versus-directory conflict:
-			// local entries keep stage 2 so they survive materialization,
-			// remote entries resolve cleanly and are omitted below the
-			// conflicted path.
-			if hasL {
-				entries = append(entries, git.IndexEntry{Path: p, Mode: l.Mode, ID: l.ID, Stage: 2})
-			} else if hasR {
-				entries = append(entries, git.IndexEntry{Path: p, Mode: r.Mode, ID: r.ID, Stage: 0})
 			}
 			continue
 		}
@@ -643,17 +632,6 @@ func formatConflictMarkers(local, remote []byte) []byte {
 	}
 	b.WriteString(">>>>>>> remote\n")
 	return b.Bytes()
-}
-
-// belowDirFileConflict reports whether path lies below a file-versus-
-// directory conflict path, matching the policy's materialization rule.
-func belowDirFileConflict(path string, dfPaths map[string]bool) bool {
-	for i := 0; i < len(path); i++ {
-		if path[i] == '/' && dfPaths[path[:i]] {
-			return true
-		}
-	}
-	return false
 }
 
 // testIDSource is a concurrency-safe deterministic source of UUIDv7

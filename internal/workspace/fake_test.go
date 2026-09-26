@@ -84,6 +84,9 @@ func (f *fakeRepository) WriteTree(entries []git.TreeEntry) (git.OID, error) {
 	if f.closed {
 		return git.OID{}, fmt.Errorf("fake: repository closed")
 	}
+	if err := git.CheckUniqueNames(entries); err != nil {
+		return git.OID{}, fmt.Errorf("fake: %w", err)
+	}
 	sorted := append([]git.TreeEntry(nil), entries...)
 	git.SortTreeEntries(sorted)
 	id := fakeTreeID(sorted)

@@ -82,7 +82,13 @@ func (w *Workspace) scanLocked(ctx context.Context) (git.Snapshot, error) {
 		return git.Snapshot{}, err
 	}
 	snap := git.Snapshot{Files: files}
-	if err := git.ValidateSnapshot(snap); err != nil {
+	err := git.ValidateSnapshot(snap)
+	if err == nil {
+		// New local content also may not hold a file whose name folds to
+		// a directory's; accepted remote state is not held to that rule.
+		err = git.ValidateFoldedDirectories(snap)
+	}
+	if err != nil {
 		var collision *git.PathCollisionError
 		if errors.As(err, &collision) {
 			other := ""

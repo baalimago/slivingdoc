@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -107,7 +108,7 @@ func (n *Notebook) attemptPublication(ctx context.Context, message string, baseT
 		return false, Result{}, storageIntegrity(ReasonEngineFailed, err, "merge failed")
 	}
 	if len(merged.Conflicts) > 0 {
-		tree, err := n.materializeTree(merged)
+		tree, err := n.materializeTree(merged, localTree)
 		if err != nil {
 			return false, Result{}, storageIntegrity(ReasonEngineFailed, err, "materialize conflict result")
 		}
@@ -133,6 +134,9 @@ func (n *Notebook) attemptPublication(ctx context.Context, message string, baseT
 	// aborts with no remote or local mutation.
 	stat, err := n.diffStat(remote.tree, merged.Tree)
 	if err != nil {
+		return false, Result{}, err
+	}
+	if err := n.rejectNewFoldedPairs(remote.tree, merged.Tree); err != nil {
 		return false, Result{}, err
 	}
 
@@ -493,4 +497,52 @@ func readOnlyMessage(entries []string) string {
 	}
 	return fmt.Sprintf("%s %s read-only in this server. Your changes there were discarded and the files reset. Write outside the read-only paths, then commit again.",
 		strings.Join(entries, ReadOnlyListSeparator), verb)
+}
+
+// rejectNewFoldedPairs refuses a merged state that would publish a new file
+// whose name folds to a directory's (`P` beside `p/x.md`), before any
+// upload and with L untouched (architecture/commit.md). Each side can be
+// valid alone, so only the merge shows the pair: one writer added `P`,
+// another `p/x.md`. A pair R already holds is tolerated, so a notebook an
+// older writer published that way stays writable.
+func (n *Notebook) rejectNewFoldedPairs(remoteTree, mergedTree git.OID) error {
+	merged, err := git.ReadSnapshot(n.ws.Repo(), mergedTree)
+	if err != nil {
+		return storageIntegrity(ReasonEngineFailed, err, "read the merged snapshot for the case-folding check")
+	}
+	if len(git.FoldedDirectoryPairs(merged)) == 0 {
+		return nil
+	}
+	remote, err := git.ReadSnapshot(n.ws.Repo(), remoteTree)
+	if err != nil {
+		return storageIntegrity(ReasonEngineFailed, err, "read the accepted snapshot for the case-folding check")
+	}
+	files := newFoldedPairFiles(merged, remote)
+	if len(files) == 0 {
+		return nil
+	}
+	return invalidRequest(ReasonInvalidContent, nil, files,
+		"the merged notebook would hold a file and a directory whose names differ only in case; rename one of them, then commit again")
+}
+
+// newFoldedPairFiles names both paths of every folded file/directory pair
+// of merged that remote does not already hold whole, sorted and once each.
+func newFoldedPairFiles(merged, remote git.Snapshot) []ErrorFile {
+	held := make(map[string]bool, len(remote.Files))
+	for _, f := range remote.Files {
+		held[f.Path] = true
+	}
+	named := map[string]bool{}
+	for _, pair := range git.FoldedDirectoryPairs(merged) {
+		if held[pair.First] && held[pair.Path] {
+			continue
+		}
+		named[pair.First], named[pair.Path] = true, true
+	}
+	files := make([]ErrorFile, 0, len(named))
+	for path := range named {
+		files = append(files, ErrorFile{Path: path, Reason: FileReasonInvalidContent})
+	}
+	slices.SortFunc(files, func(a, b ErrorFile) int { return strings.Compare(a.Path, b.Path) })
+	return files
 }

@@ -221,6 +221,24 @@ func TestScanRejectsCaseFoldingCollision(t *testing.T) {
 	}
 }
 
+// TestScanRejectsFileThatFoldsToADirectory proves a file whose name folds
+// to the name of a directory is a path collision naming both paths: the two
+// could not both exist in one notebook tree.
+func TestScanRejectsFileThatFoldsToADirectory(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("case-folding collisions cannot exist on case-insensitive hosts")
+	}
+	w, _ := scanFixture(t, map[string]string{"P": "file", "p/x.md": "below"})
+	_, err := w.Snapshot(context.Background())
+	var se *ScanError
+	if !errors.As(err, &se) || !errors.Is(err, ErrPathCollision) {
+		t.Fatalf("Snapshot() error = %v, want a path-collision *ScanError", err)
+	}
+	if se.Path != "p/x.md" || se.Other != "P" {
+		t.Fatalf("ScanError = {Path: %q, Other: %q}, want the path below and the file", se.Path, se.Other)
+	}
+}
+
 func TestScanRejectsNFCDuplicateNames(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("NFD and NFC names collide on case-insensitive Windows")
