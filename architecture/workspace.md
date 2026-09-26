@@ -102,7 +102,7 @@ MarkPulled → withOpLock → write <P>/pulled via temp + rename
 ## Gotchas
 
 - The lock is per workspace method, not per notebook operation. `Notebook.Pull` takes it separately for `Snapshot`, `Materialize`, and `MarkPulled`, so two concurrent operations on one path can interleave.
-- `app.Service` caches one `Workspace` per request path string; `Workspace.state` is an in-memory copy of `state.json`. Two strings for the same canonical path produce two `Workspace` values over one P, and each trusts its own cached state.
+- `app.Service` caches one `Workspace` per cleaned request path; `Workspace.state` is an in-memory copy of `state.json`, trusted because that `Workspace` is the only one over its P in the process.
 - `Replace`, `Diff`, and `BaselineSnapshot` have no production callers (tests only). `Replace`'s comment calls it the conflict path, but the notebook uses `Materialize`.
 - `staging/` files are written `0644` inside P, not `0600`.
 - `Pulled` is a plain `os.Stat` outside the lock.

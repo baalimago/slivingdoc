@@ -117,12 +117,12 @@ main.go:main
 
 - Invariants (from AGENTS.md "Conventions"; a change that breaks one must update these docs): the process never runs Git or imports `git2go`; all CGo stays in `git2`, all production AWS SDK use in `s3store`; `current` is the only accepted-state authority and `LIST` is a cleanup tool, never a read path; packs are immutable and uploaded before any manifest references them; publication is ETag CAS with no writer lock; content is UTF-8 without U+0000, no symlinks or special files; commit rejects complete marker blocks; checkpoint and cleanup never change a commit result; a failure after local mutation returns `RECOVERY_FAILURE`, never `OK`.
 - Caller-facing data never contains a credential, S3 key, private path, Git object ID, or Git vocabulary: notebook messages are fixed strings, `mcp.Redact` is a backstop that masks pack and probe keys, 40- and 64-hex IDs, access keys, and URL userinfo, and `mcp.safeEngineDetail` is an allowlist for `detail`.
-- One `Service` holds one `Notebook` per request path string for the life of the process (`Service.opened`). See [workspace.md](./workspace.md) for the P directory each maps to.
+- One `Service` holds one `Notebook` per cleaned request path for the life of the process (`Service.opened`). See [workspace.md](./workspace.md) for the P directory each maps to.
 
 ## Gotchas
 
 - There is no pure-Go build. `CGO_ENABLED=0` fails to compile because of `git2`; run every tool in the default CGo mode.
-- `Service.opened` is keyed by the request path string as received (after `~/` expansion), not the canonical path. `/ws/a` and `/ws/a/` open two `Workspace` values over the same P directory, each with its own cached `state`.
+- `Service.opened` is keyed by `filepath.Clean` of the request path (after `~/` expansion), so `/ws/a` and `/ws/a/` share one `Workspace` (`TestServiceSharesOneNotebookPerDirectory`).
 
 ## Related
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"sync"
 
 	"github.com/baalimago/slivingdoc/internal/git"
@@ -150,8 +151,11 @@ func (s *Service) Commit(ctx context.Context, path, message string) (notebook.Re
 
 // notebookFor returns the notebook for the request path, opening its
 // workspace and notebook on first use. The open runs under the map lock so
-// concurrent first use of the same path cannot open two workspaces.
+// concurrent first use of the same path cannot open two workspaces. The
+// map key is the cleaned path, so spellings of one directory such as
+// /ws/a and /ws/a/ share one workspace and its operation lock.
 func (s *Service) notebookFor(ctx context.Context, path string) (*notebook.Notebook, error) {
+	path = filepath.Clean(path)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
