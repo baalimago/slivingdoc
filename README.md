@@ -18,8 +18,8 @@ Test coverage: 85.0% 😍👌
 - **High speed processing:** the solution is quite simple conceptually, allowing for very high scale and parallelism
 - **Plug-and-play:** setup the bucket, point at it, and start syncing notes!
 
-[`docs/slivingdoc-v1.md`](docs/slivingdoc-v1.md) is the full accepted
-contract behind these guarantees.
+[`architecture/`](architecture/README.md) documents the contract behind
+these guarantees, one concern per file.
 
 ## Get started
 
@@ -162,7 +162,7 @@ variables. `--bucket` is required. The most common flags:
     `SLIVINGDOC_ENDPOINT`, default `https://api.slivingdoc.dev`.
 
 `slivingdoc serve -h` prints the full reference, and
-[`docs/running.md`](docs/running.md) covers everything an operator
+[`architecture/running.md`](architecture/running.md) covers everything an operator
 needs: all flags, the exact S3 permissions, logging (`LOG_LEVEL` on
 stderr), the notebook rules, conflict recovery, and checkpoint
 retention. The Terraform module in [`terraform/`](terraform/)
@@ -172,14 +172,10 @@ provisions a bucket and a least-privilege IAM user for one notebook.
 
 - [`AGENTS.md`](AGENTS.md) — the developer and agent guide: package
   map, operation flows, conventions, and the QA gates.
-- [`docs/slivingdoc-v1.md`](docs/slivingdoc-v1.md) — the accepted
-  architecture contract.
-- [`docs/build.md`](docs/build.md) — the native build, from pinned
-  libgit2 source to dependency inspection.
-- [`docs/testing.md`](docs/testing.md) — the test commands, the test
-  layers, and the no-live-AWS rule.
-- [`docs/releasing.md`](docs/releasing.md) — release artifacts, npm
-  trusted publishing, and `make release`.
+- [`architecture/README.md`](architecture/README.md) — the architecture
+  index: one doc per command and subsystem (pull, commit, storage, the Git
+  engine, the MCP server, configuration, build, testing, releasing, and
+  more).
 
 ```bash
 make qa #lint plus the full Go and npm test suites

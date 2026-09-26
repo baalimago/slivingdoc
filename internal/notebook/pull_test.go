@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -219,9 +220,13 @@ func TestPullConflictWritesMarkersAndKeepsL(t *testing.T) {
 	a, aw, _ := newNotebook(t, nbConfig{store: store, ids: ids})
 	b, bw, _ := newNotebook(t, nbConfig{store: store, ids: ids})
 
-	writeLocal(t, aw, map[string]string{"a.md": "remote v1", "clean.md": "clean"})
+	writeLocal(t, aw, map[string]string{"a.md": "base v0"})
 	pullOK(t, a)
 	commitOK(t, a, "base")
+	pullOK(t, b) // B at gen 1; a first pull must start from a copy of the notebook
+
+	writeLocal(t, aw, map[string]string{"a.md": "remote v1", "clean.md": "clean"})
+	commitOK(t, a, "remote change")
 
 	writeLocal(t, bw, map[string]string{"a.md": "local v1", "local-only.md": "local only"})
 	res, err := b.Pull(context.Background())
@@ -249,11 +254,85 @@ func TestPullConflictWritesMarkersAndKeepsL(t *testing.T) {
 	if got["local-only.md"] != "local only" {
 		t.Fatalf("local-only.md = %q, want the local addition preserved", got["local-only.md"])
 	}
-	if gen := bw.Baseline().RemoteGeneration; gen != 1 {
-		t.Fatalf("baseline generation after conflict = %d, want the remote state 1", gen)
+	if gen := bw.Baseline().RemoteGeneration; gen != 2 {
+		t.Fatalf("baseline generation after conflict = %d, want the remote state 2", gen)
 	}
-	if !bw.Pulled() {
-		t.Fatal("a conflicting pull must initialize P")
+}
+
+// TestFileDirectoryConflictKeepsLocalSide proves a file-versus-directory
+// conflict leaves the local side in L in both directions, through both
+// operations: the local file when R made the path a directory, and every
+// file of the local directory when R made the path a file. The fake engine
+// stages the directory side's entries as libgit2 does (stage 0 below the
+// path), so only the local tree tells the sides apart.
+func TestFileDirectoryConflictKeepsLocalSide(t *testing.T) {
+	tests := []struct {
+		name   string
+		base   map[string]string
+		remote map[string]string
+		local  map[string]string
+		remove []string
+	}{
+		{
+			name:   "local directory remote file",
+			remote: map[string]string{"p": "remote file"},
+			local:  map[string]string{"p/q.md": "local q", "p/sub/r.md": "local r"},
+		},
+		{
+			name:   "local file remote directory",
+			remote: map[string]string{"p/q.md": "remote q"},
+			local:  map[string]string{"p": "local file"},
+		},
+		{
+			// The remote edit below p conflicts with the local deletion,
+			// but only the conflict at p is reported and L keeps the file.
+			name:   "local file replaces a directory the remote side changed",
+			base:   map[string]string{"p/q.md": "base q"},
+			remote: map[string]string{"p/q.md": "remote q"},
+			local:  map[string]string{"p": "local file"},
+			remove: []string{"p/q.md", "p"},
+		},
+	}
+	ops := []struct {
+		name string
+		run  func(nb *Notebook) error
+	}{
+		{name: "pull", run: func(nb *Notebook) error { return errOnly(nb.Pull(context.Background())) }},
+		{name: "commit", run: func(nb *Notebook) error { return errOnly(nb.Commit(context.Background(), "mine")) }},
+	}
+	for _, tt := range tests {
+		for _, op := range ops {
+			t.Run(tt.name+"/"+op.name, func(t *testing.T) {
+				store := fake.New("")
+				ids := &testIDSource{}
+				a, aw, _ := newNotebook(t, nbConfig{store: store, ids: ids})
+				b, bw, _ := newNotebook(t, nbConfig{store: store, ids: ids})
+
+				base := map[string]string{"base.md": "base"}
+				maps.Copy(base, tt.base)
+				writeLocal(t, aw, base)
+				pullOK(t, a)
+				commitOK(t, a, "base")
+				pullOK(t, b)
+
+				writeLocal(t, aw, tt.remote)
+				commitOK(t, a, "remote side")
+				for _, path := range tt.remove {
+					removeLocal(t, bw, path)
+				}
+				writeLocal(t, bw, tt.local)
+
+				ne := assertErrorCode(t, op.run(b), CodeContentConflict)
+				if len(ne.Files) != 1 || ne.Files[0].Path != "p" || ne.Files[0].Reason != FileReasonPathConflict {
+					t.Fatalf("conflict files = %+v, want one PATH_CONFLICT at p", ne.Files)
+				}
+				want := map[string]string{"base.md": "base"}
+				maps.Copy(want, tt.local)
+				if got := localSnapshot(t, bw); !reflect.DeepEqual(got, want) {
+					t.Fatalf("L after the conflict = %v, want the local side %v", got, want)
+				}
+			})
+		}
 	}
 }
 
@@ -312,8 +391,8 @@ func TestPullCorruptPackRejected(t *testing.T) {
 	}
 }
 
-// TestPullStalePackRestartSucceeds proves the stale-observation restart of
-// architecture section 10: a pack that disappeared during cleanup discards
+// TestPullStalePackRestartSucceeds proves the stale-observation restart in
+// architecture/pull.md: a pack that disappeared during cleanup discards
 // the observation; when current moved and the pack is back, the pull
 // restarts and succeeds.
 func TestPullStalePackRestartSucceeds(t *testing.T) {
@@ -433,7 +512,10 @@ func TestPullEntryRecoveryRunsBeforeWork(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() = %v", err)
 	}
-	pullOK(t, nb2)
+	// An edit made while P required recovery is discarded by the repair,
+	// so the recovering call reports it instead of returning OK.
+	writeLocal(t, reopened, map[string]string{"a.md": "edited while broken"})
+	assertEntryRecovered(t, errOnly(nb2.Pull(context.Background())))
 	if reopened.RecoveryRequired() {
 		t.Fatal("entry recovery did not clear the recovery flag")
 	}
@@ -442,6 +524,24 @@ func TestPullEntryRecoveryRunsBeforeWork(t *testing.T) {
 	}
 	if got := readLocal(t, reopened, "a.md"); got != "v1" {
 		t.Fatalf("L after entry recovery = %q, want the accepted content", got)
+	}
+	// The flag is clear, so the next call runs its own work.
+	pullOK(t, nb2)
+}
+
+// assertEntryRecovered asserts the RECOVERY_FAILURE of a successful entry
+// recovery: stage entry, remote acceptance unknown, resynchronized, PULL.
+func assertEntryRecovered(t *testing.T, err error) {
+	t.Helper()
+	ne := assertErrorCode(t, err, CodeRecoveryFailure)
+	if ne.Recovery == nil || ne.Recovery.Stage != stageEntry || ne.Recovery.RemoteAccepted != RemoteAcceptedUnknown || !ne.Recovery.Resynchronized {
+		t.Fatalf("recovery report = %+v, want entry / unknown / resynchronized=true", ne.Recovery)
+	}
+	if ne.Action != ActionPull {
+		t.Fatalf("action = %s, want PULL", ne.Action)
+	}
+	if !errors.Is(ne, errEntryRecovered) {
+		t.Fatalf("cause = %v, want errEntryRecovered", ne.Cause)
 	}
 }
 
@@ -622,4 +722,132 @@ func TestPullCleanPullBuildsNoExtraTree(t *testing.T) {
 	if configured.treeWrites != unconfigured.treeWrites {
 		t.Fatalf("configured pull wrote %d trees, want the unconfigured pull's %d", configured.treeWrites, unconfigured.treeWrites)
 	}
+}
+
+// TestPullFirstPullGuard proves the first-pull guard: against a non-empty
+// remote a first pull proceeds only when every visible file is already in
+// R with identical bytes, and otherwise refuses before any local change;
+// a later pull is never guarded.
+func TestPullFirstPullGuard(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		local    map[string]string
+		readOnly []string
+		writable []string
+		want     map[string]string // the L a passing pull leaves
+		files    []ErrorFile       // non-nil: the pull is refused naming these
+		message  string
+	}{
+		{name: "empty", local: map[string]string{}},
+		{name: "identical subset", local: map[string]string{"a.md": "alpha"}},
+		{
+			name: "unrelated file", local: map[string]string{"x.md": "mine"},
+			files:   []ErrorFile{{Path: "x.md", Reason: FileReasonNotInNotebook}},
+			message: "found files that are not in the notebook;",
+		},
+		{
+			name: "same path other bytes", local: map[string]string{"a.md": "ALPHA"},
+			files:   []ErrorFile{{Path: "a.md", Reason: FileReasonDiffersFromNotebook}},
+			message: "found files that differ from the notebook;",
+		},
+		{
+			name: "both kinds", local: map[string]string{"a.md": "ALPHA", "b.md": "beta", "x.md": "mine"},
+			files: []ErrorFile{
+				{Path: "a.md", Reason: FileReasonDiffersFromNotebook},
+				{Path: "x.md", Reason: FileReasonNotInNotebook},
+			},
+			message: "found files that are not in the notebook or differ from it;",
+		},
+		{
+			// A protected file R holds is restored from R, so it is not
+			// compared.
+			name: "protected file in the notebook with other bytes", readOnly: []string{"a.md"},
+			local: map[string]string{"a.md": "ALPHA"},
+		},
+		{
+			// A protected file R lacks would be deleted by the pull.
+			name: "protected file not in the notebook", readOnly: []string{"ro"},
+			local:   map[string]string{"a.md": "alpha", "ro/x.md": "local only"},
+			files:   []ErrorFile{{Path: "ro/x.md", Reason: FileReasonNotInNotebook}},
+			message: "found files that are not in the notebook;",
+		},
+		{
+			name: "file outside the writable set not in the notebook", writable: []string{"w"},
+			local:   map[string]string{"todo.md": "mine"},
+			files:   []ErrorFile{{Path: "todo.md", Reason: FileReasonNotInNotebook}},
+			message: "found files that are not in the notebook;",
+		},
+		{
+			name: "unprotected file inside the writable set", writable: []string{"w"},
+			local:   map[string]string{"w/x.md": "mine"},
+			files:   []ErrorFile{{Path: "w/x.md", Reason: FileReasonNotInNotebook}},
+			message: "found files that are not in the notebook;",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			store := fake.New("")
+			ids := &testIDSource{}
+			a, aw, _ := newNotebook(t, nbConfig{store: store, ids: ids})
+			writeLocal(t, aw, map[string]string{"a.md": "alpha", "b.md": "beta"})
+			pullOK(t, a)
+			commitOK(t, a, "seed")
+
+			b, bw, _ := newNotebook(t, nbConfig{store: store, ids: ids, readOnly: tt.readOnly, writable: tt.writable})
+			writeLocal(t, bw, tt.local)
+			res, err := b.Pull(context.Background())
+			if tt.files == nil {
+				if err != nil {
+					t.Fatalf("Pull() = %v", err)
+				}
+				if got := localSnapshot(t, bw); got["a.md"] != "alpha" || got["b.md"] != "beta" || len(got) != 2 {
+					t.Fatalf("L after the first pull = %v, want the notebook", got)
+				}
+				return
+			}
+			ne := assertErrorCode(t, err, CodeInvalidRequest)
+			assertZeroResult(t, res)
+			if ne.Reason != ReasonDirectoryNotEmpty || ne.Action != ActionFixInput {
+				t.Fatalf("reason/action = %s/%s, want DIRECTORY_NOT_EMPTY/FIX_INPUT", ne.Reason, ne.Action)
+			}
+			if !reflect.DeepEqual(ne.Files, tt.files) {
+				t.Fatalf("files = %+v, want %+v", ne.Files, tt.files)
+			}
+			if !strings.Contains(ne.Message, tt.message) {
+				t.Fatalf("message = %q, want it to contain %q", ne.Message, tt.message)
+			}
+			if bw.Pulled() || bw.Baseline().RemoteGeneration != 0 {
+				t.Fatal("a refused first pull changed P")
+			}
+			if got := localSnapshot(t, bw); !reflect.DeepEqual(got, tt.local) {
+				t.Fatalf("L after the refusal = %v, want %v untouched", got, tt.local)
+			}
+		})
+	}
+
+	t.Run("seeding an empty remote refuses a protected file", func(t *testing.T) {
+		b, bw, _ := newNotebook(t, nbConfig{store: fake.New(""), ids: &testIDSource{}, writable: []string{"notes"}})
+		local := map[string]string{"notes/a.md": "seed", "todo.md": "mine"}
+		writeLocal(t, bw, local)
+		ne := assertErrorCode(t, errOnly(b.Pull(context.Background())), CodeInvalidRequest)
+		if want := []ErrorFile{{Path: "todo.md", Reason: FileReasonNotInNotebook}}; ne.Reason != ReasonDirectoryNotEmpty || !reflect.DeepEqual(ne.Files, want) {
+			t.Fatalf("refusal = %s %+v, want DIRECTORY_NOT_EMPTY naming %+v", ne.Reason, ne.Files, want)
+		}
+		if got := localSnapshot(t, bw); !reflect.DeepEqual(got, local) {
+			t.Fatalf("L after the refusal = %v, want %v untouched", got, local)
+		}
+	})
+
+	t.Run("seeding an empty remote and later pulls are not guarded", func(t *testing.T) {
+		store := fake.New("")
+		ids := &testIDSource{}
+		a, aw, _ := newNotebook(t, nbConfig{store: store, ids: ids})
+		writeLocal(t, aw, map[string]string{"a.md": "alpha"})
+		pullOK(t, a) // the remote is empty: the directory seeds it
+		commitOK(t, a, "seed")
+		writeLocal(t, aw, map[string]string{"local.md": "not yet published"})
+		pullOK(t, a) // not a first pull: local additions merge as usual
+		if got := readLocal(t, aw, "local.md"); got != "not yet published" {
+			t.Fatalf("local.md after a later pull = %q, want it kept", got)
+		}
+	})
 }

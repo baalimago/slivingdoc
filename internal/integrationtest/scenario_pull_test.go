@@ -9,7 +9,7 @@ import (
 	"github.com/baalimago/slivingdoc/internal/storage"
 )
 
-// emptyTreeID is the canonical empty Git tree (architecture section 10, L603):
+// emptyTreeID is the canonical empty Git tree (architecture/pull.md):
 // the first-pull baseline and the generation-0 remote tree.
 const emptyTreeID = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
@@ -17,7 +17,7 @@ const emptyTreeID = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 // directory against an empty remote: OK with an empty success stat (the
 // local additions are retained unchanged, so nothing changed on disk),
 // local additions retained, the empty-tree generation-0 baseline recorded,
-// and no remote state created (architecture section 10, L603).
+// and no remote state created (architecture/pull.md).
 func TestScenarioPullFirstPull(t *testing.T) {
 	t.Parallel()
 	h := newFakeHarness(t, HarnessConfig{})
@@ -56,7 +56,7 @@ func TestScenarioPullFirstPull(t *testing.T) {
 
 // TestScenarioPullWarmPull proves that a pull with no local changes and an
 // unchanged remote advances the baseline and reuses the cached pack bytes:
-// a second pull performs no pack download (architecture section 10, L603).
+// a second pull performs no pack download (architecture/pull.md).
 func TestScenarioPullWarmPull(t *testing.T) {
 	t.Parallel()
 	h := newFakeHarness(t, HarnessConfig{})
@@ -84,7 +84,7 @@ func TestScenarioPullWarmPull(t *testing.T) {
 
 // TestScenarioPullAfterRemoteAdvance proves that a pull rebases local
 // additions, modifications, and deletions on the remote head without
-// discarding any mergeable local change (architecture section 10, L603).
+// discarding any mergeable local change (architecture/pull.md).
 func TestScenarioPullAfterRemoteAdvance(t *testing.T) {
 	t.Parallel()
 	h := newFakeHarness(t, HarnessConfig{})
@@ -114,7 +114,7 @@ func TestScenarioPullAfterRemoteAdvance(t *testing.T) {
 
 // TestScenarioPullColdPull proves that a cold pull downloads only the
 // missing descriptor packs and never reconstructs state by LIST
-// (architecture section 10, L603): the list counter stays zero.
+// (architecture/pull.md): the list counter stays zero.
 func TestScenarioPullColdPull(t *testing.T) {
 	t.Parallel()
 	h := newFakeHarness(t, HarnessConfig{})
@@ -145,7 +145,7 @@ func TestScenarioPullColdPull(t *testing.T) {
 // TestScenarioPullConflict proves a conflicting pull: CONTENT_CONFLICT with
 // the exact relative path and marker ranges, markers materialized into L,
 // R recorded as the new baseline, local-only files preserved, and L never
-// reverted (architecture section 10, L603).
+// reverted (architecture/pull.md).
 func TestScenarioPullConflict(t *testing.T) {
 	t.Parallel()
 	h := newFakeHarness(t, HarnessConfig{})
@@ -187,10 +187,10 @@ func TestScenarioPullConflict(t *testing.T) {
 	assertPulledMarker(t, b, pathB)
 }
 
-// TestScenarioPullStaleReader proves the stale-reader restart (architecture
-// section 10, L603): a reader blocked on a pack GET observes the pack deleted
-// by a concurrent writer's checkpoint cleanup, rereads current, restarts,
-// and completes with the current head. The barrier keeps the race
+// TestScenarioPullStaleReader proves the stale-reader restart
+// (architecture/pull.md): a reader blocked on a pack GET observes the pack
+// deleted by a concurrent writer's checkpoint cleanup, rereads current,
+// restarts, and completes with the current head. The barrier keeps the race
 // deterministic over the real S3 backend.
 func TestScenarioPullStaleReader(t *testing.T) {
 	t.Parallel()
@@ -242,7 +242,7 @@ func TestScenarioPullStaleReader(t *testing.T) {
 
 // TestScenarioPullCacheCorruption proves that a corrupt cached pack is
 // never a false hit: the next pull discards it, re-downloads the verified
-// bytes, and heals the cache (architecture section 8.3, L369).
+// bytes, and heals the cache (architecture/pull.md).
 func TestScenarioPullCacheCorruption(t *testing.T) {
 	t.Parallel()
 	h := newFakeHarness(t, HarnessConfig{})
@@ -279,5 +279,143 @@ func TestScenarioPullCacheCorruption(t *testing.T) {
 	b.assertOK(t, b.Pull("", pathB))
 	if got := b.Recorder().CountKey(OpGet, packKey); got != 2 {
 		t.Fatalf("pack gets after the healed cache = %d, want the cached hit", got)
+	}
+}
+
+// TestScenarioPullFirstPullGuard proves the first-pull guard
+// (architecture/pull.md): a first pull proceeds into an empty directory,
+// into one whose every file is already in the notebook with identical
+// bytes, and into any directory when the remote notebook is empty
+// (seeding it). Into a directory holding any other file it is refused as
+// INVALID_REQUEST/DIRECTORY_NOT_EMPTY/FIX_INPUT naming each offending file
+// (NOT_IN_NOTEBOOK or DIFFERS_FROM_NOTEBOOK) before L, the pulled marker,
+// or state.json changes. A protected file the notebook holds is restored
+// rather than compared (TestScenarioReadOnlyPullRestores); one it lacks is
+// refused, since the pull would delete it.
+func TestScenarioPullFirstPullGuard(t *testing.T) {
+	t.Parallel()
+	published := map[string]string{"a.md": "alpha\n", "docs/b.md": "beta\n"}
+	seed := func(t *testing.T) (*Harness, *Harness) {
+		t.Helper()
+		writer := newFakeHarness(t, HarnessConfig{})
+		path := writer.Path("notes")
+		writer.assertOK(t, writer.Pull("", path))
+		for name, data := range published {
+			writer.WriteFile(path+"/"+name, data)
+		}
+		writer.assertOK(t, writer.Commit("", path, "seed"))
+		return writer, newSharedHarness(t, writer.Raw(), writer.cfg.Prefix, HarnessConfig{})
+	}
+
+	for _, row := range []struct {
+		name  string
+		local map[string]string
+	}{
+		{name: "empty directory", local: map[string]string{}},
+		{name: "matching subset", local: map[string]string{"docs/b.md": "beta\n"}},
+		{name: "matching copy", local: published},
+	} {
+		t.Run("proceeds into "+row.name, func(t *testing.T) {
+			t.Parallel()
+			_, reader := seed(t)
+			path := reader.Path("notes")
+			for name, data := range row.local {
+				reader.WriteFile(path+"/"+name, data)
+			}
+			reader.assertOK(t, reader.Pull("", path))
+			assertPulledMarker(t, reader, path)
+			assertVisibleFiles(t, reader, path, published)
+		})
+	}
+
+	t.Run("seeds an empty remote", func(t *testing.T) {
+		t.Parallel()
+		h := newFakeHarness(t, HarnessConfig{})
+		path := h.Path("notes")
+		h.WriteFile(path+"/mine.md", "seed\n")
+		h.assertOK(t, h.Pull("", path))
+		h.assertOK(t, h.Commit("", path, "seed"))
+		assertRemoteGeneration(t, h, path, 1)
+	})
+
+	t.Run("refuses a protected file the notebook lacks", func(t *testing.T) {
+		t.Parallel()
+		writer, _ := seed(t)
+		agent := newSharedHarness(t, writer.Raw(), writer.cfg.Prefix, HarnessConfig{WritablePaths: []string{"docs"}})
+		path := agent.Path("notes")
+		local := map[string]string{"docs/b.md": "beta\n", "todo.md": "mine\n"}
+		for name, data := range local {
+			agent.WriteFile(path+"/"+name, data)
+		}
+		agent.assertEnvelope(t, ToolCall{
+			Tool: toolPull, Path: path,
+			Expect: CallExpectation{
+				ErrorCode: "INVALID_REQUEST", Retryable: new(false),
+				Reason: "DIRECTORY_NOT_EMPTY", Action: "FIX_INPUT",
+				Files:    []FileExpectation{{Path: "todo.md", Reason: "NOT_IN_NOTEBOOK", Ranges: []RangeExpectation{}}},
+				Writable: []string{"docs"},
+			},
+		}, agent.Pull("", path))
+		assertVisibleFiles(t, agent, path, local)
+	})
+
+	for _, row := range []struct {
+		name  string
+		local map[string]string
+		files []FileExpectation
+	}{
+		{
+			name:  "an unrelated file",
+			local: map[string]string{"a.md": "alpha\n", "other.md": "not in the notebook\n"},
+			files: []FileExpectation{{Path: "other.md", Reason: "NOT_IN_NOTEBOOK", Ranges: []RangeExpectation{}}},
+		},
+		{
+			name:  "a file with other content",
+			local: map[string]string{"a.md": "my own alpha\n"},
+			files: []FileExpectation{{Path: "a.md", Reason: "DIFFERS_FROM_NOTEBOOK", Ranges: []RangeExpectation{}}},
+		},
+		{
+			name:  "both kinds",
+			local: map[string]string{"a.md": "my own alpha\n", "docs/b.md": "beta\n", "z.md": "mine\n"},
+			files: []FileExpectation{
+				{Path: "a.md", Reason: "DIFFERS_FROM_NOTEBOOK", Ranges: []RangeExpectation{}},
+				{Path: "z.md", Reason: "NOT_IN_NOTEBOOK", Ranges: []RangeExpectation{}},
+			},
+		},
+	} {
+		t.Run("refuses "+row.name, func(t *testing.T) {
+			t.Parallel()
+			_, reader := seed(t)
+			path := reader.Path("notes")
+			for name, data := range row.local {
+				reader.WriteFile(path+"/"+name, data)
+			}
+			reader.assertEnvelope(t, ToolCall{
+				Tool: toolPull, Path: path,
+				Expect: CallExpectation{
+					ErrorCode: "INVALID_REQUEST", Retryable: new(false),
+					Reason: "DIRECTORY_NOT_EMPTY", Action: "FIX_INPUT",
+					Files: row.files,
+				},
+			}, reader.Pull("", path))
+			assertVisibleFiles(t, reader, path, row.local)
+			if _, err := os.Stat(filepath.Join(reader.PrivateDir(path), "pulled")); err == nil {
+				t.Fatal("a refused first pull wrote the pulled marker")
+			}
+			if rec := reader.StateRecord(t, path); rec.RemoteGeneration != 0 || rec.BaselineTree != emptyTreeID {
+				t.Fatalf("state after the refusal = %+v, want the untouched generation-0 record", rec)
+			}
+			// The refusal leaves the directory unmanaged: commit still
+			// requires a pull, and emptying the directory lets it succeed.
+			reader.assertEnvelope(t, ToolCall{
+				Tool: toolCommit, Path: path, Message: "too soon",
+				Expect: CallExpectation{ErrorCode: "INVALID_REQUEST", Reason: "PULL_REQUIRED"},
+			}, reader.Commit("", path, "too soon"))
+			for name := range row.local {
+				reader.RemoveFile(path + "/" + name)
+			}
+			reader.assertOK(t, reader.Pull("", path))
+			assertVisibleFiles(t, reader, path, published)
+		})
 	}
 }

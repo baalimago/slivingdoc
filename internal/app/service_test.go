@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sync"
 	"testing"
 
@@ -197,6 +199,28 @@ func TestServiceCloseIsIdempotent(t *testing.T) {
 	}
 	if _, err := svc.Pull(context.Background(), filepath.Join(cfg.workspaceRoot, "notes")); err == nil {
 		t.Fatal("Pull() on a closed service = nil, want a refusal")
+	}
+}
+
+// TestServiceSharesOneNotebookPerDirectory proves that two spellings of
+// one directory resolve to one opened workspace and notebook, so they share
+// one operation lock.
+func TestServiceSharesOneNotebookPerDirectory(t *testing.T) {
+	cfg := testServiceConfig(t)
+	svc, _ := newTestService(t, cfg)
+	path := filepath.Join(cfg.workspaceRoot, "notes")
+	for _, spelling := range []string{path, path + "/", path + "/./", filepath.Join(path, "sub") + "/.."} {
+		if _, err := svc.Pull(context.Background(), spelling); err != nil {
+			t.Fatalf("Pull(%q) = %v", spelling, err)
+		}
+	}
+	svc.mu.Lock()
+	defer svc.mu.Unlock()
+	if len(svc.opened) != 1 {
+		t.Fatalf("opened notebooks = %d, want 1 for one directory", len(svc.opened))
+	}
+	if _, ok := svc.opened[path]; !ok {
+		t.Fatalf("opened keys = %v, want the cleaned path %q", slices.Collect(maps.Keys(svc.opened)), path)
 	}
 }
 

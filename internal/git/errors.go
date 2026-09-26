@@ -8,7 +8,7 @@ import (
 // Named engine failures. A caller-facing layer can only describe a cause it
 // can identify, so every failure this package can classify itself carries one
 // of these. Anything else is driver prose of unbounded shape and stays
-// internal (architecture section 2).
+// internal (architecture/product-contract.md).
 var (
 	// ErrNoNewObjects reports an increment export with nothing to publish.
 	ErrNoNewObjects = errors.New("no new objects")

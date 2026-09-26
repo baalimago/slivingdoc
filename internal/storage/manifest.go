@@ -21,12 +21,12 @@ import (
 var ErrIntegrity = errors.New("storage: integrity failure")
 
 // CurrentKey is the protocol key of the only authoritative state index
-// (architecture section 9.2). An absent current object is the implicit
+// (architecture/storage.md). An absent current object is the implicit
 // empty-notebook state at generation 0.
 const CurrentKey = "current"
 
 // Manifest is a validated manifest version 1 value. Field order and names
-// follow the normative shape in architecture section 9.2 exactly; the
+// follow the normative shape in architecture/storage.md exactly; the
 // encoder writes compact JSON with HTML escaping disabled and no trailing
 // newline.
 type Manifest struct {
@@ -75,7 +75,7 @@ type Retained struct {
 // DecodeManifest strictly decodes and validates a stored manifest. It
 // rejects unknown fields, duplicate names, missing required fields, and
 // explicit null at every object level, and applies every cross-field rule
-// of architecture section 9.2 before returning. Any failure is an
+// in architecture/storage.md before returning. Any failure is an
 // ErrIntegrity error; the caller must not touch referenced packs.
 func DecodeManifest(data []byte) (Manifest, error) {
 	root, err := strictjson.Parse(data)
@@ -105,6 +105,8 @@ func DecodeManifest(data []byte) (Manifest, error) {
 // EncodeManifest validates m and encodes it as compact JSON in the
 // normative field order, with HTML escaping disabled and no trailing
 // newline. An invalid manifest is rejected before any bytes are produced.
+// A nil tail, active or retained, encodes as the empty array the decoder
+// requires; the caller's slices are never modified.
 func EncodeManifest(m Manifest) ([]byte, error) {
 	if m.Increments == nil {
 		m.Increments = []Increment{}
@@ -112,6 +114,7 @@ func EncodeManifest(m Manifest) ([]byte, error) {
 	if m.Retained == nil {
 		m.Retained = []Retained{}
 	}
+	m.Retained = withEmptyRetainedTails(m.Retained)
 	if err := validateManifest(&m); err != nil {
 		return nil, integrityErr(err)
 	}
@@ -122,6 +125,25 @@ func EncodeManifest(m Manifest) ([]byte, error) {
 		return nil, fmt.Errorf("storage: encode manifest: %w", err)
 	}
 	return bytes.TrimSuffix(buf.Bytes(), []byte("\n")), nil
+}
+
+// withEmptyRetainedTails returns retained with every nil increment tail
+// replaced by an empty one, copying the slice only when one is nil.
+func withEmptyRetainedTails(retained []Retained) []Retained {
+	var out []Retained
+	for i, r := range retained {
+		if r.Increments != nil {
+			continue
+		}
+		if out == nil {
+			out = append([]Retained(nil), retained...)
+		}
+		out[i].Increments = []Increment{}
+	}
+	if out == nil {
+		return retained
+	}
+	return out
 }
 
 // decodeManifest converts a validated value tree into a Manifest. Field
@@ -395,8 +417,8 @@ func integrityErr(err error) error {
 	return fmt.Errorf("storage: manifest: %w: %w", ErrIntegrity, err)
 }
 
-// validateManifest applies the cross-field rules of architecture section
-// 9.2 to an already schema-valid manifest.
+// validateManifest applies the cross-field rules in architecture/storage.md to
+// an already schema-valid manifest.
 func validateManifest(m *Manifest) error {
 	if m.Generation == 0 {
 		return errors.New("generation must be at least 1")

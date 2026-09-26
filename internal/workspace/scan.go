@@ -17,7 +17,7 @@ import (
 )
 
 // ErrSymlink reports a symbolic link encountered in the visible directory
-// (architecture section 7.1). Symlinks are rejected on every host.
+// (architecture/workspace.md). Symlinks are rejected on every host.
 var ErrSymlink = errors.New("workspace: symbolic link rejected")
 
 // ErrUnsupportedFile reports a visible entry that is not a regular file or
@@ -25,14 +25,22 @@ var ErrSymlink = errors.New("workspace: symbolic link rejected")
 var ErrUnsupportedFile = errors.New("workspace: unsupported file")
 
 // ErrInvalidContent reports visible content that is not valid UTF-8 text
-// without U+0000 (architecture section 7.1).
+// without U+0000 (architecture/workspace.md).
 var ErrInvalidContent = errors.New("workspace: invalid text content")
 
-// ScanError names the visible path a scan rejection is about. Unwrap
-// exposes Err so errors.Is against the sentinels above keeps working.
+// ErrPathCollision reports two visible entries that map to one notebook
+// path: names that normalize to one NFC path in one directory, or paths
+// equal under Unicode case folding (architecture/workspace.md).
+var ErrPathCollision = errors.New("workspace: path collision")
+
+// ScanError names the visible path a scan rejection is about, and for a
+// collision the other path it collides with (empty when both entries map
+// to the same path). Unwrap exposes Err so errors.Is against the sentinels
+// above keeps working.
 type ScanError struct {
-	Path string
-	Err  error
+	Path  string
+	Other string
+	Err   error
 }
 
 func (e *ScanError) Error() string { return e.Err.Error() }
@@ -74,13 +82,22 @@ func (w *Workspace) scanLocked(ctx context.Context) (git.Snapshot, error) {
 		return git.Snapshot{}, err
 	}
 	snap := git.Snapshot{Files: files}
-	if err := git.ValidateSnapshot(snap); err != nil {
-		wrapped := fmt.Errorf("workspace: scan: %w", err)
+	err := git.ValidateSnapshot(snap)
+	if err == nil {
+		// New local content also may not hold a file whose name folds to
+		// a directory's; accepted remote state is not held to that rule.
+		err = git.ValidateFoldedDirectories(snap)
+	}
+	if err != nil {
 		var collision *git.PathCollisionError
 		if errors.As(err, &collision) {
-			return git.Snapshot{}, &ScanError{Path: collision.Path, Err: wrapped}
+			other := ""
+			if collision.First != collision.Path {
+				other = collision.First
+			}
+			return git.Snapshot{}, &ScanError{Path: collision.Path, Other: other, Err: fmt.Errorf("workspace: scan: %w: %w", ErrPathCollision, err)}
 		}
-		return git.Snapshot{}, wrapped
+		return git.Snapshot{}, fmt.Errorf("workspace: scan: %w", err)
 	}
 	return snap, nil
 }
@@ -130,7 +147,7 @@ func (w *Workspace) scanWalk(ctx context.Context, dirRel, prefix string, files *
 				return scanError(path, fmt.Errorf("workspace: scan %q: %w: path is both a file and a directory", path, ErrInvalidPath))
 			}
 			if dirPaths[path] {
-				return scanError(path, fmt.Errorf("workspace: scan %q: duplicate directory", path))
+				return scanError(path, fmt.Errorf("workspace: scan %q: %w: duplicate directory", path, ErrPathCollision))
 			}
 			if dirPaths == nil {
 				dirPaths = map[string]bool{}
@@ -144,7 +161,7 @@ func (w *Workspace) scanWalk(ctx context.Context, dirRel, prefix string, files *
 				return scanError(path, fmt.Errorf("workspace: scan %q: %w: path is both a file and a directory", path, ErrInvalidPath))
 			}
 			if filePaths[path] {
-				return scanError(path, fmt.Errorf("workspace: scan %q: duplicate path", path))
+				return scanError(path, fmt.Errorf("workspace: scan %q: %w: duplicate path", path, ErrPathCollision))
 			}
 			if filePaths == nil {
 				filePaths = map[string]bool{}
@@ -226,7 +243,12 @@ func (w *Workspace) readDir(rel string) ([]fs.DirEntry, error) {
 		return nil, err
 	}
 	defer f.Close()
-	return f.ReadDir(-1)
+	entries, err := f.ReadDir(-1)
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+	return entries, nil
 }
 
 // joinRel joins two slash-separated relative path fragments, treating "."

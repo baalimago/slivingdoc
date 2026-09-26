@@ -76,6 +76,9 @@ func (f *fakeRepository) HasObject(id OID) (bool, error) {
 }
 
 func (f *fakeRepository) WriteTree(entries []TreeEntry) (OID, error) {
+	if err := CheckUniqueNames(entries); err != nil {
+		return OID{}, fmt.Errorf("fake: %w", err)
+	}
 	sorted := append([]TreeEntry(nil), entries...)
 	sort.SliceStable(sorted, func(i, j int) bool { return treeEntryLess(sorted[i], sorted[j]) })
 	oid := fakeTreeID(sorted)

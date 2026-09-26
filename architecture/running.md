@@ -1,9 +1,32 @@
 # Configure and run
 
-This document is the operator reference for running slivingdoc: every
-flag, S3 credentials and requirements, logging, the notebook rules, and
-the conflict and checkpoint behavior. The [README](../README.md) has
-the short version.
+The operator reference for running slivingdoc: the commands, the result report, every flag, the session directory and shared pack cache, read-only and writable paths, S3 credentials and requirements, hosted storage, MCP host configuration, logging, profiling, the notebook rules, conflict recovery, checkpoints, and operational ownership. It answers "how do I run it, configure it, and read what it tells me?" The [README](../README.md) has the short version.
+
+Read this when: operating or deploying slivingdoc, writing an MCP host configuration, changing any operator-visible behavior (then update this doc in the same change), or looking for the user-facing contract behind a code path.
+
+## Key files
+
+| File | Purpose |
+|------|---------|
+| `internal/cli/cli.go` | Command map and router `Usage` ([cli.md](./cli.md)) |
+| `cmd/serve/serve.go`, `cmd/pull/pull.go`, `cmd/commit/commit.go`, `cmd/version/version.go` | The four commands and their help text |
+| `internal/app/config.go` | `FlagReference`, `HelpText`, precedence and validation ([config.md](./config.md)) |
+| `internal/app/command.go` | `Report`: the CLI result report |
+| `internal/app/logging.go`, `internal/app/perf.go` | Logging and `DEBUG_PERF` ([logging.md](./logging.md)) |
+| `internal/mcp/server.go` | Tool descriptions, instructions, envelopes ([mcp-server.md](./mcp-server.md)) |
+| `internal/storage/probe.go` | The startup compatibility probe ([storage.md](./storage.md)) |
+| `internal/httpstore/store.go` | The hosted storage adapter and its startup `CheckAccess` ([hosted-mode.md](./hosted-mode.md)) |
+| `terraform/` | Module that provisions the bucket and a least-privilege IAM user with access keys, granting exactly the permissions in S3 requirements |
+| `examples/seaweedfs/`, `examples/terraform/` | Runnable local S3 and deployment examples |
+
+## Flow
+
+```text
+MCP host → npx -y slivingdoc serve --bucket B    # launcher → native binary (build.md)
+  startup: config → pinned libgit2 → S3 probe (hosted: access check) → serve two tools over stdio
+  agent: notes_pull → edit UTF-8 files in the notebook directory → notes_commit
+human: slivingdoc pull [path] → edit → slivingdoc commit [path] -m "msg"
+```
 
 ## Commands
 
@@ -20,8 +43,8 @@ flag.
 ## Direct use: pull and commit
 
 `pull` and `commit` are the human mirror of the two MCP tools. They run
-the same startup sequence as `serve` — the pinned engine check and the
-S3 compatibility probe — perform one operation, print the candid
+the same startup sequence as `serve` (the pinned engine check and the
+S3 compatibility probe), perform one operation, print the candid
 result, and exit:
 
 ```text
@@ -38,12 +61,12 @@ paths resolve against the working directory. The resolved path must stay at
 or below the workspace root. `commit` requires `-m`/`--message`.
 
 On success a subcommand writes the unified result report to stdout and
-exits zero: the `OK` status token, the accepted remote generation, one
-line per changed file with its insertion and deletion counts (a
+exits zero: the `OK` status token, the accepted remote generation, the
+resolved notebook directory, one line per changed file with its insertion and deletion counts (a
 zero-count side is omitted), and the totals trailer:
 
 ```text
-OK  generation 18
+OK  generation 18  /home/me/notes
   archive/old.md  -3
   notes/a.md  +1 -1
   notes/c.md  +2
@@ -91,25 +114,29 @@ or network dependency is touched.
 variables. Flags override environment variables, and the environment
 overrides defaults.
 `--bucket` is required. `-h` on any of the three prints the same
-reference.
+reference. A non-empty `SLIVINGDOC_TOKEN` switches to [hosted
+storage](#hosted-storage), which changes the meaning of `--bucket` and
+`--endpoint` as noted.
 
-| Function              | Flag                     | Environment variable              | Default                   |
-| --------------------- | ------------------------ | --------------------------------- | ------------------------- |
-| S3 bucket (required)  | `--bucket`               | `SLIVINGDOC_BUCKET`               | —                         |
-| S3 object prefix      | `--prefix`               | `SLIVINGDOC_PREFIX`               | `slivingdoc`              |
-| S3 region             | `--region`               | `AWS_REGION`                      | `us-east-1`               |
-| S3 endpoint           | `--endpoint`             | `AWS_ENDPOINT_URL_S3`             | empty (AWS resolution)    |
-| S3 path-style access  | `--path-style`           | `SLIVINGDOC_PATH_STYLE`           | `false`                   |
-| Workspace root        | `--workspace-root`       | `SLIVINGDOC_WORKSPACE_ROOT`       | session dir / working dir |
-| Private state root    | `--private-root`         | `SLIVINGDOC_PRIVATE_ROOT`         | session dir / user cache  |
-| Shared pack cache     | `--shared-pack-cache`    | `SLIVINGDOC_SHARED_PACK_CACHE`    | `false`                   |
-| CAS retry limit       | `--commit-retries`       | `SLIVINGDOC_COMMIT_RETRIES`       | `8` (0..100)              |
-| Checkpoint pack count | `--checkpoint-packs`     | `SLIVINGDOC_CHECKPOINT_PACKS`     | `256` (minimum 1)         |
-| Retained checkpoints  | `--retained-checkpoints` | `SLIVINGDOC_RETAINED_CHECKPOINTS` | `1` (0..64)               |
-| Read-only paths       | `--read-only-paths`      | `SLIVINGDOC_READ_ONLY_PATHS`      | empty (no read-only path) |
-| Writable paths        | `--writable-paths`       | `SLIVINGDOC_WRITABLE_PATHS`       | empty (no confinement)    |
-| Log levels            | `--log-level`            | `LOG_LEVEL`                       | `info`                    |
-| Log timestamps        | `--log-timestamp`        | `SLIVINGDOC_LOG_TIMESTAMP`        | `true`                    |
+| Function                          | Flag                     | Environment variable              | Default                      |
+| --------------------------------- | ------------------------ | --------------------------------- | ---------------------------- |
+| Bucket or hosted space (required) | `--bucket`               | `SLIVINGDOC_BUCKET`               | none                         |
+| Object prefix                     | `--prefix`               | `SLIVINGDOC_PREFIX`               | `slivingdoc`                 |
+| S3 region                         | `--region`               | `AWS_REGION`                      | `us-east-1`                  |
+| S3 endpoint                       | `--endpoint`             | `AWS_ENDPOINT_URL_S3`             | empty (AWS resolution)       |
+| S3 path-style access              | `--path-style`           | `SLIVINGDOC_PATH_STYLE`           | `false`                      |
+| Hosted API token                  | none                     | `SLIVINGDOC_TOKEN`                | empty (S3 mode)              |
+| Hosted API endpoint               | `--endpoint`             | `SLIVINGDOC_ENDPOINT`             | `https://api.slivingdoc.dev` |
+| Workspace root                    | `--workspace-root`       | `SLIVINGDOC_WORKSPACE_ROOT`       | session dir / working dir    |
+| Private state root                | `--private-root`         | `SLIVINGDOC_PRIVATE_ROOT`         | session dir / user cache     |
+| Shared pack cache                 | `--shared-pack-cache`    | `SLIVINGDOC_SHARED_PACK_CACHE`    | `false`                      |
+| CAS retry limit                   | `--commit-retries`       | `SLIVINGDOC_COMMIT_RETRIES`       | `8` (0..100)                 |
+| Checkpoint pack count             | `--checkpoint-packs`     | `SLIVINGDOC_CHECKPOINT_PACKS`     | `256` (minimum 1)            |
+| Retained checkpoints              | `--retained-checkpoints` | `SLIVINGDOC_RETAINED_CHECKPOINTS` | `1` (0..64)                  |
+| Read-only paths                   | `--read-only-paths`      | `SLIVINGDOC_READ_ONLY_PATHS`      | empty (no read-only path)    |
+| Writable paths                    | `--writable-paths`       | `SLIVINGDOC_WRITABLE_PATHS`       | empty (no confinement)       |
+| Log levels                        | `--log-level`            | `LOG_LEVEL`                       | `info`                       |
+| Log timestamps                    | `--log-timestamp`        | `SLIVINGDOC_LOG_TIMESTAMP`        | `true`                       |
 
 `--workspace-root` is the root below which request paths may live, and is
 also the notebook directory an omitted path resolves to. The private root
@@ -131,7 +158,7 @@ This is the default because it needs no configuration and no coordination:
 every server gets its own notebook directory and its own private state, so
 concurrent agents never contend for one operation lock. The tools then need
 no `path`, and both the server instructions and every tool result name the
-directory. The whole session directory is removed at shutdown — the durable
+directory. The whole session directory is removed at shutdown; the durable
 notebook is the bucket, so nothing of value is in it. A process killed
 outright leaves the directory for the operating system to reap; no later
 process reuses it.
@@ -146,7 +173,7 @@ directory, which you can still open after the process exits.
 
 By default every workspace keeps its own cache of downloaded pack bytes
 inside its private state, so several agents on one machine each download the
-same packs — and an ephemeral session throws its cache away at shutdown.
+same packs, and an ephemeral session throws its cache away at shutdown.
 `--shared-pack-cache` moves that cache to one durable directory per
 notebook:
 
@@ -154,12 +181,12 @@ notebook:
 <user-cache-dir>/slivingdoc/pack-cache/<bucket>-<prefix>-<digest>/
 ```
 
-Every server addressing the same endpoint, bucket, and prefix computes the
+Every server addressing the same endpoint, region, bucket, and prefix computes the
 same directory from its own configuration, so agents share downloads with no
 coordination: the first cold pull populates the directory and later pulls by
 any agent read from it. Entries are keyed by SHA-256 and re-verified against
 the authoritative manifest on every read, so a corrupt or foreign entry is
-discarded and re-downloaded, never trusted. Only pack bytes are shared —
+discarded and re-downloaded, never trusted. Only pack bytes are shared;
 each workspace keeps its own private repository, baseline, and locks.
 
 Writing into the cache is best-effort: a read-only or full cache directory
@@ -175,7 +202,7 @@ when you are done with it, and the next pull simply re-downloads.
 comma-separated set of notebook-relative paths that one process's commits
 may never change, while a process without the flag keeps full write
 access to the same notebook. An entry protects itself and everything
-below it — `docs` covers a file named `docs` and every path under
+below it: `docs` covers a file named `docs` and every path under
 `docs/`. Use it to let a fleet of agents read injected material (FAQ
 answers, reference documentation) without risking that one of them
 overwrites it:
@@ -196,7 +223,7 @@ slivingdoc pull notes
 slivingdoc commit notes -m "update the FAQ"
 ```
 
-The next pull by any agent picks up that change with no conflict — the
+The next pull by any agent picks up that change with no conflict: the
 read-only set is enforced only against the process configured with it,
 not against the notebook itself. If an agent commits a change under
 `docs/` anyway, the commit is refused, the touched files are reset to the
@@ -224,7 +251,7 @@ alike, and the restore does not run until the file is deleted.
 The read-only set is a guardrail at the MCP tool boundary, not a security
 boundary against the agent: the serve process holds the S3 credentials,
 and an agent that can read that environment or launch its own slivingdoc
-process bypasses the setting — exactly like an operator's existing sftp
+process bypasses the setting, exactly like an operator's existing sftp
 model, where the policy lives in the server configuration, never in the
 data.
 
@@ -264,7 +291,7 @@ Entries follow the read-only rules unchanged: an entry covers itself and
 everything below it, matched on segment boundaries. A path named by both
 settings is a configuration error rather than a silent precedence rule.
 Startup refuses, naming the path and both settings, before any native or
-network dependency loads — the same point at which an invalid entry in
+network dependency loads, the same point at which an invalid entry in
 either set refuses. The entries compared are the ones you wrote, so an
 entry that also sits below another entry of its own setting is refused just
 the same.
@@ -286,9 +313,9 @@ same setting stop applying.
 Every surface the process advertises says so. With both settings
 configured, the server instructions, both tool descriptions, the result
 text item and the report name both sets and end with the rule that decides
-between them — the read-only sentence says "where the two sets nest, the
+between them (the read-only sentence says "where the two sets nest, the
 longest matching entry decides" rather than "write elsewhere", which a
-non-empty writable set makes false — so an agent is never told to write
+non-empty writable set makes false), so an agent is never told to write
 only under an entry and, in the next sentence, that changes under it are
 refused.
 
@@ -305,16 +332,18 @@ of falling back to it. That is how a process asks not to be confined.
 
 ## S3 credentials
 
-slivingdoc has no authentication layer of its own. `serve`, `pull`, and
+slivingdoc has no authentication layer of its own for S3 (in [hosted
+storage](#hosted-storage) the only credential is `SLIVINGDOC_TOKEN`, and
+nothing in this section applies). `serve`, `pull`, and
 `commit` all build the S3 client the same way, and credentials come
 from the AWS SDK default credential chain, resolved by the SDK at
 startup:
 
-1. Environment variables — `AWS_ACCESS_KEY_ID`,
+1. Environment variables: `AWS_ACCESS_KEY_ID`,
    `AWS_SECRET_ACCESS_KEY` (plus `AWS_SESSION_TOKEN`).
 2. The shared config and credentials files (`~/.aws/credentials`,
    `~/.aws/config`), honoring `AWS_PROFILE`.
-3. Ambient identity — SSO sessions, ECS/EKS task roles, and the EC2
+3. Ambient identity: SSO sessions, ECS/EKS task roles, and the EC2
    instance metadata service.
 
 slivingdoc's own flags shape _where_ the client points (`--bucket`,
@@ -322,17 +351,22 @@ slivingdoc's own flags shape _where_ the client points (`--bucket`,
 carries a credential, and a `--endpoint` URL with user information is
 refused, so a secret can never echo into a diagnostic.
 
+The region is always explicit. slivingdoc passes `--region` (or
+`AWS_REGION`, default `us-east-1`) to the SDK on every run, so
+`AWS_DEFAULT_REGION` and a profile's `region` setting are ignored; set
+`--region` or `AWS_REGION` when the bucket lives elsewhere.
+
 There are three ways to deliver credentials, and the choice is a
 deployment decision:
 
 - **Inherit.** The process inherits the environment of whatever
   launched it. A shell with an exported profile or an active SSO
-  session needs nothing else — this covers `slivingdoc pull` and
+  session needs nothing else; this covers `slivingdoc pull` and
   `commit` run by hand, and a `serve` whose MCP host was started from
   that shell.
 - **Inject.** Most MCP hosts accept an `env` block per server (see the
   example below). Use it when the host is not launched from a
-  credentialed shell — a GUI app, a service manager — or to point at a
+  credentialed shell (a GUI app, a service manager) or to point at a
   local S3-compatible store (such as SeaweedFS). Prefer injecting
   `AWS_PROFILE` over pasting static keys: host configuration files tend
   to be synced and backed up, while a profile keeps the secret in
@@ -342,8 +376,8 @@ deployment decision:
   deployment.
 
 Credentials stay inside the slivingdoc process. They never cross the
-MCP protocol — the client sees only `notes_pull`, `notes_commit`, and
-their result envelopes — and the redaction layer keeps key material out
+MCP protocol (the client sees only `notes_pull`, `notes_commit`, and
+their result envelopes), and the redaction layer keeps key material out
 of every error and log line as defense in depth.
 
 One consequence of the one-shot commands: `serve` resolves the chain
@@ -360,14 +394,16 @@ The bucket must exist. slivingdoc does not create or configure it.
 The server needs these permissions:
 
 - On the objects (`arn:...:bucket/*`): `s3:GetObject`, `s3:PutObject`,
-  `s3:DeleteObject`, `s3:CreateMultipartUpload`, `s3:UploadPart`,
-  `s3:CompleteMultipartUpload`, `s3:AbortMultipartUpload`, and
-  `s3:ListMultipartUploadParts`.
+  `s3:DeleteObject`, `s3:AbortMultipartUpload`, and
+  `s3:ListMultipartUploadParts`. IAM has no separate action for creating,
+  uploading a part of, or completing a multipart upload: `s3:PutObject`
+  authorizes all three.
 - On the bucket (`arn:...:bucket`): `s3:ListBucket` and
   `s3:ListBucketMultipartUploads`.
 
-The reusable Terraform module in [`terraform/`](../terraform/) grants
-exactly this policy.
+The reusable Terraform module in [`terraform/`](../terraform/) provisions
+the bucket and a least-privilege IAM user with access keys, and grants
+that user exactly this policy.
 
 A custom S3-compatible service is configured with an absolute `http` or
 `https` `--endpoint`. The server always uses path-style addressing for
@@ -377,13 +413,48 @@ endpoint.
 Before the first MCP call, the server runs a disposable compatibility
 probe below the configured prefix. The probe proves that the store
 enforces `If-None-Match: *` creation, `If-Match` replacement, and
-read-after-write behavior — the three conditional-write guarantees the
+read-after-write behavior, the three conditional-write guarantees the
 publication protocol requires. A store that fails the probe is refused
 at startup with the `INCOMPATIBLE_STORE` category; when the failure is
 an operational error rather than a missing capability, the diagnostic
 names the underlying reason (for example the S3 `AccessDenied` or
 `InvalidAccessKeyId` error) while the probe key and any secret stay
 redacted. Bucket versioning is not required.
+
+## Hosted storage
+
+Instead of a bucket, the notebook can live in a space of the slivingdoc
+hosted storage service ([slivingdoc.dev](https://slivingdoc.dev)). A
+non-empty `SLIVINGDOC_TOKEN` selects it:
+
+- `--bucket` names the space: 1 to 63 lowercase letters, digits, and
+  inner hyphens. `--prefix` still separates notebooks inside it.
+- The endpoint is `--endpoint`, else `SLIVINGDOC_ENDPOINT`, else
+  `https://api.slivingdoc.dev`. It must be `https`, except to a loopback
+  address. `AWS_ENDPOINT_URL_S3`, `AWS_REGION`, and the AWS credential
+  chain are not used; `--region` is ignored, and `--path-style` is still
+  validated, then unused.
+- The token is read from the environment only, never from a flag, and
+  must be printable ASCII (0x21 to 0x7E) without white space. It travels only in
+  the `Authorization` header and never appears in a diagnostic, a log
+  line, or a tool result.
+
+Startup does not run the S3 probe. It asks the server to describe itself
+(it must speak `slivingdoc-storage` version 1 and promise conditional
+writes, else `INCOMPATIBLE_STORE`) and reads the space's usage with the
+token, so a read-only token starts and can pull. A token the server does
+not accept, or a space it was not granted, refuses startup with a
+diagnostic that names `SLIVINGDOC_TOKEN` and `--bucket`.
+
+Account limits and refusals surface as `STORAGE_FAILURE` with their own reason:
+`STORAGE_FULL` (nothing was published, the edits stay, pulls keep
+working; deleting notes and committing again can compact the space),
+`REQUEST_LIMIT` (the monthly request allowance is used up; it resets on
+the first of the month, UTC), `RATE_LIMITED` (retryable), `ACCESS_DENIED`
+(for example a read-only token that commits), and `OBJECT_TOO_LARGE`.
+All but `RATE_LIMITED` are `retryable: false` and ask for the operator.
+The server's own explanation follows `The storage says:` in the message.
+[hosted-mode.md](./hosted-mode.md) has the details.
 
 ## MCP host configuration
 
@@ -415,12 +486,14 @@ credentials](#s3-credentials): the host passes these variables to the
 child process, and the AWS SDK chain picks them up. Omit it when the
 host already runs in a credentialed environment; replace it with
 `AWS_ENDPOINT_URL_S3` and static keys only for a local S3-compatible
-store such as SeaweedFS.
+store such as SeaweedFS. For [hosted storage](#hosted-storage), the
+`env` block carries `SLIVINGDOC_TOKEN` instead and `--bucket` names the
+space.
 
 Stdout carries only protocol messages; logs go to stderr. The host and
 the server share the visible directory: agents and humans edit files
 there, and the server scans them at each call. A human edit made with
-any editor is published by the next `notes_commit` for that path — or
+any editor is published by the next `notes_commit` for that path, or
 directly with `slivingdoc commit [path] -m <message>`. This sharing needs
 `--workspace-root`: a session directory is private to the server process.
 
@@ -429,8 +502,10 @@ directly with `slivingdoc commit [path] -m <message>`. This sharing needs
 Logging is configured by the environment, which applies to every command
 and works before flags are parsed. `serve`, `pull`, and `commit` also
 take `--log-level` and `--log-timestamp`, which override the environment
-once the flags resolve; the few records emitted before that point (the
-command router, a configuration refusal) follow the environment. Records
+once the flags resolve; the few records emitted before that point (command
+routing, a level-fallback warning) follow `LOG_LEVEL` and `NO_COLOR` and
+always carry `time=`. Router lines such as a startup refusal are printed
+separately, as timestamped `error: ...` lines. Records
 are structured `key=value` text on stderr. Each record carries a
 timestamp (unless `--log-timestamp=false`), a level, and the module that
 emitted it.
@@ -438,8 +513,8 @@ emitted it.
 | Variable    | Effect                                              |
 | ----------- | --------------------------------------------------- |
 | `LOG_LEVEL` | Per-module levels. A bare level is the default.     |
-| `SLIVINGDOC_LOG_TIMESTAMP` | `false` removes the `time=` field, for hosts that stamp log lines themselves. |
-| `NO_COLOR`  | Any non-empty value disables ANSI colour: log levels and the CLI report. |
+| `SLIVINGDOC_LOG_TIMESTAMP` | `false` removes the `time=` field, for hosts that stamp log lines themselves. Like `--log-timestamp`, it applies only once `serve`, `pull`, or `commit` resolves its configuration; router records (including those of `version`) always carry `time=`, and startup refusals, which the router prints through ancli, always start with an RFC3339 timestamp. |
+| `NO_COLOR`  | Any non-empty value disables ANSI colour of log levels and of the CLI report. |
 
 `LOG_LEVEL` takes a comma-separated list. `module=level` sets one
 module; a bare `level` sets the default for the rest:
@@ -457,8 +532,8 @@ flag value, in contrast, refuses startup like any other flag.
 
 ## Profiling
 
-`DEBUG_PERF` captures performance profiles across one whole command —
-startup, the operation, and shutdown — for finding where a slow `pull`
+`DEBUG_PERF` captures performance profiles across one whole command
+(startup, the operation, and shutdown) for finding where a slow `pull`
 or `commit` spends its time. `1` (or `true`) writes under
 `slivingdoc-perf/` in the system temporary directory; `0`, `false`, and
 empty disable the capture; any other value is the base directory
@@ -492,6 +567,10 @@ result or exit code.
 - Files must be valid UTF-8 text without the NUL character (U+0000).
   Empty files are valid. Bytes and line endings are preserved.
 - Symbolic links, devices, sockets, and named pipes are rejected.
+- There is no ignore file: every file under the notebook directory is
+  notebook state: a stray text file (such as an editor backup `foo~`) is
+  published, and a stray binary, symlink, or special file refuses the whole
+  pull or commit as `INVALID_REQUEST`/`INVALID_CONTENT` until it is deleted.
 - An MCP request `path` is optional; omitting it uses the server's notebook
   directory, which every result reports. When supplied it may begin with
   `~/`, which resolves against the current user's home directory. The
@@ -504,6 +583,19 @@ result or exit code.
 - A complete conflict-marker block (`<<<<<<< local`, `=======`,
   `>>>>>>> remote` at column zero) is never accepted into the notebook,
   even if it was written by hand.
+- The first pull into a directory needs that directory to be empty, or to
+  hold only files the notebook already has with identical content. The
+  exception is an empty notebook: the first pull into a directory of
+  existing files then succeeds, and the next commit publishes them as the
+  notebook's first state. Any other first pull is refused as
+  `INVALID_REQUEST`/`DIRECTORY_NOT_EMPTY`, naming each file that is not
+  in the notebook or differs from it, before the directory or the
+  pull state changes (the notebook may already be downloaded into the
+  private cache): pull into an empty directory, or move the files away
+  and pull again. A file under a read-only or otherwise protected path
+  only needs to exist in the notebook, whose content the pull restores;
+  one the notebook lacks is refused, even by an empty notebook, because
+  the pull would delete it and this process could never publish it.
 
 ## Conflict recovery
 
@@ -522,8 +614,8 @@ the accepted remote text
 
 The structured error names every affected path and marker line range.
 Resolve the files with ordinary file tools: edit them, delete the
-marker lines, keep the text you want. Then call `notes_commit` — or run
-`slivingdoc commit` — again.
+marker lines, keep the text you want. Then call `notes_commit` (or run
+`slivingdoc commit`) again.
 The resolved directory becomes your local intent, and the server merges
 it against any newer remote state. No Git command is involved.
 
@@ -543,13 +635,31 @@ Checkpoints preserve current file state, not permanent history.
 
 ## Operational ownership
 
-slivingdoc guarantees that accepted state is durably indexed by one
-authoritative manifest, that failed concurrent publications cannot
-silently overwrite accepted state, and that checkpoint and cleanup
-failures do not corrupt current state.
+slivingdoc guarantees:
 
-Bucket versioning, replication, object lock, lifecycle rules, and
-external backups are deployment recovery policies. They complement
-slivingdoc, but they are not hidden prerequisites of the
-synchronization algorithm. Choose them according to your own recovery
-requirements.
+- accepted state is indexed by one authoritative manifest (`current`);
+- a failed concurrent publication cannot silently overwrite accepted state;
+- accepted packs are immutable;
+- a successful commit is durably referenced by `current`;
+- merge conflicts do not advance remote state;
+- checkpoint and cleanup failures do not corrupt current state.
+
+Deployment owners decide:
+
+- bucket versioning and noncurrent-version retention;
+- replication and object lock;
+- backup export and recovery procedures;
+- the storage lifecycle policy.
+
+These S3 features complement slivingdoc. They are not hidden
+prerequisites of the synchronization algorithm; choose them according to
+your own recovery requirements.
+
+## Related
+
+- [cli.md](./cli.md), [config.md](./config.md), [mcp-server.md](./mcp-server.md): the code behind each section above.
+- [security.md](./security.md): the trust model behind credentials and paths.
+- [storage.md](./storage.md), [s3store.md](./s3store.md): what the bucket holds and how it is addressed.
+- [hosted-mode.md](./hosted-mode.md): the hosted storage adapter, its limits, and compaction of a full space.
+- [conflicts.md](./conflicts.md), [checkpoints.md](./checkpoints.md): conflict and checkpoint mechanics.
+- [build.md](./build.md), [releasing.md](./releasing.md): installing and shipping binaries.

@@ -3,11 +3,12 @@ package mcp
 import "github.com/baalimago/slivingdoc/internal/notebook"
 
 // SuccessInfo is the structured success object carried in the MCP tool
-// result (architecture section 2). Code is always "OK"; generation is the
-// accepted remote generation after the operation; filesChanged,
-// insertions, and deletions are the totals of the per-file change stat;
-// files is always present, empty for a no-op synchronization. All paths
-// are the same normalized internal slash form used by error files.
+// result (architecture/product-contract.md). Code is always "OK";
+// generation is the accepted remote generation after the operation;
+// filesChanged, insertions, and deletions are the totals of the per-file
+// change stat; files is always present, empty for a no-op synchronization.
+// All paths are the same normalized internal slash form used by error
+// files.
 type SuccessInfo struct {
 	Code string `json:"code"`
 	// Path is the resolved notebook directory the operation ran against.
@@ -20,8 +21,9 @@ type SuccessInfo struct {
 	Files        []ChangeFile `json:"files"`
 	ReadOnly     []string     `json:"readOnly"`
 	// Writable is the normalized writable set; a non-empty set makes every
-	// path it does not cover read-only (architecture section 2, Read-only
-	// paths). Always present, empty when nothing is configured.
+	// path it does not cover read-only (architecture/product-contract.md,
+	// Read-only and writable paths). Always present, empty when nothing is
+	// configured.
 	Writable []string `json:"writable"`
 }
 

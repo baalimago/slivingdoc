@@ -117,8 +117,8 @@ func TestConcurrentCASOneWinner(t *testing.T) {
 	}
 }
 
-// TestAmbiguousUploadRecovery proves the read-back verification of
-// architecture section 15: the response was lost after the bytes were
+// TestAmbiguousUploadRecovery proves the read-back verification in
+// architecture/guarantees.md: the response was lost after the bytes were
 // accepted, so UploadUnique succeeds without a second write.
 func TestAmbiguousUploadRecovery(t *testing.T) {
 	s := New("ambiguous")

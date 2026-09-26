@@ -10,7 +10,7 @@ import (
 var ErrInvalidOID = errors.New("git: invalid object id")
 
 // ParseOID parses a Git object ID in the canonical v1 form: exactly 40
-// lowercase hexadecimal characters (architecture section 9.3). Uppercase
+// lowercase hexadecimal characters (architecture/storage.md). Uppercase
 // hex and any other representation are rejected.
 func ParseOID(s string) (OID, error) {
 	if len(s) != 40 {
@@ -39,7 +39,7 @@ func (o OID) IsZero() bool { return o == OID{} }
 
 // MarshalJSON renders the canonical 40-character lowercase hexadecimal text
 // form as a JSON string. The manifest encoder relies on it to store Git
-// object IDs in their normative shape (architecture section 9.2).
+// object IDs in their normative shape (architecture/storage.md).
 func (o OID) MarshalJSON() ([]byte, error) {
 	b := make([]byte, 0, 42)
 	b = append(b, '"')

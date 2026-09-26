@@ -11,7 +11,7 @@ import (
 // 64-character hexadecimal SHA-256 value.
 var ErrInvalidSHA256 = errors.New("storage: invalid sha256")
 
-// SHA256 is a validated pack-content checksum (architecture section 9.3).
+// SHA256 is a validated pack-content checksum (architecture/storage.md).
 // It is the complete pack-byte digest recorded in manifest descriptors; an
 // S3 ETag is never used for this purpose.
 type SHA256 [32]byte

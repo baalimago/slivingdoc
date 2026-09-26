@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -365,6 +366,48 @@ func TestCommitAppendsIncrementPack(t *testing.T) {
 	}
 	if len(commit.Parents) != 1 || commit.Parents[0] != m1.Head {
 		t.Fatalf("second commit parents = %v, want [gen-1 head]", commit.Parents)
+	}
+}
+
+// TestOperationsOnOneWorkspaceDoNotInterleave proves the operation-wide
+// lock (architecture/workspace.md): while a commit is parked at its
+// manifest CAS, a pull of the same workspace does not even scan L; it runs
+// only after the commit returned.
+func TestOperationsOnOneWorkspaceDoNotInterleave(t *testing.T) {
+	store := fake.New("")
+	gate := &casGateStore{ObjectStore: store, entered: make(chan struct{}), release: make(chan struct{})}
+	var scans atomic.Int32
+	wsFail := &workspace.Failpoints{Scan: func() error { scans.Add(1); return nil }}
+	nb, w, _ := newNotebook(t, nbConfig{store: gate, ids: &testIDSource{}, wsFail: wsFail})
+	writeLocal(t, w, map[string]string{"a.md": "v1"})
+	pullOK(t, nb)
+
+	commitDone := make(chan error, 1)
+	go func() { commitDone <- errOnly(nb.Commit(context.Background(), "first")) }()
+	<-gate.entered
+	before := scans.Load()
+
+	pullDone := make(chan error, 1)
+	go func() { pullDone <- errOnly(nb.Pull(context.Background())) }()
+	time.Sleep(200 * time.Millisecond) // time for an unserialized pull to scan
+	if got := scans.Load(); got != before {
+		t.Fatalf("scans while the commit held the workspace = %d, want %d", got, before)
+	}
+	select {
+	case err := <-pullDone:
+		t.Fatalf("Pull() returned while the commit held the workspace: %v", err)
+	default:
+	}
+
+	close(gate.release)
+	if err := <-commitDone; err != nil {
+		t.Fatalf("Commit() = %v", err)
+	}
+	if err := <-pullDone; err != nil {
+		t.Fatalf("Pull() = %v", err)
+	}
+	if gen := w.Baseline().RemoteGeneration; gen != 1 {
+		t.Fatalf("baseline generation = %d, want 1", gen)
 	}
 }
 
@@ -1365,6 +1408,106 @@ func TestNewNotebookWritablePaths(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), tt.names) {
 				t.Fatalf("New() error = %v, want it to name %q", err, tt.names)
+			}
+		})
+	}
+}
+
+// TestCommitRefusesNewFoldedPair proves a clean merge that would publish a
+// file beside a directory whose name differs only in case is refused as
+// INVALID_REQUEST/INVALID_CONTENT naming both paths, before any upload and
+// with L untouched (architecture/commit.md): each writer's own directory
+// is valid, so only the merge shows the pair.
+func TestCommitRefusesNewFoldedPair(t *testing.T) {
+	store := fake.New("")
+	ids := &testIDSource{}
+	a, aw, _ := newNotebook(t, nbConfig{store: store, ids: ids})
+	b, bw, _ := newNotebook(t, nbConfig{store: store, ids: ids})
+	writeLocal(t, aw, map[string]string{"base.md": "base"})
+	pullOK(t, a)
+	commitOK(t, a, "base")
+	pullOK(t, b)
+
+	writeLocal(t, aw, map[string]string{"p/x.md": "directory side"})
+	commitOK(t, a, "directory")
+	writeLocal(t, bw, map[string]string{"P": "file side"})
+	before := localSnapshot(t, bw)
+	baselineBefore := bw.Baseline()
+	objectsBefore := len(listKeys(t, store))
+
+	ne := assertErrorCode(t, errOnly(b.Commit(context.Background(), "file")), CodeInvalidRequest)
+	if ne.Reason != ReasonInvalidContent || ne.Action != ActionEditFiles {
+		t.Fatalf("reason/action = %s/%s, want INVALID_CONTENT/EDIT_FILES", ne.Reason, ne.Action)
+	}
+	want := []ErrorFile{{Path: "P", Reason: FileReasonInvalidContent}, {Path: "p/x.md", Reason: FileReasonInvalidContent}}
+	if !reflect.DeepEqual(ne.Files, want) {
+		t.Fatalf("files = %+v, want %+v", ne.Files, want)
+	}
+	if got := localSnapshot(t, bw); !reflect.DeepEqual(got, before) {
+		t.Fatalf("L after the refusal = %v, want %v untouched", got, before)
+	}
+	if got := bw.Baseline(); got != baselineBefore {
+		t.Fatalf("baseline after the refusal = %+v, want %+v", got, baselineBefore)
+	}
+	if m := readManifest(t, store); m.Generation != 2 {
+		t.Fatalf("manifest generation = %d, want 2: nothing published", m.Generation)
+	}
+	if got := len(listKeys(t, store)); got != objectsBefore {
+		t.Fatalf("store objects %d -> %d, want no upload", objectsBefore, got)
+	}
+}
+
+// listKeys returns every object key in the store.
+func listKeys(t *testing.T, store storage.ObjectStore) []string {
+	t.Helper()
+	var keys []string
+	if err := store.ListObjects(context.Background(), "", func(key string) error {
+		keys = append(keys, key)
+		return nil
+	}); err != nil {
+		t.Fatalf("ListObjects() = %v", err)
+	}
+	return keys
+}
+
+// TestNewFoldedPairFiles proves only pairs the accepted state does not hold
+// whole are named: a pair R already holds is tolerated, and a pair with one
+// side new names both paths once.
+func TestNewFoldedPairFiles(t *testing.T) {
+	snap := func(paths ...string) git.Snapshot {
+		var s git.Snapshot
+		for _, p := range paths {
+			s.Files = append(s.Files, git.File{Path: p})
+		}
+		return s
+	}
+	for _, tt := range []struct {
+		name           string
+		merged, remote git.Snapshot
+		want           []ErrorFile
+	}{
+		{name: "pair already accepted", merged: snap("README", "readme/x.md", "z.md"), remote: snap("README", "readme/x.md"), want: []ErrorFile{}},
+		{
+			name:   "new file beside an accepted directory",
+			merged: snap("README", "readme/x.md", "readme/y.md"), remote: snap("readme/x.md", "readme/y.md"),
+			want: []ErrorFile{
+				{Path: "README", Reason: FileReasonInvalidContent},
+				{Path: "readme/x.md", Reason: FileReasonInvalidContent},
+				{Path: "readme/y.md", Reason: FileReasonInvalidContent},
+			},
+		},
+		{
+			name:   "new path below an accepted pair",
+			merged: snap("README", "readme/x.md", "readme/new.md"), remote: snap("README", "readme/x.md"),
+			want: []ErrorFile{
+				{Path: "README", Reason: FileReasonInvalidContent},
+				{Path: "readme/new.md", Reason: FileReasonInvalidContent},
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := newFoldedPairFiles(tt.merged, tt.remote); !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("newFoldedPairFiles() = %+v, want %+v", got, tt.want)
 			}
 		})
 	}

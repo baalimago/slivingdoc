@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -15,7 +16,7 @@ import (
 )
 
 // Commit publishes the caller's changes and incorporates concurrent,
-// non-conflicting changes (architecture section 11). It requires a
+// non-conflicting changes (architecture/commit.md). It requires a
 // non-blank message and a managed pull, validates every visible file and
 // rejects complete conflict-marker blocks before any Git or S3 work, then
 // merges the accepted baseline, L, and R. A clean result creates a commit
@@ -32,6 +33,16 @@ import (
 // an empty stat. A conflict or any error returns the zero Result with the
 // existing error.
 func (n *Notebook) Commit(ctx context.Context, message string) (Result, error) {
+	ctx, release, err := n.holdWorkspace(ctx)
+	if err != nil {
+		return Result{}, err
+	}
+	defer release()
+	return n.commit(ctx, message)
+}
+
+// commit is Commit under the held operation lock.
+func (n *Notebook) commit(ctx context.Context, message string) (Result, error) {
 	if n.ws.RecoveryRequired() {
 		if err := n.entryRecovery(ctx); err != nil {
 			return Result{}, err
@@ -97,7 +108,7 @@ func (n *Notebook) attemptPublication(ctx context.Context, message string, baseT
 		return false, Result{}, storageIntegrity(ReasonEngineFailed, err, "merge failed")
 	}
 	if len(merged.Conflicts) > 0 {
-		tree, err := n.materializeTree(merged)
+		tree, err := n.materializeTree(merged, localTree)
 		if err != nil {
 			return false, Result{}, storageIntegrity(ReasonEngineFailed, err, "materialize conflict result")
 		}
@@ -123,6 +134,9 @@ func (n *Notebook) attemptPublication(ctx context.Context, message string, baseT
 	// aborts with no remote or local mutation.
 	stat, err := n.diffStat(remote.tree, merged.Tree)
 	if err != nil {
+		return false, Result{}, err
+	}
+	if err := n.rejectNewFoldedPairs(remote.tree, merged.Tree); err != nil {
 		return false, Result{}, err
 	}
 
@@ -169,16 +183,17 @@ func (n *Notebook) attemptPublication(ctx context.Context, message string, baseT
 		}
 	}
 
-	if err := n.applyLocal(ctx, stageCommit, RemoteAcceptedYes, func() error {
-		return n.ws.Accept(ctx, proposal.baseline)
-	}); err != nil {
-		return false, Result{}, err
+	// The remote accepted the proposal, so every local acceptance failure
+	// is RECOVERY_FAILURE, including one before the workspace marked
+	// recovery (architecture/guarantees.md).
+	if err := n.ws.Accept(ctx, proposal.baseline); err != nil {
+		return false, Result{}, n.failAfterAccept(ctx, stageCommit, err)
 	}
 
 	// The commit is accepted. Checkpoint scheduling is opportunistic:
 	// when the accepted tail reached the threshold, run one bounded
-	// effort whose failure never changes this OK result (architecture
-	// section 13.1).
+	// effort whose failure never changes this OK result
+	// (architecture/checkpoints.md).
 	n.recordTail(proposal.manifest)
 	if proposal.compacting {
 		n.acceptCompaction(ctx, proposal)
@@ -238,7 +253,7 @@ func (n *Notebook) buildProposal(ctx context.Context, remote remoteState, merged
 
 // buildFirstProposal creates the root commit, the state-complete
 // checkpoint pack, the shallow boundary, and the generation-1 manifest with
-// an empty incremental tail (architecture section 11.1).
+// an empty incremental tail (architecture/commit.md).
 func (n *Notebook) buildFirstProposal(ctx context.Context, remote remoteState, mergedTree git.OID, message string, attemptStart time.Time, pubID storage.UUID) (proposal, error) {
 	head, err := git.CreateCommit(n.ws.Repo(), git.CommitSpec{Message: message, Tree: mergedTree, Time: attemptStart})
 	if err != nil {
@@ -300,7 +315,7 @@ func (n *Notebook) buildIncrementProposal(ctx context.Context, remote remoteStat
 	// The increment's target generation continues the active increment
 	// chain from the checkpoint cutoff. The manifest generation counter
 	// also advances on every checkpoint replacement, so it is not the
-	// chain position (architecture sections 9.2 and 13.3): after a
+	// chain position (architecture/commit.md and checkpoints.md): after a
 	// checkpoint through generation N with a tail of M increments, the
 	// next increment is generation N+M+1.
 	incGeneration := remote.manifest.Checkpoint.ThroughGeneration + uint64(len(remote.manifest.Increments)) + 1
@@ -422,7 +437,7 @@ func chainSize(cp storage.Checkpoint, incs []storage.Increment) uint64 {
 // for the first publication, exact-ETag replacement otherwise. A
 // precondition failure returns errCASLost; a lost response is resolved by
 // reading current and searching for the proposal's publication ID
-// (architecture section 11.3). Success is returned only when acceptance is
+// (architecture/commit.md). Success is returned only when acceptance is
 // proved.
 func (n *Notebook) publish(ctx context.Context, remote remoteState, p proposal) error {
 	manifestBytes, err := storage.EncodeManifest(p.manifest)
@@ -466,9 +481,11 @@ func (n *Notebook) mapUploadError(err error) error {
 }
 
 // enforcePolicy refuses a commit that changed a protected path, resetting
-// exactly those files to the baseline through applyLocal (architecture
-// section 11.1, Read-only paths). localTree is the tree the commit already
-// built, so detection builds none of its own.
+// exactly those files to the baseline through applyLocal
+// (architecture/commit.md, Local validation;
+// architecture/product-contract.md, Read-only and writable paths).
+// localTree is the tree the commit already built, so detection builds none
+// of its own.
 func (n *Notebook) enforcePolicy(ctx context.Context, local git.Snapshot, localTree git.OID) error {
 	if !n.policy.Configured() {
 		return nil
@@ -551,9 +568,9 @@ func (n *Notebook) policyRefusal(changed []string) error {
 
 // refusalMessage names the writable entries when the operator declared any,
 // since a default-protected policy protects nearly the whole notebook and
-// only the writable set is a list the caller can act on (architecture
-// section 2, Read-only paths). With no writable set the wording is the
-// read-only one.
+// only the writable set is a list the caller can act on
+// (architecture/product-contract.md, Read-only and writable paths). With no
+// writable set the wording is the read-only one.
 func (n *Notebook) refusalMessage(changed []string) string {
 	if writable := n.policy.Writable(); len(writable) > 0 {
 		return writableMessage(writable)
@@ -573,7 +590,7 @@ func writableMessage(entries []string) string {
 
 // violatedEntries returns, sorted and deduplicated, the most specific
 // entry covering each changed path, since a set can hold an entry below
-// another (architecture section 2, Writable paths).
+// another (architecture/product-contract.md, Read-only and writable paths).
 func violatedEntries(set git.EntrySet, changed []string) []string {
 	seen := make(map[string]bool, len(changed))
 	var out []string
@@ -589,7 +606,7 @@ func violatedEntries(set git.EntrySet, changed []string) []string {
 	return out
 }
 
-// readOnlyMessage is the refusal text fixed by architecture section 2.
+// readOnlyMessage is the refusal text fixed in architecture/product-contract.md.
 func readOnlyMessage(entries []string) string {
 	verb := "is"
 	if len(entries) > 1 {
@@ -597,4 +614,52 @@ func readOnlyMessage(entries []string) string {
 	}
 	return fmt.Sprintf("%s %s read-only in this server. Your changes there were discarded and the files reset. Write outside the read-only paths, then commit again.",
 		strings.Join(entries, ReadOnlyListSeparator), verb)
+}
+
+// rejectNewFoldedPairs refuses a merged state that would publish a new file
+// whose name folds to a directory's (`P` beside `p/x.md`), before any
+// upload and with L untouched (architecture/commit.md). Each side can be
+// valid alone, so only the merge shows the pair: one writer added `P`,
+// another `p/x.md`. A pair R already holds is tolerated, so a notebook an
+// older writer published that way stays writable.
+func (n *Notebook) rejectNewFoldedPairs(remoteTree, mergedTree git.OID) error {
+	merged, err := git.ReadSnapshot(n.ws.Repo(), mergedTree)
+	if err != nil {
+		return storageIntegrity(ReasonEngineFailed, err, "read the merged snapshot for the case-folding check")
+	}
+	if len(git.FoldedDirectoryPairs(merged)) == 0 {
+		return nil
+	}
+	remote, err := git.ReadSnapshot(n.ws.Repo(), remoteTree)
+	if err != nil {
+		return storageIntegrity(ReasonEngineFailed, err, "read the accepted snapshot for the case-folding check")
+	}
+	files := newFoldedPairFiles(merged, remote)
+	if len(files) == 0 {
+		return nil
+	}
+	return invalidRequest(ReasonInvalidContent, nil, files,
+		"the merged notebook would hold a file and a directory whose names differ only in case; rename one of them, then commit again")
+}
+
+// newFoldedPairFiles names both paths of every folded file/directory pair
+// of merged that remote does not already hold whole, sorted and once each.
+func newFoldedPairFiles(merged, remote git.Snapshot) []ErrorFile {
+	held := make(map[string]bool, len(remote.Files))
+	for _, f := range remote.Files {
+		held[f.Path] = true
+	}
+	named := map[string]bool{}
+	for _, pair := range git.FoldedDirectoryPairs(merged) {
+		if held[pair.First] && held[pair.Path] {
+			continue
+		}
+		named[pair.First], named[pair.Path] = true, true
+	}
+	files := make([]ErrorFile, 0, len(named))
+	for path := range named {
+		files = append(files, ErrorFile{Path: path, Reason: FileReasonInvalidContent})
+	}
+	slices.SortFunc(files, func(a, b ErrorFile) int { return strings.Compare(a.Path, b.Path) })
+	return files
 }

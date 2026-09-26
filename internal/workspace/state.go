@@ -12,7 +12,7 @@ import (
 	"github.com/baalimago/slivingdoc/internal/strictjson"
 )
 
-// state is the durable private-state record (architecture section 7.2).
+// state is the durable private-state record (architecture/workspace.md).
 // Field order matches the normative JSON shape exactly. Identity is the
 // lowercase SHA-256 derived key; BaselineHead is the empty string only at
 // remote generation 0; BaselineTree is the authoritative accepted baseline
@@ -43,7 +43,7 @@ const (
 )
 
 // ErrRecoveryRequired reports that the private state requires recovery
-// before any normal work (architecture section 7.2): the durable flag is
+// before any normal work (architecture/workspace.md): the durable flag is
 // set, the state record is corrupt, or an interrupted state write was
 // detected. The caller resynchronizes P and L from the authoritative remote
 // state and calls Recover with the reconstructed baseline.
@@ -54,9 +54,9 @@ var ErrRecoveryRequired = errors.New("workspace: private state requires recovery
 // workspace must be recovered before normal work.
 var ErrPartial = errors.New("workspace: partial mutation; recovery required")
 
-// Baseline is the accepted remote state of one workspace (architecture
-// section 7.2). Head is the zero OID only at remote generation 0; Tree is
-// the authoritative baseline Git tree.
+// Baseline is the accepted remote state of one workspace
+// (architecture/workspace.md). Head is the zero OID only at remote
+// generation 0; Tree is the authoritative baseline Git tree.
 type Baseline struct {
 	RemoteGeneration uint64
 	Head             git.OID
@@ -64,8 +64,8 @@ type Baseline struct {
 }
 
 // EmptyTreeID is the canonical empty Git tree used as the baseline of a
-// new workspace and as the merge base of the first pull (architecture
-// section 7.2).
+// new workspace and as the merge base of the first pull
+// (architecture/workspace.md).
 var EmptyTreeID = mustParseEmptyTree()
 
 func mustParseEmptyTree() git.OID {
@@ -213,7 +213,7 @@ func stateField(root strictjson.Value, name string) (strictjson.Value, error) {
 	return f, nil
 }
 
-// validateState applies the cross-field rules of architecture section 7.2.
+// validateState applies the cross-field rules in architecture/workspace.md.
 func validateState(st state) error {
 	if st.Version != 1 {
 		return fmt.Errorf("workspace: state: unsupported version %d", st.Version)
@@ -256,7 +256,7 @@ func validHex64(s string) bool {
 }
 
 // persistState durably writes the record: temporary file, file sync, and
-// atomic rename (architecture section 7.2). It always stamps the record
+// atomic rename (architecture/workspace.md). It always stamps the record
 // with the workspace derived key, so a recovery write repairs a corrupt or
 // mismatched identity. A failed rename leaves the previous record durable
 // (rename is atomic), so the caller aborts the operation on error and the

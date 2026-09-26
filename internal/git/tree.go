@@ -118,6 +118,21 @@ func EmptyTree(repo Repository) (OID, error) {
 	return id, nil
 }
 
+// CheckUniqueNames refuses tree entries that repeat a name. A tree builder
+// replaces an entry on a repeated insert, so a file and a directory of one
+// name would silently lose one of them. Every Repository.WriteTree runs it,
+// the native boundary and the test fakes alike.
+func CheckUniqueNames(entries []TreeEntry) error {
+	seen := make(map[string]bool, len(entries))
+	for _, e := range entries {
+		if seen[e.Name] {
+			return fmt.Errorf("duplicate tree entry name %q", e.Name)
+		}
+		seen[e.Name] = true
+	}
+	return nil
+}
+
 // SortTreeEntries sorts entries in place into canonical Git tree order.
 // Test fakes in higher packages use it so their tree ordering can never
 // drift from BuildTree's.

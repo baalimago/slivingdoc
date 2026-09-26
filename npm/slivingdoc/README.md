@@ -1,11 +1,12 @@
 # slivingdoc (npm launcher)
 
 This package is the npm installation path for the slivingdoc MCP notebook
-server (architecture section 21). The package itself contains no native
-code. `slivingdoc` selects the binary for its exact version and platform
-and downloads it from the matching GitHub release. It verifies the
-published SHA-256 and caches the verified bytes under the npm cache. It
-then executes the binary with your arguments and standard streams.
+server (see `architecture/build.md` in the repository). The package
+itself contains no native code. `slivingdoc` selects the binary for its
+exact version and platform and downloads it from the matching GitHub
+release. It verifies the published SHA-256 and caches the verified bytes
+under the npm cache. It then executes the binary with your arguments and
+standard streams.
 
 Requirements: Node.js 22 or newer and one of the supported targets
 (`linux/amd64`, `linux/arm` for 32-bit ARMv7/Raspberry Pi OS armhf,

@@ -8,14 +8,14 @@ import (
 )
 
 // Probe proves that a store enforces the conditional-write and
-// read-after-write behavior the protocol requires (architecture section
-// 9.4). It uses a unique disposable probe/<uuidv7> key below the configured
-// prefix, runs the exact create, stale replace, matching replace, immediate
-// read, and cleanup sequence, and deletes the probe key on success and
-// after any recoverable failure. Any deviation returns ErrIncompatible; an
-// operational failure (create, read, or replace) also wraps its cause, so
-// the startup diagnostic can name the real reason without weakening
-// errors.Is against ErrIncompatible.
+// read-after-write behavior the protocol requires
+// (architecture/storage.md). It uses a unique disposable probe/<uuidv7> key
+// below the configured prefix, runs the exact create, stale replace,
+// matching replace, immediate read, and cleanup sequence, and deletes the
+// probe key on success and after any recoverable failure. Any deviation
+// returns ErrIncompatible; an operational failure (create, read, or
+// replace) also wraps its cause, so the startup diagnostic can name the
+// real reason without weakening errors.Is against ErrIncompatible.
 //
 // The probe verifies If-None-Match: * (a second create fails), If-Match
 // (a wrong ETag fails without mutation), and read-after-write (the

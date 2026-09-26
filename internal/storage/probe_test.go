@@ -19,7 +19,7 @@ import (
 // probeStore wraps a fake store and breaks exactly one required probe
 // condition. The probe is a storage-policy function over interface
 // primitives, so a deliberately broken store proves that each deviation is
-// detected (architecture section 9.4).
+// detected (architecture/storage.md).
 type probeStore struct {
 	*fake.Store
 	// breakCreate ignores If-None-Match: * and overwrites unconditionally.

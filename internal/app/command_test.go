@@ -368,7 +368,7 @@ func TestWriteErrorColoured(t *testing.T) {
 }
 
 // TestWriteErrorReadOnly checks the plain read-only refusal report byte for
-// byte (architecture section 2).
+// byte (architecture/product-contract.md).
 func TestWriteErrorReadOnly(t *testing.T) {
 	t.Parallel()
 	te := &mcp.ToolError{
@@ -419,6 +419,34 @@ func TestWriteErrorAlignsPathColumn(t *testing.T) {
 	}
 }
 
+// TestWriteErrorFirstPullRefusal checks the refused first pull byte for
+// byte: each offending file with its reason, and the reason's own next step
+// in place of FIX_INPUT's "correct the request".
+func TestWriteErrorFirstPullRefusal(t *testing.T) {
+	t.Parallel()
+	te := &mcp.ToolError{
+		Code: "INVALID_REQUEST", Reason: "DIRECTORY_NOT_EMPTY", Action: "FIX_INPUT",
+		Message: "the first pull into this directory found files that are not in the notebook or differ from it; " +
+			"pull into an empty directory, or move those files away and pull again",
+		Files: []mcp.ErrorFile{
+			{Path: "a.md", Reason: "DIFFERS_FROM_NOTEBOOK"},
+			{Path: "notes/x.md", Reason: "NOT_IN_NOTEBOOK"},
+		},
+	}
+	var out bytes.Buffer
+	writeError(&out, te, painter{})
+	want := "INVALID_REQUEST · DIRECTORY_NOT_EMPTY\n" +
+		"the first pull into this directory found files that are not in the notebook or differ from it; " +
+		"pull into an empty directory, or move those files away and pull again\n" +
+		"  a.md        differs from the notebook\n" +
+		"  notes/x.md  not in the notebook\n" +
+		"next: pull into an empty directory, or move those files away, then pull again\n" +
+		"retryable: false\n"
+	if out.String() != want {
+		t.Fatalf("output = %q, want %q", out.String(), want)
+	}
+}
+
 // TestFileReasonWords checks every FileReason wording and the verbatim
 // fallback.
 func TestFileReasonWords(t *testing.T) {
@@ -432,6 +460,8 @@ func TestFileReasonWords(t *testing.T) {
 		{"UNRESOLVED_MARKERS", "unresolved markers"},
 		{"READ_ONLY", "read-only"},
 		{"INVALID_CONTENT", "invalid content"},
+		{"NOT_IN_NOTEBOOK", "not in the notebook"},
+		{"DIFFERS_FROM_NOTEBOOK", "differs from the notebook"},
 		{"SOME_UNKNOWN_TOKEN", "SOME_UNKNOWN_TOKEN"},
 	} {
 		t.Run(row.reason, func(t *testing.T) {

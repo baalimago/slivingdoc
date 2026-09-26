@@ -522,7 +522,7 @@ func TestFaultStoreAmbiguousNextOp(t *testing.T) {
 
 // TestFaultStoreUnprovableNext proves the publication cannot prove its own
 // acceptance: the replace lands but reports transport, and the read that
-// settles the question fails once (architecture section 11.3).
+// settles the question fails once (architecture/commit.md).
 func TestFaultStoreUnprovableNext(t *testing.T) {
 	t.Parallel()
 	base := newPureStore()

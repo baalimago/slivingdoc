@@ -26,7 +26,8 @@ func TestDecodePull(t *testing.T) {
 		{name: "path with NUL", args: map[string]any{"path": "/tmp/a\x00b"}, wantErr: "U+0000"},
 		{name: "non-object arguments", args: []any{abs}, wantErr: "must be a JSON object"},
 		{name: "string arguments", args: `"notes"`, wantErr: "must be a JSON object"},
-		{name: "null arguments", args: nil, wantErr: "explicit null"},
+		{name: "null arguments are the empty object", args: nil, want: ""},
+		{name: "absent arguments are the empty object", args: "", want: ""},
 		{name: "malformed JSON", args: `{"path":`, wantErr: "not a strict JSON object"},
 	}
 	for _, tt := range tests {
@@ -95,6 +96,9 @@ func TestDecodeCommit(t *testing.T) {
 		{name: "message with NUL", args: map[string]any{"path": abs, "message": "a\x00b"}, wantErr: "U+0000"},
 		{name: "message with escapes preserved", args: map[string]any{"path": abs, "message": "line1\nline2"}, wantPath: abs, wantMessage: "line1\nline2"},
 		{name: "relative path", args: map[string]any{"path": "notes", "message": "m"}, wantErr: "path must be absolute"},
+		{name: "null arguments lack the message", args: nil, wantErr: "message is required"},
+		{name: "absent arguments lack the message", args: "", wantErr: "message is required"},
+		{name: "non-object arguments", args: `[]`, wantErr: "must be a JSON object"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

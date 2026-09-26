@@ -59,7 +59,7 @@ export function sha256(data) {
 	return createHash("sha256").update(data).digest("hex");
 }
 
-// sumsFile emits the architecture section 21 SHA256SUMS grammar: sorted LF
+// sumsFile emits the SHA256SUMS grammar of architecture/build.md: sorted LF
 // lines, lowercase digest, two spaces, asset name.
 export function sumsFile(entries) {
 	return entries

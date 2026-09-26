@@ -4,7 +4,7 @@ import "time"
 
 // FileMode is a Git tree-entry file mode. Slivingdoc accepts exactly two
 // modes — regular files (100644) and directories (040000) — and rejects
-// every other mode on every host (architecture section 8.2).
+// every other mode on every host (architecture/git-engine.md).
 type FileMode uint32
 
 const (
@@ -42,8 +42,8 @@ type CommitSpec struct {
 	Time    time.Time
 }
 
-// AuthorName and AuthorEmail form the fixed commit identity from
-// architecture section 8.2. Every commit uses it; there is no
+// AuthorName and AuthorEmail form the fixed commit identity in
+// architecture/git-engine.md. Every commit uses it; there is no
 // user-configurable identity.
 const (
 	AuthorName  = "slivingdoc"
@@ -121,7 +121,7 @@ type File struct {
 // Pack is an exported Git pack: the exact pack bytes, the SHA-256 of those
 // bytes, and the number of objects the pack contains. The SHA-256 is the
 // pack-integrity checksum the storage layer records in manifest descriptors
-// (architecture section 9.3).
+// (architecture/storage.md).
 type Pack struct {
 	Data        []byte
 	SHA256      [32]byte

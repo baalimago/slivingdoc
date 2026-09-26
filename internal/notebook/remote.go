@@ -43,8 +43,8 @@ func emptyRemote() remoteState {
 // private repository, and validates the accepted history and text before
 // returning. A stale observation whose referenced pack disappeared is
 // discarded and current is re-read; an unchanged manifest that still
-// references the missing pack is a storage-integrity error (architecture
-// section 10). The reader never guesses state from object names.
+// references the missing pack is a storage-integrity error
+// (architecture/pull.md). The reader never guesses state from object names.
 func (n *Notebook) readRemote(ctx context.Context) (remoteState, error) {
 	for restart := 0; ; restart++ {
 		data, etag, present, err := n.readCurrent(ctx)
@@ -317,8 +317,9 @@ func (n *Notebook) cacheWrite(sha storage.SHA256, data []byte) error {
 
 // lookupPublication searches the active and retained checkpoint and
 // increment descriptors of the authoritative manifest for a publication ID.
-// The notebook returns success only when the ID is present (architecture
-// section 11.3); an ID that no descriptor records cannot be proved accepted.
+// The notebook returns success only when the ID is present
+// (architecture/commit.md); an ID that no descriptor records cannot be
+// proved accepted.
 func (n *Notebook) lookupPublication(ctx context.Context, id storage.UUID) (bool, error) {
 	data, _, present, err := n.readCurrent(ctx)
 	if err != nil {
@@ -352,7 +353,7 @@ func (n *Notebook) lookupPublication(ctx context.Context, id storage.UUID) (bool
 	return false, nil
 }
 
-// recoverState is the generic recovery path (architecture section 15): it
+// recoverState is the generic recovery path (architecture/guarantees.md): it
 // rereads authoritative current, imports the complete descriptor chain,
 // reconstructs the head tree, and applies it to L and P through the
 // workspace. The report states the failed stage, whether remote acceptance

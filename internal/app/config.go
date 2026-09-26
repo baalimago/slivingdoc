@@ -21,10 +21,10 @@ import (
 	"github.com/baalimago/slivingdoc/internal/workspace"
 )
 
-// config is the fully resolved process configuration (architecture section
-// 17). Flags override environment variables, which override defaults; the
-// endpoint is normalized and both roots are absolute and disjoint before
-// any engine or S3 work.
+// config is the fully resolved process configuration
+// (architecture/config.md). Flags override environment variables, which
+// override defaults; the endpoint is normalized and both roots are absolute
+// and disjoint before any engine or S3 work.
 type config struct {
 	bucket              string
 	prefix              string
@@ -39,10 +39,11 @@ type config struct {
 	checkpointPacks     int
 	retainedCheckpoints int
 
-	// readOnlyPaths are the read-only entries (architecture section 17),
+	// readOnlyPaths are the read-only entries (architecture/config.md),
 	// normalized by finish. writablePaths are the writable entries,
 	// normalized by the same step; a non-empty writable set makes every
-	// unmatched path read-only (architecture section 2, Read-only paths).
+	// unmatched path read-only (architecture/product-contract.md, Read-only
+	// and writable paths).
 	readOnlyPaths []string
 	writablePaths []string
 
@@ -56,7 +57,7 @@ type config struct {
 	logConfigured bool
 
 	// sessionDir is the process-owned parent of both roots when neither is
-	// configured (architecture section 17). It is removed at shutdown; the
+	// configured (architecture/config.md). It is removed at shutdown; the
 	// notebook itself lives in S3.
 	sessionDir string
 }
@@ -69,7 +70,7 @@ func (cfg config) hosted() bool { return cfg.token != "" }
 // and no endpoint is configured.
 const DefaultHostedEndpoint = "https://api.slivingdoc.dev"
 
-// Flags are the serve-command flags (architecture section 17). Binding and
+// Flags are the serve-command flags (architecture/config.md). Binding and
 // resolution are separate so the command router can parse the flag set
 // before the process body resolves it against the environment.
 type Flags struct {
@@ -114,7 +115,7 @@ func (f *Flags) Bind(fs *flag.FlagSet) {
 	fs.Var(&f.logTimestamp, "log-timestamp", "include the time= field in log records")
 }
 
-// The documented numeric bounds and defaults (architecture section 17).
+// The documented numeric bounds and defaults (architecture/config.md).
 // The ranges come from the notebook package, which owns them, so the flag
 // validation and the notebook validation cannot drift.
 const (
@@ -126,7 +127,7 @@ const (
 )
 
 // loadConfig resolves one validated configuration for the process
-// (architecture section 17). The flags are already parsed when the command
+// (architecture/config.md). The flags are already parsed when the command
 // router owns the command line; otherwise p.args is parsed here. Any parse
 // or validation failure returns a diagnostic that never echoes credentials
 // or private values.
@@ -294,16 +295,17 @@ func (cfg config) finish(cwd string) (config, error) {
 	// The resolved fields carry the normalized entries, which the service
 	// and the notebook each build a policy from again; the normalization
 	// keeps what resolution needs, so every rebuild answers alike
-	// (architecture section 2, Writable paths).
+	// (architecture/product-contract.md, Read-only and writable paths).
 	cfg.readOnlyPaths = policy.ReadOnly()
 	cfg.writablePaths = policy.Writable()
 	return cfg, nil
 }
 
 // resolvePolicy normalizes both entry sets and composes them into the
-// process path policy (architecture section 2, Read-only paths). Each side
-// is named by its own setting, so an operator reading the refusal knows
-// which value to edit, and a path named by both names both.
+// process path policy (architecture/product-contract.md, Read-only and
+// writable paths). Each side is named by its own setting, so an operator
+// reading the refusal knows which value to edit, and a path named by both
+// names both.
 func resolvePolicy(readOnly, writable []string) (git.PathPolicy, error) {
 	if _, err := git.NormalizeEntries(readOnly); err != nil {
 		return git.PathPolicy{}, fmt.Errorf("read-only paths: %w", err)
@@ -356,8 +358,8 @@ func environ(env []string) map[string]string {
 
 // resolveString returns the effective string value: an explicitly set flag
 // wins over the environment, which wins over the default. An explicitly
-// empty flag does not fall back to the environment (architecture section
-// 17); an empty environment value is treated as unset.
+// empty flag does not fall back to the environment
+// (architecture/config.md); an empty environment value is treated as unset.
 func resolveString(f *stringFlag, env, def string) string {
 	if f.set {
 		return f.value
@@ -478,7 +480,7 @@ func absolute(cwd, root string) (string, error) {
 }
 
 // normalizeEndpoint validates and normalizes a custom endpoint
-// (architecture section 17): an absolute http or https URL without user
+// (architecture/config.md): an absolute http or https URL without user
 // information, query, or fragment. The scheme and host are lowercased, a
 // trailing slash is removed, and a non-root path is preserved. The empty
 // endpoint stays empty for normal AWS resolution.
@@ -507,8 +509,7 @@ func normalizeEndpoint(raw string) (string, error) {
 }
 
 // stringFlag records whether the flag was explicitly set, so an explicitly
-// empty value does not fall back to the environment (architecture section
-// 17).
+// empty value does not fall back to the environment (architecture/config.md).
 type stringFlag struct {
 	value string
 	set   bool
@@ -542,7 +543,7 @@ func (f *boolFlag) Set(s string) error {
 func (f *boolFlag) IsBoolFlag() bool { return true }
 
 // intFlag accepts unsigned decimal values only: integer configuration
-// never carries a sign (architecture section 17).
+// never carries a sign (architecture/config.md).
 type intFlag struct {
 	value int
 	set   bool
@@ -574,7 +575,7 @@ func parseUnsigned(s string) (int, error) {
 }
 
 // FlagReference documents every shared configuration flag, its environment
-// variable, and its default (architecture section 17). serve, pull, and
+// variable, and its default (architecture/config.md). serve, pull, and
 // commit embed it in their help output.
 const FlagReference = `  --bucket string               S3 bucket, or the hosted space name when     SLIVINGDOC_BUCKET
                                 a token is set (required)
@@ -618,7 +619,7 @@ const FlagReference = `  --bucket string               S3 bucket, or the hosted 
                                 stamps log lines itself)
 `
 
-// HelpText is the serve-command help (architecture section 17).
+// HelpText is the serve-command help (architecture/config.md).
 const HelpText = `slivingdoc serve - shared UTF-8 text notebook over MCP stdio
 
 Usage:

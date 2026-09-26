@@ -357,8 +357,9 @@ func TestScenarioCLISharedRemoteConflict(t *testing.T) {
 }
 
 // TestScenarioCLIReadOnlyCommit: the read-only CLI report over spawned
-// one-shot processes (architecture section 2, CLI report). R is pre-seeded
-// on the real backend because spawned processes cannot share the fake store.
+// one-shot processes (architecture/product-contract.md, CLI report). R is
+// pre-seeded on the real backend because spawned processes cannot share the
+// fake store.
 func TestScenarioCLIReadOnlyCommit(t *testing.T) {
 	t.Parallel()
 	env, root, prefix := realCLIEnv(t, "integrationtest-readonly")
@@ -409,4 +410,41 @@ func TestScenarioCLIReadOnlyCommit(t *testing.T) {
 			"1 files changed, 1 insertions(+), 1 deletions(-)\n"+
 			"read-only: docs\n",
 		"commit", notes, "-m", "m")
+}
+
+// TestScenarioCLIFirstPullIntoForeignDirectory: the first-pull guard over
+// a spawned one-shot pull (architecture/pull.md). A directory holding a
+// file the published notebook lacks is refused with the exact plain report
+// and exit 1, and the file is left as it was.
+func TestScenarioCLIFirstPullIntoForeignDirectory(t *testing.T) {
+	t.Parallel()
+	env, root, prefix := realCLIEnv(t, "integrationtest-firstpull")
+
+	writer := NewHarness(t, HarnessConfig{Prefix: prefix})
+	seed := writer.Path("seed")
+	writer.WriteFile(filepath.Join(seed, "a.md"), "published\n")
+	writer.assertOK(t, writer.Pull("", seed))
+	writer.assertOK(t, writer.Commit("", seed, "seed"))
+
+	notes := filepath.Join(root, "notes")
+	writeCLIFile(t, filepath.Join(notes, "todo.md"), "someone else's file\n")
+	code, stdout, stderr := runCLI(t, "real", env, "pull", notes)
+	if code != 1 {
+		t.Fatalf("first pull into a foreign directory = exit %d, want 1; stderr: %s", code, stderr)
+	}
+	want := "INVALID_REQUEST · DIRECTORY_NOT_EMPTY\n" +
+		"the first pull into this directory found files that are not in the notebook; " +
+		"pull into an empty directory, or move those files away and pull again\n" +
+		"  todo.md  not in the notebook\n" +
+		"next: pull into an empty directory, or move those files away, then pull again\n" +
+		"retryable: false\n"
+	if stdout != want {
+		t.Fatalf("first-pull refusal stdout = %q, want %q", stdout, want)
+	}
+	if got, err := os.ReadFile(filepath.Join(notes, "todo.md")); err != nil || string(got) != "someone else's file\n" {
+		t.Fatalf("todo.md after the refusal = %q, %v; want it untouched", got, err)
+	}
+	if _, err := os.Stat(filepath.Join(notes, "a.md")); err == nil {
+		t.Fatal("the refused pull wrote the notebook into the directory")
+	}
 }

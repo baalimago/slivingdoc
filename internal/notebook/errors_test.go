@@ -8,6 +8,7 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -16,7 +17,8 @@ import (
 	"github.com/baalimago/slivingdoc/internal/workspace"
 )
 
-// allReasons lists every Reason token under its owning code (architecture section 2).
+// allReasons lists every Reason token under its owning code
+// (architecture/product-contract.md).
 var allReasons = []struct {
 	code   Code
 	reason Reason
@@ -28,6 +30,7 @@ var allReasons = []struct {
 	{CodeInvalidRequest, ReasonMessageTooLong, ActionFixInput},
 	{CodeInvalidRequest, ReasonMessageInvalid, ActionFixInput},
 	{CodeInvalidRequest, ReasonPullRequired, ActionPull},
+	{CodeInvalidRequest, ReasonDirectoryNotEmpty, ActionFixInput},
 	{CodeInvalidRequest, ReasonInvalidContent, ActionEditFiles},
 	{CodeInvalidRequest, ReasonReadOnlyPath, ActionEditFiles},
 	{CodeContentConflict, ReasonMergeConflict, ActionEditFiles},
@@ -210,6 +213,24 @@ func TestMapLocalErrorNamesScanFile(t *testing.T) {
 		}
 		if len(ne.Files) != 1 || ne.Files[0].Path != "docs/bad.md" || ne.Files[0].Reason != FileReasonInvalidContent {
 			t.Fatalf("files = %+v, want exactly [{docs/bad.md INVALID_CONTENT}]", ne.Files)
+		}
+	})
+
+	t.Run("path collision names both paths", func(t *testing.T) {
+		src := &workspace.ScanError{Path: "notes.md", Other: "Notes.md", Err: workspace.ErrPathCollision}
+		var ne *Error
+		if !errors.As(nb.mapLocalError(src), &ne) {
+			t.Fatal("mapLocalError did not return *Error")
+		}
+		if ne.Code != CodeInvalidRequest || ne.Reason != ReasonInvalidContent || ne.Action != ActionEditFiles {
+			t.Fatalf("error = %+v, want INVALID_REQUEST/INVALID_CONTENT/EDIT_FILES", ne)
+		}
+		want := []ErrorFile{
+			{Path: "Notes.md", Reason: FileReasonInvalidContent},
+			{Path: "notes.md", Reason: FileReasonInvalidContent},
+		}
+		if !reflect.DeepEqual(ne.Files, want) {
+			t.Fatalf("files = %+v, want %+v", ne.Files, want)
 		}
 	})
 

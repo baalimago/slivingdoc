@@ -1,6 +1,8 @@
 package git
 
 import (
+	"errors"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -143,5 +145,108 @@ func TestValidateSnapshotRejectsDuplicateAndInvalidFiles(t *testing.T) {
 	bin := fakeSnapshot(map[string]string{"bin.dat": string([]byte{0x00})})
 	if err := ValidateSnapshot(bin); err == nil {
 		t.Fatal("ValidateSnapshot(U+0000 content) = nil, want error")
+	}
+}
+
+// TestValidateSnapshotRejectsFileThatIsADirectory proves a name that is a
+// file and also a directory of another path is refused, exactly and under
+// case folding, in either order, and names the file and the path below it.
+func TestValidateSnapshotRejectsFileThatIsADirectory(t *testing.T) {
+	tests := []struct {
+		name  string
+		files []File
+		want  PathCollisionError
+	}{
+		{
+			name:  "exact",
+			files: []File{{Path: "p", Data: []byte("file")}, {Path: "p/q.md", Data: []byte("below")}},
+			want:  PathCollisionError{First: "p", Path: "p/q.md", Dir: true},
+		},
+		{
+			name:  "deeper and unsorted",
+			files: []File{{Path: "a/b/c.md", Data: []byte("below")}, {Path: "a/b", Data: []byte("file")}},
+			want:  PathCollisionError{First: "a/b", Path: "a/b/c.md", Dir: true},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateSnapshot(Snapshot{Files: tt.files})
+			var got *PathCollisionError
+			if !errors.As(err, &got) || *got != tt.want {
+				t.Fatalf("ValidateSnapshot() = %v, want %+v", err, tt.want)
+			}
+			if !strings.Contains(err.Error(), "is a file and a directory") {
+				t.Fatalf("error text = %q, want the file/directory wording", err)
+			}
+		})
+	}
+	sibling := Snapshot{Files: []File{{Path: "p.md", Data: []byte("x")}, {Path: "p/q.md", Data: []byte("y")}}}
+	if err := ValidateSnapshot(sibling); err != nil {
+		t.Fatalf("ValidateSnapshot(sibling names) = %v, want nil", err)
+	}
+	// Accepted state an older writer published with a folded pair stays
+	// readable: the folded rule is ValidateFoldedDirectories' alone.
+	folded := Snapshot{Files: []File{{Path: "README", Data: []byte("file")}, {Path: "readme/x.md", Data: []byte("below")}}}
+	if err := ValidateSnapshot(folded); err != nil {
+		t.Fatalf("ValidateSnapshot(folded file/directory pair) = %v, want nil", err)
+	}
+}
+
+// TestValidateFoldedDirectories proves the local-content rule: a file whose
+// name folds to a directory's is refused naming both, exact pairs too, and
+// sibling names pass.
+func TestValidateFoldedDirectories(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		files []File
+		want  *PathCollisionError
+	}{
+		{
+			name:  "case folding",
+			files: []File{{Path: "README", Data: []byte("file")}, {Path: "readme/x.md", Data: []byte("below")}},
+			want:  &PathCollisionError{First: "README", Path: "readme/x.md", Fold: true, Dir: true},
+		},
+		{
+			name:  "exact",
+			files: []File{{Path: "p", Data: []byte("file")}, {Path: "p/q.md", Data: []byte("below")}},
+			want:  &PathCollisionError{First: "p", Path: "p/q.md", Dir: true},
+		},
+		{
+			name:  "siblings",
+			files: []File{{Path: "P.md", Data: []byte("x")}, {Path: "p/q.md", Data: []byte("y")}},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateFoldedDirectories(Snapshot{Files: tt.files})
+			if tt.want == nil {
+				if err != nil {
+					t.Fatalf("ValidateFoldedDirectories() = %v, want nil", err)
+				}
+				return
+			}
+			var got *PathCollisionError
+			if !errors.As(err, &got) || *got != *tt.want {
+				t.Fatalf("ValidateFoldedDirectories() = %v, want %+v", err, *tt.want)
+			}
+		})
+	}
+}
+
+func TestFoldedDirectoryPairs(t *testing.T) {
+	snap := Snapshot{Files: []File{
+		{Path: "README", Data: []byte("file")},
+		{Path: "a.md", Data: []byte("x")},
+		{Path: "readme/x.md", Data: []byte("below")},
+		{Path: "readme/y/z.md", Data: []byte("deeper")},
+	}}
+	want := []PathCollisionError{
+		{First: "README", Path: "readme/x.md", Fold: true, Dir: true},
+		{First: "README", Path: "readme/y/z.md", Fold: true, Dir: true},
+	}
+	if got := FoldedDirectoryPairs(snap); !reflect.DeepEqual(got, want) {
+		t.Fatalf("FoldedDirectoryPairs() = %+v, want %+v", got, want)
+	}
+	if got := FoldedDirectoryPairs(Snapshot{Files: []File{{Path: "a.md"}, {Path: "b/c.md"}}}); got != nil {
+		t.Fatalf("FoldedDirectoryPairs(no pair) = %+v, want nil", got)
 	}
 }

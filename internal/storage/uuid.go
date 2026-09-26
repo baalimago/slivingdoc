@@ -14,7 +14,7 @@ var ErrInvalidUUID = errors.New("storage: invalid uuid")
 
 // UUID is a validated RFC 9562 UUID value. The storage protocol accepts
 // only the canonical lowercase text form; every protocol ID must be version
-// 7 with the RFC 4122 variant (architecture section 9.1).
+// 7 with the RFC 4122 variant (architecture/storage.md).
 type UUID [16]byte
 
 // NewUUIDv7 returns a new version-7 UUID from the current time and a

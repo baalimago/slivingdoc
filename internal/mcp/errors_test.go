@@ -340,7 +340,7 @@ func recoveryError() error {
 }
 
 // TestRedact scrubs credentials, S3 keys, private paths, and Git IDs from
-// diagnostic text (architecture section 2).
+// diagnostic text (architecture/product-contract.md).
 func TestRedact(t *testing.T) {
 	packUUID := "0196c2d0-7f2b-7e00-8000-000000000004"
 	probeUUID := "0196c2d0-7f2b-7e00-8000-000000000005"

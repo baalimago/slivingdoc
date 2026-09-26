@@ -166,3 +166,13 @@ func TestBuildTreePropagatesWriteError(t *testing.T) {
 }
 
 var _ = errors.Is // keep errors import for future assertions
+
+func TestCheckUniqueNames(t *testing.T) {
+	if err := CheckUniqueNames([]TreeEntry{{Name: "p", Mode: ModeBlob}, {Name: "p.md", Mode: ModeBlob}, {Name: "q", Mode: ModeTree}}); err != nil {
+		t.Fatalf("CheckUniqueNames(distinct) = %v, want nil", err)
+	}
+	err := CheckUniqueNames([]TreeEntry{{Name: "p", Mode: ModeBlob}, {Name: "p", Mode: ModeTree}})
+	if err == nil || !strings.Contains(err.Error(), `"p"`) {
+		t.Fatalf("CheckUniqueNames(file and directory named p) = %v, want an error naming p", err)
+	}
+}

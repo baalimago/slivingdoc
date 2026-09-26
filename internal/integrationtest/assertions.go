@@ -10,7 +10,7 @@ import (
 )
 
 // stateRecord is the minimal strict view of the private state record
-// (architecture section 7.2), read by the harness for baseline
+// (architecture/workspace.md), read by the harness for baseline
 // assertions. The workspace package owns the strict decode; the harness
 // reads the fields the black-box contract observes: the remote generation
 // and the recovery-required flag.

@@ -739,6 +739,132 @@ func TestContextCancellationWhileWaitingForLock(t *testing.T) {
 	}
 }
 
+// TestHoldSpansWorkspaceCalls proves the operation-wide lock: calls made
+// with the held context run without waiting on the lock they already hold,
+// a call without it waits until the release, and a nested Hold is a no-op.
+func TestHoldSpansWorkspaceCalls(t *testing.T) {
+	w := openWorkspace(t, testConfig(t, newFakeEngine(), "notes"))
+	tree := buildTree(t, w, map[string]string{"a.md": "a"})
+
+	held, release, err := w.Hold(context.Background())
+	if err != nil {
+		t.Fatalf("Hold() = %v", err)
+	}
+	nested, releaseNested, err := w.Hold(held)
+	if err != nil || nested != held {
+		t.Fatalf("nested Hold() = %v, %v; want the held context unchanged", nested, err)
+	}
+	releaseNested() // a no-op: the outer hold still owns the lock
+
+	if _, err := w.Snapshot(held); err != nil {
+		t.Fatalf("Snapshot(held) = %v", err)
+	}
+	if err := w.Accept(held, Baseline{RemoteGeneration: 1, Head: oidTest("c"), Tree: tree}); err != nil {
+		t.Fatalf("Accept(held) = %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if _, err := w.Snapshot(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Snapshot() without the held context = %v, want it to wait for the release", err)
+	}
+
+	release()
+	if _, err := w.Snapshot(context.Background()); err != nil {
+		t.Fatalf("Snapshot() after the release = %v", err)
+	}
+	// A context held for another workspace does not carry this one's lock.
+	other := openWorkspace(t, testConfig(t, newFakeEngine(), "other"))
+	otherHeld, otherRelease, err := other.Hold(context.Background())
+	if err != nil {
+		t.Fatalf("other Hold() = %v", err)
+	}
+	defer otherRelease()
+	if w.holds(otherHeld) {
+		t.Fatal("a context held for another workspace claims this workspace's lock")
+	}
+	// Holds on two workspaces nest: the inner one does not replace the
+	// outer one's mark.
+	both, bothRelease, err := w.Hold(otherHeld)
+	if err != nil {
+		t.Fatalf("nested Hold() on a second workspace = %v", err)
+	}
+	defer bothRelease()
+	if !w.holds(both) || !other.holds(both) {
+		t.Fatalf("nested holds = %t/%t, want both workspaces held", w.holds(both), other.holds(both))
+	}
+	if _, err := other.Snapshot(both); err != nil {
+		t.Fatalf("Snapshot() on the outer workspace under both holds = %v", err)
+	}
+}
+
+// TestLockHolderRereadsState proves the operation lock refreshes the
+// in-memory record from state.json (architecture/workspace.md): two
+// Workspace values on one P stand for two processes, and each sees the
+// baseline and recovery flag the other wrote once it takes the lock. An
+// unreadable record keeps the last baseline and requires recovery.
+func TestLockHolderRereadsState(t *testing.T) {
+	ctx := context.Background()
+	cfg := testConfig(t, newFakeEngine(), "notes")
+	w1 := openWorkspace(t, cfg)
+	w2 := openWorkspace(t, cfg)
+	hold := func(w *Workspace) {
+		t.Helper()
+		_, release, err := w.Hold(ctx)
+		if err != nil {
+			t.Fatalf("Hold() = %v", err)
+		}
+		release()
+	}
+
+	accepted := Baseline{RemoteGeneration: 1, Head: oidTest("c"), Tree: buildTree(t, w1, map[string]string{"a.md": "a"})}
+	if err := w1.Accept(ctx, accepted); err != nil {
+		t.Fatalf("Accept() = %v", err)
+	}
+	if got := w2.Baseline(); got.RemoteGeneration != 0 {
+		t.Fatalf("w2 baseline before its lock = %+v, want the generation-0 copy read at Open", got)
+	}
+	hold(w2)
+	if got := w2.Baseline(); got != accepted {
+		t.Fatalf("w2 baseline after its lock = %+v, want %+v written by w1", got, accepted)
+	}
+
+	// w1 fails after the recovery flag is durable; w2 learns it at its lock.
+	w1.failpoints = &Failpoints{Replace: func() error { return errors.New("injected") }}
+	next := Baseline{RemoteGeneration: 2, Head: oidTest("d"), Tree: buildTree(t, w1, map[string]string{"a.md": "b"})}
+	if err := w1.Accept(ctx, next); err == nil {
+		t.Fatal("Accept() with the Replace failpoint = nil, want the injected failure")
+	}
+	if w2.RecoveryRequired() {
+		t.Fatal("w2 saw the recovery flag before taking the lock")
+	}
+	hold(w2)
+	if !w2.RecoveryRequired() {
+		t.Fatal("w2 after its lock does not require the recovery w1 recorded")
+	}
+	if _, err := w2.Snapshot(ctx); !errors.Is(err, ErrRecoveryRequired) {
+		t.Fatalf("w2 Snapshot() = %v, want ErrRecoveryRequired", err)
+	}
+
+	// w1 repairs; w2 is released from recovery at its next lock.
+	w1.failpoints = nil
+	if err := w1.Recover(ctx, accepted); err != nil {
+		t.Fatalf("Recover() = %v", err)
+	}
+	hold(w2)
+	if w2.RecoveryRequired() || w2.Baseline() != accepted {
+		t.Fatalf("w2 after the repair: recovery %t, baseline %+v; want false and %+v", w2.RecoveryRequired(), w2.Baseline(), accepted)
+	}
+
+	if err := os.WriteFile(filepath.Join(w2.privDir, stateFileName), []byte("{not json"), 0o600); err != nil {
+		t.Fatalf("WriteFile(state) = %v", err)
+	}
+	hold(w2)
+	if !w2.RecoveryRequired() || w2.Baseline() != accepted {
+		t.Fatalf("w2 over an unreadable record: recovery %t, baseline %+v; want true and the last %+v", w2.RecoveryRequired(), w2.Baseline(), accepted)
+	}
+}
+
 // oidTest parses a deterministic OID from a short hex string.
 func oidTest(hex string) git.OID {
 	id, err := git.ParseOID(strings.Repeat("0", 40-len(hex)) + hex)
@@ -746,4 +872,39 @@ func oidTest(hex string) git.OID {
 		panic(err)
 	}
 	return id
+}
+
+// TestRebuiltRepositoryRecordsRecoveryDurably proves Open writes the
+// recovery requirement into state.json when it had to rebuild the private
+// repository: the rebuilt repository lacks the recorded baseline, and the
+// lock holder's reread of the record must not clear the requirement.
+func TestRebuiltRepositoryRecordsRecoveryDurably(t *testing.T) {
+	ctx := context.Background()
+	cfg := testConfig(t, newFakeEngine(), "notes")
+	w := openWorkspace(t, cfg)
+	accepted := Baseline{RemoteGeneration: 1, Head: oidTest("c"), Tree: buildTree(t, w, map[string]string{"a.md": "a"})}
+	if err := w.Accept(ctx, accepted); err != nil {
+		t.Fatalf("Accept() = %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close() = %v", err)
+	}
+
+	cfg.Engine = newFakeEngine() // the repository is gone: Open rebuilds it
+	rebuilt := openWorkspace(t, cfg)
+	st, err := readStateFile(rebuilt.privDir)
+	if err != nil {
+		t.Fatalf("readStateFile() = %v", err)
+	}
+	if !st.RecoveryRequired {
+		t.Fatal("state.json after a repository rebuild does not require recovery")
+	}
+	if _, release, err := rebuilt.Hold(ctx); err != nil {
+		t.Fatalf("Hold() = %v", err)
+	} else {
+		release()
+	}
+	if !rebuilt.RecoveryRequired() || rebuilt.Baseline() != accepted {
+		t.Fatalf("after the lock: recovery %t, baseline %+v; want true and %+v", rebuilt.RecoveryRequired(), rebuilt.Baseline(), accepted)
+	}
 }

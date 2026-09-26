@@ -1,10 +1,10 @@
-// lib/platform.mjs — platform-to-artifact mapping (architecture section 21).
+// lib/platform.mjs — platform-to-artifact mapping (architecture/build.md).
 //
 // Release tags use v<semver>. Assets use
 // slivingdoc-v<semver>-<os>-<arch> and add .exe on Windows. OS values are
 // linux, darwin, and windows; architecture values are amd64, arm, and arm64.
 // The `arm` artifact targets 32-bit Linux ARMv7 (Raspberry Pi OS armhf).
-// Windows arm64 stays deferred (architecture section 23).
+// Windows arm64 stays deferred (architecture/decisions.md).
 
 const OS_NAMES = Object.freeze({ linux: "linux", darwin: "darwin", win32: "windows" });
 const ARCH_NAMES = Object.freeze({ x64: "amd64", arm: "arm", arm64: "arm64" });

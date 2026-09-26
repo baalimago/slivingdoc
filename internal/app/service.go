@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"sync"
 
 	"github.com/baalimago/slivingdoc/internal/git"
@@ -13,7 +14,7 @@ import (
 )
 
 // ServiceConfig is the validated service configuration the app resolves
-// from flags and the environment (architecture section 17). Process
+// from flags and the environment (architecture/config.md). Process
 // scenarios and the integration harness build it directly; production
 // derives it from the resolved config through serviceConfig.
 type ServiceConfig struct {
@@ -28,11 +29,12 @@ type ServiceConfig struct {
 	CommitRetries       int
 	CheckpointPacks     int
 	RetainedCheckpoints int
-	// ReadOnlyPaths are the read-only entries (architecture section 2,
-	// Read-only paths).
+	// ReadOnlyPaths are the read-only entries
+	// (architecture/product-contract.md, Read-only and writable paths).
 	ReadOnlyPaths []string
 	// WritablePaths are the writable entries; a non-empty set protects
-	// every unmatched path (architecture section 2, Read-only paths).
+	// every unmatched path (architecture/product-contract.md, Read-only and
+	// writable paths).
 	WritablePaths []string
 }
 
@@ -70,7 +72,7 @@ type ServiceHooks struct {
 // Service is the MCP service view: one requested visible path resolves to
 // one workspace and notebook, opened lazily on first use and kept open
 // until Close. Calls for one path serialize on that workspace's operation
-// lock; distinct paths operate independently (architecture section 7.2).
+// lock; distinct paths operate independently (architecture/workspace.md).
 type Service struct {
 	engine git.Engine
 	store  storage.ObjectStore
@@ -117,7 +119,7 @@ func NewService(engine git.Engine, store storage.ObjectStore, cfg ServiceConfig,
 
 // Root is the notebook directory an omitted request path resolves to: the
 // configured workspace root, or the process-owned temporary notebook
-// directory when no root was configured (architecture section 17).
+// directory when no root was configured (architecture/config.md).
 func (s *Service) Root() string { return s.cfg.WorkspaceRoot }
 
 // ReadOnlyPaths returns the normalized, sorted read-only entries; never nil.
@@ -149,8 +151,11 @@ func (s *Service) Commit(ctx context.Context, path, message string) (notebook.Re
 
 // notebookFor returns the notebook for the request path, opening its
 // workspace and notebook on first use. The open runs under the map lock so
-// concurrent first use of the same path cannot open two workspaces.
+// concurrent first use of the same path cannot open two workspaces. The
+// map key is the cleaned path, so spellings of one directory such as
+// /ws/a and /ws/a/ share one workspace and its operation lock.
 func (s *Service) notebookFor(ctx context.Context, path string) (*notebook.Notebook, error) {
+	path = filepath.Clean(path)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
@@ -179,8 +184,8 @@ func (s *Service) notebookFor(ctx context.Context, path string) (*notebook.Noteb
 	}
 	// The notebook builds its own policy from the entry sets: each layer
 	// validates what it is configured with, and the normalized entries
-	// resolve exactly as the written ones do (architecture section 2,
-	// Writable paths).
+	// resolve exactly as the written ones do
+	// (architecture/product-contract.md, Read-only and writable paths).
 	nb, err := notebook.New(notebook.Config{
 		Workspace:           ws,
 		Store:               s.store,
@@ -200,8 +205,8 @@ func (s *Service) notebookFor(ctx context.Context, path string) (*notebook.Noteb
 }
 
 // identity is the storage identity derived from the normalized
-// configuration (architecture sections 7.2 and 17): the endpoint, region,
-// bucket, prefix, and the manifest protocol version.
+// configuration (architecture/workspace.md and config.md): the endpoint,
+// region, bucket, prefix, and the manifest protocol version.
 func (s *Service) identity() workspace.Identity {
 	return workspace.Identity{
 		Endpoint:        s.cfg.Endpoint,

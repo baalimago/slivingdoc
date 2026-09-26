@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 // workspace over a fake engine, so only the Git engine and the object store
 // are ever faked.
 type Workspace interface {
+	Hold(ctx context.Context) (context.Context, func(), error)
 	Snapshot(ctx context.Context) (git.Snapshot, error)
 	Baseline() workspace.Baseline
 	Repo() git.Repository
@@ -35,7 +37,7 @@ type Workspace interface {
 // the first (the application resolves the default; the notebook validates
 // the range 0..100, where 0 means a single attempt). CheckpointPacks is the
 // active-tail length that triggers one checkpoint effort (the application
-// resolves the default 1,024; the notebook requires at least 1, so an
+// resolves the default 256; the notebook requires at least 1, so an
 // explicitly configured zero fails). RetainedCheckpoints is the number of
 // previous checkpoint generations kept as cleanup roots (the application
 // resolves the default 1; the notebook validates 0..64). NewID and Now
@@ -47,11 +49,13 @@ type Config struct {
 	// Store is the semantic object-store boundary.
 	Store storage.ObjectStore
 	// ReadOnlyPaths are the notebook-relative read-only entries
-	// (architecture section 2, Read-only paths); New rejects an invalid one.
+	// (architecture/product-contract.md, Read-only and writable paths); New
+	// rejects an invalid one.
 	ReadOnlyPaths []string
 	// WritablePaths are the notebook-relative writable entries. A non-empty
-	// set protects every unmatched path (architecture section 2, Read-only
-	// paths); New rejects an invalid entry and a path named by both sets.
+	// set protects every unmatched path (architecture/product-contract.md,
+	// Read-only and writable paths); New rejects an invalid entry and a
+	// path named by both sets.
 	WritablePaths []string
 	// RetryLimit bounds CAS retries after the first attempt.
 	RetryLimit int
@@ -89,7 +93,7 @@ const DefaultCheckpointPacks = 256
 const DefaultRetainedCheckpoints = 1
 
 // MaxRetryLimit, MinCheckpointPacks, and MaxRetainedCheckpoints are the
-// documented operational ranges (architecture section 17). The application
+// documented operational ranges (architecture/config.md). The application
 // package validates its flags against the same values, so the two range
 // checks cannot drift.
 const (
@@ -98,8 +102,8 @@ const (
 	MaxRetainedCheckpoints = 64
 )
 
-// MaxMessageBytes is the notes_commit message byte bound (architecture
-// section 2). The MCP schema advertises the same value.
+// MaxMessageBytes is the notes_commit message byte bound
+// (architecture/product-contract.md). The MCP schema advertises the same value.
 const MaxMessageBytes = 16384
 
 // ReadOnlyListSeparator joins read-only entries on every surface that lists
@@ -108,8 +112,8 @@ const ReadOnlyListSeparator = ", "
 
 // PathSetsNestRule is the terse form of the composition rule, carried by
 // every surface that lists both sets: each set's own sentence is complete
-// only against the other, because the sets may nest (architecture section
-// 2, Writable paths).
+// only against the other, because the sets may nest
+// (architecture/product-contract.md, Read-only and writable paths).
 const PathSetsNestRule = "longest match decides"
 
 const (
@@ -119,9 +123,10 @@ const (
 )
 
 // Notebook executes pull and commit against one workspace and one store.
-// All methods are safe for concurrent use; per-path serialization comes
-// from the workspace operation lock. Checkpoint scheduling is opportunistic
-// and never determines commit success (architecture section 13).
+// All methods are safe for concurrent use; each Pull and Commit holds the
+// workspace operation lock from its first check to its result, so two
+// operations on one visible path never interleave. Checkpoint scheduling is opportunistic
+// and never determines commit success (architecture/checkpoints.md).
 type Notebook struct {
 	ws                  Workspace
 	store               storage.ObjectStore
@@ -134,8 +139,8 @@ type Notebook struct {
 	// everything else. It collapses the read-only set on its own, so it can
 	// hold a broader entry than the policy resolves over — but only where a
 	// writable entry splits a read-only entry from its ancestor, and the
-	// refusal names the writable set instead there (architecture section 2,
-	// Writable paths).
+	// refusal names the writable set instead there
+	// (architecture/product-contract.md, Read-only and writable paths).
 	readOnly   git.EntrySet
 	newID      func() (storage.UUID, error)
 	now        func() time.Time
@@ -216,16 +221,34 @@ const (
 	stageReadOnly = "commit.readonly"
 )
 
+// errEntryRecovered is the cause of the RECOVERY_FAILURE a successful
+// entry recovery reports: the call rewrote L to the accepted state instead
+// of running its own work.
+var errEntryRecovered = errors.New("notebook: entry recovery rewrote the visible directory to the accepted state")
+
+// holdWorkspace acquires the workspace operation lock for one whole
+// operation (architecture/workspace.md). A failure to acquire it is a
+// local-state failure, like any other lock failure before mutation.
+func (n *Notebook) holdWorkspace(ctx context.Context) (context.Context, func(), error) {
+	held, release, err := n.ws.Hold(ctx)
+	if err != nil {
+		return ctx, nil, n.mapLocalError(err)
+	}
+	return held, release, nil
+}
+
 // entryRecovery runs the authoritative resynchronization the next MCP call
 // must perform before any pull or commit work when P requires recovery
-// (architecture section 15). A successful repair clears the flag and the
-// caller proceeds; a failed repair returns RECOVERY_FAILURE.
+// (architecture/guarantees.md). The repair rewrites L to the accepted
+// state, discarding whatever L held since the failed call, so the call
+// always returns RECOVERY_FAILURE: resynchronized with action PULL when the
+// repair cleared the flag, not resynchronized with RETRY when it failed.
 func (n *Notebook) entryRecovery(ctx context.Context) error {
 	report, err := n.recoverState(ctx, stageEntry, RemoteAcceptedUnknown)
 	if err != nil {
 		return recoveryFailure(report.public(), err)
 	}
-	return nil
+	return entryRecovered(report.public(), errEntryRecovered)
 }
 
 // applyLocal runs one workspace local mutation and maps its outcome: a
@@ -248,20 +271,26 @@ func (n *Notebook) applyLocal(ctx context.Context, stage string, accepted Remote
 // failAfterAccept handles a failure between the proved manifest acceptance
 // and the local acceptance: the remote accepted the proposal, so the
 // generic recovery path runs unconditionally and the call reports
-// RECOVERY_FAILURE even when resynchronization succeeds (architecture
-// section 15).
+// RECOVERY_FAILURE even when resynchronization succeeds
+// (architecture/guarantees.md).
 func (n *Notebook) failAfterAccept(ctx context.Context, stage string, cause error) error {
 	report, _ := n.recoverState(ctx, stage, RemoteAcceptedYes)
 	return recoveryFailure(report.public(), cause)
 }
 
-// scanErrorFiles names the offending file of a scan rejection when known.
+// scanErrorFiles names the offending file of a scan rejection when known,
+// and for a collision the path it collides with too.
 func scanErrorFiles(err error) []ErrorFile {
 	var se *workspace.ScanError
-	if errors.As(err, &se) && se.Path != "" {
-		return []ErrorFile{{Path: se.Path, Reason: FileReasonInvalidContent}}
+	if !errors.As(err, &se) || se.Path == "" {
+		return nil
 	}
-	return nil
+	files := []ErrorFile{{Path: se.Path, Reason: FileReasonInvalidContent}}
+	if se.Other != "" {
+		files = append(files, ErrorFile{Path: se.Other, Reason: FileReasonInvalidContent})
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
+	return files
 }
 
 // mapLocalError maps a workspace error that occurred before any local
@@ -272,7 +301,8 @@ func (n *Notebook) mapLocalError(err error) error {
 	if errors.Is(err, workspace.ErrInvalidContent) ||
 		errors.Is(err, workspace.ErrSymlink) ||
 		errors.Is(err, workspace.ErrUnsupportedFile) ||
-		errors.Is(err, workspace.ErrInvalidPath) {
+		errors.Is(err, workspace.ErrInvalidPath) ||
+		errors.Is(err, workspace.ErrPathCollision) {
 		return invalidRequest(ReasonInvalidContent, err, scanErrorFiles(err), "visible files violate the notebook contract")
 	}
 	return storageFailure(ReasonLocalState, err, "local private state operation failed")
@@ -296,8 +326,9 @@ func ValidateMessage(message string) error {
 }
 
 // rejectMarkers returns the conflicted files of a snapshot: every complete
-// conflict-marker block with its exact path and row ranges (architecture
-// section 12). The check runs before any Git or S3 mutation.
+// conflict-marker block with its exact path and row ranges
+// (architecture/conflicts.md). The check runs before any Git or S3
+// mutation.
 func rejectMarkers(snap git.Snapshot) []ErrorFile {
 	var files []ErrorFile
 	for _, f := range snap.Files {
@@ -310,9 +341,10 @@ func rejectMarkers(snap git.Snapshot) []ErrorFile {
 
 // materializeTree converts a conflicted merge result into a tree the
 // workspace can materialize: the full result with markers, resolved blobs,
-// and local file/directory sides.
-func (n *Notebook) materializeTree(merged git.MergeResult) (git.OID, error) {
-	snap, err := git.MaterializeTree(n.ws.Repo(), merged)
+// and local file/directory sides read from local, the tree merged as the
+// local side.
+func (n *Notebook) materializeTree(merged git.MergeResult, local git.OID) (git.OID, error) {
+	snap, err := git.MaterializeTree(n.ws.Repo(), merged, local)
 	if err != nil {
 		return git.OID{}, fmt.Errorf("notebook: materialize merge result: %w", err)
 	}

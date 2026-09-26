@@ -64,9 +64,11 @@ func helperMain(mode string) int {
 			return fake.New(cfg.Prefix), nil
 		}
 	case "real":
-		// The real S3 adapter against the environment-configured endpoint:
-		// the CLI scenarios point it at the shared S3-compatible suite, so
-		// state survives across one-shot pull and commit processes.
+		// The real store adapter (S3, or hosted when SLIVINGDOC_TOKEN is set)
+		// against the environment-configured endpoint: the S3 CLI scenarios
+		// point it at the shared S3-compatible suite and the hosted ones at a
+		// gatewaytest server, so state survives across one-shot pull and
+		// commit processes.
 	case "bad-store":
 		opts.StoreFactory = func(ctx context.Context, cfg app.ServiceConfig) (storage.ObjectStore, error) {
 			store := fake.New(cfg.Prefix)
@@ -157,7 +159,7 @@ func spawnHelperIn(t *testing.T, dir, mode string, extraEnv []string, args ...st
 	env = overrideEnv(env, extraEnv)
 	// The race runtime sleeps atexit_sleep_ms (default 1 s) on every clean
 	// exit; the parent waits on that exit, so the suite would pay it per
-	// helper (docs/testing.md, Why the strictness).
+	// helper (architecture/testing.md, Process tests and the race sleep).
 	env = overrideEnv(env, []string{"GORACE=" + strings.TrimSpace(os.Getenv("GORACE")+" atexit_sleep_ms=0")})
 	argv := append([]string{os.Args[0]}, args...)
 	proc, err := os.StartProcess(os.Args[0], argv, &os.ProcAttr{

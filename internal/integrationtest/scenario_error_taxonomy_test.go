@@ -15,7 +15,7 @@ import (
 // TestScenarioErrorTaxonomy proves every tool-level category reaches an MCP
 // caller as the stable, complete envelope. INCOMPATIBLE_STORE is necessarily
 // a process-startup category and is covered by
-// TestScenarioIntegrityStartupProbeFailure (architecture section 2, L26).
+// TestScenarioIntegrityStartupProbeFailure (architecture/product-contract.md).
 func TestScenarioErrorTaxonomy(t *testing.T) {
 	t.Parallel()
 	type outcome struct {
@@ -135,7 +135,7 @@ func TestScenarioErrorTaxonomy(t *testing.T) {
 }
 
 // gitObjectID matches a bare 40-hex Git object ID. Git history is internal
-// (architecture section 12, L763), so no object ID may reach a caller.
+// (architecture/git-engine.md), so no object ID may reach a caller.
 var gitObjectID = regexp.MustCompile(`\b[0-9a-f]{40}\b`)
 
 // gitVocabulary is Git terminology that may never reach a caller. Recovery
@@ -146,8 +146,8 @@ var gitVocabulary = []string{"git ", "git:", "rebase", "merge-base", "refs/", "p
 
 // assertTaxonomyRedaction proves that neither the caller-facing envelope nor
 // the harness's own log records leak an S3 key, a private path, or a Git
-// object ID, and that no caller-facing text speaks Git (architecture
-// section 2, L26).
+// object ID, and that no caller-facing text speaks Git
+// (architecture/product-contract.md).
 //
 // Credential redaction is proven where a credential actually exists: the
 // in-process harness constructs its own store, so no secret ever reaches

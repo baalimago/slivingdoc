@@ -3,7 +3,7 @@
 //
 // Verifies that the GitHub release for this package's version contains every
 // required artifact, the SHA256SUMS checksum file, and the license NOTICE
-// (architecture section 21). Runs automatically before `npm publish`; a
+// (architecture/build.md). Runs automatically before `npm publish`; a
 // release that is missing any required asset blocks publication, so npm can
 // never precede the complete GitHub release.
 //

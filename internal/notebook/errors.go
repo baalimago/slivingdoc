@@ -1,8 +1,9 @@
 // Package notebook composes workspaces, Git state, and storage into the
-// safe pull and optimistic commit operations of architecture sections 10-15.
-// It is the only consumer of the storage protocol besides cleanup: Pull
-// reads and validates the authoritative manifest and imports packs; Commit
-// builds proposals, uploads immutable packs before their manifest CAS, and
+// safe pull and optimistic commit operations in architecture/pull.md,
+// commit.md, conflicts.md, checkpoints.md, and guarantees.md. It is the
+// only consumer of the storage protocol besides cleanup: Pull reads and
+// validates the authoritative manifest and imports packs; Commit builds
+// proposals, uploads immutable packs before their manifest CAS, and
 // resolves contention, ambiguity, and recovery.
 //
 // The package consumes narrow consumer-owned interfaces (Workspace and the
@@ -27,7 +28,8 @@ const (
 	// CodeInvalidRequest reports invalid tool input or a state the
 	// operation refuses before any Git or S3 work: a blank commit
 	// message, a commit without a managed pull, or invalid visible
-	// content.
+	// content; or before any local mutation: a first pull into a
+	// directory holding files the remote notebook does not.
 	CodeInvalidRequest Code = "INVALID_REQUEST"
 	// CodeContentConflict reports a three-tree merge conflict. L is
 	// rewritten with the full materialized result and the exact conflicted
@@ -50,8 +52,8 @@ const (
 	CodeRecoveryFailure Code = "RECOVERY_FAILURE"
 )
 
-// Reason classifies a domain error one level below Code (architecture
-// section 2, Reason tokens by code).
+// Reason classifies a domain error one level below Code
+// (architecture/product-contract.md, Reason and action tokens).
 type Reason string
 
 const (
@@ -61,6 +63,7 @@ const (
 	ReasonMessageTooLong      Reason = "MESSAGE_TOO_LONG"
 	ReasonMessageInvalid      Reason = "MESSAGE_INVALID"
 	ReasonPullRequired        Reason = "PULL_REQUIRED"
+	ReasonDirectoryNotEmpty   Reason = "DIRECTORY_NOT_EMPTY"
 	ReasonInvalidContent      Reason = "INVALID_CONTENT"
 	ReasonReadOnlyPath        Reason = "READ_ONLY_PATH"
 	ReasonMergeConflict       Reason = "MERGE_CONFLICT"
@@ -94,6 +97,10 @@ const (
 	FileReasonUnresolvedMarkers FileReason = "UNRESOLVED_MARKERS"
 	FileReasonReadOnly          FileReason = "READ_ONLY"
 	FileReasonInvalidContent    FileReason = "INVALID_CONTENT"
+	// A first pull found the file in the directory but not in the notebook,
+	// or with other bytes than the notebook's (ReasonDirectoryNotEmpty).
+	FileReasonNotInNotebook       FileReason = "NOT_IN_NOTEBOOK"
+	FileReasonDiffersFromNotebook FileReason = "DIFFERS_FROM_NOTEBOOK"
 )
 
 // Action is the caller's next step after a domain error.
@@ -112,8 +119,9 @@ type codeReason struct {
 	reason Reason
 }
 
-// actionForPairing is the code/reason to action table of architecture
-// section 2; CodeRecoveryFailure branches on the recovery report instead.
+// actionForPairing is the code/reason to action table in
+// architecture/product-contract.md; CodeRecoveryFailure branches on the
+// recovery report instead.
 var actionForPairing = map[codeReason]Action{
 	{CodeInvalidRequest, ReasonMalformedInput}:      ActionFixInput,
 	{CodeInvalidRequest, ReasonPathOutsideRoot}:     ActionFixInput,
@@ -121,6 +129,7 @@ var actionForPairing = map[codeReason]Action{
 	{CodeInvalidRequest, ReasonMessageTooLong}:      ActionFixInput,
 	{CodeInvalidRequest, ReasonMessageInvalid}:      ActionFixInput,
 	{CodeInvalidRequest, ReasonPullRequired}:        ActionPull,
+	{CodeInvalidRequest, ReasonDirectoryNotEmpty}:   ActionFixInput,
 	{CodeInvalidRequest, ReasonInvalidContent}:      ActionEditFiles,
 	{CodeInvalidRequest, ReasonReadOnlyPath}:        ActionEditFiles,
 	{CodeContentConflict, ReasonMergeConflict}:      ActionEditFiles,
@@ -163,7 +172,7 @@ func actionFor(code Code, reason Reason, report *RecoveryReport) (Action, error)
 }
 
 // ErrorFile names one conflicted or rejected path, its reason, and the
-// one-based inclusive marker ranges inside it (architecture section 12).
+// one-based inclusive marker ranges inside it (architecture/conflicts.md).
 type ErrorFile struct {
 	Path   string
 	Reason FileReason
@@ -180,18 +189,19 @@ const (
 	RemoteAcceptedUnknown RemoteAccepted = "unknown"
 )
 
-// RecoveryReport describes one generic recovery run (architecture section
-// 15): the failed stage, whether remote acceptance is known, and whether
-// resynchronization from authoritative current succeeded.
+// RecoveryReport describes one generic recovery run
+// (architecture/guarantees.md): the failed stage, whether remote acceptance
+// is known, and whether resynchronization from authoritative current
+// succeeded.
 type RecoveryReport struct {
 	Stage          string
 	RemoteAccepted RemoteAccepted
 	Resynchronized bool
 }
 
-// Error is a notebook domain error (architecture section 2). Recovery is
-// set only for CodeRecoveryFailure. Cause keeps the underlying failure for
-// diagnostics and errors.Is.
+// Error is a notebook domain error (architecture/product-contract.md).
+// Recovery is set only for CodeRecoveryFailure. Cause keeps the underlying
+// failure for diagnostics and errors.Is.
 type Error struct {
 	Code     Code
 	Reason   Reason
@@ -309,6 +319,21 @@ func recoveryFailure(report RecoveryReport, cause error) error {
 	return &Error{
 		Code: CodeRecoveryFailure, Reason: reason, Action: action,
 		Message:  "unexpected failure after local mutation started; recovery ran",
+		Recovery: &report, Cause: cause,
+	}
+}
+
+// entryRecovered builds the RECOVERY_FAILURE of a successful entry
+// recovery: the repair rewrote L to the accepted state, so edits made there
+// since the failed call are gone and the caller must know
+// (architecture/guarantees.md).
+func entryRecovered(report RecoveryReport, cause error) error {
+	const reason = ReasonLocalMutationFailed
+	action, _ := actionFor(CodeRecoveryFailure, reason, &report)
+	return &Error{
+		Code: CodeRecoveryFailure, Reason: reason, Action: action,
+		Message: "an earlier call left the notebook directory partially updated; it was rewritten to the accepted " +
+			"state and edits made there since that call were discarded; pull, then reapply them",
 		Recovery: &report, Cause: cause,
 	}
 }

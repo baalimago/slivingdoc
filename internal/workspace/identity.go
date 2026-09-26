@@ -9,15 +9,16 @@ import (
 )
 
 // ManifestVersion is the protocol manifest version that is part of the
-// notebook storage identity (architecture section 9.2). The identity binds
+// notebook storage identity (architecture/storage.md). The identity binds
 // one private directory to one visible path and one remote notebook; a
 // different manifest protocol is a different remote.
 const ManifestVersion = 1
 
-// Identity is the notebook storage identity (architecture section 7.2):
+// Identity is the notebook storage identity (architecture/config.md and
+// workspace.md):
 // the normalized S3 endpoint, region, bucket, prefix, and manifest version
 // the notebook is bound to. The endpoint must already be in the normalized
-// configuration form (architecture section 17): lowercased scheme and host,
+// configuration form (architecture/config.md): lowercased scheme and host,
 // no trailing slash, no user information. Configuration owns that
 // normalization; DerivedKey consumes it as given.
 type Identity struct {
@@ -32,7 +33,7 @@ type Identity struct {
 
 // DerivedKey returns the private-directory key: the lowercase hexadecimal
 // SHA-256 of a length-prefixed encoding of the canonical visible path and
-// the storage identity (architecture section 7.2). Every component carries
+// the storage identity (architecture/workspace.md). Every component carries
 // its own length prefix, so no concatenation of inputs can collide under
 // ambiguous separators. The digest does not expose the caller's path.
 func DerivedKey(canonicalPath string, id Identity) string {

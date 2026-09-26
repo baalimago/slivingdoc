@@ -12,18 +12,18 @@ import (
 	"github.com/baalimago/slivingdoc/internal/workspace"
 )
 
-// Stable error categories of the tool-error shape (architecture section 2
-// and the worklog error taxonomy). The text of an error can change; the
-// code and the structured conflict paths are stable. Notebook domain
-// errors carry their own notebook.Code; only the codes this package
-// generates itself are named here.
+// Stable error categories of the tool-error shape
+// (architecture/product-contract.md and the worklog error taxonomy). The
+// text of an error can change; the code and the structured conflict paths
+// are stable. Notebook domain errors carry their own notebook.Code; only
+// the codes this package generates itself are named here.
 const (
 	codeInvalidRequest = "INVALID_REQUEST"
 	codeStorageFailure = "STORAGE_FAILURE"
 )
 
 // Reason and action tokens for errors raised before a request reaches the
-// notebook (architecture section 2, Reason tokens by code).
+// notebook (architecture/product-contract.md, Reason and action tokens).
 const (
 	reasonMalformedInput  = "MALFORMED_INPUT"
 	reasonPathOutsideRoot = "PATH_OUTSIDE_ROOT"
@@ -35,7 +35,7 @@ const (
 
 // ToolError is the structured error object carried in the MCP tool result.
 // Code, reason, action, diagnostic ID, retryable, message, and files are always
-// present; detail and recovery are conditional (architecture section 2).
+// present; detail and recovery are conditional (architecture/product-contract.md).
 // Request paths are absolute; every files[].path is relative to the
 // request path and uses the normalized internal slash form.
 type ToolError struct {
@@ -232,7 +232,7 @@ func invalidRequest(cause error) *ToolError {
 	}
 }
 
-// Redaction patterns. The architecture (section 2) forbids credentials,
+// Redaction patterns. architecture/product-contract.md forbids credentials,
 // S3 keys, private paths, and Git IDs in any error text or data. The
 // notebook messages never contain credentials, but pack keys (for example
 // "packs/checkpoints/1-<uuid>.pack"), the probe key ("probe/<uuid>"), Git

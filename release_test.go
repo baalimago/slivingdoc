@@ -18,7 +18,7 @@ import (
 )
 
 // The release scripts are the publication half of the contract: the
-// dependency baselines of architecture section 21, the strict SHA256SUMS
+// dependency baselines in architecture/build.md, the strict SHA256SUMS
 // grammar the npm launcher parses, and the immutable release-workflow
 // reference. They are POSIX shell, so these tests drive the real scripts
 // rather than reimplementing their rules.
@@ -252,7 +252,7 @@ func runScript(t *testing.T, name string, args ...string) (stdout, stderr string
 }
 
 // TestReleaseDependencyBaselines proves each platform checker accepts
-// exactly the architecture section 21 baseline and rejects anything the
+// exactly the baseline in architecture/build.md and rejects anything the
 // pinned build must link statically or bundle — above all libgit2.
 func TestReleaseDependencyBaselines(t *testing.T) {
 	t.Parallel()
@@ -436,7 +436,7 @@ var releaseBinary = sync.OnceValues(func() (string, error) {
 
 // TestReleaseBinary proves the release build wiring: the version is injected
 // through the linker, and on Linux the resulting executable links only the
-// architecture section 21 baseline, so libgit2 is genuinely static.
+// baseline in architecture/build.md, so libgit2 is genuinely static.
 func TestReleaseBinary(t *testing.T) {
 	t.Parallel()
 	bin, err := releaseBinary()

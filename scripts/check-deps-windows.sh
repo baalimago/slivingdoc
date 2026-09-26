@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # check-deps-windows.sh — verify a Windows PE binary depends only on the
-# documented Windows system DLL baseline (architecture section 21).
+# documented Windows system DLL baseline (architecture/build.md).
 #
 # The slivingdoc release executable must contain libgit2 and every non-system
 # dependency. Windows may use only documented Windows system DLLs; anything
