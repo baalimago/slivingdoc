@@ -17,7 +17,7 @@ Read this when: wiring a notebook, changing a default or range, adding a metric,
 | `internal/notebook/metrics.go` | `Metrics`: atomic counters and gauges |
 | `internal/notebook/failpoints.go` | `Failpoints{CAS}` |
 | `internal/notebook/backoff.go` | `BackoffWaiter`, `exponentialBackoff.Wait` |
-| `internal/notebook/errors.go` | `Error`, `Code`, `Reason`, `FileReason`, `Action`, constructors (`invalidRequest`, `contentConflict`, `storageIntegrity`, `storageFailure`, `remoteBusy`, `recoveryFailure`), `errCASLost`, `errStaleManifest` |
+| `internal/notebook/errors.go` | `Error`, `Code`, `Reason`, `FileReason`, `Action`, constructors (`invalidRequest`, `contentConflict`, `storageIntegrity`, `storageFailure`, `remoteBusy`, `recoveryFailure`), `errCASLost`, `errManifestRefused`, `errStaleManifest` |
 | `internal/notebook/logger.go` | `WithLogger`, `LoggerFrom` (context logger for checkpoint, cleanup and cache warnings) |
 | `internal/app/service.go` | `Service.notebookFor`: the only production constructor call |
 
@@ -80,7 +80,7 @@ Notebook.Commit(ctx, message) → see commit.md
 
 ### Failpoints (`failpoints.go`)
 
-`Failpoints.CAS` fires after the manifest CAS accepted and before local acceptance. An error there goes through `failAfterAccept` (stage `commit.cas`, `remoteAccepted=yes`). The workspace keeps its own boundary failpoints; see [guarantees.md](./guarantees.md#failpoints).
+`Failpoints.CAS` fires after the manifest CAS accepted and before local acceptance. An error there goes through `failAfterPublish` and `failAfterAccept` (stage `commit.cas`, `remoteAccepted=yes`). The workspace keeps its own boundary failpoints; see [guarantees.md](./guarantees.md#failpoints).
 
 ### Backoff (`backoff.go`)
 

@@ -8,7 +8,7 @@ Read this when: adding a failure mode, a reason or action token, a store refusal
 
 | File | Purpose |
 |------|---------|
-| `internal/notebook/errors.go` | `Code`, `Reason`, `FileReason`, `Action` tokens; `actionForPairing`, `actionFor`; `Error` (`Code`, `Reason`, `Action`, `Message`, `Files`, `Recovery`, `Cause`); `ErrorFile`; `RecoveryReport`, `RemoteAccepted`; constructors `invalidRequest`, `contentConflict`, `storageIntegrity`, `storageFailure` (with `storeRefusal`), `remoteBusy`, `recoveryFailure`; internal `errCASLost`, `errStaleManifest`; `contentConflictFiles` |
+| `internal/notebook/errors.go` | `Code`, `Reason`, `FileReason`, `Action` tokens; `actionForPairing`, `actionFor`; `Error` (`Code`, `Reason`, `Action`, `Message`, `Files`, `Recovery`, `Cause`); `ErrorFile`; `RecoveryReport`, `RemoteAccepted`; constructors `invalidRequest`, `contentConflict`, `storageIntegrity`, `storageFailure` (with `storeRefusal`), `remoteBusy`, `recoveryFailure`; internal `errCASLost`, `errManifestRefused`, `errStaleManifest`; `contentConflictFiles` |
 | `internal/notebook/notebook.go` | `mapLocalError`, `scanErrorFiles`, `failAfterAccept`, `ValidateMessage` |
 | `internal/git/errors.go` | Named engine failures `ErrNoNewObjects`, `ErrObjectMissing`, `ErrEmptyPack`, `ErrHeadRequired`; `UnsupportedModeError` |
 | `internal/git/policy.go` | `OverlapError` (both path sets name one path; a startup refusal) |
@@ -109,7 +109,7 @@ An unmapped pairing is a programming error: `actionFor` returns `RETRY` plus `er
 - The `mcpReqID` is the `diagnosticId`; the CLI report has no diagnostic ID.
 - `notebook.Error.Error()` includes the cause text; never render it to a caller. Use `MapError`.
 - A backend error must wrap `ErrNotFound`, `ErrPreconditionFailed`, `ErrTransport`, `ErrIntegrity`, or one of the refusal sentinels (`ErrIncompatible` is startup-only), or the notebook treats it as an opaque failure.
-- `storageFailure` replaces the reason for a store refusal, so code that tests a `STORAGE_FAILURE` reason (for example `discardCompaction` testing `MANIFEST_WRITE`) never sees the operation's reason for such a cause.
+- `storageFailure` replaces the reason for a store refusal, so code that tests a `STORAGE_FAILURE` reason never sees the operation's reason for such a cause. A fact about the operation that must survive the replacement goes into the cause chain as a sentinel instead: `publish` wraps a refused manifest write in `errManifestRefused`, which `discardCompaction` tests.
 
 ## Related
 

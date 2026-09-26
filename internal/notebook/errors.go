@@ -226,6 +226,11 @@ func (e *Error) Unwrap() error { return e.Cause }
 // the race; commit maps it to a retry or REMOTE_BUSY at the bound.
 var errCASLost = errors.New("notebook: manifest CAS lost")
 
+// errManifestRefused marks a manifest write the store answered with a
+// refusal: the manifest definitely did not accept the proposal, unlike a
+// transport failure, whose acceptance is unknown.
+var errManifestRefused = errors.New("notebook: manifest write refused")
+
 // errStaleManifest is the internal signal that a referenced pack
 // disappeared during readRemote; the reader re-reads current and restarts
 // unless the manifest is unchanged.

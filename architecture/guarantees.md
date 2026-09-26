@@ -49,7 +49,7 @@ Generic recovery:
 | After upload, before CAS | Pack is an unreferenced proposal; cleanup may delete it later | [checkpoints.md](./checkpoints.md) |
 | CAS precondition failure | Another writer won; merge again and retry | `publish` returns `errCASLost` |
 | CAS response lost | Reread `current`, search active and retained descriptors for the publication ID | `publish`, `lookupPublication` |
-| CAS accepted, local accept fails | `RECOVERY_FAILURE`, stage `commit.accept`, `remoteAccepted=yes`, even if resync succeeds, and also when the failure came before L mutation began (reading the target tree, staging, a cancelled request) | `failAfterAccept` |
+| CAS accepted, local accept fails | `RECOVERY_FAILURE`, stage `commit.accept`, `remoteAccepted=yes`, even if resync succeeds, and also when the failure came before L mutation began (reading the target tree, staging, a cancelled request); an accepted compacting commit still runs its best-effort cleanup | `failAfterPublish`, `failAfterAccept` |
 | Merge conflict | Remote unchanged; L rewritten with markers | [conflicts.md](./conflicts.md) |
 | Retry exhaustion | `REMOTE_BUSY`; caller files untouched | `Commit` loop |
 | Checkpoint failure | Accepted state unchanged; metrics + warning | `failCheckpoint` |
