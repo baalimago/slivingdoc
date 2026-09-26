@@ -144,6 +144,10 @@ slivingdoc/
     |   `-- fake/            deterministic in-memory ObjectStore
     |-- s3store/             the ONLY AWS SDK package: S3 adapter, prefix
     |                        join, multipart upload, semantic error mapping
+    |-- httpstore/           hosted storage API adapter (SLIVINGDOC_TOKEN):
+    |   |                    bearer token, space, status-to-semantic error
+    |   |                    mapping, access check instead of the probe
+    |   `-- gatewaytest/     test-only reference server of the hosted API
     |-- strictjson/          neutral strict JSON value tree (manifest and
     |                        state.json)
     |-- tests3/              testcontainers S3 backend helper (currently
@@ -240,11 +244,13 @@ line ranges) with a nonzero exit. `commit` requires
 3. **Open the native engine.** `git2.New().Open()` verifies that the linked
    libgit2 is exactly the pinned v1.9.6 and refuses any other ABI.
 4. **Build the object store.** The `StoreFactory` seam builds the
-   `internal/s3store` adapter; tests substitute the deterministic fake.
+   `internal/s3store` adapter, or the `internal/httpstore` adapter when
+   `SLIVINGDOC_TOKEN` is set; tests substitute the deterministic fake.
 5. **Probe the store.** `storage.Probe` proves the endpoint honors
-   `If-None-Match`, `If-Match`, and read-after-write. A failure exits nonzero
-   with a redacted `INCOMPATIBLE_STORE` diagnostic **before** any transport
-   serves a request.
+   `If-None-Match`, `If-Match`, and read-after-write. A hosted store runs
+   its `CheckAccess` instead (server description plus a read-only space
+   check). A failure exits nonzero with a redacted diagnostic **before** any
+   transport serves a request.
 6. **Serve.** `mcp.NewServer` registers exactly `notes_pull` and
    `notes_commit` and runs over stdio. Stdout carries protocol messages only;
    logs go to stderr.

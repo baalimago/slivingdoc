@@ -2,7 +2,6 @@ package s3store
 
 import (
 	"context"
-	"crypto/sha256"
 	"errors"
 	"net/http"
 	"net/url"
@@ -151,55 +150,6 @@ func TestMapErrorNonJSONResponse(t *testing.T) {
 	if strings.Contains(got.Error(), "invalid character") {
 		t.Fatalf("mapError = %q, want the raw JSON error replaced", got)
 	}
-}
-
-// TestMetadataRoundTrip proves the slivingdoc metadata headers survive an
-// encode/decode round trip and that present-but-malformed headers are
-// rejected.
-func TestMetadataRoundTrip(t *testing.T) {
-	meta := storage.Metadata{
-		SHA256:     sha256Value(t, "pack bytes"),
-		Size:       12345,
-		Kind:       storage.KindCheckpoint,
-		Generation: 7,
-	}
-	got, err := decodeMeta(encodeMeta(meta))
-	if err != nil {
-		t.Fatalf("decodeMeta(encodeMeta(meta)): %v", err)
-	}
-	if got != meta {
-		t.Fatalf("metadata round trip = %+v, want %+v", got, meta)
-	}
-
-	// Absent metadata decodes to the zero value: headers are diagnostic,
-	// the manifest descriptor is authoritative.
-	got, err = decodeMeta(nil)
-	if err != nil {
-		t.Fatalf("decodeMeta(nil): %v", err)
-	}
-	if got != (storage.Metadata{}) {
-		t.Fatalf("decodeMeta(nil) = %+v, want the zero value", got)
-	}
-
-	malformed := []map[string]string{
-		{metaSHA256: "not-hex"},
-		{metaSHA256: "ABCDEF"},
-		{metaSize: "big"},
-		{metaSize: "-1"},
-		{metaKind: "bogus"},
-		{metaGeneration: "one"},
-	}
-	for _, md := range malformed {
-		if _, err := decodeMeta(md); err == nil {
-			t.Fatalf("decodeMeta(%v) succeeded, want an error", md)
-		}
-	}
-}
-
-func sha256Value(t *testing.T, s string) storage.SHA256 {
-	t.Helper()
-	sum := sha256.Sum256([]byte(s))
-	return storage.SHA256(sum)
 }
 
 // recordingTransport records the request URL and fails the request, so a

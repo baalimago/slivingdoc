@@ -48,6 +48,25 @@ a native binary directly from the
 [GitHub release](https://github.com/baalimago/slivingdoc/releases)
 (`slivingdoc-v<semver>-<os>-<arch>`) and run it in place.
 
+### Hosted storage
+
+Rather not run a bucket? Create a space at [slivingdoc.dev](https://slivingdoc.dev),
+then give slivingdoc an API token and the space name:
+
+```json
+{
+  "mcpServers": {
+    "slivingdoc": {
+      "command": "npx",
+      "args": ["-y", "slivingdoc", "serve", "--bucket", "my-space"],
+      "env": { "SLIVINGDOC_TOKEN": "<your-api-token>" }
+    }
+  }
+}
+```
+
+The token replaces the AWS settings. Everything else works the same way.
+
 Supported platforms: Linux (amd64, 32-bit ARMv7, arm64), macOS (amd64,
 arm64), and Windows (amd64). The 32-bit Linux ARM artifact supports Raspberry
 Pi OS armhf.

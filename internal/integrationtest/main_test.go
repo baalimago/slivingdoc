@@ -214,10 +214,10 @@ func overrideEnv(env, overrides []string) []string {
 }
 
 // sanitizedEnv returns the test process environment without AWS credential
-// and endpoint variables, so a spawned helper can never observe the
-// developer's cloud configuration. It also drops NO_COLOR: terminal-colour
-// scenarios model their own environment and must not inherit a user's output
-// preference.
+// and endpoint variables or a hosted API token, so a spawned helper can
+// never observe the developer's cloud configuration. It also drops
+// NO_COLOR: terminal-colour scenarios model their own environment and must
+// not inherit a user's output preference.
 func sanitizedEnv() []string {
 	var out []string
 	for _, kv := range os.Environ() {
@@ -228,7 +228,7 @@ func sanitizedEnv() []string {
 			"AWS_ENDPOINT_URL", "AWS_CA_BUNDLE", "AWS_SHARED_CREDENTIALS_FILE",
 			"AWS_CONFIG_FILE", "SLIVINGDOC_BUCKET", "SLIVINGDOC_PREFIX",
 			"SLIVINGDOC_WORKSPACE_ROOT", "SLIVINGDOC_PRIVATE_ROOT",
-			"SLIVINGDOC_SHARED_PACK_CACHE", "NO_COLOR":
+			"SLIVINGDOC_SHARED_PACK_CACHE", "SLIVINGDOC_TOKEN", "SLIVINGDOC_ENDPOINT", "NO_COLOR":
 			continue
 		}
 		out = append(out, kv)

@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	"github.com/baalimago/go_away_boilerplate/pkg/slogcolor"
 
 	"github.com/baalimago/slivingdoc/internal/git"
+	"github.com/baalimago/slivingdoc/internal/httpstore"
 	"github.com/baalimago/slivingdoc/internal/notebook"
 	"github.com/baalimago/slivingdoc/internal/pathutil"
 	"github.com/baalimago/slivingdoc/internal/storage"
@@ -29,6 +31,7 @@ type config struct {
 	prefix              string
 	region              string
 	endpoint            string
+	token               string
 	pathStyle           bool
 	workspaceRoot       string
 	privateRoot         string
@@ -58,6 +61,14 @@ type config struct {
 	// notebook itself lives in S3.
 	sessionDir string
 }
+
+// hosted reports whether the process uses the hosted storage API: an API
+// token selects it, and --bucket then names the space.
+func (cfg config) hosted() bool { return cfg.token != "" }
+
+// DefaultHostedEndpoint is the hosted storage API used when a token is set
+// and no endpoint is configured.
+const DefaultHostedEndpoint = "https://api.slivingdoc.dev"
 
 // Flags are the serve-command flags (architecture section 17). Binding and
 // resolution are separate so the command router can parse the flag set
@@ -149,10 +160,17 @@ func (f *Flags) resolve(environment []string, cwd, cacheDir string, ephemeral bo
 	}()
 	env := environ(environment)
 	cfg := config{
-		bucket:   resolveString(&f.bucket, env["SLIVINGDOC_BUCKET"], ""),
-		prefix:   resolveString(&f.prefix, env["SLIVINGDOC_PREFIX"], "slivingdoc"),
-		region:   resolveString(&f.region, env["AWS_REGION"], "us-east-1"),
-		endpoint: resolveString(&f.endpoint, env["AWS_ENDPOINT_URL_S3"], ""),
+		bucket: resolveString(&f.bucket, env["SLIVINGDOC_BUCKET"], ""),
+		prefix: resolveString(&f.prefix, env["SLIVINGDOC_PREFIX"], "slivingdoc"),
+		token:  env["SLIVINGDOC_TOKEN"],
+	}
+	if cfg.hosted() {
+		// The AWS variables describe an S3 account, not the hosted API, so
+		// they never redirect a token.
+		cfg.endpoint = resolveString(&f.endpoint, env["SLIVINGDOC_ENDPOINT"], DefaultHostedEndpoint)
+	} else {
+		cfg.region = resolveString(&f.region, env["AWS_REGION"], "us-east-1")
+		cfg.endpoint = resolveString(&f.endpoint, env["AWS_ENDPOINT_URL_S3"], "")
 	}
 	wsRoot, wsSet := resolveRoot(&f.workspaceRoot, env["SLIVINGDOC_WORKSPACE_ROOT"])
 	privRoot, privSet := resolveRoot(&f.privateRoot, env["SLIVINGDOC_PRIVATE_ROOT"])
@@ -230,14 +248,18 @@ func (cfg config) finish(cwd string) (config, error) {
 	if err := storage.ValidatePrefix(cfg.prefix); err != nil {
 		return config{}, err
 	}
-	if cfg.region == "" {
-		return config{}, errors.New("region is required")
-	}
 	endpoint, err := normalizeEndpoint(cfg.endpoint)
 	if err != nil {
 		return config{}, err
 	}
 	cfg.endpoint = endpoint
+	if cfg.hosted() {
+		if err := validateHosted(cfg); err != nil {
+			return config{}, err
+		}
+	} else if cfg.region == "" {
+		return config{}, errors.New("region is required")
+	}
 
 	if cfg.workspaceRoot, err = absolute(cwd, cfg.workspaceRoot); err != nil {
 		return config{}, fmt.Errorf("workspace root: %w", err)
@@ -298,6 +320,36 @@ func resolvePolicy(readOnly, writable []string) (git.PathPolicy, error) {
 		return git.PathPolicy{}, fmt.Errorf("writable paths: %w", err)
 	}
 	return policy, nil
+}
+
+// validateHosted checks the hosted-mode settings: --bucket is a valid space
+// name, the token can travel in a header, and the token only ever travels
+// over HTTPS, except to a loopback test server. No diagnostic echoes the
+// token.
+func validateHosted(cfg config) error {
+	if err := httpstore.ValidateSpace(cfg.bucket); err != nil {
+		return fmt.Errorf("bucket names the hosted space: %w", err)
+	}
+	if err := httpstore.ValidateToken(cfg.token); err != nil {
+		return errors.New("SLIVINGDOC_TOKEN must be printable characters without white space")
+	}
+	u, err := url.Parse(cfg.endpoint)
+	if err != nil {
+		return errors.New("endpoint is not a valid URL")
+	}
+	if u.Scheme != "https" && !isLoopback(u.Hostname()) {
+		return errors.New("the hosted endpoint must use https so the token is never sent in clear text")
+	}
+	return nil
+}
+
+// isLoopback reports whether host names this machine.
+func isLoopback(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // environ maps the process environment to a lookup table. The last value
@@ -534,10 +586,17 @@ func parseUnsigned(s string) (int, error) {
 // FlagReference documents every shared configuration flag, its environment
 // variable, and its default (architecture section 17). serve, pull, and
 // commit embed it in their help output.
-const FlagReference = `  --bucket string               S3 bucket (required)                         SLIVINGDOC_BUCKET
+const FlagReference = `  --bucket string               S3 bucket, or the hosted space name when     SLIVINGDOC_BUCKET
+                                a token is set (required)
   --prefix string               S3 object prefix (default "slivingdoc")      SLIVINGDOC_PREFIX
-  --region string               S3 region (default "us-east-1")              AWS_REGION
+  --region string               S3 region (default "us-east-1"; unused       AWS_REGION
+                                with a token)
   --endpoint string             S3-compatible endpoint URL (empty for AWS)   AWS_ENDPOINT_URL_S3
+                                or, with a token, the hosted storage API     SLIVINGDOC_ENDPOINT
+                                URL (default "https://api.slivingdoc.dev")
+  (environment only)            hosted storage API token; setting it         SLIVINGDOC_TOKEN
+                                stores the notebook in the hosted space
+                                named by --bucket
   --path-style                  force S3 path-style addressing               SLIVINGDOC_PATH_STYLE
   --workspace-root string       visible workspace root (serve default: a     SLIVINGDOC_WORKSPACE_ROOT
                                 per-process temporary directory; pull and
