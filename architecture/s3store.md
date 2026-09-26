@@ -24,7 +24,7 @@ app.realStoreFactory(cfg)
   → s3store.New(ctx, Config{Bucket, Prefix, Region, Endpoint}, Options{ForcePathStyle})
       validate bucket, storage.ValidatePrefix, Options.withDefaults
       awsconfig.LoadDefaultConfig(WithRegion, WithBaseEndpoint, [static creds])
-      s3.NewFromConfig(UsePathStyle = Endpoint != "" || ForcePathStyle)
+      s3.NewFromConfig(BaseEndpoint = Endpoint when set; UsePathStyle = Endpoint != "" || ForcePathStyle)
 
 ReadObject(key)     → GetObject(bucket, prefix/key)           → decodeMeta
 PutObject(key,r,m)  → size < threshold ? putSingle (PutObject + metadata)
@@ -44,7 +44,7 @@ tests:  make test → tests3-lease --ready-file F → SLIVINGDOC_TESTS3_ENDPOINT
 
 **Boundary.** No AWS SDK type crosses `internal/s3store`; `Config` holds plain strings, and every returned error wraps a `storage` sentinel. All AWS SDK use in production stays in this package (an AGENTS invariant). The adapter never creates or configures the bucket.
 
-**Addressing.** A custom endpoint always uses path style (SeaweedFS and similar resolve buckets only that way); `ForcePathStyle` (`--path-style`) requests it for the default AWS endpoint. `TestAddressingProvesPathStyle` proves the request URL shape without a network.
+**Addressing.** A custom endpoint always uses path style (SeaweedFS and similar resolve buckets only that way); `ForcePathStyle` (`--path-style`) requests it for the default AWS endpoint. `TestAddressingProvesPathStyle` proves the request URL shape without a network, and `TestConfiguredEndpointBeatsServiceEndpointSettings` proves a configured endpoint addresses the request even when `AWS_ENDPOINT_URL_S3` or a profile `endpoint_url` names another, or `AWS_IGNORE_CONFIGURED_ENDPOINT_URLS` / `ignore_configured_endpoint_urls` would drop it: `New` sets the endpoint both as a load option and as the client's `BaseEndpoint` ([config.md](./config.md)). The unit tests that inject `httpClient` call `isolateAWSEnv` first, which unsets `AWS_CA_BUNDLE` (the SDK refuses a custom CA bundle with a non-default HTTP client), the profile variables, `AWS_USE_FIPS_ENDPOINT`, `AWS_USE_DUALSTACK_ENDPOINT`, and every `AWS_ENDPOINT_URL*`, and points the config and credentials files at a missing path.
 
 **Credentials.** Production passes no `AccessKey`/`SecretKey`, so `LoadDefaultConfig` uses the AWS default credential chain. Static credentials are used only when both fields are set, which only test code does (values from `tests3.Suite.StoreConfig`); `app.realStoreFactory` never sets them. A credential-resolution failure surfaces through the startup probe as a redacted `INCOMPATIBLE_STORE` refusal naming the reason ([config.md](./config.md)).
 

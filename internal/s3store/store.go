@@ -141,6 +141,13 @@ func New(ctx context.Context, cfg Config, opts ...Options) (*Store, error) {
 		return nil, fmt.Errorf("s3store: load AWS configuration: %w", err)
 	}
 	client := s3.NewFromConfig(awsCfg, func(o *s3.Options) {
+		if cfg.Endpoint != "" {
+			// Set again on the client: AWS_IGNORE_CONFIGURED_ENDPOINT_URLS
+			// or a profile's ignore_configured_endpoint_urls makes the
+			// configuration load drop WithBaseEndpoint, which would send
+			// every request to AWS instead (architecture/config.md).
+			o.BaseEndpoint = aws.String(cfg.Endpoint)
+		}
 		if cfg.Endpoint != "" || options.ForcePathStyle {
 			// S3-compatible endpoints (SeaweedFS and similar) resolve
 			// bucket names only in path style; --path-style requests the

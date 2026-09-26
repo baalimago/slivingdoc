@@ -6,6 +6,8 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -227,6 +229,7 @@ func TestAddressingProvesPathStyle(t *testing.T) {
 		{name: "forced path style", force: true, wantPath: "/bucket/prefix/key", wantHostSub: "s3."},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
+			isolateAWSEnv(t)
 			rec := &recordingTransport{}
 			cfg := Config{
 				Bucket: "bucket", Prefix: "prefix", Region: "us-east-1",
@@ -257,4 +260,103 @@ func TestAddressingProvesPathStyle(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestConfiguredEndpointBeatsServiceEndpointSettings proves that a
+// configured endpoint addresses every request even when the SDK's own
+// settings name another one or tell it to ignore configured endpoints:
+// AWS_ENDPOINT_URL_S3, a profile's services s3 endpoint_url,
+// AWS_IGNORE_CONFIGURED_ENDPOINT_URLS, and a profile's
+// ignore_configured_endpoint_urls. The negative-control rows leave the
+// endpoint unset and show each ambient setting really redirects traffic,
+// so the positive rows cannot pass by accident. An SDK upgrade that
+// reorders the sources must fail here (architecture/config.md).
+func TestConfiguredEndpointBeatsServiceEndpointSettings(t *testing.T) {
+	dir := t.TempDir()
+	writeProfile := func(name, body string) string {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatalf("write profile: %v", err)
+		}
+		return path
+	}
+	services := writeProfile("services", "[default]\nservices = elsewhere\n\n[services elsewhere]\ns3 =\n  endpoint_url = http://profile.invalid:9000\n")
+	ignoring := writeProfile("ignoring", "[default]\nignore_configured_endpoint_urls = true\n")
+	const configured = "http://configured.example:8333"
+	for _, tt := range []struct {
+		name     string
+		env      map[string]string
+		endpoint string
+		wantHost string // exact host, or the suffix of a virtual host
+	}{
+		{name: "AWS_ENDPOINT_URL_S3", env: map[string]string{"AWS_ENDPOINT_URL_S3": "http://env.invalid:9000"}, endpoint: configured, wantHost: "configured.example:8333"},
+		{name: "profile endpoint_url", env: map[string]string{"AWS_CONFIG_FILE": services, "AWS_PROFILE": "default"}, endpoint: configured, wantHost: "configured.example:8333"},
+		{name: "AWS_IGNORE_CONFIGURED_ENDPOINT_URLS", env: map[string]string{"AWS_IGNORE_CONFIGURED_ENDPOINT_URLS": "true"}, endpoint: configured, wantHost: "configured.example:8333"},
+		{name: "profile ignore_configured_endpoint_urls", env: map[string]string{"AWS_CONFIG_FILE": ignoring, "AWS_PROFILE": "default"}, endpoint: configured, wantHost: "configured.example:8333"},
+		{name: "control: AWS_ENDPOINT_URL_S3 without an endpoint", env: map[string]string{"AWS_ENDPOINT_URL_S3": "http://env.invalid:9000"}, wantHost: "env.invalid:9000"},
+		{name: "control: profile endpoint_url without an endpoint", env: map[string]string{"AWS_CONFIG_FILE": services, "AWS_PROFILE": "default"}, wantHost: "profile.invalid:9000"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			isolateAWSEnv(t)
+			for k, v := range tt.env {
+				t.Setenv(k, v)
+			}
+			rec := &recordingTransport{}
+			st, err := New(context.Background(), Config{
+				Bucket: "bucket", Prefix: "prefix", Region: "us-east-1",
+				Endpoint:  tt.endpoint,
+				AccessKey: "AKIAIOSFODNN7EXAMPLE", SecretKey: "secret",
+				httpClient:       &http.Client{Transport: rec},
+				retryMaxAttempts: 1,
+			})
+			if err != nil {
+				t.Fatalf("New() = %v", err)
+			}
+			if _, _, err := st.ReadObject(context.Background(), "key"); err == nil {
+				t.Fatal("ReadObject() succeeded, want the recording transport error")
+			}
+			if len(rec.urls) != 1 {
+				t.Fatalf("requests = %d, want 1", len(rec.urls))
+			}
+			u, err := url.Parse(rec.urls[0])
+			if err != nil {
+				t.Fatalf("parse %q: %v", rec.urls[0], err)
+			}
+			if u.Host != tt.wantHost && !strings.HasSuffix(u.Host, "."+tt.wantHost) {
+				t.Fatalf("request = %s, want host %s", rec.urls[0], tt.wantHost)
+			}
+			if tt.endpoint != "" && u.Path != "/bucket/prefix/key" {
+				t.Fatalf("request = %s, want the configured endpoint in path style", rec.urls[0])
+			}
+		})
+	}
+}
+
+// isolateAWSEnv clears, for one test, every ambient AWS setting that
+// changes how the SDK builds a client: a CA bundle (which conflicts with an
+// injected HTTP client), a profile and its files, endpoint overrides, and
+// the FIPS and dual-stack endpoint variants.
+// t.Setenv records the original values for the cleanup; the variables are
+// then unset rather than left empty, since the SDK reads an empty file
+// variable as the default path.
+func isolateAWSEnv(t *testing.T) {
+	t.Helper()
+	names := []string{
+		"AWS_CA_BUNDLE", "AWS_PROFILE", "AWS_DEFAULT_PROFILE", "AWS_IGNORE_CONFIGURED_ENDPOINT_URLS",
+		"AWS_USE_FIPS_ENDPOINT", "AWS_USE_DUALSTACK_ENDPOINT",
+	}
+	for _, kv := range os.Environ() {
+		if name, _, _ := strings.Cut(kv, "="); strings.HasPrefix(name, "AWS_ENDPOINT_URL") {
+			names = append(names, name)
+		}
+	}
+	for _, name := range names {
+		t.Setenv(name, "")
+		if err := os.Unsetenv(name); err != nil {
+			t.Fatalf("unset %s: %v", name, err)
+		}
+	}
+	missing := filepath.Join(t.TempDir(), "absent")
+	t.Setenv("AWS_CONFIG_FILE", missing)
+	t.Setenv("AWS_SHARED_CREDENTIALS_FILE", missing)
 }
