@@ -1,6 +1,7 @@
 package integrationtest
 
 import (
+	"maps"
 	"testing"
 )
 
@@ -214,9 +215,7 @@ func TestScenarioFileDirectoryConflictKeepsLocalSide(t *testing.T) {
 				},
 			}, res)
 			want := map[string]string{"base.md": "base\n"}
-			for name, data := range row.local {
-				want[name] = data
-			}
+			maps.Copy(want, row.local)
 			assertVisibleFiles(t, b, pathB, want)
 
 			// The materialized result is the new local intent against R:
