@@ -8,7 +8,7 @@ Read this when: changing pull ordering, remote reading, the pack cache, the pull
 
 | File | Purpose |
 |------|---------|
-| `internal/notebook/pull.go` | `Notebook.Pull`, `pinProtected` |
+| `internal/notebook/pull.go` | `Notebook.Pull`, `guardFirstPull`, `pinProtected` |
 | `internal/notebook/commit.go` | `restoreProtected` (used by `pinProtected`) |
 | `internal/notebook/remote.go` | `readRemote`, `readCurrent`, `emptyRemote`, `importRemote`, `prefetchPacks`, `ensurePack`, `cacheRead`, `cacheWrite`, `remoteState.baseline` |
 | `internal/notebook/notebook.go` | `entryRecovery`, `applyLocal`, `mapLocalError`, `materializeTree` |
@@ -39,6 +39,8 @@ mcp handler.pull → Service.Pull(path)
          git.ImportPack(checkpoint) → git.MarkShallow(checkpoint head) → git.ImportPack(each increment)
          missing pack → errStaleManifest → reread current; restart only if ETag moved
        git.ValidateHistory(head, checkpoint head) → ReadCommit(head) → git.ReadSnapshot(head tree)
+  4b. guardFirstPull(local, remote)       → first pull only: INVALID_REQUEST/DIRECTORY_NOT_EMPTY
+                                             unless L is empty, R is empty, or L ⊆ R byte for byte
   5. pinProtected(local, localTree)       → merge local side (protected paths pinned to baseline)
   6. git.Merge(repo, Baseline().Tree, mergeTree, remote.tree)
   7a. conflicts: materializeTree → applyLocal(stageConflict, ws.Materialize(R baseline, tree))
@@ -51,7 +53,8 @@ mcp handler.pull → Service.Pull(path)
 ## Behavior
 
 - **Order of checks.** Recovery first, then the visible scan, then the remote read. An invalid visible file (bad UTF-8, U+0000, symlink, special file, invalid name, file-versus-directory ambiguity, two names that normalize to one NFC path, two paths equal under case folding) is refused as `INVALID_REQUEST`/`INVALID_CONTENT` naming the file before any S3 request (`mapLocalError`, `scanErrorFiles`); a case-folding collision names both paths.
-- **Baseline is the merge base.** A = `ws.Baseline().Tree` from `state.json`, never a file snapshot. On the first pull A is the canonical empty tree `4b825dc642cb6eb9a060e54bf8d69288fbee4904` (`workspace.EmptyTreeID`), so existing valid files in L are local additions; an add/add at one path conflicts normally.
+- **Baseline is the merge base.** A = `ws.Baseline().Tree` from `state.json`, never a file snapshot. On the first pull A is the canonical empty tree `4b825dc642cb6eb9a060e54bf8d69288fbee4904` (`workspace.EmptyTreeID`), so any file in L would be a local addition.
+- **First-pull guard.** A first pull (no `pulled` marker in P) proceeds only when every file in L passes (`guardFirstPull`): an unprotected file must exist in R with identical bytes, or R must be the empty tree (no `current`, or an accepted state with no files: the directory seeds the notebook); a protected file must exist in R, whose bytes the pull restores whatever L holds (`pinProtected`), and its content is not compared. A protected file R lacks is refused as `NOT_IN_NOTEBOOK` even against an empty R: its first-pull baseline is empty, so the pull would delete it, and no commit from this process could publish it. Otherwise it returns `INVALID_REQUEST`/`DIRECTORY_NOT_EMPTY` (action `FIX_INPUT`) naming every offending file, sorted by path, with file reason `NOT_IN_NOTEBOOK` or `DIFFERS_FROM_NOTEBOOK` and empty ranges; the message says which of the two it found. The refusal comes after the remote read and before any change to L, the `pulled` marker, or `state.json`: no marker, no baseline, so a later commit still gets `PULL_REQUIRED`. The remote read may already have imported R into P's repository and filled the pack cache; that is invisible state the next pull reuses. A directory that is not a copy of this notebook would otherwise be merged against the empty baseline, publishing its unrelated files on the next commit or conflicting add/add with the notebook. Every later pull merges local additions as usual. Because the guard admits only identical files, a first pull can no longer conflict.
 - **Empty remote.** No `current` object means R is the empty tree at generation 0. Pull keeps valid local additions in L, records the empty tree as the baseline, marks P pulled, and creates no remote state.
 - **Only packs missing from the byte cache are downloaded.** Every `readRemote` re-imports the checkpoint and every active increment into the private repository; only the download is skipped when the pack-byte cache (P-local `pack-cache/`, or the shared identity-keyed directory with `--shared-pack-cache`, see [running.md](./running.md#the-shared-pack-cache)) holds bytes with the exact size and a fresh SHA-256. A corrupt entry is deleted and refetched. If the cache cannot be written, every call downloads again (warning only). Downloads may overlap (16 in flight); import order is the manifest order: checkpoint, shallow boundary, increments.
 - **Stale reads.** If cleanup deleted a pack the observed manifest references, the reader rereads `current` and restarts; the same ETag with the pack still missing is `STORAGE_INTEGRITY`/`PACK_INVALID`. It never guesses state from object names and never loops forever (bounded by the retry limit).

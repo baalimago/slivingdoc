@@ -281,3 +281,141 @@ func TestScenarioPullCacheCorruption(t *testing.T) {
 		t.Fatalf("pack gets after the healed cache = %d, want the cached hit", got)
 	}
 }
+
+// TestScenarioPullFirstPullGuard proves the first-pull guard
+// (architecture/pull.md): a first pull proceeds into an empty directory,
+// into one whose every file is already in the notebook with identical
+// bytes, and into any directory when the remote notebook is empty
+// (seeding it). Into a directory holding any other file it is refused as
+// INVALID_REQUEST/DIRECTORY_NOT_EMPTY/FIX_INPUT naming each offending file
+// (NOT_IN_NOTEBOOK or DIFFERS_FROM_NOTEBOOK) before L, the pulled marker,
+// or state.json changes. A protected file the notebook holds is restored
+// rather than compared (TestScenarioReadOnlyPullRestores); one it lacks is
+// refused, since the pull would delete it.
+func TestScenarioPullFirstPullGuard(t *testing.T) {
+	t.Parallel()
+	published := map[string]string{"a.md": "alpha\n", "docs/b.md": "beta\n"}
+	seed := func(t *testing.T) (*Harness, *Harness) {
+		t.Helper()
+		writer := newFakeHarness(t, HarnessConfig{})
+		path := writer.Path("notes")
+		writer.assertOK(t, writer.Pull("", path))
+		for name, data := range published {
+			writer.WriteFile(path+"/"+name, data)
+		}
+		writer.assertOK(t, writer.Commit("", path, "seed"))
+		return writer, newSharedHarness(t, writer.Raw(), writer.cfg.Prefix, HarnessConfig{})
+	}
+
+	for _, row := range []struct {
+		name  string
+		local map[string]string
+	}{
+		{name: "empty directory", local: map[string]string{}},
+		{name: "matching subset", local: map[string]string{"docs/b.md": "beta\n"}},
+		{name: "matching copy", local: published},
+	} {
+		t.Run("proceeds into "+row.name, func(t *testing.T) {
+			t.Parallel()
+			_, reader := seed(t)
+			path := reader.Path("notes")
+			for name, data := range row.local {
+				reader.WriteFile(path+"/"+name, data)
+			}
+			reader.assertOK(t, reader.Pull("", path))
+			assertPulledMarker(t, reader, path)
+			assertVisibleFiles(t, reader, path, published)
+		})
+	}
+
+	t.Run("seeds an empty remote", func(t *testing.T) {
+		t.Parallel()
+		h := newFakeHarness(t, HarnessConfig{})
+		path := h.Path("notes")
+		h.WriteFile(path+"/mine.md", "seed\n")
+		h.assertOK(t, h.Pull("", path))
+		h.assertOK(t, h.Commit("", path, "seed"))
+		assertRemoteGeneration(t, h, path, 1)
+	})
+
+	t.Run("refuses a protected file the notebook lacks", func(t *testing.T) {
+		t.Parallel()
+		writer, _ := seed(t)
+		agent := newSharedHarness(t, writer.Raw(), writer.cfg.Prefix, HarnessConfig{WritablePaths: []string{"docs"}})
+		path := agent.Path("notes")
+		local := map[string]string{"docs/b.md": "beta\n", "todo.md": "mine\n"}
+		for name, data := range local {
+			agent.WriteFile(path+"/"+name, data)
+		}
+		agent.assertEnvelope(t, ToolCall{
+			Tool: toolPull, Path: path,
+			Expect: CallExpectation{
+				ErrorCode: "INVALID_REQUEST", Retryable: new(false),
+				Reason: "DIRECTORY_NOT_EMPTY", Action: "FIX_INPUT",
+				Files:    []FileExpectation{{Path: "todo.md", Reason: "NOT_IN_NOTEBOOK", Ranges: []RangeExpectation{}}},
+				Writable: []string{"docs"},
+			},
+		}, agent.Pull("", path))
+		assertVisibleFiles(t, agent, path, local)
+	})
+
+	for _, row := range []struct {
+		name  string
+		local map[string]string
+		files []FileExpectation
+	}{
+		{
+			name:  "an unrelated file",
+			local: map[string]string{"a.md": "alpha\n", "other.md": "not in the notebook\n"},
+			files: []FileExpectation{{Path: "other.md", Reason: "NOT_IN_NOTEBOOK", Ranges: []RangeExpectation{}}},
+		},
+		{
+			name:  "a file with other content",
+			local: map[string]string{"a.md": "my own alpha\n"},
+			files: []FileExpectation{{Path: "a.md", Reason: "DIFFERS_FROM_NOTEBOOK", Ranges: []RangeExpectation{}}},
+		},
+		{
+			name:  "both kinds",
+			local: map[string]string{"a.md": "my own alpha\n", "docs/b.md": "beta\n", "z.md": "mine\n"},
+			files: []FileExpectation{
+				{Path: "a.md", Reason: "DIFFERS_FROM_NOTEBOOK", Ranges: []RangeExpectation{}},
+				{Path: "z.md", Reason: "NOT_IN_NOTEBOOK", Ranges: []RangeExpectation{}},
+			},
+		},
+	} {
+		t.Run("refuses "+row.name, func(t *testing.T) {
+			t.Parallel()
+			_, reader := seed(t)
+			path := reader.Path("notes")
+			for name, data := range row.local {
+				reader.WriteFile(path+"/"+name, data)
+			}
+			reader.assertEnvelope(t, ToolCall{
+				Tool: toolPull, Path: path,
+				Expect: CallExpectation{
+					ErrorCode: "INVALID_REQUEST", Retryable: new(false),
+					Reason: "DIRECTORY_NOT_EMPTY", Action: "FIX_INPUT",
+					Files: row.files,
+				},
+			}, reader.Pull("", path))
+			assertVisibleFiles(t, reader, path, row.local)
+			if _, err := os.Stat(filepath.Join(reader.PrivateDir(path), "pulled")); err == nil {
+				t.Fatal("a refused first pull wrote the pulled marker")
+			}
+			if rec := reader.StateRecord(t, path); rec.RemoteGeneration != 0 || rec.BaselineTree != emptyTreeID {
+				t.Fatalf("state after the refusal = %+v, want the untouched generation-0 record", rec)
+			}
+			// The refusal leaves the directory unmanaged: commit still
+			// requires a pull, and emptying the directory lets it succeed.
+			reader.assertEnvelope(t, ToolCall{
+				Tool: toolCommit, Path: path, Message: "too soon",
+				Expect: CallExpectation{ErrorCode: "INVALID_REQUEST", Reason: "PULL_REQUIRED"},
+			}, reader.Commit("", path, "too soon"))
+			for name := range row.local {
+				reader.RemoveFile(path + "/" + name)
+			}
+			reader.assertOK(t, reader.Pull("", path))
+			assertVisibleFiles(t, reader, path, published)
+		})
+	}
+}

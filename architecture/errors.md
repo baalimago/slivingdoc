@@ -44,7 +44,7 @@ Startup: Setup error → router prints `<time> error: failed to setup command: <
 
 | Code | Meaning | Retryable (`mcp.retryable`) |
 |---|---|---|
-| `INVALID_REQUEST` | bad input or a refused state before Git/S3 work | no |
+| `INVALID_REQUEST` | bad input or a refused state before Git/S3 work, or a first pull refused before L or the pull state changes | no |
 | `CONTENT_CONFLICT` | three-tree conflict, or unresolved markers in a commit | no |
 | `REMOTE_BUSY` | CAS lost `--commit-retries` + 1 times | yes |
 | `STORAGE_FAILURE` | store operation failed without a known accepted result; also the fallback for unknown errors | yes |
@@ -56,7 +56,7 @@ Startup: Setup error → router prints `<time> error: failed to setup command: <
 
 | Code | Reason | Action |
 |---|---|---|
-| `INVALID_REQUEST` | `MALFORMED_INPUT`, `PATH_OUTSIDE_ROOT`, `MESSAGE_BLANK`, `MESSAGE_TOO_LONG`, `MESSAGE_INVALID` | `FIX_INPUT` |
+| `INVALID_REQUEST` | `MALFORMED_INPUT`, `PATH_OUTSIDE_ROOT`, `MESSAGE_BLANK`, `MESSAGE_TOO_LONG`, `MESSAGE_INVALID`, `DIRECTORY_NOT_EMPTY` | `FIX_INPUT` |
 | `INVALID_REQUEST` | `PULL_REQUIRED` | `PULL` |
 | `INVALID_REQUEST` | `INVALID_CONTENT`, `READ_ONLY_PATH` | `EDIT_FILES` |
 | `CONTENT_CONFLICT` | `MERGE_CONFLICT`, `UNRESOLVED_MARKERS` | `EDIT_FILES` |
@@ -68,7 +68,7 @@ Startup: Setup error → router prints `<time> error: failed to setup command: <
 
 An unmapped pairing is a programming error: `actionFor` returns `RETRY` plus `errUnknownActionPairing`; the constructors discard that error, so tests must cover every pairing.
 
-**File reasons.** `TEXT_CONFLICT` and `PATH_CONFLICT` (from `contentConflictFiles`: a conflict with content is text, else path), `UNRESOLVED_MARKERS`, `READ_ONLY`, `INVALID_CONTENT`. Each file carries one-based inclusive `ranges` (`git.MarkerRange`); the array is empty when the reason has no marker block (`READ_ONLY`, `INVALID_CONTENT`). File paths are relative to the request path in slash form.
+**File reasons.** `TEXT_CONFLICT` and `PATH_CONFLICT` (from `contentConflictFiles`: a conflict with content is text, else path), `UNRESOLVED_MARKERS`, `READ_ONLY`, `INVALID_CONTENT`, and `NOT_IN_NOTEBOOK` / `DIFFERS_FROM_NOTEBOOK` (from `guardFirstPull`). Each file carries one-based inclusive `ranges` (`git.MarkerRange`); the array is empty when the reason has no marker block (`READ_ONLY`, `INVALID_CONTENT`, `NOT_IN_NOTEBOOK`, `DIFFERS_FROM_NOTEBOOK`). File paths are relative to the request path in slash form.
 
 **Recovery report.** `RECOVERY_FAILURE` carries `RecoveryReport{Stage, RemoteAccepted ("yes"|"no"|"unknown"), Resynchronized}`, exposed as `ToolError.Recovery`. The call never returns `OK`. See [commit.md](./commit.md).
 

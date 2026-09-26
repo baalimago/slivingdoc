@@ -1,9 +1,13 @@
 package notebook
 
 import (
+	"bytes"
 	"context"
+	"slices"
+	"strings"
 
 	"github.com/baalimago/slivingdoc/internal/git"
+	"github.com/baalimago/slivingdoc/internal/workspace"
 )
 
 // Pull validates and ingests the visible directory, reads and validates the
@@ -46,6 +50,9 @@ func (n *Notebook) pull(ctx context.Context) (Result, error) {
 
 	remote, err := n.readRemote(ctx)
 	if err != nil {
+		return Result{}, err
+	}
+	if err := n.guardFirstPull(local, remote); err != nil {
 		return Result{}, err
 	}
 
@@ -99,6 +106,72 @@ func (n *Notebook) pull(ctx context.Context) (Result, error) {
 		return Result{}, n.mapLocalError(err)
 	}
 	return Result{Generation: remote.generation, Stat: stat}, nil
+}
+
+// guardFirstPull refuses a first pull (no pulled marker in P) into a
+// visible directory that holds files the remote notebook lacks or holds
+// with other content (architecture/pull.md). It runs before L, the pulled
+// marker, or state.json changes; the remote read before it may already
+// have filled P's repository and pack cache. Such a directory is not a
+// copy of this notebook: merging it against the empty first-pull baseline
+// would publish or conflict with unrelated files. An empty directory and
+// one whose every file is already in R with identical bytes pass. An
+// empty remote notebook admits any unprotected file: the directory seeds
+// it. A protected file R holds is not compared, since the pull restores it
+// from R whatever L holds; a protected file R lacks is refused whatever R
+// is, since the pull would delete it (its baseline is empty) and no commit
+// could publish it. The refusal names every offending file with its file
+// reason.
+func (n *Notebook) guardFirstPull(local git.Snapshot, remote remoteState) error {
+	if n.ws.Pulled() || len(local.Files) == 0 {
+		return nil
+	}
+	accepted := map[string][]byte{}
+	if remote.tree != workspace.EmptyTreeID {
+		remoteSnap, err := git.ReadSnapshot(n.ws.Repo(), remote.tree)
+		if err != nil {
+			return storageIntegrity(ReasonEngineFailed, err, "read the accepted snapshot for the first-pull check")
+		}
+		for _, f := range remoteSnap.Files {
+			accepted[f.Path] = f.Data
+		}
+	}
+	seeding := remote.tree == workspace.EmptyTreeID
+	var files []ErrorFile
+	kinds := make(map[FileReason]bool, 2)
+	for _, f := range local.Files {
+		data, ok := accepted[f.Path]
+		var reason FileReason
+		switch {
+		case n.policy.Protects(f.Path) && ok:
+			continue // restored from R
+		case n.policy.Protects(f.Path):
+			reason = FileReasonNotInNotebook
+		case seeding:
+			continue
+		case !ok:
+			reason = FileReasonNotInNotebook
+		case !bytes.Equal(data, f.Data):
+			reason = FileReasonDiffersFromNotebook
+		default:
+			continue
+		}
+		kinds[reason] = true
+		files = append(files, ErrorFile{Path: f.Path, Reason: reason})
+	}
+	if len(files) == 0 {
+		return nil
+	}
+	slices.SortFunc(files, func(a, b ErrorFile) int { return strings.Compare(a.Path, b.Path) })
+	found := "files that are not in the notebook"
+	switch {
+	case kinds[FileReasonNotInNotebook] && kinds[FileReasonDiffersFromNotebook]:
+		found = "files that are not in the notebook or differ from it"
+	case kinds[FileReasonDiffersFromNotebook]:
+		found = "files that differ from the notebook"
+	}
+	return invalidRequest(ReasonDirectoryNotEmpty, nil, files,
+		"the first pull into this directory found %s; pull into an empty directory, or move those files away and pull again", found)
 }
 
 // pinProtected returns the tree the merge takes as its local side: the

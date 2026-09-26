@@ -539,6 +539,19 @@ result or exit code.
 - A complete conflict-marker block (`<<<<<<< local`, `=======`,
   `>>>>>>> remote` at column zero) is never accepted into the notebook,
   even if it was written by hand.
+- The first pull into a directory needs that directory to be empty, or to
+  hold only files the notebook already has with identical content. The
+  exception is an empty notebook: the first pull into a directory of
+  existing files then succeeds, and the next commit publishes them as the
+  notebook's first state. Any other first pull is refused as
+  `INVALID_REQUEST`/`DIRECTORY_NOT_EMPTY`, naming each file that is not
+  in the notebook or differs from it, before the directory or the
+  pull state changes (the notebook may already be downloaded into the
+  private cache): pull into an empty directory, or move the files away
+  and pull again. A file under a read-only or otherwise protected path
+  only needs to exist in the notebook, whose content the pull restores;
+  one the notebook lacks is refused, even by an empty notebook, because
+  the pull would delete it and this process could never publish it.
 
 ## Conflict recovery
 

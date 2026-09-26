@@ -55,8 +55,8 @@ func TestCommitMarkersBeforeReadOnly(t *testing.T) {
 	store := fake.New("")
 	ids := &testIDSource{}
 	nb, w, _ := newNotebook(t, nbConfig{store: store, ids: ids, readOnly: []string{"docs"}})
-	writeLocal(t, w, map[string]string{"docs/a.md": "base", "notes/x.md": "base"})
-	pullOK(t, nb)
+	writeLocal(t, w, map[string]string{"notes/x.md": "base"})
+	pullOK(t, nb) // a protected file the empty notebook lacks would refuse the first pull
 	writeLocal(t, w, map[string]string{
 		"docs/a.md":  "changed",                                        // a read-only violation
 		"notes/x.md": "<<<<<<< local\na\n=======\nb\n>>>>>>> remote\n", // a marker block elsewhere
@@ -118,8 +118,7 @@ func TestCommitReadOnlyBaselineReadFailure(t *testing.T) {
 	target := new(git.OID) // armed after the baseline is established below
 	eng := &dynamicReadFailEngine{fakeEngine: newFakeEngine(), target: target}
 	nb, w, _ := newNotebook(t, nbConfig{store: store, ids: ids, engine: eng, readOnly: []string{"docs"}})
-	writeLocal(t, w, map[string]string{"docs/a.md": "base"})
-	pullOK(t, nb)
+	pullOK(t, nb) // into an empty directory: the empty notebook lacks docs/a.md
 	*target = w.Baseline().Tree
 	writeLocal(t, w, map[string]string{"docs/a.md": "changed"})
 	before := localSnapshot(t, w)
@@ -183,8 +182,7 @@ func TestCommitReadOnlyPinBuildFailure(t *testing.T) {
 	fail := new(bool)
 	eng := &toggleWriteTreeEngine{fakeEngine: newFakeEngine(), fail: fail}
 	nb, w, _ := newNotebook(t, nbConfig{store: store, ids: ids, engine: eng, readOnly: []string{"docs"}})
-	writeLocal(t, w, map[string]string{"docs/a.md": "base"})
-	pullOK(t, nb)
+	pullOK(t, nb) // into an empty directory: the empty notebook lacks docs/a.md
 	writeLocal(t, w, map[string]string{"docs/a.md": "changed"})
 	before := localSnapshot(t, w)
 	baselineBefore := w.Baseline()

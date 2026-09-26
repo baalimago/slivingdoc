@@ -219,9 +219,13 @@ func TestPullConflictWritesMarkersAndKeepsL(t *testing.T) {
 	a, aw, _ := newNotebook(t, nbConfig{store: store, ids: ids})
 	b, bw, _ := newNotebook(t, nbConfig{store: store, ids: ids})
 
-	writeLocal(t, aw, map[string]string{"a.md": "remote v1", "clean.md": "clean"})
+	writeLocal(t, aw, map[string]string{"a.md": "base v0"})
 	pullOK(t, a)
 	commitOK(t, a, "base")
+	pullOK(t, b) // B at gen 1; a first pull must start from a copy of the notebook
+
+	writeLocal(t, aw, map[string]string{"a.md": "remote v1", "clean.md": "clean"})
+	commitOK(t, a, "remote change")
 
 	writeLocal(t, bw, map[string]string{"a.md": "local v1", "local-only.md": "local only"})
 	res, err := b.Pull(context.Background())
@@ -249,11 +253,8 @@ func TestPullConflictWritesMarkersAndKeepsL(t *testing.T) {
 	if got["local-only.md"] != "local only" {
 		t.Fatalf("local-only.md = %q, want the local addition preserved", got["local-only.md"])
 	}
-	if gen := bw.Baseline().RemoteGeneration; gen != 1 {
-		t.Fatalf("baseline generation after conflict = %d, want the remote state 1", gen)
-	}
-	if !bw.Pulled() {
-		t.Fatal("a conflicting pull must initialize P")
+	if gen := bw.Baseline().RemoteGeneration; gen != 2 {
+		t.Fatalf("baseline generation after conflict = %d, want the remote state 2", gen)
 	}
 }
 
@@ -643,4 +644,132 @@ func TestPullCleanPullBuildsNoExtraTree(t *testing.T) {
 	if configured.treeWrites != unconfigured.treeWrites {
 		t.Fatalf("configured pull wrote %d trees, want the unconfigured pull's %d", configured.treeWrites, unconfigured.treeWrites)
 	}
+}
+
+// TestPullFirstPullGuard proves the first-pull guard: against a non-empty
+// remote a first pull proceeds only when every visible file is already in
+// R with identical bytes, and otherwise refuses before any local change;
+// a later pull is never guarded.
+func TestPullFirstPullGuard(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		local    map[string]string
+		readOnly []string
+		writable []string
+		want     map[string]string // the L a passing pull leaves
+		files    []ErrorFile       // non-nil: the pull is refused naming these
+		message  string
+	}{
+		{name: "empty", local: map[string]string{}},
+		{name: "identical subset", local: map[string]string{"a.md": "alpha"}},
+		{
+			name: "unrelated file", local: map[string]string{"x.md": "mine"},
+			files:   []ErrorFile{{Path: "x.md", Reason: FileReasonNotInNotebook}},
+			message: "found files that are not in the notebook;",
+		},
+		{
+			name: "same path other bytes", local: map[string]string{"a.md": "ALPHA"},
+			files:   []ErrorFile{{Path: "a.md", Reason: FileReasonDiffersFromNotebook}},
+			message: "found files that differ from the notebook;",
+		},
+		{
+			name: "both kinds", local: map[string]string{"a.md": "ALPHA", "b.md": "beta", "x.md": "mine"},
+			files: []ErrorFile{
+				{Path: "a.md", Reason: FileReasonDiffersFromNotebook},
+				{Path: "x.md", Reason: FileReasonNotInNotebook},
+			},
+			message: "found files that are not in the notebook or differ from it;",
+		},
+		{
+			// A protected file R holds is restored from R, so it is not
+			// compared.
+			name: "protected file in the notebook with other bytes", readOnly: []string{"a.md"},
+			local: map[string]string{"a.md": "ALPHA"},
+		},
+		{
+			// A protected file R lacks would be deleted by the pull.
+			name: "protected file not in the notebook", readOnly: []string{"ro"},
+			local:   map[string]string{"a.md": "alpha", "ro/x.md": "local only"},
+			files:   []ErrorFile{{Path: "ro/x.md", Reason: FileReasonNotInNotebook}},
+			message: "found files that are not in the notebook;",
+		},
+		{
+			name: "file outside the writable set not in the notebook", writable: []string{"w"},
+			local:   map[string]string{"todo.md": "mine"},
+			files:   []ErrorFile{{Path: "todo.md", Reason: FileReasonNotInNotebook}},
+			message: "found files that are not in the notebook;",
+		},
+		{
+			name: "unprotected file inside the writable set", writable: []string{"w"},
+			local:   map[string]string{"w/x.md": "mine"},
+			files:   []ErrorFile{{Path: "w/x.md", Reason: FileReasonNotInNotebook}},
+			message: "found files that are not in the notebook;",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			store := fake.New("")
+			ids := &testIDSource{}
+			a, aw, _ := newNotebook(t, nbConfig{store: store, ids: ids})
+			writeLocal(t, aw, map[string]string{"a.md": "alpha", "b.md": "beta"})
+			pullOK(t, a)
+			commitOK(t, a, "seed")
+
+			b, bw, _ := newNotebook(t, nbConfig{store: store, ids: ids, readOnly: tt.readOnly, writable: tt.writable})
+			writeLocal(t, bw, tt.local)
+			res, err := b.Pull(context.Background())
+			if tt.files == nil {
+				if err != nil {
+					t.Fatalf("Pull() = %v", err)
+				}
+				if got := localSnapshot(t, bw); got["a.md"] != "alpha" || got["b.md"] != "beta" || len(got) != 2 {
+					t.Fatalf("L after the first pull = %v, want the notebook", got)
+				}
+				return
+			}
+			ne := assertErrorCode(t, err, CodeInvalidRequest)
+			assertZeroResult(t, res)
+			if ne.Reason != ReasonDirectoryNotEmpty || ne.Action != ActionFixInput {
+				t.Fatalf("reason/action = %s/%s, want DIRECTORY_NOT_EMPTY/FIX_INPUT", ne.Reason, ne.Action)
+			}
+			if !reflect.DeepEqual(ne.Files, tt.files) {
+				t.Fatalf("files = %+v, want %+v", ne.Files, tt.files)
+			}
+			if !strings.Contains(ne.Message, tt.message) {
+				t.Fatalf("message = %q, want it to contain %q", ne.Message, tt.message)
+			}
+			if bw.Pulled() || bw.Baseline().RemoteGeneration != 0 {
+				t.Fatal("a refused first pull changed P")
+			}
+			if got := localSnapshot(t, bw); !reflect.DeepEqual(got, tt.local) {
+				t.Fatalf("L after the refusal = %v, want %v untouched", got, tt.local)
+			}
+		})
+	}
+
+	t.Run("seeding an empty remote refuses a protected file", func(t *testing.T) {
+		b, bw, _ := newNotebook(t, nbConfig{store: fake.New(""), ids: &testIDSource{}, writable: []string{"notes"}})
+		local := map[string]string{"notes/a.md": "seed", "todo.md": "mine"}
+		writeLocal(t, bw, local)
+		ne := assertErrorCode(t, errOnly(b.Pull(context.Background())), CodeInvalidRequest)
+		if want := []ErrorFile{{Path: "todo.md", Reason: FileReasonNotInNotebook}}; ne.Reason != ReasonDirectoryNotEmpty || !reflect.DeepEqual(ne.Files, want) {
+			t.Fatalf("refusal = %s %+v, want DIRECTORY_NOT_EMPTY naming %+v", ne.Reason, ne.Files, want)
+		}
+		if got := localSnapshot(t, bw); !reflect.DeepEqual(got, local) {
+			t.Fatalf("L after the refusal = %v, want %v untouched", got, local)
+		}
+	})
+
+	t.Run("seeding an empty remote and later pulls are not guarded", func(t *testing.T) {
+		store := fake.New("")
+		ids := &testIDSource{}
+		a, aw, _ := newNotebook(t, nbConfig{store: store, ids: ids})
+		writeLocal(t, aw, map[string]string{"a.md": "alpha"})
+		pullOK(t, a) // the remote is empty: the directory seeds it
+		commitOK(t, a, "seed")
+		writeLocal(t, aw, map[string]string{"local.md": "not yet published"})
+		pullOK(t, a) // not a first pull: local additions merge as usual
+		if got := readLocal(t, aw, "local.md"); got != "not yet published" {
+			t.Fatalf("local.md after a later pull = %q, want it kept", got)
+		}
+	})
 }

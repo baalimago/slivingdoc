@@ -27,6 +27,7 @@ var allReasons = []struct {
 	{CodeInvalidRequest, ReasonMessageTooLong, ActionFixInput},
 	{CodeInvalidRequest, ReasonMessageInvalid, ActionFixInput},
 	{CodeInvalidRequest, ReasonPullRequired, ActionPull},
+	{CodeInvalidRequest, ReasonDirectoryNotEmpty, ActionFixInput},
 	{CodeInvalidRequest, ReasonInvalidContent, ActionEditFiles},
 	{CodeInvalidRequest, ReasonReadOnlyPath, ActionEditFiles},
 	{CodeContentConflict, ReasonMergeConflict, ActionEditFiles},

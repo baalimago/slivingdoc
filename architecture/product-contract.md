@@ -38,7 +38,7 @@ CLI:  cmd/pull, cmd/commit → Runtime.Pull/Commit → app.Report → writeSucce
 
 | Tool | Input | Effect |
 |------|-------|--------|
-| `notes_pull` | `path` (optional) | Write the current notebook into the directory, merging unpublished local edits. See [pull.md](./pull.md). |
+| `notes_pull` | `path` (optional) | Write the current notebook into the directory, merging unpublished local edits. The first pull into a directory needs it empty or holding only files identical to the notebook's (a protected file need only exist in it), unless the notebook is empty and every file is unprotected (`DIRECTORY_NOT_EMPTY`, naming the files). See [pull.md](./pull.md). |
 | `notes_commit` | `message`, `path` (optional) | Publish local changes, incorporating concurrent non-conflicting changes. See [commit.md](./commit.md). |
 
 Workflow: `notes_pull` once, edit UTF-8 files, `notes_commit(message)`; repeat.
@@ -92,6 +92,7 @@ The notebook emits every pairing below except `MALFORMED_INPUT` and `PATH_OUTSID
 | `INVALID_REQUEST` | `PATH_OUTSIDE_ROOT` | Path escapes the workspace root, or a symlink component | `FIX_INPUT` |
 | `INVALID_REQUEST` | `MESSAGE_BLANK` / `MESSAGE_TOO_LONG` / `MESSAGE_INVALID` | Message rules above | `FIX_INPUT` |
 | `INVALID_REQUEST` | `PULL_REQUIRED` | Commit before any pull on this P | `PULL` |
+| `INVALID_REQUEST` | `DIRECTORY_NOT_EMPTY` | First pull into a directory holding files the notebook lacks, or unprotected files it holds with other bytes (an empty notebook still refuses protected files); L, the pulled marker and `state.json` unchanged (P's repository and pack cache may hold R) | `FIX_INPUT` |
 | `INVALID_REQUEST` | `INVALID_CONTENT` | A visible file breaks the content or path rules; `files` names it | `EDIT_FILES` |
 | `INVALID_REQUEST` | `READ_ONLY_PATH` | Commit touched a protected path; files were reset | `EDIT_FILES` |
 | `CONTENT_CONFLICT` | `MERGE_CONFLICT` | Three-tree merge conflicted; markers written | `EDIT_FILES` |
@@ -102,11 +103,11 @@ The notebook emits every pairing below except `MALFORMED_INPUT` and `PATH_OUTSID
 | `STORAGE_INTEGRITY` | `MANIFEST_INVALID`, `PACK_INVALID`, `HISTORY_INVALID`, `ENGINE_FAILED` | Stored state untrusted, or engine failure | `OPERATOR` |
 | `RECOVERY_FAILURE` | `LOCAL_MUTATION_FAILED` | Failure after local mutation began, or (stage `entry`) the repair of an earlier one rewrote L instead of running the call | `PULL` if `resynchronized`, else `RETRY` |
 
-File reasons: `TEXT_CONFLICT` (marker ranges), `PATH_CONFLICT` (file versus directory, empty ranges), `UNRESOLVED_MARKERS` (ranges), `READ_ONLY` (empty), `INVALID_CONTENT` (empty). Action meanings: `FIX_INPUT` change the request; `EDIT_FILES` edit then commit; `PULL` pull then continue; `RETRY` repeat the call; `OPERATOR` a person must act.
+File reasons: `TEXT_CONFLICT` (marker ranges), `PATH_CONFLICT` (file versus directory, empty ranges), `UNRESOLVED_MARKERS` (ranges), `READ_ONLY` (empty), `INVALID_CONTENT` (empty), `NOT_IN_NOTEBOOK` and `DIFFERS_FROM_NOTEBOOK` (empty; a refused first pull). Action meanings: `FIX_INPUT` change the request; `EDIT_FILES` edit then commit; `PULL` pull then continue; `RETRY` repeat the call; `OPERATOR` a person must act.
 
 ### CLI report (`app.Report`)
 
-Success prints to stdout and exits 0: `OK  generation N  <path>`, one line per changed file with `+ins -del` (zero side omitted), a totals line, then `writable:`, `read-only:`, and `path-rule: longest match decides` trailers when configured. A domain error prints the same skeleton and exits nonzero: `CODE · REASON`, the message, one line per file (path padded to the longest path plus two, the reason as words from `fileReasonWords`, `lines a-b`), `next:` from `actionWordings`, `retryable:`, the recovery report, and the same trailers. The CLI report omits `detail` and `diagnosticId`. File reason words (`fileReasonWords`): `TEXT_CONFLICT` "conflict", `PATH_CONFLICT` "path conflict", `UNRESOLVED_MARKERS` "unresolved markers", `READ_ONLY` "read-only", `INVALID_CONTENT` "invalid content". Next-step wording (`actionWordings`): `FIX_INPUT` "correct the request, then call again", `EDIT_FILES` "edit the files, then commit", `PULL` "pull, then continue", `RETRY` "retry the same call", `OPERATOR` "operator attention needed". Colour only on a real terminal with `NO_COLOR` empty; stripped of escapes, output is byte-identical to the plain form.
+Success prints to stdout and exits 0: `OK  generation N  <path>`, one line per changed file with `+ins -del` (zero side omitted), a totals line, then `writable:`, `read-only:`, and `path-rule: longest match decides` trailers when configured. A domain error prints the same skeleton and exits nonzero: `CODE · REASON`, the message, one line per file (path padded to the longest path plus two, the reason as words from `fileReasonWords`, `lines a-b`), `next:` from `nextStep` (a reason's own wording in `reasonNextSteps`, else `actionWordings`), `retryable:`, the recovery report, and the same trailers. The CLI report omits `detail` and `diagnosticId`. File reason words (`fileReasonWords`): `TEXT_CONFLICT` "conflict", `PATH_CONFLICT` "path conflict", `UNRESOLVED_MARKERS` "unresolved markers", `READ_ONLY` "read-only", `INVALID_CONTENT` "invalid content", `NOT_IN_NOTEBOOK` "not in the notebook", `DIFFERS_FROM_NOTEBOOK` "differs from the notebook". Next-step wording by reason (`reasonNextSteps`): `DIRECTORY_NOT_EMPTY` "pull into an empty directory, or move those files away, then pull again". Next-step wording by action (`actionWordings`): `FIX_INPUT` "correct the request, then call again", `EDIT_FILES` "edit the files, then commit", `PULL` "pull, then continue", `RETRY` "retry the same call", `OPERATOR` "operator attention needed". Colour only on a real terminal with `NO_COLOR` empty; stripped of escapes, output is byte-identical to the plain form.
 
 ### Read-only and writable paths
 

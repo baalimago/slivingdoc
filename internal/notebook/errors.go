@@ -27,7 +27,8 @@ const (
 	// CodeInvalidRequest reports invalid tool input or a state the
 	// operation refuses before any Git or S3 work: a blank commit
 	// message, a commit without a managed pull, or invalid visible
-	// content.
+	// content; or before any local mutation: a first pull into a
+	// directory holding files the remote notebook does not.
 	CodeInvalidRequest Code = "INVALID_REQUEST"
 	// CodeContentConflict reports a three-tree merge conflict. L is
 	// rewritten with the full materialized result and the exact conflicted
@@ -61,6 +62,7 @@ const (
 	ReasonMessageTooLong      Reason = "MESSAGE_TOO_LONG"
 	ReasonMessageInvalid      Reason = "MESSAGE_INVALID"
 	ReasonPullRequired        Reason = "PULL_REQUIRED"
+	ReasonDirectoryNotEmpty   Reason = "DIRECTORY_NOT_EMPTY"
 	ReasonInvalidContent      Reason = "INVALID_CONTENT"
 	ReasonReadOnlyPath        Reason = "READ_ONLY_PATH"
 	ReasonMergeConflict       Reason = "MERGE_CONFLICT"
@@ -89,6 +91,10 @@ const (
 	FileReasonUnresolvedMarkers FileReason = "UNRESOLVED_MARKERS"
 	FileReasonReadOnly          FileReason = "READ_ONLY"
 	FileReasonInvalidContent    FileReason = "INVALID_CONTENT"
+	// A first pull found the file in the directory but not in the notebook,
+	// or with other bytes than the notebook's (ReasonDirectoryNotEmpty).
+	FileReasonNotInNotebook       FileReason = "NOT_IN_NOTEBOOK"
+	FileReasonDiffersFromNotebook FileReason = "DIFFERS_FROM_NOTEBOOK"
 )
 
 // Action is the caller's next step after a domain error.
@@ -117,6 +123,7 @@ var actionForPairing = map[codeReason]Action{
 	{CodeInvalidRequest, ReasonMessageTooLong}:      ActionFixInput,
 	{CodeInvalidRequest, ReasonMessageInvalid}:      ActionFixInput,
 	{CodeInvalidRequest, ReasonPullRequired}:        ActionPull,
+	{CodeInvalidRequest, ReasonDirectoryNotEmpty}:   ActionFixInput,
 	{CodeInvalidRequest, ReasonInvalidContent}:      ActionEditFiles,
 	{CodeInvalidRequest, ReasonReadOnlyPath}:        ActionEditFiles,
 	{CodeContentConflict, ReasonMergeConflict}:      ActionEditFiles,

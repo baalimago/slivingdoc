@@ -95,6 +95,9 @@ var fileReasonWords = map[string]string{
 	"UNRESOLVED_MARKERS": "unresolved markers",
 	"READ_ONLY":          "read-only",
 	"INVALID_CONTENT":    "invalid content",
+	// The first-pull refusal (DIRECTORY_NOT_EMPTY).
+	"NOT_IN_NOTEBOOK":       "not in the notebook",
+	"DIFFERS_FROM_NOTEBOOK": "differs from the notebook",
 }
 
 // actionWordings is the CLI wording of each notebook.Action token.
@@ -104,6 +107,22 @@ var actionWordings = map[string]string{
 	"PULL":       "pull, then continue",
 	"RETRY":      "retry the same call",
 	"OPERATOR":   "operator attention needed",
+}
+
+// reasonNextSteps overrides the action's next-step wording for a reason
+// whose action wording would mislead: a refused first pull needs the
+// directory changed, not the request.
+var reasonNextSteps = map[string]string{
+	"DIRECTORY_NOT_EMPTY": "pull into an empty directory, or move those files away, then pull again",
+}
+
+// nextStep renders the next-step line of a domain error: the reason's own
+// wording when it has one, else the action's.
+func nextStep(te *mcp.ToolError) string {
+	if step, ok := reasonNextSteps[te.Reason]; ok {
+		return step
+	}
+	return actionWording(te.Action)
 }
 
 // fileReasonWord renders a file reason token, verbatim when unknown.
@@ -197,7 +216,7 @@ func writeError(out io.Writer, te *mcp.ToolError, p painter) {
 		}
 		b.WriteByte('\n')
 	}
-	fmt.Fprintf(&b, "%s %s\n", p.cyan("next:"), actionWording(te.Action))
+	fmt.Fprintf(&b, "%s %s\n", p.cyan("next:"), nextStep(te))
 	fmt.Fprintf(&b, "retryable: %t\n", te.Retryable)
 	if rec := te.Recovery; rec != nil {
 		fmt.Fprintf(&b, "recovery: stage=%s remoteAccepted=%s resynchronized=%t\n",

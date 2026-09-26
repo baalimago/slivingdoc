@@ -68,6 +68,7 @@ Where the code has since diverged, the code wins and the note says so.
 36. Unexpected partial local mutation uses one generic recovery path.
 37. The `pull` and `commit` subcommands expose the same two operations to humans; they reuse the serve startup surface and print the envelope as a candid text report.
 38. Read-only paths are per-process configuration (`--read-only-paths` / `SLIVINGDOC_READ_ONLY_PATHS`), not notebook or manifest state; they are enforced at commit (refuse and reset) and restored at pull. Writable paths (`--writable-paths` / `SLIVINGDOC_WRITABLE_PATHS`) are the same kind of configuration: the two sets resolve by longest match, a non-empty writable set protects every unmatched path, and both are advertised on every surface that lists a set.
+39. A first pull proceeds only into an empty directory, into one whose every file the notebook already has with identical bytes (a protected file only needs to exist in the notebook, which restores it), or against an empty notebook (seeding it with unprotected files); otherwise it is refused as `DIRECTORY_NOT_EMPTY`, naming the files, before L, the pulled marker or `state.json` changes ([pull.md](./pull.md)).
 
 ### Deferred work
 
