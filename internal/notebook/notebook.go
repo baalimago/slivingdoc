@@ -219,16 +219,23 @@ const (
 	stageReadOnly = "commit.readonly"
 )
 
+// errEntryRecovered is the cause of the RECOVERY_FAILURE a successful
+// entry recovery reports: the call rewrote L to the accepted state instead
+// of running its own work.
+var errEntryRecovered = errors.New("notebook: entry recovery rewrote the visible directory to the accepted state")
+
 // entryRecovery runs the authoritative resynchronization the next MCP call
 // must perform before any pull or commit work when P requires recovery
-// (architecture/guarantees.md). A successful repair clears the flag and the
-// caller proceeds; a failed repair returns RECOVERY_FAILURE.
+// (architecture/guarantees.md). The repair rewrites L to the accepted
+// state, discarding whatever L held since the failed call, so the call
+// always returns RECOVERY_FAILURE: resynchronized with action PULL when the
+// repair cleared the flag, not resynchronized with RETRY when it failed.
 func (n *Notebook) entryRecovery(ctx context.Context) error {
 	report, err := n.recoverState(ctx, stageEntry, RemoteAcceptedUnknown)
 	if err != nil {
 		return recoveryFailure(report.public(), err)
 	}
-	return nil
+	return entryRecovered(report.public(), errEntryRecovered)
 }
 
 // applyLocal runs one workspace local mutation and maps its outcome: a

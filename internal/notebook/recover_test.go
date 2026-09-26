@@ -123,9 +123,10 @@ func TestRecoverFailpointReportsFailedResync(t *testing.T) {
 	}
 
 	// Once the condition passes, the next call self-heals from the
-	// authoritative state because the remote accepted the proposal.
+	// authoritative state because the remote accepted the proposal, and
+	// reports the rewrite instead of returning OK.
 	wsFail.Recover = nil
-	pullOK(t, nb)
+	assertEntryRecovered(t, errOnly(nb.Pull(context.Background())))
 	if gen := w.Baseline().RemoteGeneration; gen != 1 {
 		t.Fatalf("baseline after self-heal = %d, want 1", gen)
 	}
@@ -135,4 +136,5 @@ func TestRecoverFailpointReportsFailedResync(t *testing.T) {
 	if got := readLocal(t, w, "a.md"); got != "v1" {
 		t.Fatalf("L after self-heal = %q, want the accepted content", got)
 	}
+	pullOK(t, nb)
 }

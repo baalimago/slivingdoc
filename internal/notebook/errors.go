@@ -267,6 +267,21 @@ func recoveryFailure(report RecoveryReport, cause error) error {
 	}
 }
 
+// entryRecovered builds the RECOVERY_FAILURE of a successful entry
+// recovery: the repair rewrote L to the accepted state, so edits made there
+// since the failed call are gone and the caller must know
+// (architecture/guarantees.md).
+func entryRecovered(report RecoveryReport, cause error) error {
+	const reason = ReasonLocalMutationFailed
+	action, _ := actionFor(CodeRecoveryFailure, reason, &report)
+	return &Error{
+		Code: CodeRecoveryFailure, Reason: reason, Action: action,
+		Message: "an earlier call left the notebook directory partially updated; it was rewritten to the accepted " +
+			"state and edits made there since that call were discarded; pull, then reapply them",
+		Recovery: &report, Cause: cause,
+	}
+}
+
 // contentConflictFiles converts git conflicts into the stable error shape.
 func contentConflictFiles(conflicts []git.Conflict) []ErrorFile {
 	files := make([]ErrorFile, 0, len(conflicts))

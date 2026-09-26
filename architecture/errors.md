@@ -49,7 +49,7 @@ Startup: Setup error → router prints `<time> error: failed to setup command: <
 | `REMOTE_BUSY` | CAS lost `--commit-retries` + 1 times | yes |
 | `STORAGE_FAILURE` | store operation failed without a known accepted result; also the fallback for unknown errors | yes |
 | `STORAGE_INTEGRITY` | stored or local state failed validation | no |
-| `RECOVERY_FAILURE` | failure after local mutation began; generic recovery ran | yes |
+| `RECOVERY_FAILURE` | failure after local mutation began, or entry recovery of an earlier such failure; generic recovery ran | yes |
 | `INCOMPATIBLE_STORE` | startup probe failed; never a tool result | n/a (process exits) |
 
 **Reason to action table (`actionForPairing`).**

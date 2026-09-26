@@ -28,7 +28,7 @@ Read this when: changing pull ordering, remote reading, the pack cache, the pull
 mcp handler.pull → Service.Pull(path)
   | cmd/pull → app.Runtime.Pull (attaches the notebook logger) → Service.Pull(path)
   → notebookFor(path) → Notebook.Pull(ctx)
-  1. ws.RecoveryRequired()? → entryRecovery → recoverState (RECOVERY_FAILURE on failure)
+  1. ws.RecoveryRequired()? → entryRecovery → recoverState → RECOVERY_FAILURE stage entry (always; no pull runs)
   2. ws.Snapshot(ctx)                     → scan L under the op lock (mapLocalError on failure)
   3. git.BuildTree(repo, local)           → localTree
   4. readRemote(ctx)

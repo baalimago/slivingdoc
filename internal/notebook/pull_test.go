@@ -433,7 +433,10 @@ func TestPullEntryRecoveryRunsBeforeWork(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() = %v", err)
 	}
-	pullOK(t, nb2)
+	// An edit made while P required recovery is discarded by the repair,
+	// so the recovering call reports it instead of returning OK.
+	writeLocal(t, reopened, map[string]string{"a.md": "edited while broken"})
+	assertEntryRecovered(t, errOnly(nb2.Pull(context.Background())))
 	if reopened.RecoveryRequired() {
 		t.Fatal("entry recovery did not clear the recovery flag")
 	}
@@ -442,6 +445,24 @@ func TestPullEntryRecoveryRunsBeforeWork(t *testing.T) {
 	}
 	if got := readLocal(t, reopened, "a.md"); got != "v1" {
 		t.Fatalf("L after entry recovery = %q, want the accepted content", got)
+	}
+	// The flag is clear, so the next call runs its own work.
+	pullOK(t, nb2)
+}
+
+// assertEntryRecovered asserts the RECOVERY_FAILURE of a successful entry
+// recovery: stage entry, remote acceptance unknown, resynchronized, PULL.
+func assertEntryRecovered(t *testing.T, err error) {
+	t.Helper()
+	ne := assertErrorCode(t, err, CodeRecoveryFailure)
+	if ne.Recovery == nil || ne.Recovery.Stage != stageEntry || ne.Recovery.RemoteAccepted != RemoteAcceptedUnknown || !ne.Recovery.Resynchronized {
+		t.Fatalf("recovery report = %+v, want entry / unknown / resynchronized=true", ne.Recovery)
+	}
+	if ne.Action != ActionPull {
+		t.Fatalf("action = %s, want PULL", ne.Action)
+	}
+	if !errors.Is(ne, errEntryRecovered) {
+		t.Fatalf("cause = %v, want errEntryRecovered", ne.Cause)
 	}
 }
 

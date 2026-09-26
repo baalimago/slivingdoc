@@ -33,6 +33,7 @@ Generic recovery:
         → Workspace.Recover(baseline)   (only op allowed while recovery is required)
     → RECOVERY_FAILURE{stage, remoteAccepted, resynchronized}
   next call: Pull/Commit → RecoveryRequired()? → entryRecovery (stage "entry", remoteAccepted "unknown")
+    → always RECOVERY_FAILURE; the call does no work of its own
 ```
 
 ## Behavior
@@ -61,9 +62,9 @@ Generic recovery:
 - There is no per-interruption recovery algorithm. Every mutation of L goes through `Workspace.applyLocked`, which stages the full target tree in P first (failure there leaves L intact and needs no recovery), then durably writes `recoveryRequired=true`, then rewrites L in place, then persists the new baseline with `recoveryRequired=false`.
 - `applyLocal` inspects `ws.RecoveryRequired()` after a failed mutation: set means the mutation had started, so it runs `recoverState` and returns `RECOVERY_FAILURE`; clear means nothing changed, so the plain workspace error passes through: `mcp.MapError` reports a non-context failure (a lock error, reading the target tree, staging) as retryable `STORAGE_FAILURE`/`INTERNAL`, while a lock wait or staging step ended by cancellation or a deadline stays a protocol error over MCP (the CLI returns the raw error).
 - `recoverState` reports `stage` (`entry`, `pull.accept`, `commit.accept`, `commit.cas`, `merge.materialize`, `commit.readonly`), whether remote acceptance is known, and whether resync succeeded. A successful repair never turns the anomalous call into `OK`; action is `PULL` when resynchronized, else `RETRY`.
-- If repair fails, P stays marked. Every normal workspace operation then returns `ErrRecoveryRequired` (`withOpLock`), and the next `Pull` or `Commit` runs `entryRecovery` before anything else.
+- If repair fails, P stays marked. Every normal workspace operation then returns `ErrRecoveryRequired` (`withOpLock`), and the next `Pull` or `Commit` runs `entryRecovery` instead of its own work.
 - `workspace.Open` also enters recovery-required mode on a missing or corrupt `state.json`, a leftover `state.json.tmp`, an identity mismatch, or an unopenable repository (rebuilt empty and refilled from R).
-- Recovery may overwrite L: L is not a durability boundary. Recovery during a failing call is reported through `RECOVERY_FAILURE`. Entry recovery at the start of the next call is not reported: `entryRecovery` returns nil on success, the call proceeds and may return `OK`, and edits made to L since the failure (or before an open-time anomaly) are gone (`TestPullEntryRecoveryRunsBeforeWork`, `TestScenarioRecoveryRepairImpossible`).
+- Recovery may overwrite L: L is not a durability boundary, but every overwrite is reported. Recovery during a failing call is reported through that call's `RECOVERY_FAILURE`. Entry recovery at the start of the next call is reported too: it rewrites L to the accepted state, discarding edits made since the failure (or before an open-time anomaly), so `entryRecovery` always returns `RECOVERY_FAILURE` stage `entry` and never runs the call's own pull or commit. A successful repair is `resynchronized=true` with action `PULL` and a message (`entryRecovered`) saying edits were discarded; the following call runs normally (`TestPullEntryRecoveryRunsBeforeWork`, `TestScenarioRecoveryRepairImpossible`).
 - A read-only reset is an ordinary local mutation, so its failure once L mutation began is `RECOVERY_FAILURE` with stage `commit.readonly`, never a bare `READ_ONLY_PATH` over a half-reset directory.
 
 ### Failpoints

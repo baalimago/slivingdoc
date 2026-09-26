@@ -100,7 +100,7 @@ The notebook emits every pairing below except `MALFORMED_INPUT` and `PATH_OUTSID
 | `STORAGE_FAILURE` | `MANIFEST_READ`, `PACK_DOWNLOAD`, `PACK_UPLOAD`, `MANIFEST_WRITE`, `LOCAL_STATE`, `INTERNAL` | Store or local-state failure with no accepted result | `RETRY` |
 | `STORAGE_FAILURE` | `PUBLICATION_UNPROVEN` | CAS response lost; acceptance not provable | `PULL` |
 | `STORAGE_INTEGRITY` | `MANIFEST_INVALID`, `PACK_INVALID`, `HISTORY_INVALID`, `ENGINE_FAILED` | Stored state untrusted, or engine failure | `OPERATOR` |
-| `RECOVERY_FAILURE` | `LOCAL_MUTATION_FAILED` | Failure after local mutation began | `PULL` if `resynchronized`, else `RETRY` |
+| `RECOVERY_FAILURE` | `LOCAL_MUTATION_FAILED` | Failure after local mutation began, or (stage `entry`) the repair of an earlier one rewrote L instead of running the call | `PULL` if `resynchronized`, else `RETRY` |
 
 File reasons: `TEXT_CONFLICT` (marker ranges), `PATH_CONFLICT` (file versus directory, empty ranges), `UNRESOLVED_MARKERS` (ranges), `READ_ONLY` (empty), `INVALID_CONTENT` (empty). Action meanings: `FIX_INPUT` change the request; `EDIT_FILES` edit then commit; `PULL` pull then continue; `RETRY` repeat the call; `OPERATOR` a person must act.
 

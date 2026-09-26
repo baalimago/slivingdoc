@@ -32,7 +32,7 @@ app.Service.notebookFor(path)
                                   RetainedCheckpoints, ReadOnlyPaths, WritablePaths, Failpoints})
 Notebook.Pull(ctx)   → see pull.md
 Notebook.Commit(ctx, message) → see commit.md
-  both: RecoveryRequired()? → entryRecovery → recoverState
+  both: RecoveryRequired()? → entryRecovery → recoverState → RECOVERY_FAILURE (stage entry)
         readRemote → readCurrent → storage.DecodeManifest → importRemote
                      → prefetchPacks → ensurePack (cache or ReadObject, verify)
                      → git.ImportPack(checkpoint) → git.MarkShallow(checkpoint head)

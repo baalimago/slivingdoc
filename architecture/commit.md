@@ -25,7 +25,7 @@ Read this when: changing commit validation order, proposal construction, the man
 
 ```text
 Notebook.Commit(ctx, message)
-  1. RecoveryRequired()? → entryRecovery
+  1. RecoveryRequired()? → entryRecovery → RECOVERY_FAILURE stage entry (always; no commit runs)
   2. ValidateMessage(message)                    INVALID_REQUEST MESSAGE_*
   3. ws.Pulled()?                                INVALID_REQUEST PULL_REQUIRED
   4. ws.Snapshot → rejectMarkers                 CONTENT_CONFLICT UNRESOLVED_MARKERS

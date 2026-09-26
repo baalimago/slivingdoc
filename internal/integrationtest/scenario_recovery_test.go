@@ -167,7 +167,10 @@ func TestScenarioRecoveryConflictMaterialization(t *testing.T) {
 // TestScenarioRecoveryRepairImpossible proves the second failure guarantee:
 // a failed immediate resynchronization is reported candidly and P remains in
 // recovery-required mode. After removing the fault, the next MCP call runs
-// entry recovery before normal work (architecture/guarantees.md).
+// entry recovery instead of its own work: it rewrites L to the accepted
+// state, discarding an edit made meanwhile, and says so with
+// RECOVERY_FAILURE at stage entry rather than OK. The call after that runs
+// normally (architecture/guarantees.md).
 func TestScenarioRecoveryRepairImpossible(t *testing.T) {
 	t.Parallel()
 	h := newRecoveryHarness(t)
@@ -199,11 +202,30 @@ func TestScenarioRecoveryRepairImpossible(t *testing.T) {
 
 	h.NotebookFailpoints().CAS = nil
 	h.WorkspaceFailpoints().Recover = nil
-	h.assertOK(t, h.Pull("", path))
+	h.WriteFile(path+"/a.md", "edited while recovery was pending")
+	res = h.Pull("", path)
+	h.assertEnvelope(t, ToolCall{
+		Tool: toolPull, Path: path,
+		Expect: CallExpectation{
+			ErrorCode: codeRecoveryFailure,
+			Retryable: new(true),
+			Reason:    "LOCAL_MUTATION_FAILED",
+			Action:    "PULL",
+			Recovery: &RecoveryExpectation{
+				Stage:          "entry",
+				RemoteAccepted: "unknown",
+				Resynchronized: new(true),
+			},
+		},
+	}, res)
 	if h.StateRecord(t, path).RecoveryRequired {
 		t.Fatal("entry recovery did not clear recoveryRequired")
 	}
+	if got := h.ReadFile(path + "/a.md"); got != "alpha" {
+		t.Fatalf("a.md after entry recovery = %q, want the accepted content", got)
+	}
 	assertRemoteGeneration(t, h, path, 1)
+	h.assertOK(t, h.Pull("", path))
 }
 
 // TestScenarioRecoveryNoMutationBoundaries proves the other half of the
