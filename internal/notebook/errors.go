@@ -160,6 +160,11 @@ var errUnknownActionPairing = errors.New("notebook: programming error: no action
 // pairing returns ActionRetry and errUnknownActionPairing.
 func actionFor(code Code, reason Reason, report *RecoveryReport) (Action, error) {
 	if code == CodeRecoveryFailure {
+		if isRefusalReason(reason) {
+			// A store refusal stopped the resynchronization: the caller's
+			// next step is the refusal's, as for a STORAGE_FAILURE.
+			return actionFor(CodeStorageFailure, reason, nil)
+		}
 		if report != nil && report.Resynchronized {
 			return ActionPull, nil
 		}
@@ -269,17 +274,37 @@ func storageIntegrity(reason Reason, cause error, format string, args ...any) er
 // the operation.
 func storageFailure(reason Reason, cause error, format string, args ...any) error {
 	message := fmt.Sprintf(format, args...)
-	if r, m, ok := storeRefusal(cause); ok {
+	if r, m, ok := refusalMessage(cause); ok {
 		reason, message = r, m
-		var refusal *storage.Refusal
-		if errors.As(cause, &refusal) && refusal.Message != "" {
-			message += ". The storage says: " + refusal.Message
-		}
 	}
 	action, _ := actionFor(CodeStorageFailure, reason, nil)
 	return &Error{
 		Code: CodeStorageFailure, Reason: reason, Action: action,
 		Message: message, Cause: cause,
+	}
+}
+
+// refusalMessage is storeRefusal with the store's own sanitized line
+// appended to the message when the refusal carries one.
+func refusalMessage(cause error) (Reason, string, bool) {
+	reason, message, ok := storeRefusal(cause)
+	if !ok {
+		return "", "", false
+	}
+	var refusal *storage.Refusal
+	if errors.As(cause, &refusal) && refusal.Message != "" {
+		message += ". The storage says: " + refusal.Message
+	}
+	return reason, message, true
+}
+
+// isRefusalReason reports whether reason is one storeRefusal produces.
+func isRefusalReason(reason Reason) bool {
+	switch reason {
+	case ReasonStorageFull, ReasonRequestLimit, ReasonRateLimited, ReasonAccessDenied, ReasonObjectTooLarge:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -316,15 +341,30 @@ func remoteBusy(format string, args ...any) error {
 	return &Error{Code: CodeRemoteBusy, Reason: reason, Action: action, Message: fmt.Sprintf(format, args...)}
 }
 
-// recoveryFailure builds a RECOVERY_FAILURE error carrying the report and
-// the underlying cause.
-func recoveryFailure(report RecoveryReport, cause error) error {
-	const reason = ReasonLocalMutationFailed
+// recoveryFailure builds a RECOVERY_FAILURE error carrying the report, the
+// underlying cause, and the failure of the resynchronization, if any. A
+// nil cause means the resynchronization failure is the cause itself (entry
+// recovery). When the store refused the
+// resynchronizing read, the error keeps its code but takes the refusal's
+// reason, action and message, so the caller sees why recovery could not
+// finish (architecture/guarantees.md).
+func recoveryFailure(report RecoveryReport, cause, resyncErr error) error {
+	reason := ReasonLocalMutationFailed
+	message := "unexpected failure after local mutation started; recovery ran"
+	if r, m, ok := refusalMessage(resyncErr); ok {
+		reason = r
+		message = "unexpected failure after local mutation started; recovery could not resynchronize the notebook directory: " + m
+	}
+	switch {
+	case cause == nil:
+		cause = resyncErr
+	case resyncErr != nil:
+		cause = errors.Join(cause, resyncErr)
+	}
 	action, _ := actionFor(CodeRecoveryFailure, reason, &report)
 	return &Error{
 		Code: CodeRecoveryFailure, Reason: reason, Action: action,
-		Message:  "unexpected failure after local mutation started; recovery ran",
-		Recovery: &report, Cause: cause,
+		Message: message, Recovery: &report, Cause: cause,
 	}
 }
 

@@ -66,6 +66,26 @@ func TestMapErrorEveryCategory(t *testing.T) {
 			err: &notebook.Error{Code: notebook.CodeStorageFailure, Reason: notebook.ReasonRateLimited, Action: notebook.ActionRetry, Message: "slowing down"},
 		},
 		{name: "recovery failure", err: recoveryError(), wantCode: "RECOVERY_FAILURE", wantReason: "LOCAL_MUTATION_FAILED", wantAction: "PULL", wantRetry: true, wantReco: true},
+		{
+			name: "recovery stopped by access denied", wantCode: "RECOVERY_FAILURE", wantReason: "ACCESS_DENIED", wantAction: "OPERATOR", wantRetry: false, wantReco: true,
+			err: recoveryRefusal(notebook.ReasonAccessDenied, notebook.ActionOperator),
+		},
+		{
+			name: "recovery stopped by storage full", wantCode: "RECOVERY_FAILURE", wantReason: "STORAGE_FULL", wantAction: "OPERATOR", wantRetry: false, wantReco: true,
+			err: recoveryRefusal(notebook.ReasonStorageFull, notebook.ActionOperator),
+		},
+		{
+			name: "recovery stopped by request limit", wantCode: "RECOVERY_FAILURE", wantReason: "REQUEST_LIMIT", wantAction: "OPERATOR", wantRetry: false, wantReco: true,
+			err: recoveryRefusal(notebook.ReasonRequestLimit, notebook.ActionOperator),
+		},
+		{
+			name: "recovery stopped by object too large", wantCode: "RECOVERY_FAILURE", wantReason: "OBJECT_TOO_LARGE", wantAction: "OPERATOR", wantRetry: false, wantReco: true,
+			err: recoveryRefusal(notebook.ReasonObjectTooLarge, notebook.ActionOperator),
+		},
+		{
+			name: "recovery stopped by rate limit", wantCode: "RECOVERY_FAILURE", wantReason: "RATE_LIMITED", wantAction: "RETRY", wantRetry: true, wantReco: true,
+			err: recoveryRefusal(notebook.ReasonRateLimited, notebook.ActionRetry),
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -394,5 +414,15 @@ func TestRedactPreservesReasonTokens(t *testing.T) {
 	}
 	if strings.Contains(te.Message, "packs/increments") {
 		t.Fatalf("message = %q, want the pack key redacted", te.Message)
+	}
+}
+
+// recoveryRefusal is a RECOVERY_FAILURE whose resynchronizing read the store
+// refused for reason.
+func recoveryRefusal(reason notebook.Reason, action notebook.Action) error {
+	return &notebook.Error{
+		Code: notebook.CodeRecoveryFailure, Reason: reason, Action: action,
+		Message:  "recovery could not resynchronize the notebook directory",
+		Recovery: &notebook.RecoveryReport{Stage: "entry", RemoteAccepted: notebook.RemoteAcceptedUnknown},
 	}
 }

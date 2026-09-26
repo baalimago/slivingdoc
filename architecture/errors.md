@@ -8,14 +8,14 @@ Read this when: adding a failure mode, a reason or action token, a store refusal
 
 | File | Purpose |
 |------|---------|
-| `internal/notebook/errors.go` | `Code`, `Reason`, `FileReason`, `Action` tokens; `actionForPairing`, `actionFor`; `Error` (`Code`, `Reason`, `Action`, `Message`, `Files`, `Recovery`, `Cause`); `ErrorFile`; `RecoveryReport`, `RemoteAccepted`; constructors `invalidRequest`, `contentConflict`, `storageIntegrity`, `storageFailure` (with `storeRefusal`), `remoteBusy`, `recoveryFailure`; internal `errCASLost`, `errManifestRefused`, `errStaleManifest`; `contentConflictFiles` |
+| `internal/notebook/errors.go` | `Code`, `Reason`, `FileReason`, `Action` tokens; `actionForPairing`, `actionFor`; `Error` (`Code`, `Reason`, `Action`, `Message`, `Files`, `Recovery`, `Cause`); `ErrorFile`; `RecoveryReport`, `RemoteAccepted`; constructors `invalidRequest`, `contentConflict`, `storageIntegrity`, `storageFailure` (with `refusalMessage` and `storeRefusal`), `remoteBusy`, `recoveryFailure`; `isRefusalReason`; internal `errCASLost`, `errManifestRefused`, `errStaleManifest`; `contentConflictFiles` |
 | `internal/notebook/notebook.go` | `mapLocalError`, `scanErrorFiles`, `failAfterAccept`, `ValidateMessage` |
 | `internal/git/errors.go` | Named engine failures `ErrNoNewObjects`, `ErrObjectMissing`, `ErrEmptyPack`, `ErrHeadRequired`; `UnsupportedModeError` |
 | `internal/git/policy.go` | `OverlapError` (both path sets name one path; a startup refusal) |
 | `internal/storage/store.go`, `manifest.go`, `key.go`, `sha256.go`, `uuid.go` | Storage sentinels `ErrNotFound`, `ErrPreconditionFailed`, `ErrTransport`, `ErrIncompatible`, `ErrQuotaExceeded`, `ErrRequestLimit`, `ErrRateLimited`, `ErrAccessDenied`, `ErrTooLarge`, `ErrIntegrity`, `ErrInvalidKey`, `ErrInvalidPrefix`, `ErrInvalidSHA256`, `ErrInvalidUUID`; the `Refusal` type |
 | `internal/workspace/path.go`, `scan.go` | `ErrInvalidPath`, `PathEscapeError`, `ErrSymlink`, `ErrUnsupportedFile`, `ErrInvalidContent`, `ScanError` |
 | `internal/strictjson/json.go` | `Parse` rejections (malformed, duplicate field, `null`, non-`uint64` number, trailing data), `RejectUnknown` |
-| `internal/mcp/errors.go` | `ToolError`, `ErrorFile`, `ErrorRange`, `RecoveryInfo`, `MapError`, `mapNotebookError`, `safeEngineDetail`, `retryable`, `invalidPathMessage`, `decodeFailureError`, `invalidRequest`, `Redact`, `redactValues`, the redaction regexes |
+| `internal/mcp/errors.go` | `ToolError`, `ErrorFile`, `ErrorRange`, `RecoveryInfo`, `MapError`, `mapNotebookError`, `safeEngineDetail`, `retryable`, `permanentRefusal`, `invalidPathMessage`, `decodeFailureError`, `invalidRequest`, `Redact`, `redactValues`, the redaction regexes |
 | `internal/app/command.go` | `Report` (CLI rendering; returns `errors.New(te.Code)`), `fileReasonWords`, `actionWordings` |
 | `internal/app/app.go` | Startup refusal wrapping: `app: invalid configuration: ...`, `app: open native engine: ...`, `app: create object store: ...` / `app: create hosted store: ...` (`realStoreFactory`), and in `checkStore` `app: INCOMPATIBLE_STORE: ...`, `app: hosted storage refused the token: ...`, `app: hosted storage check failed: ...` |
 
@@ -30,8 +30,8 @@ MCP:  handler.resultFor(err) → mcp.MapError(err)
         workspace.ErrInvalidPath/ErrSymlink → INVALID_REQUEST / PATH_OUTSIDE_ROOT / FIX_INPUT
         context.Canceled/DeadlineExceeded  → not a domain error: protocol error
         anything else                      → STORAGE_FAILURE / INTERNAL / RETRY, retryable
-      retryable(code, reason): STORAGE_FAILURE with STORAGE_FULL, REQUEST_LIMIT,
-                               ACCESS_DENIED or OBJECT_TOO_LARGE → false
+      retryable(code, reason): STORAGE_FAILURE or RECOVERY_FAILURE with STORAGE_FULL,
+                               REQUEST_LIMIT, ACCESS_DENIED or OBJECT_TOO_LARGE → false
       → errorResult: isError + errorText + ToolError{DiagnosticID = mcpReqID, ReadOnly, Writable}
       decode failure → decodeFailureError → notebook message error keeps its tokens,
                                             else INVALID_REQUEST / MALFORMED_INPUT
@@ -51,7 +51,7 @@ Startup: Setup error → router prints `<time> error: failed to setup command: <
 | `REMOTE_BUSY` | CAS lost `--commit-retries` + 1 times | yes |
 | `STORAGE_FAILURE` | store operation failed without a known accepted result; also the fallback for unknown errors | yes, except reasons `STORAGE_FULL`, `REQUEST_LIMIT`, `ACCESS_DENIED`, `OBJECT_TOO_LARGE` |
 | `STORAGE_INTEGRITY` | stored or local state failed validation | no |
-| `RECOVERY_FAILURE` | failure after local mutation began, or entry recovery of an earlier such failure; generic recovery ran | yes |
+| `RECOVERY_FAILURE` | failure after local mutation began, or entry recovery of an earlier such failure; generic recovery ran | yes, except reasons `STORAGE_FULL`, `REQUEST_LIMIT`, `ACCESS_DENIED`, `OBJECT_TOO_LARGE` |
 | `INCOMPATIBLE_STORE` | startup probe failed, or the hosted server is not a compatible storage API; never a tool result | n/a (process exits) |
 
 **Reason to action table (`actionForPairing`).**
@@ -69,6 +69,8 @@ Startup: Setup error → router prints `<time> error: failed to setup command: <
 | `STORAGE_FAILURE` | `STORAGE_FULL`, `REQUEST_LIMIT`, `ACCESS_DENIED`, `OBJECT_TOO_LARGE` | `OPERATOR` |
 | `STORAGE_INTEGRITY` | `MANIFEST_INVALID`, `PACK_INVALID`, `HISTORY_INVALID`, `ENGINE_FAILED` | `OPERATOR` |
 | `RECOVERY_FAILURE` | `LOCAL_MUTATION_FAILED` | `PULL` if `Recovery.Resynchronized`, else `RETRY` |
+| `RECOVERY_FAILURE` | `RATE_LIMITED` | `RETRY` (the store refused the resynchronizing read) |
+| `RECOVERY_FAILURE` | `STORAGE_FULL`, `REQUEST_LIMIT`, `ACCESS_DENIED`, `OBJECT_TOO_LARGE` | `OPERATOR` (the store refused the resynchronizing read) |
 
 An unmapped pairing is a programming error: `actionFor` returns `RETRY` plus `errUnknownActionPairing`; the constructors discard that error, so tests must cover every pairing.
 
@@ -78,7 +80,7 @@ An unmapped pairing is a programming error: `actionFor` returns `RETRY` plus `er
 
 **Layer mapping.** Storage sentinels are classified by the notebook: `ErrNotFound` on `current` is generation 0, not an error; `ErrPreconditionFailed` on a manifest write is contention (merge and retry, then `REMOTE_BUSY`); `ErrTransport` on a manifest write is ambiguous and resolved by reading back (`PUBLICATION_UNPROVEN` when unprovable); `ErrIntegrity` becomes `STORAGE_INTEGRITY`. Workspace content errors before mutation (`ErrInvalidContent`, `ErrSymlink`, `ErrUnsupportedFile`, `ErrInvalidPath`, `ErrPathCollision`) become `INVALID_REQUEST`/`INVALID_CONTENT` naming the file, and both files of a case-folding collision (`mapLocalError`, `scanErrorFiles`); other workspace errors during an operation become `STORAGE_FAILURE`/`LOCAL_STATE`. That includes failing to take the operation lock at the start of a pull or commit (`holdWorkspace`), a lock wait ended by the request's cancellation or deadline among them: it is a retryable domain error, not a protocol error like a cancellation later in the call. Failures opening the workspace or notebook in `app.Service.notebookFor` (other than invalid-path/symlink), `app: open notebook: ...`, and `app: service is closed` reach `MapError` raw and become `STORAGE_FAILURE`/`INTERNAL`/`RETRY`. A request path outside the workspace root reaches `mcp.MapError` directly as a `workspace` error and becomes `PATH_OUTSIDE_ROOT`, whose message names the root but never the rejected path (`invalidPathMessage`).
 
-**Store refusals.** The account-level sentinels (raised today only by the hosted adapter, [hosted-mode.md](./hosted-mode.md)) are classified inside `storageFailure`: when `storeRefusal` recognizes the cause (`ErrQuotaExceeded` → `STORAGE_FULL`, `ErrRequestLimit` → `REQUEST_LIMIT`, `ErrRateLimited` → `RATE_LIMITED`, `ErrAccessDenied` → `ACCESS_DENIED`, `ErrTooLarge` → `OBJECT_TOO_LARGE`), its reason and fixed message replace the operation's own (`PACK_UPLOAD`, `MANIFEST_READ`, and so on), because the next step is about the account, not the operation. When the cause is a `*storage.Refusal` with a non-empty `Message`, the server's sanitized one-line text is appended after `. The storage says: `; that text is untrusted server output and still passes through `Redact`. Only these refusals carry server text into a result.
+**Store refusals.** The account-level sentinels (raised today only by the hosted adapter, [hosted-mode.md](./hosted-mode.md)) are classified inside `storageFailure`: when `storeRefusal` recognizes the cause (`ErrQuotaExceeded` → `STORAGE_FULL`, `ErrRequestLimit` → `REQUEST_LIMIT`, `ErrRateLimited` → `RATE_LIMITED`, `ErrAccessDenied` → `ACCESS_DENIED`, `ErrTooLarge` → `OBJECT_TOO_LARGE`), its reason and fixed message replace the operation's own (`PACK_UPLOAD`, `MANIFEST_READ`, and so on), because the next step is about the account, not the operation. When the cause is a `*storage.Refusal` with a non-empty `Message`, the server's sanitized one-line text is appended after `. The storage says: `; that text is untrusted server output and still passes through `Redact`. Only these refusals carry server text into a result. `recoveryFailure` applies the same classification (`refusalMessage`) to the failure of a recovery's resynchronizing read: the code stays `RECOVERY_FAILURE`, which keeps the rule that a failure after local mutation began is never reported as anything else, while the reason, action and message are the refusal's, with the message prefixed by `recovery could not resynchronize the notebook directory: `. `actionFor` gives a `RECOVERY_FAILURE` with a refusal reason (`isRefusalReason`) the `STORAGE_FAILURE` pairing's action.
 
 **Strict JSON.** `strictjson` rejects malformed JSON, duplicate names, explicit `null`, numbers that are not unquoted `uint64`, and trailing data. In tool arguments this becomes `INVALID_REQUEST`/`MALFORMED_INPUT`; an absent or `null` `arguments` member is not a failure but the empty object (`parseArguments`). In the manifest (`storage.DecodeManifest`) it becomes `ErrIntegrity`, so `STORAGE_INTEGRITY`/`MANIFEST_INVALID`. The workspace private-state record uses the same parser.
 
@@ -105,7 +107,7 @@ An unmapped pairing is a programming error: `actionFor` returns `RETRY` plus `er
 ## Gotchas
 
 - `notebook.ReasonMalformedInput` and `ReasonPathOutsideRoot` exist in the table, but the MCP layer raises those two with its own constants in `mcp/errors.go`; keep the spellings identical.
-- `retryable` is decided in `mcp.retryable` by code, and for `STORAGE_FAILURE` also by reason; adding a code, or a `STORAGE_FAILURE` reason a retry cannot fix, means updating it. The CLI report's `retryable:` line comes from the same function.
+- `retryable` is decided in `mcp.retryable` by code, and for `STORAGE_FAILURE` and `RECOVERY_FAILURE` also by reason (`permanentRefusal`); adding a code, or a refusal reason a retry cannot fix, means updating it. The CLI report's `retryable:` line comes from the same function.
 - The `mcpReqID` is the `diagnosticId`; the CLI report has no diagnostic ID.
 - `notebook.Error.Error()` includes the cause text; never render it to a caller. Use `MapError`.
 - A backend error must wrap `ErrNotFound`, `ErrPreconditionFailed`, `ErrTransport`, `ErrIntegrity`, or one of the refusal sentinels (`ErrIncompatible` is startup-only), or the notebook treats it as an opaque failure.

@@ -100,6 +100,24 @@ func TestScenarioErrorTaxonomy(t *testing.T) {
 				return outcome{h: h, call: call, result: h.Commit("", path, call.Message), code: codeRecoveryFailure, reason: "LOCAL_MUTATION_FAILED", action: "PULL", retry: true, recover: true}
 			},
 		},
+		{
+			// The store refuses the resynchronizing read: the call stays a
+			// RECOVERY_FAILURE but carries the refusal's reason and action,
+			// and is not retryable.
+			name: "recovery refused by the store",
+			run: func(t *testing.T) outcome {
+				h := newRecoveryHarness(t)
+				path := h.Path("notes")
+				h.assertOK(t, h.Pull("", path))
+				h.WriteFile(path+"/a.md", "alpha")
+				h.NotebookFailpoints().CAS = func() error {
+					h.Faults().FailNext(OpGet, storage.CurrentKey, &storage.Refusal{Err: storage.ErrAccessDenied, Detail: "HTTP 403 forbidden"})
+					return errors.New("injected recovery")
+				}
+				call := ToolCall{Tool: toolCommit, Path: path, Message: "recover"}
+				return outcome{h: h, call: call, result: h.Commit("", path, call.Message), code: codeRecoveryFailure, reason: "ACCESS_DENIED", action: "OPERATOR", retry: false, recover: true}
+			},
+		},
 	}
 
 	for _, row := range rows {
