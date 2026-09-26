@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -198,5 +199,21 @@ func TestCommandsCoverTheDocumentedSurface(t *testing.T) {
 		if _, ok := commands[want]; !ok {
 			t.Fatalf("command %q is missing; its shortcut is part of the CLI surface", want)
 		}
+	}
+}
+
+// TestRunPassesTheProcessEnvironment proves that options without an
+// environment — what main passes — reach the commands with the process
+// environment, so NO_COLOR set in the shell disables the report colour
+// (architecture/cli.md).
+func TestRunPassesTheProcessEnvironment(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	got := withProcessEnv(app.ProcessOptions{})
+	if !slices.Contains(got.Env, "NO_COLOR=1") {
+		t.Fatalf("resolved Env lacks NO_COLOR=1: %v", got.Env)
+	}
+	injected := []string{"NO_COLOR="}
+	if got := withProcessEnv(app.ProcessOptions{Env: injected}); len(got.Env) != 1 || got.Env[0] != "NO_COLOR=" {
+		t.Fatalf("an injected Env was replaced: %v", got.Env)
 	}
 }

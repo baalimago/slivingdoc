@@ -54,7 +54,7 @@ Runtime.Pull/Commit (CLI) → notebook.WithLogger(ctx, Module(base, "notebook"))
 
 **Timestamps.** `--log-timestamp=false` (or `SLIVINGDOC_LOG_TIMESTAMP=false`) wraps the handler in `noTimeHandler`, which zeroes each record's time so the text handler omits `time=`. For hosts that stamp lines themselves.
 
-**Colour.** Any non-empty `NO_COLOR` disables ANSI level colour. The same variable is meant to disable the CLI report colour ([cli.md](./cli.md)), but in the real binary it does not (known bug: `ProcessOptions.Env` stays nil, so `app.Report` never sees `NO_COLOR`).
+**Colour.** Any non-empty `NO_COLOR` disables ANSI level colour. The same variable disables the CLI report colour ([cli.md](./cli.md)): `cli.Run` stores the resolved environment in `ProcessOptions.Env`, which the commands pass to `app.Report`.
 
 **Request correlation.** Each tool call gets a 16-hex `mcpReqID` from `newRequestID`. `requestLogger` binds `mcpReqID` and `tool`, logs `tool call started` and `tool call completed` (`outcome`, `duration`, and on error `cause` via `redactValues`), and attaches the same logger to the context with `notebook.WithLogger`. Background efforts scheduled by that call log through `LoggerFrom(ctx)` and so share the ID. The same ID is the `diagnosticId` in the tool result, which is how an operator joins a caller report to the full cause.
 

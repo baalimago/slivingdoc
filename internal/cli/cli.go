@@ -65,10 +65,8 @@ var consoleOnce sync.Once
 
 // Run routes args to a command and returns the process exit code.
 func Run(ctx context.Context, args []string, engine git.Engine, opts app.ProcessOptions) int {
+	opts = withProcessEnv(opts)
 	environment := opts.Env
-	if environment == nil {
-		environment = os.Environ()
-	}
 	stderr := opts.Stderr
 	if stderr == nil {
 		stderr = os.Stderr
@@ -94,6 +92,17 @@ func Run(ctx context.Context, args []string, engine git.Engine, opts app.Process
 	stopPerf()
 	log.Debug("command finished", "exit", code)
 	return code
+}
+
+// withProcessEnv resolves a nil Env to the process environment and stores
+// it in the options, so every command — and the report colour gate behind
+// it, which reads NO_COLOR from Env — sees the same environment the router
+// read.
+func withProcessEnv(opts app.ProcessOptions) app.ProcessOptions {
+	if opts.Env == nil {
+		opts.Env = os.Environ()
+	}
+	return opts
 }
 
 // setupConsole makes the router's own diagnostics readable: one line each,

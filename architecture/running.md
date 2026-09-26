@@ -102,9 +102,7 @@ retryable: false
 Colour is presentation-only. The status tokens, the generation summary,
 the per-file counts, and the conflict paths are coloured only when stdout
 is a real terminal; piped or redirected output stays plain text. Any
-non-empty `NO_COLOR` is meant to disable the colour even on a terminal
-(known bug: the released binary ignores `NO_COLOR` for this report; pipe
-the output to get plain text).
+non-empty `NO_COLOR` disables the colour even on a terminal.
 
 A missing message, or more than one path, exits nonzero before any native
 or network dependency is touched.
@@ -472,7 +470,7 @@ emitted it.
 | ----------- | --------------------------------------------------- |
 | `LOG_LEVEL` | Per-module levels. A bare level is the default.     |
 | `SLIVINGDOC_LOG_TIMESTAMP` | `false` removes the `time=` field, for hosts that stamp log lines themselves. Like `--log-timestamp`, it applies only once `serve`, `pull`, or `commit` resolves its configuration; router records (including those of `version`) always carry `time=`, and startup refusals, which the router prints through ancli, always start with an RFC3339 timestamp. |
-| `NO_COLOR`  | Any non-empty value disables ANSI colour of log levels; it is meant to disable the CLI report colour too (known bug: ignored there in the released binary). |
+| `NO_COLOR`  | Any non-empty value disables ANSI colour of log levels and of the CLI report. |
 
 `LOG_LEVEL` takes a comma-separated list. `module=level` sets one
 module; a bare `level` sets the default for the rest:
