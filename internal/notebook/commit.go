@@ -150,10 +150,11 @@ func (n *Notebook) attemptPublication(ctx context.Context, message string, baseT
 		}
 	}
 
-	if err := n.applyLocal(ctx, stageCommit, RemoteAcceptedYes, func() error {
-		return n.ws.Accept(ctx, proposal.baseline)
-	}); err != nil {
-		return false, Result{}, err
+	// The remote accepted the proposal, so every local acceptance failure
+	// is RECOVERY_FAILURE, including one before the workspace marked
+	// recovery (architecture/guarantees.md).
+	if err := n.ws.Accept(ctx, proposal.baseline); err != nil {
+		return false, Result{}, n.failAfterAccept(ctx, stageCommit, err)
 	}
 
 	// The commit is accepted. Checkpoint scheduling is opportunistic:

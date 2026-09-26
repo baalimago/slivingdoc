@@ -26,8 +26,9 @@ Publication order (load-bearing):
   create local commit + pack → storage.UploadUnique(pack) → CAS current → Workspace.Accept
 
 Generic recovery:
-  any local mutation fails after the durable recoveryRequired=true
-    → applyLocal / failAfterAccept → recoverState
+  any local mutation fails after the durable recoveryRequired=true (applyLocal),
+  or any failure after a proved CAS (failAfterAccept)
+    → recoverState
         → readRemote (reread current, import packs, validate)
         → Workspace.Recover(baseline)   (only op allowed while recovery is required)
     → RECOVERY_FAILURE{stage, remoteAccepted, resynchronized}
@@ -46,7 +47,7 @@ Generic recovery:
 | After upload, before CAS | Pack is an unreferenced proposal; cleanup may delete it later | [checkpoints.md](./checkpoints.md) |
 | CAS precondition failure | Another writer won; merge again and retry | `publish` returns `errCASLost` |
 | CAS response lost | Reread `current`, search active and retained descriptors for the publication ID | `publish`, `lookupPublication` |
-| CAS accepted, local accept fails | Once L mutation began: `RECOVERY_FAILURE`, `remoteAccepted=yes`, even if resync succeeds. A failure before that (a lock error, reading the target tree, staging; a cancelled request stays a protocol error) returns `STORAGE_FAILURE`/`INTERNAL` with L untouched; the publication landed and a retry syncs | `failAfterAccept`, `applyLocal(…, RemoteAcceptedYes, …)` |
+| CAS accepted, local accept fails | `RECOVERY_FAILURE`, stage `commit.accept`, `remoteAccepted=yes`, even if resync succeeds, and also when the failure came before L mutation began (a lock error, reading the target tree, staging, a cancelled request) | `failAfterAccept` |
 | Merge conflict | Remote unchanged; L rewritten with markers | [conflicts.md](./conflicts.md) |
 | Retry exhaustion | `REMOTE_BUSY`; caller files untouched | `Commit` loop |
 | Checkpoint failure | Accepted state unchanged; metrics + warning | `failCheckpoint` |

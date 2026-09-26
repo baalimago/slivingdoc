@@ -46,7 +46,7 @@ Notebook.Commit(ctx, message)
              ErrTransport → lookupPublication(pubID): found → accepted | else PUBLICATION_UNPROVEN
              other → STORAGE_FAILURE MANIFEST_WRITE
            Failpoints.CAS → failAfterAccept
-           applyLocal(stageCommit, RemoteAcceptedYes, Accept(proposal.baseline))
+           Accept(proposal.baseline) failure → failAfterAccept(stageCommit)
            recordTail; tail >= checkpointPacks → runCheckpoint (see checkpoints.md)
        casLost: attempt > retryLimit → REMOTE_BUSY; else waiter.Wait(attempt) and loop
 ```
@@ -85,7 +85,7 @@ Notebook.Commit(ctx, message)
 
 ### After acceptance
 
-- `Accept(proposal.baseline)` rewrites L to the exact accepted merged tree and records its generation, head, and tree in `state.json`. A failure after the workspace's recovery flag is durable is `RECOVERY_FAILURE` with stage `commit.accept` and `remoteAccepted=yes`. The failpoint path (stage `commit.cas`) goes through `failAfterAccept` and is always `RECOVERY_FAILURE`. Known gap: an `Accept` failure before the flag (a lock error, reading the target tree, staging; a cancelled request stays a protocol error) returns the plain workspace error, which MCP reports as `STORAGE_FAILURE`/`INTERNAL` (`RETRY`) unless it is a context error. In every case the publication is already accepted; L is unchanged and the next pull or commit converges.
+- `Accept(proposal.baseline)` rewrites L to the exact accepted merged tree and records its generation, head, and tree in `state.json`. Any `Accept` failure goes through `failAfterAccept`: `RECOVERY_FAILURE` with stage `commit.accept` and `remoteAccepted=yes`, whether it happened after the workspace's recovery flag was durable or before it (a lock error, reading the target tree, staging, a cancelled request). The failpoint path (stage `commit.cas`) does the same with stage `commit.cas`. In every case the publication is already accepted; the immediate resynchronization rewrites L to it, and when that cannot run (a cancelled request) the report says `resynchronized=false` and the next pull or commit converges.
 - The result is `Generation` = new manifest generation and `Stat` = R tree to merged tree.
 - When the accepted active tail length reaches `checkpointPacks`, one checkpoint effort runs before `Commit` returns; its outcome never changes the result.
 

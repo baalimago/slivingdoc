@@ -50,6 +50,43 @@ func TestCASFailpointTriggersRecovery(t *testing.T) {
 	}
 }
 
+// TestAcceptFailureBeforeRecoveryMarkIsRecoveryFailure proves that a
+// local acceptance failing after a proved CAS but before the workspace
+// marks recovery (staging) still reports RECOVERY_FAILURE with remote
+// acceptance known, not a plain local-state failure, and resynchronizes.
+func TestAcceptFailureBeforeRecoveryMarkIsRecoveryFailure(t *testing.T) {
+	store := fake.New("")
+	triggered := errors.New("injected staging failure")
+	var stageCalls int
+	wsFail := &workspace.Failpoints{Stage: func() error {
+		stageCalls++
+		if stageCalls == 2 { // the pull stages first; the commit's acceptance second
+			return triggered
+		}
+		return nil
+	}}
+	nb, w, _ := newNotebook(t, nbConfig{store: store, ids: &testIDSource{}, wsFail: wsFail})
+
+	writeLocal(t, w, map[string]string{"a.md": "v1"})
+	pullOK(t, nb)
+	ne := assertErrorCode(t, errOnly(nb.Commit(context.Background(), "first")), CodeRecoveryFailure)
+	if ne.Recovery == nil || ne.Recovery.Stage != stageCommit || ne.Recovery.RemoteAccepted != RemoteAcceptedYes || !ne.Recovery.Resynchronized {
+		t.Fatalf("recovery report = %+v, want commit.accept / yes / resynchronized=true", ne.Recovery)
+	}
+	if ne.Action != ActionPull {
+		t.Fatalf("action = %s, want PULL", ne.Action)
+	}
+	if !errors.Is(ne, triggered) {
+		t.Fatalf("RECOVERY_FAILURE cause = %v, want the injected failure", ne.Cause)
+	}
+	if gen := w.Baseline().RemoteGeneration; gen != 1 {
+		t.Fatalf("baseline generation = %d, want the accepted 1", gen)
+	}
+	if w.RecoveryRequired() {
+		t.Fatal("successful resynchronization must clear the recovery flag")
+	}
+}
+
 // TestRecoverFailpointReportsFailedResync proves an immediate repair that
 // cannot complete reports resynchronized=false and leaves P durably
 // requiring recovery.

@@ -68,6 +68,18 @@ func TestScenarioRecoveryBoundaries(t *testing.T) {
 			clear:   clearFailpoint(baselineFailpoint),
 			tool:    toolCommit, message: "first", stage: "commit.accept", remoteAccepted: "yes",
 		},
+		{
+			// Staging fails before the workspace marks recovery, but the
+			// remote already accepted, so the call is still a recovery.
+			name: "accepted commit staging",
+			prepare: func(t *testing.T, h *Harness, path string) {
+				h.assertOK(t, h.Pull("", path))
+				h.WriteFile(path+"/a.md", "alpha")
+			},
+			install: failOnce(stageFailpoint, "injected accepted-commit staging"),
+			clear:   clearFailpoint(stageFailpoint),
+			tool:    toolCommit, message: "first", stage: "commit.accept", remoteAccepted: "yes",
+		},
 	}
 
 	for _, row := range rows {
@@ -265,6 +277,7 @@ type failpointOf func(h *Harness) *func() error
 
 func replaceFailpoint(h *Harness) *func() error  { return &h.WorkspaceFailpoints().Replace }
 func baselineFailpoint(h *Harness) *func() error { return &h.WorkspaceFailpoints().Baseline }
+func stageFailpoint(h *Harness) *func() error    { return &h.WorkspaceFailpoints().Stage }
 
 // failOnce installs a failpoint that fails its first call and then lets
 // every later call through, so the recovery path itself is not blocked. The
