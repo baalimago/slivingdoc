@@ -208,6 +208,10 @@ func (s *Store) CheckAccess(ctx context.Context) error {
 	}
 	if resp.StatusCode != http.StatusOK {
 		defer drain(resp)
+		if resp.StatusCode == http.StatusNotFound {
+			// No storage API at this endpoint, whatever the body says.
+			return fmt.Errorf("httpstore: describe server: HTTP 404: no storage API at this endpoint: %w", storage.ErrIncompatible)
+		}
 		err := s.statusError(resp)
 		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
 			// The server is busy or down, not a different kind of server.
@@ -539,8 +543,14 @@ func (s *Store) statusError(resp *http.Response) error {
 		refusal.Err = storage.ErrRateLimited
 	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
 		refusal.Err = storage.ErrAccessDenied
-	case resp.StatusCode == http.StatusNotFound:
+	case resp.StatusCode == http.StatusNotFound && code == "not_found" && reason == reasonNoObject:
 		refusal.Err = storage.ErrNotFound
+	case resp.StatusCode == http.StatusNotFound:
+		// Only no_object means absent. A missing space, an unknown route,
+		// or an older gateway's 404 without a reason must never read as an
+		// empty store, or a pull would delete the caller's notes.
+		refusal.Err = storage.ErrAccessDenied
+		return fmt.Errorf("%s: %w", s.unreachable(reason), refusal)
 	case resp.StatusCode == http.StatusPreconditionFailed:
 		refusal.Err = storage.ErrPreconditionFailed
 	case resp.StatusCode == http.StatusRequestEntityTooLarge:
@@ -560,12 +570,28 @@ func appendMessage(detail, msg string) string {
 	return detail + ": " + msg
 }
 
+// reasonNoObject is the only 404 reason that means an absent object
+// (the gateway's API.md, Read).
+const reasonNoObject = "no_object"
+
+// unreachable describes a 404 that is not an absent object.
+func (s *Store) unreachable(reason string) string {
+	switch reason {
+	case "no_space":
+		return fmt.Sprintf("space %q does not exist or the token was not granted it", s.name)
+	case "no_endpoint":
+		return "the server has no such endpoint; check --endpoint"
+	default:
+		return fmt.Sprintf("space %q is not reachable: the server answered 404 without saying what is missing", s.name)
+	}
+}
+
 // writeError maps a refusal of a request addressed to the space. A 404
-// there means the space is unknown to this token, never an absent object.
+// there is never an absent object, even one that says no_object.
 func (s *Store) writeError(resp *http.Response) error {
 	err := s.statusError(resp)
 	if errors.Is(err, storage.ErrNotFound) {
-		return fmt.Errorf("space %q does not exist or the token was not granted it: %w", s.name, storage.ErrAccessDenied)
+		return fmt.Errorf("space %q answered 404 to a request addressed to the space: %w", s.name, storage.ErrAccessDenied)
 	}
 	return err
 }

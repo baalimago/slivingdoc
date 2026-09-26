@@ -214,6 +214,150 @@ func TestClientErrorIsNotTransport(t *testing.T) {
 
 // The API answers If-Match on an absent object with 412, so a 404 on a
 // replace means the space is gone or the grant was revoked.
+// Only a 404 not_found with reason no_object reads as an absent object.
+// Every other 404, including one without a reason (an older gateway),
+// is ErrAccessDenied and never ErrNotFound, so a pull cannot mistake an
+// unreachable space for an empty notebook.
+func TestRead404MapsByReason(t *testing.T) {
+	tests := []struct {
+		body string
+		want error
+		text string
+	}{
+		{`{"error":"not_found","reason":"no_object","message":"no such object"}`, storage.ErrNotFound, "no such object"},
+		{`{"error":"NOT_FOUND","reason":"NO_OBJECT"}`, storage.ErrNotFound, "no_object"},
+		{`{"error":"not_found","reason":"no_space","message":"no such space for this token"}`, storage.ErrAccessDenied, "does not exist or the token was not granted it"},
+		{`{"error":"not_found","reason":"no_endpoint","message":"no such endpoint"}`, storage.ErrAccessDenied, "check --endpoint"},
+		{`{"error":"not_found"}`, storage.ErrAccessDenied, "without saying what is missing"},
+		{`{"reason":"no_object"}`, storage.ErrAccessDenied, "without saying what is missing"},
+		{`{"error":"not_found","reason":"gone"}`, storage.ErrAccessDenied, "without saying what is missing"},
+		{`<html>not found</html>`, storage.ErrAccessDenied, "without saying what is missing"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.body, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = io.WriteString(w, tt.body)
+			}))
+			t.Cleanup(srv.Close)
+			_, _, err := newStore(t, srv.URL, "").ReadObject(context.Background(), storage.CurrentKey)
+			if !errors.Is(err, tt.want) {
+				t.Fatalf("read = %v, want %v", err, tt.want)
+			}
+			if tt.want != storage.ErrNotFound && errors.Is(err, storage.ErrNotFound) {
+				t.Fatalf("read = %v, must not be ErrNotFound", err)
+			}
+			if !strings.Contains(err.Error(), tt.text) {
+				t.Fatalf("read = %v, want it to say %q", err, tt.text)
+			}
+		})
+	}
+}
+
+// get404Body fetches path with the test token and returns the 404 body.
+func get404Body(t *testing.T, g *gatewaytest.Gateway, path string) string {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, g.URL()+path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("GET %s = %d %s, want 404", path, resp.StatusCode, body)
+	}
+	return string(body)
+}
+
+// Every way a space is out of reach answers the byte-identical no_space
+// body, so space names cannot be probed; no_object comes only once the
+// token and grant checks passed.
+func TestGatewayNoSpaceIsOneBody(t *testing.T) {
+	_, g := newGatewayStore(t)
+	object := "/v1/spaces/%s/objects/nb/current"
+	absent := get404Body(t, g, fmt.Sprintf(object, testSpace))
+	if !strings.Contains(absent, `"reason":"no_object"`) {
+		t.Fatalf("absent object body = %s, want no_object", absent)
+	}
+	g.AddSpace("other", 1<<20)
+	bodies := map[string]string{
+		"missing space":   get404Body(t, g, fmt.Sprintf(object, "missing")),
+		"ungranted space": get404Body(t, g, fmt.Sprintf(object, "other")),
+		"invalid name":    get404Body(t, g, fmt.Sprintf(object, "Not_A_Name")),
+	}
+	g.DeleteSpace(testSpace)
+	bodies["deleted space"] = get404Body(t, g, fmt.Sprintf(object, testSpace))
+	want := bodies["missing space"]
+	if !strings.Contains(want, `"reason":"no_space"`) {
+		t.Fatalf("missing space body = %s, want no_space", want)
+	}
+	for name, body := range bodies {
+		if body != want {
+			t.Fatalf("%s body = %s, want the byte-identical %s", name, body, want)
+		}
+	}
+}
+
+// The reference gateway answers every 404 with the real gateway's reason:
+// a missing object no_object, a space the token cannot reach no_space
+// (deleted, or the grant moved), and an unknown route no_endpoint.
+func TestGateway404Reasons(t *testing.T) {
+	s, g := newGatewayStore(t)
+	if _, _, err := s.ReadObject(context.Background(), storage.CurrentKey); !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("read of an absent object = %v, want ErrNotFound", err)
+	}
+	for _, path := range []string{"/v1/nope", "/v1/spaces/" + testSpace + "/nope"} {
+		resp, err := http.Get(g.URL() + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound || !strings.Contains(string(body), `"reason":"no_endpoint"`) {
+			t.Fatalf("GET %s = %d %s, want 404 no_endpoint", path, resp.StatusCode, body)
+		}
+	}
+	for _, tt := range []struct {
+		method, path string
+		status       int
+		want         string
+	}{
+		{http.MethodGet, "/v1/spaces/Not_A_Name/usage", http.StatusNotFound, `"reason":"no_space"`},
+		{http.MethodDelete, "/v1/spaces/" + testSpace + "/usage", http.StatusMethodNotAllowed, `"error":"method_not_allowed"`},
+	} {
+		req, err := http.NewRequest(tt.method, g.URL()+tt.path, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != tt.status || !strings.Contains(string(body), tt.want) {
+			t.Fatalf("%s %s = %d %s, want %d %s", tt.method, tt.path, resp.StatusCode, body, tt.status, tt.want)
+		}
+	}
+	g.AddSpace("other", 1<<20)
+	g.Grant(testToken, "other", false)
+	if _, _, err := s.ReadObject(context.Background(), storage.CurrentKey); !errors.Is(err, storage.ErrAccessDenied) {
+		t.Fatalf("read after the grant moved = %v, want ErrAccessDenied", err)
+	}
+	g.Grant(testToken, testSpace, false)
+	g.DeleteSpace(testSpace)
+	_, _, err := s.ReadObject(context.Background(), storage.CurrentKey)
+	var refusal *storage.Refusal
+	if !errors.Is(err, storage.ErrAccessDenied) || !errors.As(err, &refusal) || refusal.Message != "no such space for this token" {
+		t.Fatalf("read of a deleted space = %v, want ErrAccessDenied carrying the gateway message", err)
+	}
+}
+
 func TestReplaceAnswered404IsAccessDenied(t *testing.T) {
 	s, g := newGatewayStore(t)
 	g.RefuseNext(http.MethodPut, http.StatusNotFound, "not_found")
@@ -497,7 +641,8 @@ func TestMisbehavingServer(t *testing.T) {
 			want: storage.ErrIntegrity,
 		},
 		{
-			name: "read not found",
+			// An older gateway's 404 without a reason fails closed.
+			name: "read not found without a reason",
 			handler: func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(http.StatusNotFound)
 			},
@@ -505,7 +650,7 @@ func TestMisbehavingServer(t *testing.T) {
 				_, _, err := s.ReadObject(context.Background(), storage.CurrentKey)
 				return err
 			},
-			want: storage.ErrNotFound,
+			want: storage.ErrAccessDenied,
 		},
 		{
 			name: "delete refused",

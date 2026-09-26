@@ -1,8 +1,12 @@
 // Package gatewaytest runs an in-process reference server of the hosted
 // storage API, version 1, for tests. It follows the contract document of
-// the hosted gateway: key grammar before authentication, bearer tokens
-// granted per space, read-only grants, pack quota, conditional small-object
-// writes, cursor listing, and batched deletes. Each space is backed by the
+// the hosted gateway: routing and key grammar before authentication,
+// bearer tokens granted per space, read-only grants, pack quota,
+// conditional small-object writes, cursor listing, and batched deletes.
+// Every 404 is not_found with the gateway's reason: no_endpoint for an
+// unknown route, one byte-identical no_space body for any space out of
+// reach, and no_object, after the token and grant checks, for an absent
+// object; any other backend failure is 502 backend_unavailable. Each space is backed by the
 // deterministic in-memory store.
 package gatewaytest
 
@@ -34,7 +38,8 @@ const (
 
 var (
 	keyRE   = regexp.MustCompile(`^(?:(.+)/)?(current|probe/[0-9a-f-]{36}|packs/(?:checkpoints|increments)/\d+-[0-9a-f-]{36}\.pack)$`)
-	spaceRE = regexp.MustCompile(`^/v1/spaces/([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(/.*)$`)
+	routeRE = regexp.MustCompile(`^/v1/spaces/([^/]+)/(.+)$`)
+	spaceRE = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
 )
 
 // Gateway is one running reference server.
@@ -91,6 +96,14 @@ func (g *Gateway) Grant(token, space string, readOnly bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.grants[token] = grant{space: space, readOnly: readOnly}
+}
+
+// DeleteSpace removes a space and everything it holds; its grants stay
+// and now answer 404 no_space, as for a space deleted on the gateway.
+func (g *Gateway) DeleteSpace(name string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	delete(g.spaces, name)
 }
 
 // SetQuota changes a space's quota in bytes.
@@ -151,20 +164,31 @@ func (g *Gateway) serve(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	m := spaceRE.FindStringSubmatch(r.URL.Path)
+	m := routeRE.FindStringSubmatch(r.URL.Path)
 	if m == nil {
-		writeError(w, http.StatusNotFound, "not_found")
+		notFound(w, reasonNoEndpoint)
 		return
 	}
-	name, rest := m[1], m[2]
+	name, rest := m[1], "/"+m[2]
+	switch operation(r.Method, rest) {
+	case routeUnknown:
+		notFound(w, reasonNoEndpoint)
+		return
+	case routeWrongMethod:
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+		return
+	}
+	if !spaceRE.MatchString(name) {
+		notFound(w, reasonNoSpace)
+		return
+	}
 	key, isObject := strings.CutPrefix(rest, "/objects/")
 	if isObject && !validKey(key) {
 		writeError(w, http.StatusBadRequest, "invalid_key")
 		return
 	}
-	sp, gr, status, code := g.authorize(r, name)
-	if status != 0 {
-		writeError(w, status, code)
+	sp, gr, ok := g.authorize(w, r, name)
+	if !ok {
 		return
 	}
 	write := r.Method != http.MethodGet
@@ -203,19 +227,53 @@ func (g *Gateway) nextRefusal(method string) (refusal, bool) {
 	return refusal{}, false
 }
 
-func (g *Gateway) authorize(r *http.Request, name string) (*space, grant, int, string) {
+// routeMatch classifies a request against the gateway's operation table.
+type routeMatch int
+
+const (
+	routeOK routeMatch = iota
+	routeWrongMethod
+	routeUnknown
+)
+
+// operation mirrors the gateway's operation table: objects/<key> takes GET
+// and PUT, objects and usage GET, delete POST; anything else is unknown.
+func operation(method, rest string) routeMatch {
+	allowed := map[string]bool{}
+	switch {
+	case strings.HasPrefix(rest, "/objects/"):
+		allowed[http.MethodGet], allowed[http.MethodPut] = true, true
+	case rest == "/objects", rest == "/usage":
+		allowed[http.MethodGet] = true
+	case rest == "/delete":
+		allowed[http.MethodPost] = true
+	default:
+		return routeUnknown
+	}
+	if !allowed[method] {
+		return routeWrongMethod
+	}
+	return routeOK
+}
+
+// authorize resolves the bearer token's grant for the named space and
+// answers the refusal itself: 401 for an unknown token, 404 no_space for a
+// space that does not exist or that the token was not granted.
+func (g *Gateway) authorize(w http.ResponseWriter, r *http.Request, name string) (*space, grant, bool) {
 	token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 	g.mu.Lock()
-	defer g.mu.Unlock()
 	gr, known := g.grants[token]
-	if !ok || !known {
-		return nil, grant{}, http.StatusUnauthorized, "unauthorized"
-	}
 	sp, exists := g.spaces[name]
-	if !exists || gr.space != name {
-		return nil, grant{}, http.StatusNotFound, "not_found"
+	g.mu.Unlock()
+	if !ok || !known {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return nil, grant{}, false
 	}
-	return sp, gr, 0, ""
+	if !exists || gr.space != name {
+		notFound(w, reasonNoSpace)
+		return nil, grant{}, false
+	}
+	return sp, gr, true
 }
 
 func validKey(key string) bool {
@@ -240,7 +298,7 @@ func (g *Gateway) usage(w http.ResponseWriter, sp *space) {
 func read(w http.ResponseWriter, r *http.Request, sp *space, key string) {
 	rc, info, err := sp.store.ReadObject(r.Context(), key)
 	if errors.Is(err, storage.ErrNotFound) {
-		writeError(w, http.StatusNotFound, "not_found")
+		notFound(w, reasonNoObject)
 		return
 	}
 	if err != nil {
@@ -413,6 +471,27 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+// The reasons of a 404 not_found, and the gateway's message for each. Only
+// reasonNoObject means an absent object.
+const (
+	reasonNoObject   = "no_object"
+	reasonNoSpace    = "no_space"
+	reasonNoEndpoint = "no_endpoint"
+)
+
+var notFoundMessages = map[string]string{
+	reasonNoObject:   "no such object",
+	reasonNoSpace:    "no such space for this token",
+	reasonNoEndpoint: "no such endpoint",
+}
+
+// notFound answers 404 not_found with reason and the gateway's message.
+func notFound(w http.ResponseWriter, reason string) {
+	writeJSON(w, http.StatusNotFound, map[string]any{
+		"error": "not_found", "message": notFoundMessages[reason], "retryable": false, "reason": reason,
+	})
 }
 
 func writeError(w http.ResponseWriter, status int, code string) {

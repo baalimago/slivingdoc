@@ -73,7 +73,7 @@ mcp handler.pull → Service.Pull(path)
 - `readRemote` re-imports every active pack on every pull and commit attempt, so cost scales with the tail length until a checkpoint compacts it.
 - `readRemote` validates the whole history from head to the shallow boundary on every pull; `ValidateHistory` shares one seen set so the cost is the number of unique objects, not commits times files.
 - `MarkPulled` failure is reported as `STORAGE_FAILURE`/`LOCAL_STATE` even though L and the baseline were already updated.
-- Known bug (hosted mode): `readCurrent` treats every `ErrNotFound` on `current` as the empty notebook, and the hosted adapter also returns `ErrNotFound` for a read in a space the token cannot reach (deleted or not granted; an unknown token is a 401, `ACCESS_DENIED`). Such a pull merges against the empty tree: when no file changed locally it deletes the files and returns `OK` at generation 0; a locally changed file conflicts (modify/delete, `CONTENT_CONFLICT`) ([hosted-mode.md](./hosted-mode.md)).
+- `readCurrent` treats `ErrNotFound` on `current` as the empty notebook, so a backend must return it only for a key that is really absent. The hosted adapter does so only for a 404 with reason `no_object`; a space the token cannot reach (404 `no_space`, or any 404 without that reason) is `ErrAccessDenied`, so the pull fails as `STORAGE_FAILURE`/`ACCESS_DENIED` before any merge and L is untouched ([hosted-mode.md](./hosted-mode.md)).
 
 ## Related
 
