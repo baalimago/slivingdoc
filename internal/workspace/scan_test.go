@@ -164,9 +164,6 @@ func TestScanRejectsFileVersusDirectoryAmbiguity(t *testing.T) {
 	// same internal path: one entry is a file, the other a directory.
 	nfd := norm.NFD.String("café")
 	nfc := norm.NFC.String("café")
-	if nfd == nfc {
-		t.Skip("normalization forms are identical on this platform")
-	}
 	w := openWorkspace(t, testConfig(t, newFakeEngine(), "notes"))
 	dir := filepath.Join(w.Path(), nfd)
 	if err := os.MkdirAll(filepath.Join(dir, "x"), 0o755); err != nil {
@@ -214,9 +211,46 @@ func TestScanRejectsCaseFoldingCollision(t *testing.T) {
 	if !errors.As(err, &se) {
 		t.Fatalf("Snapshot() error = %v, want a *ScanError", err)
 	}
-	// Read order is unspecified, so Path may name either entry.
-	if se.Path != "Notes.md" && se.Path != "notes.md" {
-		t.Fatalf("ScanError.Path = %q, want one of the two colliding paths", se.Path)
+	// The scan reads names in byte order, so the second occurrence is the
+	// lower-case name and the other side is the upper-case one.
+	if se.Path != "notes.md" || se.Other != "Notes.md" {
+		t.Fatalf("ScanError = {Path: %q, Other: %q}, want both colliding paths", se.Path, se.Other)
+	}
+	if !errors.Is(err, ErrPathCollision) {
+		t.Fatalf("Snapshot() error = %v, want ErrPathCollision", err)
+	}
+}
+
+func TestScanRejectsNFCDuplicateNames(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("NFD and NFC names collide on case-insensitive Windows")
+	}
+	nfd := norm.NFD.String("café")
+	nfc := norm.NFC.String("café")
+	for _, kind := range []string{"file", "directory"} {
+		t.Run(kind, func(t *testing.T) {
+			w := openWorkspace(t, testConfig(t, newFakeEngine(), "notes"))
+			for _, name := range []string{nfd, nfc} {
+				p := filepath.Join(w.Path(), name)
+				if kind == "directory" {
+					p = filepath.Join(p, "x.md")
+					if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+						t.Fatalf("MkdirAll(%q): %v", name, err)
+					}
+				}
+				if err := os.WriteFile(p, []byte("data"), 0o644); err != nil {
+					t.Fatalf("write %q: %v", name, err)
+				}
+			}
+			_, err := w.Snapshot(context.Background())
+			var se *ScanError
+			if !errors.As(err, &se) || se.Path != nfc {
+				t.Fatalf("Snapshot() error = %v, want *ScanError{Path: %q}", err, nfc)
+			}
+			if !errors.Is(err, ErrPathCollision) {
+				t.Fatalf("Snapshot() error = %v, want ErrPathCollision", err)
+			}
+		})
 	}
 }
 

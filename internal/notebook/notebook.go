@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -257,13 +258,19 @@ func (n *Notebook) failAfterAccept(ctx context.Context, stage string, cause erro
 	return recoveryFailure(report.public(), cause)
 }
 
-// scanErrorFiles names the offending file of a scan rejection when known.
+// scanErrorFiles names the offending file of a scan rejection when known,
+// and for a collision the path it collides with too.
 func scanErrorFiles(err error) []ErrorFile {
 	var se *workspace.ScanError
-	if errors.As(err, &se) && se.Path != "" {
-		return []ErrorFile{{Path: se.Path, Reason: FileReasonInvalidContent}}
+	if !errors.As(err, &se) || se.Path == "" {
+		return nil
 	}
-	return nil
+	files := []ErrorFile{{Path: se.Path, Reason: FileReasonInvalidContent}}
+	if se.Other != "" {
+		files = append(files, ErrorFile{Path: se.Other, Reason: FileReasonInvalidContent})
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
+	return files
 }
 
 // mapLocalError maps a workspace error that occurred before any local
@@ -274,7 +281,8 @@ func (n *Notebook) mapLocalError(err error) error {
 	if errors.Is(err, workspace.ErrInvalidContent) ||
 		errors.Is(err, workspace.ErrSymlink) ||
 		errors.Is(err, workspace.ErrUnsupportedFile) ||
-		errors.Is(err, workspace.ErrInvalidPath) {
+		errors.Is(err, workspace.ErrInvalidPath) ||
+		errors.Is(err, workspace.ErrPathCollision) {
 		return invalidRequest(ReasonInvalidContent, err, scanErrorFiles(err), "visible files violate the notebook contract")
 	}
 	return storageFailure(ReasonLocalState, err, "local private state operation failed")
