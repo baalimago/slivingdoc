@@ -389,9 +389,10 @@ The bucket must exist. slivingdoc does not create or configure it.
 The server needs these permissions:
 
 - On the objects (`arn:...:bucket/*`): `s3:GetObject`, `s3:PutObject`,
-  `s3:DeleteObject`, `s3:CreateMultipartUpload`, `s3:UploadPart`,
-  `s3:CompleteMultipartUpload`, `s3:AbortMultipartUpload`, and
-  `s3:ListMultipartUploadParts`.
+  `s3:DeleteObject`, `s3:AbortMultipartUpload`, and
+  `s3:ListMultipartUploadParts`. IAM has no separate action for creating,
+  uploading a part of, or completing a multipart upload: `s3:PutObject`
+  authorizes all three.
 - On the bucket (`arn:...:bucket`): `s3:ListBucket` and
   `s3:ListBucketMultipartUploads`.
 
