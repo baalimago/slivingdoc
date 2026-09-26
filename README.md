@@ -150,13 +150,16 @@ variables. `--bucket` is required. The most common flags:
 | ------------------ | --------------------------- | ------------------- |
 | `--bucket`         | `SLIVINGDOC_BUCKET`         | — (required)        |
 | `--workspace-root` | `SLIVINGDOC_WORKSPACE_ROOT` | temporary dir[^1]   |
-| `--endpoint`       | `AWS_ENDPOINT_URL_S3`       | AWS resolution      |
+| `--endpoint`       | `AWS_ENDPOINT_URL_S3`[^2]   | AWS resolution      |
 | `--region`         | `AWS_REGION`                | `us-east-1`         |
-| none               | `SLIVINGDOC_TOKEN`          | empty (S3 mode)     |
+| (environment only) | `SLIVINGDOC_TOKEN`          | empty (S3 mode)     |
 
 [^1]: `serve` with no configured root takes a per-process temporary
     notebook directory and removes it at shutdown; the notes themselves live
     in the bucket. `pull` and `commit` default to the working directory.
+
+[^2]: With `SLIVINGDOC_TOKEN` set, `--endpoint` names the hosted API instead:
+    `SLIVINGDOC_ENDPOINT`, default `https://api.slivingdoc.dev`.
 
 `slivingdoc serve -h` prints the full reference, and
 [`docs/running.md`](docs/running.md) covers everything an operator

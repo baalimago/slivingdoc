@@ -65,8 +65,8 @@ func TestScenarioHostedRoundTrip(t *testing.T) {
 // TestScenarioHostedStorageFull proves the over-quota contract: a commit
 // that would take the space past its quota fails with STORAGE_FULL, says
 // how to fix it, is not retryable, keeps the visible edit, and publishes
-// nothing; pulls keep working; and the same commit succeeds once the space
-// has room again.
+// nothing; pulls keep working; a used-up request allowance is
+// REQUEST_LIMIT; and the same commit succeeds once the space has room again.
 func TestScenarioHostedStorageFull(t *testing.T) {
 	t.Parallel()
 	g, env, root := hostedEnv(t, 1<<20)

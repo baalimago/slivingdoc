@@ -396,8 +396,9 @@ than leaking. Two deliberate exceptions come from hosted storage
 (architecture/hosted-mode.md): `STORAGE_FAILURE` is not retryable for the
 account refusals a retry cannot change, and the hosted server's own
 message, sanitized and redacted, is appended to their message. That text
-is untrusted server output in agent-facing results. Caller-facing text must never contain a credential, an S3
-key, a private path, a Git object ID, or Git vocabulary.
+is untrusted server output in agent-facing results. Caller-facing text
+must never contain a credential, an S3 key, a private path, a Git object ID,
+or Git vocabulary.
 
 ## Duplication policy
 

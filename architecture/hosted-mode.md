@@ -4,8 +4,8 @@ A process configured with an API token (`SLIVINGDOC_TOKEN`) stores the
 notebook through the slivingdoc hosted storage API instead of S3. The API is
 the six `storage.ObjectStore` operations over HTTPS with a bearer token,
 addressed to one named space. Its contract is `cloud/API.md` in the
-slivingdoc-cloud repository (formerly slivingdoc-web); it names nothing provider-specific. The object
-layout, the manifest, and the publication protocol are unchanged: hosted mode
+baalimago/slivingdoc-web repository (being renamed to slivingdoc-cloud); it
+names nothing provider-specific. The object layout, the manifest, and the publication protocol are unchanged: hosted mode
 is a second adapter, `internal/httpstore`, below the same notebook code.
 
 ## Configuration
@@ -56,9 +56,10 @@ does not run the S3 write probe (`storage.Probe`). `checkStore` in
 ## Status mapping
 
 `statusError` in `internal/httpstore/store.go` maps a refusal to a semantic
-storage error. The error body is `{"error", "reason", "message"}`. The status or the
-error code picks the category (a `quota_exceeded` code counts as a 507
-whatever its status), and the reason splits the two quota limits.
+storage error. The error body is `{"error", "reason", "message"}`. The
+status or the error code picks the category (a `quota_exceeded` code counts
+as a 507 and a `rate_limited` code as a 429, whatever the status), and the
+reason splits the two quota limits.
 
 | Answer                                         | Storage error           | Notebook reason    | Action     | Retryable |
 | ---------------------------------------------- | ----------------------- | ------------------ | ---------- | --------- |

@@ -177,7 +177,8 @@ func redactValues(s string) string {
 
 // retryable reports whether a notebook error permits a retry. Storage
 // failures do, except the store's refusals that repeating cannot change:
-// a full space, denied credentials, and an oversized object.
+// a full space, a used-up request allowance, denied credentials, and an
+// oversized object.
 func retryable(code notebook.Code, reason notebook.Reason) bool {
 	switch code {
 	case notebook.CodeStorageFailure:

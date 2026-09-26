@@ -351,11 +351,12 @@ func TestRedact(t *testing.T) {
 		"head " + gitID + " unreadable; " +
 		"private /home/user/.cache/slivingdoc/" + derivedKey + " + " +
 		"key AKIAIOSFODNN7EXAMPLE and endpoint http://user:secret@s3.example.com " +
-		"token sld_0123456789abcdef_c2VjcmV0LXRva2Vu-_x"
+		"token sld_0123456789abcdef_c2VjcmV0LXRva2Vu-_x " +
+		"and sld_0123456789abcdef_ab-AKIAIOSFODNN7EXAMPLE-tailsecret"
 	got := Redact(input)
 	for _, leaked := range []string{
 		"packs/increments", packUUID, "probe/" + probeUUID,
-		gitID, derivedKey, "AKIAIOSFODNN7EXAMPLE", "user:secret", "sld_", "c2VjcmV0LXRva2Vu",
+		gitID, derivedKey, "AKIAIOSFODNN7EXAMPLE", "user:secret", "sld_", "c2VjcmV0LXRva2Vu", "tailsecret",
 	} {
 		if strings.Contains(got, leaked) {
 			t.Fatalf("Redact() leaked %q in %q", leaked, got)

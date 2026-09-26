@@ -25,7 +25,8 @@ var (
 	// probe and cannot serve the protocol.
 	ErrIncompatible = errors.New("storage: incompatible store")
 	// ErrQuotaExceeded reports that the store refused a write because the
-	// space, or the account that owns it, is full. Nothing was stored; reads keep working.
+	// space, or the account that owns it, is full. Nothing was stored;
+	// reads keep working.
 	ErrQuotaExceeded = errors.New("storage: quota exceeded")
 	// ErrRequestLimit reports that the store refused a write because the
 	// account used its request allowance for the billing period. Nothing

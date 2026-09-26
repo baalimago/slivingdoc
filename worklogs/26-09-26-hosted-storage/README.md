@@ -1,7 +1,7 @@
 # slivingdoc hosted storage worklog
 
 **Status:** Complete for the client. The hosted gateway lives in
-`cloud/` of the slivingdoc-cloud repository (formerly slivingdoc-web).
+`cloud/` of baalimago/slivingdoc-web (being renamed to slivingdoc-cloud).
 
 **Architecture:** [`../../architecture/hosted-mode.md`](../../architecture/hosted-mode.md)
 
@@ -21,10 +21,10 @@ say how to fix it, and reads must keep working.
 | `internal/httpstore` | The adapter. It maps HTTP statuses to the semantic storage errors, retries only idempotent requests, and never puts the token in an error. It passes the shared contract suite with and without a notebook prefix. |
 | `internal/httpstore/gatewaytest` | A test-only reference server of the API over the in-memory store: key grammar before authentication, per-space grants, read-only grants, pack quota, cursor listing, and injected refusals. |
 | `internal/storage` | Five semantic errors: `ErrQuotaExceeded`, `ErrRequestLimit`, `ErrRateLimited`, `ErrAccessDenied`, `ErrTooLarge`, and `Refusal`, which carries the server's message. The metadata field names and codec moved here from `s3store`, so both adapters share one implementation. |
-| `internal/notebook`, `internal/mcp` | Five `STORAGE_FAILURE` reasons: `STORAGE_FULL`, `REQUEST_LIMIT`, `RATE_LIMITED`, `ACCESS_DENIED`, `OBJECT_TOO_LARGE`. Each message names the fix and ends with the server's own message. `retryable` is false for all but `RATE_LIMITED`. `sld_` tokens are redacted. |
+| `internal/notebook`, `internal/mcp` | Five `STORAGE_FAILURE` reasons: `STORAGE_FULL`, `REQUEST_LIMIT`, `RATE_LIMITED`, `ACCESS_DENIED`, `OBJECT_TOO_LARGE`. Each message names the fix and, when the server sent one, ends with the server's own message. `retryable` is false for all but `RATE_LIMITED`. `sld_` tokens are redacted. |
 | `internal/app` | `SLIVINGDOC_TOKEN` selects hosted mode. `--bucket` names the space, and `--endpoint` or `SLIVINGDOC_ENDPOINT` names the API, by default `https://api.slivingdoc.dev`. The AWS variables are ignored, and the token is sent only over HTTPS or to loopback. Startup runs `CheckAccess` instead of the write probe. |
 | Contract suite | Missing-key rows use valid protocol keys, and the probe cleanup is observed through the keys the probe created rather than a `LIST` of `probe/`, which a hosted store refuses. |
-| Scenarios | `scenario_hosted_test.go`: round trip, storage full, read-only token, and startup refusals, all over one-shot CLI processes against the reference server. |
+| Scenarios | `scenario_hosted_test.go`: round trip, storage full and request limit, read-only token, and startup refusals, all over one-shot CLI processes against the reference server. |
 
 ## Open items
 

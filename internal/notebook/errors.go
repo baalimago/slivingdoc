@@ -279,7 +279,7 @@ func storeRefusal(cause error) (Reason, string, bool) {
 			"Pulls keep working", true
 	case errors.Is(cause, storage.ErrRequestLimit):
 		return ReasonRequestLimit, "the storage account that owns this space used its request allowance for the month, " +
-			"so nothing was published; its owner can raise the allowance (for slivingdoc.dev spaces: upgrade at https://slivingdoc.dev) or wait until it resets " +
+			"so nothing was published; its owner can raise the allowance (for slivingdoc.dev: upgrade at https://slivingdoc.dev) or wait until it resets " +
 			"on the first of the month (UTC), then commit again. Pulls keep working, more slowly", true
 	case errors.Is(cause, storage.ErrRateLimited):
 		return ReasonRateLimited, "the storage is slowing down requests from this account; wait, then retry", true
