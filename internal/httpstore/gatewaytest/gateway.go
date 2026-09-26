@@ -1,6 +1,6 @@
 // Package gatewaytest runs an in-process reference server of the hosted
 // storage API, version 1, for tests. It follows the contract document of
-// the hosted gateway: routing and key grammar before authentication,
+// the hosted gateway: routing, key grammar and list prefix before authentication,
 // bearer tokens granted per space, read-only grants, pack quota,
 // conditional small-object writes, cursor listing, and batched deletes.
 // Every 404 is not_found with the gateway's reason: no_endpoint for an
@@ -157,7 +157,7 @@ func (g *Gateway) serve(w http.ResponseWriter, r *http.Request) {
 		writeReasonError(w, rf.status, rf.code, rf.reason)
 		return
 	}
-	if r.URL.Path == "/v1" && r.Method == http.MethodGet {
+	if (r.URL.Path == "/v1" || r.URL.Path == "/v1/") && r.Method == http.MethodGet {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"api": "slivingdoc-storage", "version": 1,
 			"maxPackBytes": MaxPackBytes, "maxSmallBytes": MaxSmallBytes, "conditionalWrites": true,
@@ -184,6 +184,10 @@ func (g *Gateway) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	key, isObject := strings.CutPrefix(rest, "/objects/")
 	if isObject && !validKey(key) {
+		writeError(w, http.StatusBadRequest, "invalid_key")
+		return
+	}
+	if rest == "/objects" && !validListPrefix(r.URL.Query().Get("prefix")) {
 		writeError(w, http.StatusBadRequest, "invalid_key")
 		return
 	}
@@ -274,6 +278,12 @@ func (g *Gateway) authorize(w http.ResponseWriter, r *http.Request, name string)
 		return nil, grant{}, false
 	}
 	return sp, gr, true
+}
+
+// validListPrefix accepts [<notebook prefix>/]packs/..., the only
+// listable namespace; serve checks it before the token.
+func validListPrefix(prefix string) bool {
+	return strings.HasPrefix(prefix, "packs/") || strings.Contains(prefix, "/packs/")
 }
 
 func validKey(key string) bool {
@@ -405,10 +415,6 @@ func putSmall(w http.ResponseWriter, r *http.Request, sp *space, key string) {
 
 func (g *Gateway) list(w http.ResponseWriter, r *http.Request, sp *space) {
 	prefix := r.URL.Query().Get("prefix")
-	if !strings.HasPrefix(prefix, "packs/") && !strings.Contains(prefix, "/packs/") {
-		writeError(w, http.StatusBadRequest, "bad_request")
-		return
-	}
 	var keys []string
 	if err := sp.store.ListObjects(r.Context(), prefix, func(key string) error {
 		keys = append(keys, key)

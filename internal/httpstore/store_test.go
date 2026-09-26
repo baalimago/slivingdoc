@@ -212,12 +212,11 @@ func TestClientErrorIsNotTransport(t *testing.T) {
 	}
 }
 
-// The API answers If-Match on an absent object with 412, so a 404 on a
-// replace means the space is gone or the grant was revoked.
-// Only a 404 not_found with reason no_object reads as an absent object.
-// Every other 404, including one without a reason (an older gateway),
-// is ErrAccessDenied and never ErrNotFound, so a pull cannot mistake an
-// unreachable space for an empty notebook.
+// TestRead404MapsByReason proves that only a 404 whose raw code is
+// not_found and raw reason no_object reads as an absent object. Every other
+// 404, including one without a reason (an older gateway) or with the tokens
+// in another case, is ErrAccessDenied and never ErrNotFound, so a pull
+// cannot mistake an unreachable space for an empty notebook.
 func TestRead404MapsByReason(t *testing.T) {
 	tests := []struct {
 		body string
@@ -225,7 +224,7 @@ func TestRead404MapsByReason(t *testing.T) {
 		text string
 	}{
 		{`{"error":"not_found","reason":"no_object","message":"no such object"}`, storage.ErrNotFound, "no such object"},
-		{`{"error":"NOT_FOUND","reason":"NO_OBJECT"}`, storage.ErrNotFound, "no_object"},
+		{`{"error":"NOT_FOUND","reason":"NO_OBJECT"}`, storage.ErrAccessDenied, "without saying what is missing"},
 		{`{"error":"not_found","reason":"no_space","message":"no such space for this token"}`, storage.ErrAccessDenied, "does not exist or the token was not granted it"},
 		{`{"error":"not_found","reason":"no_endpoint","message":"no such endpoint"}`, storage.ErrAccessDenied, "check --endpoint"},
 		{`{"error":"not_found"}`, storage.ErrAccessDenied, "without saying what is missing"},
@@ -358,6 +357,8 @@ func TestGateway404Reasons(t *testing.T) {
 	}
 }
 
+// The API answers If-Match on an absent object with 412, so a 404 on a
+// replace means the space is gone or the grant was revoked.
 func TestReplaceAnswered404IsAccessDenied(t *testing.T) {
 	s, g := newGatewayStore(t)
 	g.RefuseNext(http.MethodPut, http.StatusNotFound, "not_found")
@@ -761,5 +762,67 @@ func packFixture(t *testing.T, data []byte, generation uint64) (storage.Key, sto
 		Size:       uint64(len(data)),
 		Kind:       storage.KindIncrement,
 		Generation: generation,
+	}
+}
+
+// A 404 of the startup usage check is ErrAccessDenied whatever its reason,
+// and names the fix by reason: no_space the space and grant, anything else
+// --endpoint. The gateway's message travels as the refusal's.
+func TestCheckAccessUsage404ByReason(t *testing.T) {
+	tests := []struct {
+		body string
+		text string
+	}{
+		{`{"error":"not_found","reason":"no_space","message":"no such space for this token"}`, "does not exist or the token was not granted it"},
+		{`{"error":"not_found","reason":"no_endpoint","message":"no such endpoint"}`, "no such space API; check --endpoint"},
+		{`{"error":"not_found","reason":"no_object","message":"no such object"}`, "no such space API; check --endpoint"},
+		{``, "no such space API; check --endpoint"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.body, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/v1" {
+					_, _ = io.WriteString(w, `{"api":"slivingdoc-storage","version":1,"conditionalWrites":true}`)
+					return
+				}
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = io.WriteString(w, tt.body)
+			}))
+			t.Cleanup(srv.Close)
+			err := newStore(t, srv.URL, "").CheckAccess(context.Background())
+			if !errors.Is(err, storage.ErrAccessDenied) || errors.Is(err, storage.ErrIncompatible) || !strings.Contains(err.Error(), tt.text) {
+				t.Fatalf("CheckAccess = %v, want ErrAccessDenied saying %q", err, tt.text)
+			}
+			var refusal *storage.Refusal
+			if tt.body != "" && (!errors.As(err, &refusal) || refusal.Message == "") {
+				t.Fatalf("CheckAccess = %v, want the gateway message on the refusal", err)
+			}
+		})
+	}
+}
+
+// The reference gateway serves its description at /v1 and /v1/, and, like
+// the real one, refuses a list prefix outside packs/ as invalid_key before
+// it looks at the token.
+func TestGatewayDescriptionAndListPrefix(t *testing.T) {
+	_, g := newGatewayStore(t)
+	for _, tt := range []struct {
+		path   string
+		status int
+		want   string
+	}{
+		{"/v1", http.StatusOK, `"api":"slivingdoc-storage"`},
+		{"/v1/", http.StatusOK, `"api":"slivingdoc-storage"`},
+		{"/v1/spaces/" + testSpace + "/objects?prefix=nb/current", http.StatusBadRequest, `"error":"invalid_key"`},
+	} {
+		resp, err := http.Get(g.URL() + tt.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != tt.status || !strings.Contains(string(body), tt.want) {
+			t.Fatalf("GET %s without a token = %d %s, want %d %s", tt.path, resp.StatusCode, body, tt.status, tt.want)
+		}
 	}
 }

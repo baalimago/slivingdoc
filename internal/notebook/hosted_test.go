@@ -3,8 +3,10 @@ package notebook
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/baalimago/slivingdoc/internal/httpstore"
@@ -61,31 +63,63 @@ func assertAccessDenied(t *testing.T, err error) {
 
 // A pulled workspace whose space becomes unreachable is refused as
 // ACCESS_DENIED. The 404 no_space is never read as an empty notebook, so
-// the pull neither deletes the notes nor moves the baseline, with or
+// the pull neither deletes the notes nor moves the baseline, with and
 // without a local edit.
 func TestHostedUnreachableSpacePullKeepsNotes(t *testing.T) {
 	for _, tt := range unreachableCases {
-		t.Run(tt.name, func(t *testing.T) {
-			store, g := hostedStore(t)
-			nb, w, _ := newNotebook(t, nbConfig{store: store, ids: &testIDSource{}})
-			pullOK(t, nb)
-			writeLocal(t, w, map[string]string{"a.md": "kept\n"})
-			commitOK(t, nb, "first")
-			writeLocal(t, w, map[string]string{"b.md": "local edit\n"})
-			before := localSnapshot(t, w)
+		for _, edit := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/local edit %v", tt.name, edit), func(t *testing.T) {
+				store, g := hostedStore(t)
+				nb, w, _ := newNotebook(t, nbConfig{store: store, ids: &testIDSource{}})
+				pullOK(t, nb)
+				writeLocal(t, w, map[string]string{"a.md": "kept\n"})
+				commitOK(t, nb, "first")
+				if edit {
+					writeLocal(t, w, map[string]string{"b.md": "local edit\n"})
+				}
+				before := diskTree(t, w.Path())
 
-			tt.cut(g)
-			assertAccessDenied(t, errOnly(nb.Pull(context.Background())))
-			if got := localSnapshot(t, w); len(got) != len(before) || got["a.md"] != "kept\n" || got["b.md"] != "local edit\n" {
-				t.Fatalf("L after the refused pull = %v, want %v untouched", got, before)
-			}
-			if gen := w.Baseline().RemoteGeneration; gen != 1 {
-				t.Fatalf("baseline generation = %d, want 1 unchanged", gen)
-			}
-			if w.RecoveryRequired() {
-				t.Fatal("a refused read must not mark recovery")
-			}
-		})
+				tt.cut(g)
+				assertAccessDenied(t, errOnly(nb.Pull(context.Background())))
+				assertTreeUnchanged(t, before, diskTree(t, w.Path()))
+				if gen := w.Baseline().RemoteGeneration; gen != 1 {
+					t.Fatalf("baseline generation = %d, want 1 unchanged", gen)
+				}
+				if w.RecoveryRequired() {
+					t.Fatal("a refused read must not mark recovery")
+				}
+			})
+		}
+	}
+}
+
+// diskTree reads every regular file below dir straight from disk, so it
+// works while the workspace refuses scans (recovery required).
+func diskTree(t *testing.T, dir string) map[string]string {
+	t.Helper()
+	tree := map[string]string{}
+	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(dir, path)
+		tree[filepath.ToSlash(rel)] = string(data)
+		return err
+	})
+	if err != nil {
+		t.Fatalf("read %s: %v", dir, err)
+	}
+	return tree
+}
+
+func assertTreeUnchanged(t *testing.T, before, after map[string]string) {
+	t.Helper()
+	if !reflect.DeepEqual(before, after) {
+		t.Fatalf("L = %v, want %v untouched", after, before)
 	}
 }
 
@@ -138,6 +172,7 @@ func TestHostedUnreachableSpaceEntryRecoveryKeepsNotes(t *testing.T) {
 	writeLocal(t, ow, map[string]string{"b.md": "remote\n"})
 	commitOK(t, other, "second")
 
+	before := diskTree(t, w.Path())
 	cut = true
 	first := assertErrorCode(t, errOnly(nb.Pull(context.Background())), CodeRecoveryFailure)
 	if first.Reason != ReasonAccessDenied || first.Recovery == nil || first.Recovery.Resynchronized {
@@ -146,20 +181,14 @@ func TestHostedUnreachableSpaceEntryRecoveryKeepsNotes(t *testing.T) {
 	if !w.RecoveryRequired() {
 		t.Fatal("the failed replacement must leave P requiring recovery")
 	}
+	assertTreeUnchanged(t, before, diskTree(t, w.Path()))
 
 	entry := assertErrorCode(t, errOnly(nb.Pull(context.Background())), CodeRecoveryFailure)
 	if entry.Reason != ReasonAccessDenied || entry.Action != ActionOperator ||
 		entry.Recovery == nil || entry.Recovery.Stage != stageEntry || entry.Recovery.Resynchronized {
 		t.Fatalf("entry recovery = %s/%s %+v, want ACCESS_DENIED/OPERATOR at entry, not resynchronized", entry.Reason, entry.Action, entry.Recovery)
 	}
-	// The workspace refuses a scan while recovery is required, so read L
-	// from disk.
-	if got := readLocal(t, w, "a.md"); got != "kept\n" {
-		t.Fatalf("a.md after entry recovery = %q, want it untouched", got)
-	}
-	if _, err := os.Stat(filepath.Join(w.Path(), "b.md")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("b.md after the refused recovery = %v, want it absent: nothing was applied", err)
-	}
+	assertTreeUnchanged(t, before, diskTree(t, w.Path()))
 	if !w.RecoveryRequired() {
 		t.Fatal("a refused entry recovery must keep P requiring recovery")
 	}

@@ -317,8 +317,9 @@ var recoveryRefusalMessages = map[Reason]string{
 		"request allowance for the month; its owner can raise the allowance (for slivingdoc.dev: upgrade at https://slivingdoc.dev) " +
 		"or wait until it resets on the first of the month (UTC), then pull",
 	ReasonRateLimited: "the storage is slowing down requests from this account, so the notebook directory could not be repaired yet; wait, then pull",
-	ReasonAccessDenied: "the storage refused the credentials for the read that repairs the notebook directory: the token is missing, revoked, " +
-		"or not granted this space. Check SLIVINGDOC_TOKEN and --bucket, then pull",
+	ReasonAccessDenied: "the storage refused the read that repairs the notebook directory: the token is missing, revoked, read-only, " +
+		"or not granted this space, the space does not exist, or --endpoint does not point at the storage API. " +
+		"Check SLIVINGDOC_TOKEN, --bucket and --endpoint, then pull",
 	ReasonObjectTooLarge: "the storage refused the read that repairs the notebook directory as larger than it serves; an operator must check the storage",
 }
 
@@ -348,8 +349,9 @@ func storeRefusal(cause error) (Reason, string, bool) {
 	case errors.Is(cause, storage.ErrRateLimited):
 		return ReasonRateLimited, "the storage is slowing down requests from this account; wait, then retry", true
 	case errors.Is(cause, storage.ErrAccessDenied):
-		return ReasonAccessDenied, "the storage refused the credentials: the token is missing, revoked, " +
-			"read-only, or not granted this space. Check SLIVINGDOC_TOKEN and --bucket", true
+		return ReasonAccessDenied, "the storage refused the request: the token is missing, revoked, read-only, " +
+			"or not granted this space, the space does not exist, or --endpoint does not point at the storage API. " +
+			"Check SLIVINGDOC_TOKEN, --bucket and --endpoint", true
 	case errors.Is(cause, storage.ErrTooLarge):
 		return ReasonObjectTooLarge, "the notebook data to upload is larger than the storage accepts in one object; " +
 			"nothing was published", true
