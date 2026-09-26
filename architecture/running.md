@@ -432,8 +432,8 @@ non-empty `SLIVINGDOC_TOKEN` selects it:
 - The endpoint is `--endpoint`, else `SLIVINGDOC_ENDPOINT`, else
   `https://api.slivingdoc.dev`. It must be `https`, except to a loopback
   address. `AWS_ENDPOINT_URL_S3`, `AWS_REGION`, and the AWS credential
-  chain are not used; `--region` and `--path-style` are accepted and
-  ignored.
+  chain are not used; `--region` is ignored, and `--path-style` is still
+  validated, then unused.
 - The token is read from the environment only, never from a flag, and
   must be printable ASCII (0x21 to 0x7E) without white space. It travels only in
   the `Authorization` header and never appears in a diagnostic, a log
