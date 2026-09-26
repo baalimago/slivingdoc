@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
@@ -29,6 +30,10 @@ const (
 	defaultMultipartThreshold = 64 << 20 // single PUT below 64 MiB
 	defaultMultipartPartSize  = 16 << 20 // 16 MiB parts
 	minMultipartPartSize      = 5 << 20  // S3 minimum part size except the last
+
+	// abortTimeout bounds the best-effort multipart abort, which runs on a
+	// context detached from the caller's cancellation.
+	abortTimeout = 10 * time.Second
 )
 
 // Options tunes the upload strategy and addressing of a Store. The zero
@@ -209,7 +214,10 @@ func (s *Store) putSingle(ctx context.Context, key string, r io.Reader, meta sto
 }
 
 // putMultipart uploads a large pack in parts and aborts the multipart
-// upload on any failure, so a failed upload leaves no incomplete state.
+// upload on any failure after its creation, including a failed completion.
+// The abort is best-effort and runs on a short context detached from ctx,
+// so a cancelled request still releases its parts
+// (architecture/s3store.md).
 func (s *Store) putMultipart(ctx context.Context, key string, r io.Reader, meta storage.Metadata, partSize int64) error {
 	full := s.fullKey(key)
 	up, err := s.client.CreateMultipartUpload(ctx, &s3.CreateMultipartUploadInput{
@@ -222,7 +230,9 @@ func (s *Store) putMultipart(ctx context.Context, key string, r io.Reader, meta 
 		return mapError("multipart create "+key, err)
 	}
 	abort := func() {
-		_, _ = s.client.AbortMultipartUpload(ctx, &s3.AbortMultipartUploadInput{
+		actx, cancel := context.WithTimeout(context.WithoutCancel(ctx), abortTimeout)
+		defer cancel()
+		_, _ = s.client.AbortMultipartUpload(actx, &s3.AbortMultipartUploadInput{
 			Bucket:   aws.String(s.bucket),
 			Key:      aws.String(full),
 			UploadId: up.UploadId,
@@ -267,6 +277,7 @@ func (s *Store) putMultipart(ctx context.Context, key string, r io.Reader, meta 
 		UploadId:        up.UploadId,
 		MultipartUpload: &types.CompletedMultipartUpload{Parts: parts},
 	}); err != nil {
+		abort()
 		return mapError("multipart complete "+key, err)
 	}
 	return nil

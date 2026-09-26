@@ -4,11 +4,14 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	smithy "github.com/aws/smithy-go"
@@ -359,4 +362,99 @@ func isolateAWSEnv(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "absent")
 	t.Setenv("AWS_CONFIG_FILE", missing)
 	t.Setenv("AWS_SHARED_CREDENTIALS_FILE", missing)
+}
+
+// multipartTransport answers the multipart calls of one upload: create
+// returns an upload ID, a part succeeds unless failPart is set, completion
+// fails with a server error, and every abort is recorded with whether its
+// request context was still live.
+type multipartTransport struct {
+	mu          sync.Mutex
+	failPart    func() // runs when a part arrives; the part then fails
+	aborts      int
+	abortCtxErr error
+}
+
+func (m *multipartTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.Body != nil {
+		// The SDK computes the part checksum while the body streams, so
+		// the body is consumed as a real server would.
+		if _, err := io.Copy(io.Discard, req.Body); err != nil {
+			return nil, err
+		}
+	}
+	q := req.URL.Query()
+	switch {
+	case req.Method == http.MethodPost && q.Has("uploads"):
+		return xmlResponse(http.StatusOK, `<InitiateMultipartUploadResult><Bucket>bucket</Bucket><Key>prefix/key</Key><UploadId>up-1</UploadId></InitiateMultipartUploadResult>`), nil
+	case req.Method == http.MethodPut && q.Has("partNumber"):
+		if m.failPart != nil {
+			m.failPart()
+			return nil, errors.New("multipart transport: part failed")
+		}
+		resp := xmlResponse(http.StatusOK, "")
+		resp.Header.Set("ETag", `"part-etag"`)
+		return resp, nil
+	case req.Method == http.MethodPost && q.Has("uploadId"):
+		return xmlResponse(http.StatusInternalServerError, `<Error><Code>InternalError</Code><Message>complete failed</Message></Error>`), nil
+	case req.Method == http.MethodDelete && q.Has("uploadId"):
+		m.mu.Lock()
+		m.aborts++
+		m.abortCtxErr = req.Context().Err()
+		m.mu.Unlock()
+		return xmlResponse(http.StatusNoContent, ""), nil
+	}
+	return nil, fmt.Errorf("multipart transport: unexpected %s %s", req.Method, req.URL)
+}
+
+func xmlResponse(status int, body string) *http.Response {
+	return &http.Response{
+		StatusCode: status,
+		Header:     http.Header{"Content-Type": []string{"application/xml"}},
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+}
+
+// TestMultipartAbortsOnEveryFailure proves that a multipart upload is
+// aborted when its completion fails, and that the abort still reaches the
+// store on a live context when the caller's context was cancelled during a
+// part (architecture/s3store.md).
+func TestMultipartAbortsOnEveryFailure(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		cancelPart bool
+	}{
+		{name: "complete fails"},
+		{name: "part fails after the request context is cancelled", cancelPart: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			isolateAWSEnv(t)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			tr := &multipartTransport{}
+			if tt.cancelPart {
+				tr.failPart = cancel
+			}
+			st, err := New(context.Background(), Config{
+				Bucket: "bucket", Prefix: "prefix", Region: "us-east-1",
+				AccessKey: "AKIAIOSFODNN7EXAMPLE", SecretKey: "secret",
+				httpClient:       &http.Client{Transport: tr},
+				retryMaxAttempts: 1,
+			}, Options{MultipartThreshold: 1})
+			if err != nil {
+				t.Fatalf("New() = %v", err)
+			}
+			if err := st.PutObject(ctx, "key", strings.NewReader("data"), storage.Metadata{Size: 4}); err == nil {
+				t.Fatal("PutObject() succeeded, want the multipart failure")
+			}
+			tr.mu.Lock()
+			defer tr.mu.Unlock()
+			if tr.aborts != 1 {
+				t.Fatalf("aborts = %d, want 1", tr.aborts)
+			}
+			if tr.abortCtxErr != nil {
+				t.Fatalf("abort request context = %v, want a live context", tr.abortCtxErr)
+			}
+		})
+	}
 }

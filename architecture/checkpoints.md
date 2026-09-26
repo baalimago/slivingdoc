@@ -85,7 +85,7 @@ after:  C1(at I256) -> I257 -> I258
 - Before each delete batch of at most 1,000 keys, it rereads and strictly decodes `current` and rebuilds the full root set (active checkpoint, active increments, every retained checkpoint and increment). Only unreferenced candidates are deleted, so a stale listing can never delete a pack a newer manifest references. Deletable candidates include retired packs and never-accepted proposals.
 - Failures are recorded (`CleanupErrors`, warning) at batch granularity and retried by a later checkpoint's cleanup. If checkpoints never succeed, cleanup never runs and old proposals remain.
 - Readers never depend on timing for safety: a reader that hits a deleted pack rereads `current` and restarts ([pull.md](./pull.md)).
-- S3 versioning may keep deleted versions; lifecycle rules for noncurrent versions are the operator's concern. Incomplete multipart uploads are not cleanup's concern: `s3store` aborts best-effort on a part or read failure, but a failed Complete or a cancelled context can leave one behind, and only a bucket lifecycle rule removes it ([s3store.md](./s3store.md)).
+- S3 versioning may keep deleted versions; lifecycle rules for noncurrent versions are the operator's concern. Incomplete multipart uploads are not cleanup's concern: `s3store` aborts best-effort on any failure after the upload's creation, on a context detached from the request's cancellation, but a failed abort or a process that dies mid-upload can leave one behind, and only a bucket lifecycle rule removes it ([s3store.md](./s3store.md)).
 
 ### Metrics
 
