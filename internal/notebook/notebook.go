@@ -20,6 +20,7 @@ import (
 // workspace over a fake engine, so only the Git engine and the object store
 // are ever faked.
 type Workspace interface {
+	Hold(ctx context.Context) (context.Context, func(), error)
 	Snapshot(ctx context.Context) (git.Snapshot, error)
 	Baseline() workspace.Baseline
 	Repo() git.Repository
@@ -122,8 +123,9 @@ const (
 )
 
 // Notebook executes pull and commit against one workspace and one store.
-// All methods are safe for concurrent use; per-path serialization comes
-// from the workspace operation lock. Checkpoint scheduling is opportunistic
+// All methods are safe for concurrent use; each Pull and Commit holds the
+// workspace operation lock from its first check to its result, so two
+// operations on one visible path never interleave. Checkpoint scheduling is opportunistic
 // and never determines commit success (architecture/checkpoints.md).
 type Notebook struct {
 	ws                  Workspace
@@ -223,6 +225,17 @@ const (
 // entry recovery reports: the call rewrote L to the accepted state instead
 // of running its own work.
 var errEntryRecovered = errors.New("notebook: entry recovery rewrote the visible directory to the accepted state")
+
+// holdWorkspace acquires the workspace operation lock for one whole
+// operation (architecture/workspace.md). A failure to acquire it is a
+// local-state failure, like any other lock failure before mutation.
+func (n *Notebook) holdWorkspace(ctx context.Context) (context.Context, func(), error) {
+	held, release, err := n.ws.Hold(ctx)
+	if err != nil {
+		return ctx, nil, n.mapLocalError(err)
+	}
+	return held, release, nil
+}
 
 // entryRecovery runs the authoritative resynchronization the next MCP call
 // must perform before any pull or commit work when P requires recovery

@@ -8,7 +8,7 @@ Read this when: changing path handling, the scan, the P layout, `state.json`, th
 
 | File | Purpose |
 |------|---------|
-| `internal/workspace/workspace.go` | Package doc; `Engine` (consumer-owned: `CreateRepo`, `OpenRepo`), `Config`, `Workspace`, `Open`, `openPrivateState`, `rejectSymlinkComponents`, `Close`, `Baseline`, `BaselineSnapshot`, `Diff`, `Replace`, `Accept`, `Materialize`, `CacheDir`, `Pulled`, `MarkPulled`, `Recover`, `withOpLock` |
+| `internal/workspace/workspace.go` | Package doc; `Engine` (consumer-owned: `CreateRepo`, `OpenRepo`), `Config`, `Workspace`, `Open`, `openPrivateState`, `rejectSymlinkComponents`, `Close`, `Baseline`, `BaselineSnapshot`, `Diff`, `Replace`, `Accept`, `Materialize`, `CacheDir`, `Pulled`, `MarkPulled`, `Recover`, `Hold`, `acquire`, `refreshState`, `loadDurableState`, `withOpLock` |
 | `internal/workspace/scan.go` | `Snapshot`, `scanLocked`, `scanWalk`, `readVisibleFile`, `collectVisible`, `readDir`, `ScanError`, `ErrSymlink`, `ErrUnsupportedFile`, `ErrInvalidContent`, `ErrPathCollision` |
 | `internal/workspace/materialize.go` | `applyLocked`, `markRecoveryRequired`, `writeStage`, `applyInPlace`, `targetDirSet`, `tempSuffix`, `Failpoints`, `Diff` |
 | `internal/workspace/state.go` | `state` (the `state.json` record), layout constants, `Baseline`, `EmptyTreeID`, `newWorkspaceState`, `encodeState`, `decodeState`, `validateState`, `persistState`, `readStateFile`, `ErrRecoveryRequired`, `ErrPartial` |
@@ -29,6 +29,8 @@ Service.notebookFor(path)
       rejectSymlinkComponents → root.MkdirAll(rel)
       flock(<P>/operation.lock) → openPrivateState (create or open repo, EmptyTree, load/create state.json)
 
+Hold(ctx)  → acquire (semaphore, then flock) → ctx carrying the held lock + release
+           (Notebook.Pull / Notebook.Commit hold it for the whole operation)
 Snapshot   → withOpLock → scanLocked → scanWalk → readVisibleFile → git.ValidateSnapshot
 Materialize(baseline, tree) / Accept(baseline) / Recover(baseline)
            → withOpLock → [Recover: markRecoveryRequired] → applyLocked
@@ -83,7 +85,7 @@ MarkPulled → withOpLock → write <P>/pulled via temp + rename
 ### Opening and recovery-required mode
 
 - Fresh first use (no state, no repo, no temp file): create the repository, write the empty tree, persist the initial record.
-- Any anomaly forces recovery-required mode instead of failing `Open`: missing state with an existing repository (interrupted first init), a leftover `state.json.tmp`, an unreadable or invalid record, an identity mismatch, or a repository that will not open (removed and recreated empty; it is only a cache).
+- Any anomaly forces recovery-required mode instead of failing `Open`: missing state with an existing repository (interrupted first init), a leftover `state.json.tmp`, an unreadable or invalid record, an identity mismatch, or a repository that will not open (removed and recreated empty; it is only a cache; when the record itself is sound, `Open` persists `recoveryRequired: true` into it so a later reread keeps the requirement).
 - While recovery is required, every operation except `Recover` returns `ErrRecoveryRequired` from `withOpLock`. The notebook repairs it from `current`; see [guarantees.md](./guarantees.md).
 
 ### Rewriting L (`applyLocked`)
@@ -94,18 +96,21 @@ MarkPulled → withOpLock → write <P>/pulled via temp + rename
 - L directories are created `0755` and files `0644`, subject to umask; Windows inherits the root ACL.
 - `Materialize(baseline, tree)` writes `tree` to L and records `baseline` in one failure-atomic operation: this is how pull and conflicts show a merged or marker-bearing tree while recording R. `Accept(baseline)` writes `baseline.Tree`. `Recover(baseline)` marks recovery first, then does the same.
 
-### Operation lock (`withOpLock`)
+### Operation lock (`Hold`, `withOpLock`)
 
-- Per workspace: a one-slot semaphore (honors the request context) serializes calls in-process, then `flock.TryLockContext` on `operation.lock` (retry every 50 ms until the context ends) serializes across processes. The OS releases the lock on process exit; no PID or stale-lock recovery exists. `Open` takes the same file lock while creating P.
+- Per workspace: a one-slot semaphore (honors the request context) serializes calls in-process, then `flock.TryLockContext` on `operation.lock` (retry every 50 ms until the context ends) serializes across processes (`acquire`). The OS releases the lock on process exit; no PID or stale-lock recovery exists. `Open` takes the same file lock while creating P.
+- `Hold(ctx)` acquires the lock for a whole notebook operation and returns a context that carries it (`heldLockKey`, keyed by this `Workspace`, so holds on several workspaces nest in one context). `withOpLock` runs a call directly when its context already holds this workspace's lock, and otherwise acquires the lock for that call alone. `Notebook.Pull` and `Notebook.Commit` hold it from their first recovery check to their result, including entry recovery, the scan, the remote read, the publication, local acceptance, and the opportunistic checkpoint, so two operations on one path never interleave, in one process or across processes. A nested `Hold` with a held context is a no-op. `Hold` does not refuse a recovery-required workspace; `withOpLock` still does for everything but `Recover`.
+- Once the file lock is held, `acquire` rereads `state.json` into `Workspace.state` (`refreshState`, `loadDurableState`): another process sharing P may have advanced the baseline or set or cleared the recovery flag since this `Workspace` last looked. A missing or undecodable record, a foreign identity, or a leftover `state.json.tmp` requires recovery, as at `Open`; an unreadable record keeps the last known baseline. Because the record is the only thing a lock holder trusts, `Open` writes `recoveryRequired` into it when it had to rebuild the private repository under a sound record (`openPrivateState`).
 - Different paths lock independently and can work concurrently.
 
 ## Gotchas
 
-- The lock is per workspace method, not per notebook operation. `Notebook.Pull` takes it separately for `Snapshot`, `Materialize`, and `MarkPulled`, so two concurrent operations on one path can interleave.
-- `app.Service` caches one `Workspace` per cleaned request path; `Workspace.state` is an in-memory copy of `state.json`, trusted because that `Workspace` is the only one over its P in the process.
+- A workspace call made with a context that does not carry the held lock (a fresh `context.Background()` inside an operation) waits for the lock the operation itself holds and deadlocks until its context ends. Pass the operation's context down.
+- A slow operation (a large checkpoint upload inside a commit) keeps every other operation on its path waiting; other paths are unaffected.
+- `app.Service` caches one `Workspace` per cleaned request path; `Workspace.state` is an in-memory copy of `state.json`, refreshed each time the lock is taken. `Baseline()` and `RecoveryRequired()` read that copy without the lock, so outside a held operation they can be stale by another process's last write.
 - `Replace`, `Diff`, and `BaselineSnapshot` have no production callers (tests only). `Replace`'s comment calls it the conflict path, but the notebook uses `Materialize`.
 - `staging/` files are written `0644` inside P, not `0600`.
-- `Pulled` is a plain `os.Stat` outside the lock.
+- `Pulled` is a plain `os.Stat` that takes no lock itself. The notebook calls it while holding the operation lock, so another process cannot write or remove the marker in between; a caller outside a held operation gets a point-in-time answer.
 
 ## Related
 

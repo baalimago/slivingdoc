@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/baalimago/slivingdoc/internal/storage"
 )
@@ -518,4 +519,46 @@ func TestScenarioCommitPublicationNotFound(t *testing.T) {
 	if m := h.Manifest(); m.Generation != 1 {
 		t.Fatalf("remote manifest generation = %d, want the unlanded proposal to leave 1", m.Generation)
 	}
+}
+
+// TestScenarioOperationsOnOnePathDoNotInterleave proves the operation lock
+// spans a whole notes_pull or notes_commit (architecture/workspace.md): a
+// commit parked at its manifest create still holds the path, so a pull of
+// the same path from another session starts none of its work — not even
+// its read of current — until the commit has returned.
+func TestScenarioOperationsOnOnePathDoNotInterleave(t *testing.T) {
+	t.Parallel()
+	h := newFakeHarness(t, HarnessConfig{})
+	path := h.Path("notes")
+	h.assertOK(t, h.Pull("a", path))
+	h.WriteFile(path+"/a.md", "A")
+
+	h.Faults().BlockNext(OpCreate, storage.CurrentKey)
+	commitCh := runCall(t, h, "a", toolCommit, path, "A")
+	h.eventually(t, settleTimeout, func() error {
+		if !h.Faults().Waiting(OpCreate, storage.CurrentKey) {
+			return fmt.Errorf("the commit has not reached the conditional create")
+		}
+		return nil
+	})
+	reads := h.Recorder().CountKey(OpGet, storage.CurrentKey)
+
+	pullCh := runCall(t, h, "b", toolPull, path, "")
+	time.Sleep(300 * time.Millisecond) // time for an unserialized pull to read current
+	if got := h.Recorder().CountKey(OpGet, storage.CurrentKey); got != reads {
+		t.Fatalf("reads of current while the commit held the path = %d, want %d: the pull interleaved", got, reads)
+	}
+	select {
+	case out := <-pullCh:
+		t.Fatalf("the pull returned while the commit held the path: %+v", out)
+	default:
+	}
+
+	h.Faults().Release(OpCreate, storage.CurrentKey)
+	h.awaitCall(t, commitCh, ToolCall{Tool: toolCommit, Path: path, Message: "A", Expect: CallExpectation{OK: true}})
+	h.awaitCall(t, pullCh, ToolCall{Tool: toolPull, Path: path, Expect: CallExpectation{OK: true}})
+	if got := h.ReadFile(path + "/a.md"); got != "A" {
+		t.Fatalf("a.md after both calls = %q, want the published content", got)
+	}
+	assertRemoteGeneration(t, h, path, 1)
 }

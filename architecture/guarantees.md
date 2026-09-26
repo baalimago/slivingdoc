@@ -48,7 +48,7 @@ Generic recovery:
 | After upload, before CAS | Pack is an unreferenced proposal; cleanup may delete it later | [checkpoints.md](./checkpoints.md) |
 | CAS precondition failure | Another writer won; merge again and retry | `publish` returns `errCASLost` |
 | CAS response lost | Reread `current`, search active and retained descriptors for the publication ID | `publish`, `lookupPublication` |
-| CAS accepted, local accept fails | `RECOVERY_FAILURE`, stage `commit.accept`, `remoteAccepted=yes`, even if resync succeeds, and also when the failure came before L mutation began (a lock error, reading the target tree, staging, a cancelled request) | `failAfterAccept` |
+| CAS accepted, local accept fails | `RECOVERY_FAILURE`, stage `commit.accept`, `remoteAccepted=yes`, even if resync succeeds, and also when the failure came before L mutation began (reading the target tree, staging, a cancelled request) | `failAfterAccept` |
 | Merge conflict | Remote unchanged; L rewritten with markers | [conflicts.md](./conflicts.md) |
 | Retry exhaustion | `REMOTE_BUSY`; caller files untouched | `Commit` loop |
 | Checkpoint failure | Accepted state unchanged; metrics + warning | `failCheckpoint` |
@@ -60,7 +60,7 @@ Generic recovery:
 ### Local mutation and recovery
 
 - There is no per-interruption recovery algorithm. Every mutation of L goes through `Workspace.applyLocked`, which stages the full target tree in P first (failure there leaves L intact and needs no recovery), then durably writes `recoveryRequired=true`, then rewrites L in place, then persists the new baseline with `recoveryRequired=false`.
-- `applyLocal` inspects `ws.RecoveryRequired()` after a failed mutation: set means the mutation had started, so it runs `recoverState` and returns `RECOVERY_FAILURE`; clear means nothing changed, so the plain workspace error passes through: `mcp.MapError` reports a non-context failure (a lock error, reading the target tree, staging) as retryable `STORAGE_FAILURE`/`INTERNAL`, while a lock wait or staging step ended by cancellation or a deadline stays a protocol error over MCP (the CLI returns the raw error).
+- `applyLocal` inspects `ws.RecoveryRequired()` after a failed mutation: set means the mutation had started, so it runs `recoverState` and returns `RECOVERY_FAILURE`; clear means nothing changed, so the plain workspace error passes through: `mcp.MapError` reports a non-context failure (reading the target tree, staging) as retryable `STORAGE_FAILURE`/`INTERNAL`, while a staging step ended by cancellation or a deadline stays a protocol error over MCP (the CLI returns the raw error). The lock is not taken here: it is held from the start of the operation (`holdWorkspace`), and failing to take it there, a cancelled or expired lock wait included, is `STORAGE_FAILURE`/`LOCAL_STATE` through `mapLocalError` before anything changed.
 - `recoverState` reports `stage` (`entry`, `pull.accept`, `commit.accept`, `commit.cas`, `merge.materialize`, `commit.readonly`), whether remote acceptance is known, and whether resync succeeded. A successful repair never turns the anomalous call into `OK`; action is `PULL` when resynchronized, else `RETRY`.
 - If repair fails, P stays marked. Every normal workspace operation then returns `ErrRecoveryRequired` (`withOpLock`), and the next `Pull` or `Commit` runs `entryRecovery` instead of its own work.
 - `workspace.Open` also enters recovery-required mode on a missing or corrupt `state.json`, a leftover `state.json.tmp`, an identity mismatch, or an unopenable repository (rebuilt empty and refilled from R).
@@ -91,7 +91,7 @@ Deterministic injection at operation boundaries, wired through `app.ServiceHooks
 
 ## Gotchas
 
-- The workspace op lock (`withOpLock`) is acquired and released per workspace call (`Snapshot`, `Materialize`, `Accept`, `MarkPulled`), not across a whole `Pull` or `Commit`. Two concurrent operations on the same path, in one process or across processes, can interleave between the scan and the rewrite of L. Callers must not run overlapping operations on one directory.
+- The workspace operation lock is held across a whole `Pull` or `Commit` (`Workspace.Hold`), so two concurrent operations on the same path, in one process or across processes, run one after the other; the second sees the first's result in L and P. In one process both operations share one `Workspace`; across processes each has its own in-memory copy of `state.json`, and `acquire` rereads the record once the file lock is held (`refreshState`), so the second process works from the baseline and recovery flag the first one wrote (`TestOperationsOnOneWorkspaceDoNotInterleave`, `TestScenarioOperationsOnOnePathDoNotInterleave`, `TestLockHolderRereadsState`).
 - `MarkPulled` runs outside `applyLocal`; its failure maps to `STORAGE_FAILURE`/`LOCAL_STATE` even though L was already rewritten (L and P are consistent at that point).
 - A new failure boundary that mutates L must go through `applyLocked` (so the flag is durable first) and its caller must wrap it in `applyLocal` with the right stage and `RemoteAccepted` value.
 

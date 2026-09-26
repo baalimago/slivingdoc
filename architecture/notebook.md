@@ -8,7 +8,7 @@ Read this when: wiring a notebook, changing a default or range, adding a metric,
 
 | File | Purpose |
 |------|---------|
-| `internal/notebook/notebook.go` | `Workspace` (consumer-owned interface), `Config`, `New`, `Notebook`, defaults and ranges, `ValidateMessage`, `entryRecovery`, `applyLocal`, `failAfterAccept`, `mapLocalError`, `rejectMarkers`, `materializeTree`, stage constants |
+| `internal/notebook/notebook.go` | `Workspace` (consumer-owned interface), `Config`, `New`, `Notebook`, defaults and ranges, `ValidateMessage`, `holdWorkspace`, `entryRecovery`, `applyLocal`, `failAfterAccept`, `mapLocalError`, `rejectMarkers`, `materializeTree`, stage constants |
 | `internal/notebook/pull.go` | `Pull`, `pinProtected`. See [pull.md](./pull.md) |
 | `internal/notebook/commit.go` | `Commit`, `attemptPublication`, `buildProposal`, `publish`, `enforcePolicy`. See [commit.md](./commit.md) |
 | `internal/notebook/remote.go` | `remoteState`, `readRemote`, `readCurrent`, `importRemote`, `prefetchPacks`, `ensurePack`, `cacheRead`, `cacheWrite`, `lookupPublication`, `recoverState` |
@@ -90,7 +90,7 @@ Notebook.Commit(ctx, message) → see commit.md
 
 - Almost every failure is a `*notebook.Error` with `Code`, `Reason`, `Action` (from `actionForPairing`; for `RECOVERY_FAILURE`, `PULL` when resynchronized, else `RETRY`), `Message`, `Files`, optional `Recovery`, and `Cause` (unwrapped for `errors.Is`). Two exceptions come back unwrapped: a workspace error from `applyLocal` raised before the workspace set its recovery flag (never after a proved CAS, which always goes through `failAfterAccept`), and the context error from a cancelled backoff wait. `mcp.MapError` maps the first to `STORAGE_FAILURE`/`INTERNAL` (`RETRY`) and treats cancellation as a protocol error. See [product-contract.md](./product-contract.md).
 - `mapLocalError`: workspace `ErrInvalidContent`, `ErrSymlink`, `ErrUnsupportedFile`, `ErrInvalidPath` become `INVALID_REQUEST`/`INVALID_CONTENT` with the offending path from `ScanError`; any other workspace error before mutation is `STORAGE_FAILURE`/`LOCAL_STATE`.
-- `applyLocal(ctx, stage, accepted, fn)` wraps every call that mutates L. It runs `recoverState` and returns `RECOVERY_FAILURE` only when `ws.RecoveryRequired()` shows the flag was already durable; a failure before that (a lock error, reading the target tree, staging; a cancelled request stays a protocol error) returns the plain error. `failAfterAccept` handles every failure between a proved CAS and the end of local acceptance and always runs `recoverState` and returns `RECOVERY_FAILURE`. See [guarantees.md](./guarantees.md).
+- `applyLocal(ctx, stage, accepted, fn)` wraps every call that mutates L. It runs `recoverState` and returns `RECOVERY_FAILURE` only when `ws.RecoveryRequired()` shows the flag was already durable; a failure before that (reading the target tree, staging; a cancelled request stays a protocol error; the operation lock is already held, so no lock wait fails here) returns the plain error. `failAfterAccept` handles every failure between a proved CAS and the end of local acceptance and always runs `recoverState` and returns `RECOVERY_FAILURE`. See [guarantees.md](./guarantees.md).
 
 ### Logging (`logger.go`)
 
@@ -100,7 +100,7 @@ The notebook never takes a logger at construction. `WithLogger` attaches a logge
 
 - Checkpoint and cleanup run synchronously inside the `Commit` call that triggered them (not in a goroutine), so the commit's latency includes them even though their outcome cannot change its result.
 - `readRemote` re-imports every active pack on each call (pull, every commit attempt, checkpoint reread), so its cost grows with the tail length until a checkpoint compacts it. Imported objects are harmless cache, never state, even when the caller later fails.
-- The notebook never locks anything itself; per-call serialization is the workspace's `withOpLock`, which is per workspace method, not per notebook operation.
+- The notebook has no lock of its own: `Pull` and `Commit` hold the workspace operation lock for the whole operation (`holdWorkspace` over `Workspace.Hold`) and pass the held context to every workspace call; see [workspace.md](./workspace.md). `holdWorkspace` maps a failure to take the lock through `mapLocalError`, so a closed workspace, a lock-file error, or a lock wait ended by cancellation or a deadline is `STORAGE_FAILURE`/`LOCAL_STATE` before anything changed.
 
 ## Related
 

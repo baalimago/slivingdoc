@@ -92,7 +92,7 @@ the accepted remote text
 ## Gotchas
 
 - `MergeResult.Tree` is the zero OID whenever there are conflicts; callers must use `MaterializeTree`, never `ReadSnapshot(res.Tree)`.
-- A failure while writing the conflicted result to L, after the workspace's recovery flag is durable, is `RECOVERY_FAILURE` with stage `merge.materialize`, not `CONTENT_CONFLICT`. A failure before the flag (a lock error, reading the target tree, staging; a cancelled request stays a protocol error) returns the plain workspace error (`STORAGE_FAILURE`/`INTERNAL` over MCP unless it is a context error) with L unchanged. A `materializeTree` failure (building the conflicted snapshot) is `STORAGE_INTEGRITY`/`ENGINE_FAILED`.
+- A failure while writing the conflicted result to L, after the workspace's recovery flag is durable, is `RECOVERY_FAILURE` with stage `merge.materialize`, not `CONTENT_CONFLICT`. A failure before the flag (reading the target tree, staging; a cancelled request stays a protocol error; the operation lock is already held, so no lock wait fails here) returns the plain workspace error (`STORAGE_FAILURE`/`INTERNAL` over MCP unless it is a context error) with L unchanged. A `materializeTree` failure (building the conflicted snapshot) is `STORAGE_INTEGRITY`/`ENGINE_FAILED`.
 - `Merge` keeps `Index` on the result so `MaterializeTree` can rebuild the full conflicted state; do not drop it when passing results around.
 - Commit's marker check looks at the whole visible snapshot, so a note that must contain a literal example block needs one signature character changed.
 

@@ -32,6 +32,16 @@ import (
 // an empty stat. A conflict or any error returns the zero Result with the
 // existing error.
 func (n *Notebook) Commit(ctx context.Context, message string) (Result, error) {
+	ctx, release, err := n.holdWorkspace(ctx)
+	if err != nil {
+		return Result{}, err
+	}
+	defer release()
+	return n.commit(ctx, message)
+}
+
+// commit is Commit under the held operation lock.
+func (n *Notebook) commit(ctx context.Context, message string) (Result, error) {
 	if n.ws.RecoveryRequired() {
 		if err := n.entryRecovery(ctx); err != nil {
 			return Result{}, err

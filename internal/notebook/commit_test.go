@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -365,6 +366,48 @@ func TestCommitAppendsIncrementPack(t *testing.T) {
 	}
 	if len(commit.Parents) != 1 || commit.Parents[0] != m1.Head {
 		t.Fatalf("second commit parents = %v, want [gen-1 head]", commit.Parents)
+	}
+}
+
+// TestOperationsOnOneWorkspaceDoNotInterleave proves the operation-wide
+// lock (architecture/workspace.md): while a commit is parked at its
+// manifest CAS, a pull of the same workspace does not even scan L; it runs
+// only after the commit returned.
+func TestOperationsOnOneWorkspaceDoNotInterleave(t *testing.T) {
+	store := fake.New("")
+	gate := &casGateStore{ObjectStore: store, entered: make(chan struct{}), release: make(chan struct{})}
+	var scans atomic.Int32
+	wsFail := &workspace.Failpoints{Scan: func() error { scans.Add(1); return nil }}
+	nb, w, _ := newNotebook(t, nbConfig{store: gate, ids: &testIDSource{}, wsFail: wsFail})
+	writeLocal(t, w, map[string]string{"a.md": "v1"})
+	pullOK(t, nb)
+
+	commitDone := make(chan error, 1)
+	go func() { commitDone <- errOnly(nb.Commit(context.Background(), "first")) }()
+	<-gate.entered
+	before := scans.Load()
+
+	pullDone := make(chan error, 1)
+	go func() { pullDone <- errOnly(nb.Pull(context.Background())) }()
+	time.Sleep(200 * time.Millisecond) // time for an unserialized pull to scan
+	if got := scans.Load(); got != before {
+		t.Fatalf("scans while the commit held the workspace = %d, want %d", got, before)
+	}
+	select {
+	case err := <-pullDone:
+		t.Fatalf("Pull() returned while the commit held the workspace: %v", err)
+	default:
+	}
+
+	close(gate.release)
+	if err := <-commitDone; err != nil {
+		t.Fatalf("Commit() = %v", err)
+	}
+	if err := <-pullDone; err != nil {
+		t.Fatalf("Pull() = %v", err)
+	}
+	if gen := w.Baseline().RemoteGeneration; gen != 1 {
+		t.Fatalf("baseline generation = %d, want 1", gen)
 	}
 }
 

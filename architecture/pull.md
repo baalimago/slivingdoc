@@ -28,8 +28,9 @@ Read this when: changing pull ordering, remote reading, the pack cache, the pull
 mcp handler.pull → Service.Pull(path)
   | cmd/pull → app.Runtime.Pull (attaches the notebook logger) → Service.Pull(path)
   → notebookFor(path) → Notebook.Pull(ctx)
+  0. holdWorkspace → ws.Hold(ctx)          → the op lock, held until the result (mapLocalError on failure)
   1. ws.RecoveryRequired()? → entryRecovery → recoverState → RECOVERY_FAILURE stage entry (always; no pull runs)
-  2. ws.Snapshot(ctx)                     → scan L under the op lock (mapLocalError on failure)
+  2. ws.Snapshot(ctx)                     → scan L under the held op lock (mapLocalError on failure)
   3. git.BuildTree(repo, local)           → localTree
   4. readRemote(ctx)
        readCurrent → absent: emptyRemote() (gen 0, EmptyTreeID) → skip to 5
@@ -60,11 +61,11 @@ mcp handler.pull → Service.Pull(path)
 - **Pulled marker.** Both the clean and the conflict path call `ws.MarkPulled`, which is what makes a later `notes_commit` legal (`PULL_REQUIRED` otherwise).
 - **Result.** `Generation` is R's generation; `Stat` is the diffstat from the raw scanned L to the merged tree, so it shows remote changes arriving and protected-path restores, while kept local edits (present on both sides) do not appear. A conflict returns the zero `Result` with the error.
 - **Protected paths.** With `--read-only-paths` or `--writable-paths`, `pinProtected` replaces every changed protected path in the local side with baseline content (or removes it) before the merge, so the merge takes R there unconditionally and never reports a conflict under a protected path. With no policy configured it returns `localTree` unchanged.
-- **Failure mapping.** Merge or materialize engine errors are `STORAGE_INTEGRITY`/`ENGINE_FAILED`. A failure inside `Materialize` after the recovery flag is durable becomes `RECOVERY_FAILURE` with stage `pull.accept` (clean) or `merge.materialize` (conflict) and `remoteAccepted=no`. A failure before the flag (a lock error, reading the target tree, staging; a cancelled request stays a protocol error) returns the plain workspace error, reported as `STORAGE_FAILURE`/`INTERNAL` unless it is a context error; L and P are unchanged.
+- **Failure mapping.** Merge or materialize engine errors are `STORAGE_INTEGRITY`/`ENGINE_FAILED`. A failure inside `Materialize` after the recovery flag is durable becomes `RECOVERY_FAILURE` with stage `pull.accept` (clean) or `merge.materialize` (conflict) and `remoteAccepted=no`. A failure before the flag (reading the target tree, staging; a cancelled request stays a protocol error; the operation lock is already held, so no lock wait fails here) returns the plain workspace error, reported as `STORAGE_FAILURE`/`INTERNAL` unless it is a context error; L and P are unchanged.
 
 ## Gotchas
 
-- The op lock is taken separately for `Snapshot`, `Materialize`, and `MarkPulled`; an edit to L between step 2 and step 7 is overwritten without being merged. The contract says callers edit only between tool calls.
+- The op lock is held from step 0 to the result, so another pull or commit on the same path waits; it does not stop a process that edits L directly, and such an edit between step 2 and step 7 is overwritten without being merged. The contract says callers edit only between tool calls.
 - `diffStat` runs before the clean-path `Materialize` on purpose: a read failure must abort while L and P are untouched. Keep new presentation work before the mutation.
 - `readRemote` re-imports every active pack on every pull and commit attempt, so cost scales with the tail length until a checkpoint compacts it.
 - `readRemote` validates the whole history from head to the shallow boundary on every pull; `ValidateHistory` shares one seen set so the cost is the number of unique objects, not commits times files.

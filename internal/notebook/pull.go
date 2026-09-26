@@ -19,6 +19,16 @@ import (
 // observed and the materialized result. A conflict or any error returns
 // the zero Result with the existing error.
 func (n *Notebook) Pull(ctx context.Context) (Result, error) {
+	ctx, release, err := n.holdWorkspace(ctx)
+	if err != nil {
+		return Result{}, err
+	}
+	defer release()
+	return n.pull(ctx)
+}
+
+// pull is Pull under the held operation lock.
+func (n *Notebook) pull(ctx context.Context) (Result, error) {
 	if n.ws.RecoveryRequired() {
 		if err := n.entryRecovery(ctx); err != nil {
 			return Result{}, err
