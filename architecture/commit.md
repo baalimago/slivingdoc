@@ -2,23 +2,23 @@
 
 `notes_commit` publishes the caller's edits in L and folds in concurrent, non-conflicting changes by others. It validates locally, merges (A = accepted baseline, L, R = observed `current`), builds a commit and one immutable pack, uploads the pack, and then makes the only accepting move: a conditional write of `current` against the ETag it read (compare-and-swap). A lost race rereads R and rebuilds everything; a lost response is resolved by reading `current` back. `OK` is returned only when acceptance is proved. This doc answers "what does a commit do, how does it retry, and how does it decide a result it cannot see".
 
-Read this when: changing commit validation order, proposal construction, the manifest CAS, retry and backoff, publication proof, or the first-publication path.
+Read this when: changing commit validation order, proposal construction, the manifest CAS, retry and backoff, publication proof, the first-publication path, or the compaction of a full space.
 
 ## Key files
 
 | File | Purpose |
 |------|---------|
-| `internal/notebook/commit.go` | `Commit`, `attemptPublication`, `proposal`, `buildProposal`, `buildFirstProposal`, `buildIncrementProposal`, `uploadProposal`, `publish`, `mapUploadError`, `enforcePolicy`, `restoreProtected`, `policyRefusal`, `rejectNewFoldedPairs`, `newFoldedPairFiles` |
+| `internal/notebook/commit.go` | `Commit`, `attemptPublication`, `proposal`, `buildProposal`, `buildFirstProposal`, `buildIncrementProposal`, `buildCompactingProposal`, `acceptCompaction`, `discardCompaction`, `chainSize`, `uploadProposal`, `publish`, `mapUploadError`, `enforcePolicy`, `restoreProtected`, `policyRefusal`, `rejectNewFoldedPairs`, `newFoldedPairFiles` |
 | `internal/notebook/remote.go` | `readRemote`, `lookupPublication` |
 | `internal/notebook/notebook.go` | `ValidateMessage`, `rejectMarkers`, `applyLocal`, `failAfterAccept` |
 | `internal/notebook/backoff.go` | `exponentialBackoff.Wait` |
-| `internal/notebook/errors.go` | `errCASLost`, `remoteBusy`, `ReasonPublicationUnproven` |
+| `internal/notebook/errors.go` | `errCASLost`, `remoteBusy`, `ReasonPublicationUnproven`, `storageFailure`/`storeRefusal` (`STORAGE_FULL` and the other store refusals) |
 | `internal/git/commit.go` | `CreateCommit`, `ValidateCommitMessage` |
 | `internal/git/pack.go` | `ExportIncrement`, `ExportCheckpoint`, `MarkShallow` |
 | `internal/git/merge.go` | `Merge`, `FindConflictBlocks` |
 | `internal/storage/upload.go` | `UploadUnique`, `VerifyObject` |
 | `internal/storage/manifest.go` | `Manifest`, `Checkpoint`, `Increment`, `EncodeManifest`, `CurrentKey` |
-| `internal/storage/store.go` | `ObjectStore.CreateObject` / `ReplaceObject`, `ErrPreconditionFailed`, `ErrTransport` |
+| `internal/storage/store.go` | `ObjectStore.CreateObject` / `ReplaceObject`, `ErrPreconditionFailed`, `ErrTransport`, `ErrQuotaExceeded` |
 | `internal/workspace/workspace.go` | `Accept`, `Materialize`, `Pulled` |
 
 ## Flow
@@ -43,13 +43,17 @@ Notebook.Commit(ctx, message)
            rejectNewFoldedPairs(remote.tree, merged.Tree) → INVALID_REQUEST/INVALID_CONTENT for a new case-folded file/directory pair
            buildProposal: gen 0 → buildFirstProposal | else buildIncrementProposal
            uploadProposal → storage.UploadUnique
+             ErrQuotaExceeded on an increment → buildCompactingProposal (hosted-mode.md):
+               checkpoint not smaller than the referenced packs → STORAGE_FAILURE STORAGE_FULL
+               else uploadProposal(compacting checkpoint) and publish that instead
            publish: EncodeManifest → CreateObject (gen 0) | ReplaceObject(etag)
+             compacting and publish failed → discardCompaction
              ErrPreconditionFailed → errCASLost → casLost=true
              ErrTransport → lookupPublication(pubID): found → accepted | else PUBLICATION_UNPROVEN
              other → STORAGE_FAILURE MANIFEST_WRITE
            Failpoints.CAS → failAfterAccept
            Accept(proposal.baseline) failure → failAfterAccept(stageCommit)
-           recordTail; tail >= checkpointPacks → runCheckpoint (see checkpoints.md)
+           recordTail; compacting → acceptCompaction; tail >= checkpointPacks → runCheckpoint (see checkpoints.md)
        casLost: attempt > retryLimit → REMOTE_BUSY; else waiter.Wait(attempt) and loop
 ```
 
@@ -86,6 +90,11 @@ Notebook.Commit(ctx, message)
 - **Lost pack-upload response**: `UploadUnique` reads the unique key back and proves size and SHA-256; matching bytes are reused, absence is a transport failure (`PACK_UPLOAD`), different bytes are `STORAGE_INTEGRITY`/`PACK_INVALID`. Metadata alone is never proof.
 - `OK` is never returned while acceptance is uncertain.
 
+### A full space
+
+- A store refusal of the pack upload (`ErrQuotaExceeded`, `ErrRequestLimit`, `ErrAccessDenied`, `ErrTooLarge`, `ErrRateLimited`) happens before the manifest moves: nothing is published, L, the baseline and `state.json` are unchanged, and the result is `STORAGE_FAILURE` with that refusal's reason ([errors.md](./errors.md)).
+- When an increment upload is refused with `ErrQuotaExceeded`, `buildCompactingProposal` re-exports the same commit as a checkpoint of the whole state (same publication ID, key `packs/checkpoints/<incGen>-<cpID>.pack`, empty tail, no retained generation). It proceeds only when that pack is smaller than the total size of every pack the observed manifest references, active and retained (summed by `chainSize`); otherwise the original `STORAGE_FULL` error is returned. A first publication is never compacted. After acceptance `acceptCompaction` records the shallow boundary and runs `cleanup` at the checkpoint's generation; a publish failure that is a lost CAS or `MANIFEST_WRITE` makes `discardCompaction` delete the checkpoint pack. The full behavior and its trade-offs are in [hosted-mode.md](./hosted-mode.md).
+
 ### After acceptance
 
 - `Accept(proposal.baseline)` rewrites L to the exact accepted merged tree and records its generation, head, and tree in `state.json`. Any `Accept` failure goes through `failAfterAccept`: `RECOVERY_FAILURE` with stage `commit.accept` and `remoteAccepted=yes`, whether it happened after the workspace's recovery flag was durable or before it (reading the target tree, staging, a cancelled request). The failpoint path (stage `commit.cas`) does the same with stage `commit.cas`. In every case the publication is already accepted; the immediate resynchronization rewrites L to it, and when that cannot run (a cancelled request) the report says `resynchronized=false` and the next pull or commit converges.
@@ -98,6 +107,7 @@ Notebook.Commit(ctx, message)
 - Objects from losing attempts stay in the private repository. They are never referenced by accepted state.
 - `attemptStart` is taken once, so all attempts of one call share the commit time; the commit OID still differs per attempt because the parent differs.
 - A conflict during a commit rewrites L and records R as the new baseline just like pull; the caller resolves and commits again without pulling.
+- Known bug: an `Accept` failure after an accepted compacting commit returns through `failAfterAccept` before `acceptCompaction`, so the replaced chain is not cleaned up; and `discardCompaction` misses a manifest write refused as a store refusal, because `storageFailure` has replaced its `MANIFEST_WRITE` reason. Both leave dead bytes in a full space until a later cleanup (a checkpoint's or a later compaction's) ([hosted-mode.md](./hosted-mode.md)).
 
 ## Related
 
@@ -105,4 +115,4 @@ Notebook.Commit(ctx, message)
 - [git-engine.md](./git-engine.md) for pack export and commit creation
 - [running.md](./running.md#configuration) (`--commit-retries`)
 - `../AGENTS.md`: [Event Flow](../AGENTS.md#event-flow), [Conventions](../AGENTS.md#conventions)
-- Other concerns: [storage.md](./storage.md), [s3store.md](./s3store.md), [errors.md](./errors.md)
+- Other concerns: [storage.md](./storage.md), [s3store.md](./s3store.md), [hosted-mode.md](./hosted-mode.md), [errors.md](./errors.md)

@@ -64,9 +64,11 @@ func helperMain(mode string) int {
 			return fake.New(cfg.Prefix), nil
 		}
 	case "real":
-		// The real S3 adapter against the environment-configured endpoint:
-		// the CLI scenarios point it at the shared S3-compatible suite, so
-		// state survives across one-shot pull and commit processes.
+		// The real store adapter (S3, or hosted when SLIVINGDOC_TOKEN is set)
+		// against the environment-configured endpoint: the S3 CLI scenarios
+		// point it at the shared S3-compatible suite and the hosted ones at a
+		// gatewaytest server, so state survives across one-shot pull and
+		// commit processes.
 	case "bad-store":
 		opts.StoreFactory = func(ctx context.Context, cfg app.ServiceConfig) (storage.ObjectStore, error) {
 			store := fake.New(cfg.Prefix)

@@ -1,19 +1,19 @@
 # System overview
 
-slivingdoc gives many agents one shared directory of UTF-8 text notes that they read and edit with ordinary file tools. It stores the current notebook durably in S3-compatible object storage and resolves concurrent edits with Git's three-way merge, run in-process through a statically linked libgit2. It is not a source-control product: it uses Git data structures internally but never exposes a repository, a ref, a commit ID, or a Git executable. This doc answers "what are the moving parts, which package owns what, and which way do dependencies point".
+slivingdoc gives many agents one shared directory of UTF-8 text notes that they read and edit with ordinary file tools. It stores the current notebook durably in S3-compatible object storage, or in a space of the slivingdoc hosted storage API when an API token is set, and resolves concurrent edits with Git's three-way merge, run in-process through a statically linked libgit2. It is not a source-control product: it uses Git data structures internally but never exposes a repository, a ref, a commit ID, or a Git executable. This doc answers "what are the moving parts, which package owns what, and which way do dependencies point".
 
 Read this when: you are new to the repo, you need to find which package owns a behavior, or you are about to add an import between internal packages.
 
 ## Purpose and priorities
 
 1. Resolve concurrent file changes quickly.
-2. Store the current notebook durably in S3.
+2. Store the current notebook durably in S3 (or the hosted storage API, which offers the same conditional-write semantics).
 
 The public API is exactly two operations, `notes_pull` and `notes_commit`, served over MCP stdio and mirrored as the one-shot `slivingdoc pull [path]` and `slivingdoc commit [path] -m <msg>` subcommands. There is no public Go package, SDK, or HTTP API: all Go packages are internal, and the supported interfaces are the MCP tools, the `pull` and `commit` subcommands, process flags, release artifacts, and the npm launcher. See [product-contract.md](./product-contract.md).
 
 ## Scope
 
-In v1: stdio MCP transport; direct `pull`/`commit` subcommands; one shared notebook per configured bucket+prefix; UTF-8 text files and directories; text merges with visible conflict markers; S3-compatible storage; optimistic concurrent publication; count-based automatic checkpoints; a self-contained native executable; an npm launcher.
+In v1: stdio MCP transport; direct `pull`/`commit` subcommands; one shared notebook per configured bucket+prefix; UTF-8 text files and directories; text merges with visible conflict markers; S3-compatible storage, or the hosted storage API ([hosted-mode.md](./hosted-mode.md)); optimistic concurrent publication; count-based automatic checkpoints; a self-contained native executable; an npm launcher.
 
 Out of scope: a Git executable, `git-remote-s3`, `git2go`, a public Git remote, a writer lock or lease object in S3, symlinks/devices/sockets/pipes/hard-link semantics, branch/tag/ref/checkout/rollback APIs, permanent Git history, an application-level backup service.
 
@@ -37,7 +37,7 @@ Out of scope: a Git executable, `git-remote-s3`, `git2go`, a public Git remote, 
 | Component | Responsibility |
 |-----------|----------------|
 | libgit2 (`internal/git2`) | Build trees and commits, create and import packs, merge three trees. |
-| S3 (`internal/s3store`) | Store immutable bytes, hold the accepted manifest, enforce conditional publication. |
+| S3 (`internal/s3store`), or the hosted storage API (`internal/httpstore`) | Store immutable bytes, hold the accepted manifest, enforce conditional publication. |
 | slivingdoc (`internal/notebook`, `internal/workspace`, `internal/git`) | Product policy: paths, content rules, retries under contention, conflict presentation, checkpoints. |
 
 This reuses mature Git merge behavior without operating a Git server, a mounted object-store filesystem, or a coordination database. Most work (scan, merge, pack build, upload, download) runs concurrently across writers; only the final CAS on the small `current` object orders publications.
@@ -68,10 +68,12 @@ One line per `internal/` package.
 | `git2` | The only CGo package: pinned libgit2 v1.9.6 behind the `git` seam. See [git-engine.md](./git-engine.md) |
 | `notebook` | Pull, Commit, bounded CAS retry, publication proof, generic recovery, checkpoints, cleanup, metrics, failpoints, domain error taxonomy. See [notebook.md](./notebook.md) |
 | `workspace` | L/P layout, `os.Root` scans, strict `state.json`, baseline authority, staged in-place materialization, op lock, recovery-required mode. See [workspace.md](./workspace.md) |
-| `storage` | `ObjectStore` boundary, strict manifest v1, pack key grammar, `UploadUnique`, startup `Probe`, UUIDv7, SHA-256 type |
+| `storage` | `ObjectStore` boundary, semantic errors (including the store refusals and `Refusal`), pack metadata fields, strict manifest v1, pack key grammar, `UploadUnique`, startup `Probe`, UUIDv7, SHA-256 type |
 | `storage/fake` | Deterministic in-memory `ObjectStore` with fault injection (tests) |
 | `storage/contract` | One contract suite run against every `ObjectStore` (tests) |
 | `s3store` | The only production AWS SDK package (test-only `tests3/s3.go` also uses the SDK to create its bucket): S3 adapter, prefix join, multipart upload, semantic error mapping |
+| `httpstore` | The second production `ObjectStore`, selected by `SLIVINGDOC_TOKEN`: the hosted storage API over HTTPS with a bearer token and one space, status-to-semantic error mapping, `CheckAccess` instead of the probe. See [hosted-mode.md](./hosted-mode.md) |
+| `httpstore/gatewaytest` | Test-only reference server of the hosted API over `storage/fake` |
 | `mcp` | stdio MCP server: two strict tool schemas, strict decoding, error/success envelopes, redaction, `mcpReqID` logging |
 | `strictjson` | Strict JSON value tree shared by the manifest and `state.json` (rejects unknown, duplicate, missing, null) |
 | `pathutil` | `ExpandHome` for `~/` request paths |
@@ -87,6 +89,7 @@ main.go ──> cli ──> cmd/* ──> app ──┬──> mcp ────�
    │                                ├──> workspace │               │                └──> strictjson
    │                                ├──> storage <─┼── s3store     └──> git
    │                                ├──> s3store   ├──> workspace, git, strictjson, pathutil
+   │                                ├──> httpstore     (s3store and httpstore each import only storage)
    │                                └──> git, pathutil
    └──> git2 (engine constructed once in main, passed down as git.Engine)
 ```
@@ -96,6 +99,7 @@ Rules the import graph follows (verified by `grep` over non-test imports):
 - `git` imports no internal package. Everything above it speaks `git.OID`, `git.Snapshot`, `git.Repository`.
 - `git2` imports only `git`. In production only `main.go` imports it; tests in `integrationtest`, `cmd/pull`, `cmd/commit`, `app`, `notebook`, and `workspace` import it for native runs. Every other package receives a `git.Engine`.
 - `s3store` imports only `storage`, and only `app` (`realStoreFactory`, the default when `ProcessOptions.StoreFactory` is nil) and `integrationtest` import it.
+- `httpstore` imports only `storage` (and the standard library); only `app` (`realStoreFactory`, `validateHosted`) imports it in production. `httpstore/gatewaytest` imports `storage` and `storage/fake` and is imported only by tests (`httpstore`, `app` in `hosted_test.go`, `integrationtest`).
 - `notebook` imports `workspace`, `git`, `storage`; it never imports `mcp` or `app`.
 - `workspace` imports `git` and `strictjson`; it never reads remote state.
 - `storage` imports `git` (for `git.OID` in the manifest) and `strictjson`.
@@ -105,7 +109,8 @@ Rules the import graph follows (verified by `grep` over non-test imports):
 
 ```text
 main.go:main
-  → cli.Run → app.Setup (config, git2 Open + version check, s3store, storage.Probe)
+  → cli.Run → app.Setup (config, git2 Open + version check, s3store + storage.Probe,
+                          or httpstore + CheckAccess when SLIVINGDOC_TOKEN is set)
   → Runtime.Serve → mcp.NewServer (notes_pull, notes_commit)      [serve]
     or Runtime.Pull / Runtime.Commit → app.Report                  [pull, commit]
       → Service.Pull/Commit(path) → Service.notebookFor(path)
@@ -116,7 +121,8 @@ main.go:main
 ## Behavior
 
 - Invariants (from AGENTS.md "Conventions"; a change that breaks one must update these docs): the process never runs Git or imports `git2go`; all CGo stays in `git2`, all production AWS SDK use in `s3store`; `current` is the only accepted-state authority and `LIST` is a cleanup tool, never a read path; packs are immutable and uploaded before any manifest references them; publication is ETag CAS with no writer lock; content is UTF-8 without U+0000, no symlinks or special files; commit rejects complete marker blocks; checkpoint and cleanup never change a commit result; a failure after local mutation returns `RECOVERY_FAILURE`, never `OK`.
-- Caller-facing data never contains a credential, S3 key, private path, Git object ID, or Git vocabulary: notebook messages are fixed strings, `mcp.Redact` is a backstop that masks pack and probe keys, 40- and 64-hex IDs, access keys, and URL userinfo, and `mcp.safeEngineDetail` is an allowlist for `detail`.
+- Stores are `ObjectStore` adapters (`s3store`, and `httpstore` for hosted mode). The notebook stays store-neutral except where it reacts to the semantic store refusals: `storeRefusal` reasons and the compaction of a full space on `storage.ErrQuotaExceeded` ([hosted-mode.md](./hosted-mode.md)).
+- Caller-facing data never contains a credential, S3 key, private path, Git object ID, or Git vocabulary: notebook messages are fixed strings (except a hosted store refusal, which appends the server's sanitized message after `The storage says:`), `mcp.Redact` is a backstop that masks `sld_` API tokens, pack and probe keys, 40- and 64-hex IDs, access keys, and URL userinfo, and `mcp.safeEngineDetail` is an allowlist for `detail`.
 - One `Service` holds one `Notebook` per cleaned request path for the life of the process (`Service.opened`). See [workspace.md](./workspace.md) for the P directory each maps to.
 
 ## Gotchas
@@ -132,4 +138,4 @@ main.go:main
 - [git-engine.md](./git-engine.md), [workspace.md](./workspace.md)
 - [running.md](./running.md): commands, configuration, and operator guidance
 - `../AGENTS.md`: [Architecture](../AGENTS.md#architecture) (box diagram and runtime layout), [Package Map](../AGENTS.md#package-map), [Event Flow](../AGENTS.md#event-flow), [Startup Wiring](../AGENTS.md#startup-wiring-maingo), [Conventions](../AGENTS.md#conventions)
-- Other concerns: [storage.md](./storage.md), [s3store.md](./s3store.md), [mcp-server.md](./mcp-server.md), [cli.md](./cli.md), [config.md](./config.md), [errors.md](./errors.md), [logging.md](./logging.md), [testing.md](./testing.md), [build.md](./build.md)
+- Other concerns: [storage.md](./storage.md), [s3store.md](./s3store.md), [hosted-mode.md](./hosted-mode.md), [mcp-server.md](./mcp-server.md), [cli.md](./cli.md), [config.md](./config.md), [errors.md](./errors.md), [logging.md](./logging.md), [testing.md](./testing.md), [build.md](./build.md)

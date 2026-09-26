@@ -59,15 +59,22 @@ the code and fix the doc in the same change (see
   confinement, the scan and content rules, the P layout, `state.json`,
   the operation lock, rewriting L in place, recovery-required mode.
 - **[storage.md](./storage.md)**: `internal/storage`: object layout and
-  key grammar, the `current` manifest, pack integrity, the probe,
-  `UploadUnique`, the `ObjectStore` interface, contract suite and fake.
-  Start here to implement a new backend.
+  key grammar, the `current` manifest, pack integrity and metadata, the
+  semantic errors and `Refusal`, the probe, `UploadUnique`, the
+  `ObjectStore` interface, contract suite and fake. Start here to
+  implement a new backend.
 - **[s3store.md](./s3store.md)**: `internal/s3store` over the AWS SDK
   (addressing, conditional writes, multipart, error mapping, metadata
   headers, IAM permissions) and the `internal/tests3` container.
+- **[hosted-mode.md](./hosted-mode.md)**: `internal/httpstore`, the
+  hosted storage API adapter selected by `SLIVINGDOC_TOKEN`: settings,
+  the `CheckAccess` startup check, requests and redirects, the
+  status-to-error mapping, retries, compaction of a full space, and the
+  `gatewaytest` reference server.
 - **[config.md](./config.md)**: every flag and environment variable,
-  defaults, bounds, precedence, endpoint normalization, the session
-  directory, the shared pack cache, path sets, credentials.
+  defaults, bounds, precedence, endpoint normalization, hosted-mode
+  selection, the session directory, the shared pack cache, path sets,
+  credentials.
 - **[errors.md](./errors.md)**: the error taxonomy from storage and Git
   up to the tool result and the CLI exit code: codes, retryability,
   reason and action tokens, redaction, strict JSON rejections.
@@ -103,7 +110,10 @@ the code and fix the doc in the same change (see
 - New to the repo: **overview.md → product-contract.md → notebook.md**.
 - Changing pull or commit: **notebook.md → pull.md or commit.md →
   conflicts.md → guarantees.md**.
-- Adding a storage backend: **storage.md → s3store.md → testing.md**.
+- Adding a storage backend: **storage.md → s3store.md or hosted-mode.md
+  → testing.md**.
+- Working on hosted storage: **hosted-mode.md → storage.md → errors.md →
+  commit.md → checkpoints.md**.
 - Adding a flag or command: **config.md → cli.md → running.md**.
 - Changing what an agent sees: **product-contract.md → mcp-server.md →
   errors.md**.

@@ -1,6 +1,6 @@
 # Configure and run
 
-The operator reference for running slivingdoc: the commands, the result report, every flag, the session directory and shared pack cache, read-only and writable paths, S3 credentials and requirements, MCP host configuration, logging, profiling, the notebook rules, conflict recovery, checkpoints, and operational ownership. It answers "how do I run it, configure it, and read what it tells me?" The [README](../README.md) has the short version.
+The operator reference for running slivingdoc: the commands, the result report, every flag, the session directory and shared pack cache, read-only and writable paths, S3 credentials and requirements, hosted storage, MCP host configuration, logging, profiling, the notebook rules, conflict recovery, checkpoints, and operational ownership. It answers "how do I run it, configure it, and read what it tells me?" The [README](../README.md) has the short version.
 
 Read this when: operating or deploying slivingdoc, writing an MCP host configuration, changing any operator-visible behavior (then update this doc in the same change), or looking for the user-facing contract behind a code path.
 
@@ -15,6 +15,7 @@ Read this when: operating or deploying slivingdoc, writing an MCP host configura
 | `internal/app/logging.go`, `internal/app/perf.go` | Logging and `DEBUG_PERF` ([logging.md](./logging.md)) |
 | `internal/mcp/server.go` | Tool descriptions, instructions, envelopes ([mcp-server.md](./mcp-server.md)) |
 | `internal/storage/probe.go` | The startup compatibility probe ([storage.md](./storage.md)) |
+| `internal/httpstore/store.go` | The hosted storage adapter and its startup `CheckAccess` ([hosted-mode.md](./hosted-mode.md)) |
 | `terraform/` | Module that provisions the bucket and a least-privilege IAM user with access keys, granting exactly the permissions in S3 requirements |
 | `examples/seaweedfs/`, `examples/terraform/` | Runnable local S3 and deployment examples |
 
@@ -22,7 +23,7 @@ Read this when: operating or deploying slivingdoc, writing an MCP host configura
 
 ```text
 MCP host → npx -y slivingdoc serve --bucket B    # launcher → native binary (build.md)
-  startup: config → pinned libgit2 → S3 probe → serve two tools over stdio
+  startup: config → pinned libgit2 → S3 probe (hosted: access check) → serve two tools over stdio
   agent: notes_pull → edit UTF-8 files in the notebook directory → notes_commit
 human: slivingdoc pull [path] → edit → slivingdoc commit [path] -m "msg"
 ```
@@ -113,25 +114,29 @@ or network dependency is touched.
 variables. Flags override environment variables, and the environment
 overrides defaults.
 `--bucket` is required. `-h` on any of the three prints the same
-reference.
+reference. A non-empty `SLIVINGDOC_TOKEN` switches to [hosted
+storage](#hosted-storage), which changes the meaning of `--bucket` and
+`--endpoint` as noted.
 
-| Function              | Flag                     | Environment variable              | Default                   |
-| --------------------- | ------------------------ | --------------------------------- | ------------------------- |
-| S3 bucket (required)  | `--bucket`               | `SLIVINGDOC_BUCKET`               | none                      |
-| S3 object prefix      | `--prefix`               | `SLIVINGDOC_PREFIX`               | `slivingdoc`              |
-| S3 region             | `--region`               | `AWS_REGION`                      | `us-east-1`               |
-| S3 endpoint           | `--endpoint`             | `AWS_ENDPOINT_URL_S3`             | empty (AWS resolution)    |
-| S3 path-style access  | `--path-style`           | `SLIVINGDOC_PATH_STYLE`           | `false`                   |
-| Workspace root        | `--workspace-root`       | `SLIVINGDOC_WORKSPACE_ROOT`       | session dir / working dir |
-| Private state root    | `--private-root`         | `SLIVINGDOC_PRIVATE_ROOT`         | session dir / user cache  |
-| Shared pack cache     | `--shared-pack-cache`    | `SLIVINGDOC_SHARED_PACK_CACHE`    | `false`                   |
-| CAS retry limit       | `--commit-retries`       | `SLIVINGDOC_COMMIT_RETRIES`       | `8` (0..100)              |
-| Checkpoint pack count | `--checkpoint-packs`     | `SLIVINGDOC_CHECKPOINT_PACKS`     | `256` (minimum 1)         |
-| Retained checkpoints  | `--retained-checkpoints` | `SLIVINGDOC_RETAINED_CHECKPOINTS` | `1` (0..64)               |
-| Read-only paths       | `--read-only-paths`      | `SLIVINGDOC_READ_ONLY_PATHS`      | empty (no read-only path) |
-| Writable paths        | `--writable-paths`       | `SLIVINGDOC_WRITABLE_PATHS`       | empty (no confinement)    |
-| Log levels            | `--log-level`            | `LOG_LEVEL`                       | `info`                    |
-| Log timestamps        | `--log-timestamp`        | `SLIVINGDOC_LOG_TIMESTAMP`        | `true`                    |
+| Function                          | Flag                     | Environment variable              | Default                      |
+| --------------------------------- | ------------------------ | --------------------------------- | ---------------------------- |
+| Bucket or hosted space (required) | `--bucket`               | `SLIVINGDOC_BUCKET`               | none                         |
+| Object prefix                     | `--prefix`               | `SLIVINGDOC_PREFIX`               | `slivingdoc`                 |
+| S3 region                         | `--region`               | `AWS_REGION`                      | `us-east-1`                  |
+| S3 endpoint                       | `--endpoint`             | `AWS_ENDPOINT_URL_S3`             | empty (AWS resolution)       |
+| S3 path-style access              | `--path-style`           | `SLIVINGDOC_PATH_STYLE`           | `false`                      |
+| Hosted API token                  | none                     | `SLIVINGDOC_TOKEN`                | empty (S3 mode)              |
+| Hosted API endpoint               | `--endpoint`             | `SLIVINGDOC_ENDPOINT`             | `https://api.slivingdoc.dev` |
+| Workspace root                    | `--workspace-root`       | `SLIVINGDOC_WORKSPACE_ROOT`       | session dir / working dir    |
+| Private state root                | `--private-root`         | `SLIVINGDOC_PRIVATE_ROOT`         | session dir / user cache     |
+| Shared pack cache                 | `--shared-pack-cache`    | `SLIVINGDOC_SHARED_PACK_CACHE`    | `false`                      |
+| CAS retry limit                   | `--commit-retries`       | `SLIVINGDOC_COMMIT_RETRIES`       | `8` (0..100)                 |
+| Checkpoint pack count             | `--checkpoint-packs`     | `SLIVINGDOC_CHECKPOINT_PACKS`     | `256` (minimum 1)            |
+| Retained checkpoints              | `--retained-checkpoints` | `SLIVINGDOC_RETAINED_CHECKPOINTS` | `1` (0..64)                  |
+| Read-only paths                   | `--read-only-paths`      | `SLIVINGDOC_READ_ONLY_PATHS`      | empty (no read-only path)    |
+| Writable paths                    | `--writable-paths`       | `SLIVINGDOC_WRITABLE_PATHS`       | empty (no confinement)       |
+| Log levels                        | `--log-level`            | `LOG_LEVEL`                       | `info`                       |
+| Log timestamps                    | `--log-timestamp`        | `SLIVINGDOC_LOG_TIMESTAMP`        | `true`                       |
 
 `--workspace-root` is the root below which request paths may live, and is
 also the notebook directory an omitted path resolves to. The private root
@@ -327,7 +332,9 @@ of falling back to it. That is how a process asks not to be confined.
 
 ## S3 credentials
 
-slivingdoc has no authentication layer of its own. `serve`, `pull`, and
+slivingdoc has no authentication layer of its own for S3 (in [hosted
+storage](#hosted-storage) the only credential is `SLIVINGDOC_TOKEN`, and
+nothing in this section applies). `serve`, `pull`, and
 `commit` all build the S3 client the same way, and credentials come
 from the AWS SDK default credential chain, resolved by the SDK at
 startup:
@@ -414,6 +421,41 @@ names the underlying reason (for example the S3 `AccessDenied` or
 `InvalidAccessKeyId` error) while the probe key and any secret stay
 redacted. Bucket versioning is not required.
 
+## Hosted storage
+
+Instead of a bucket, the notebook can live in a space of the slivingdoc
+hosted storage service ([slivingdoc.dev](https://slivingdoc.dev)). A
+non-empty `SLIVINGDOC_TOKEN` selects it:
+
+- `--bucket` names the space: 1 to 63 lowercase letters, digits, and
+  inner hyphens. `--prefix` still separates notebooks inside it.
+- The endpoint is `--endpoint`, else `SLIVINGDOC_ENDPOINT`, else
+  `https://api.slivingdoc.dev`. It must be `https`, except to a loopback
+  address. `AWS_ENDPOINT_URL_S3`, `AWS_REGION`, and the AWS credential
+  chain are not used; `--region` and `--path-style` are accepted and
+  ignored.
+- The token is read from the environment only, never from a flag, and
+  must be printable ASCII (0x21 to 0x7E) without white space. It travels only in
+  the `Authorization` header and never appears in a diagnostic, a log
+  line, or a tool result.
+
+Startup does not run the S3 probe. It asks the server to describe itself
+(it must speak `slivingdoc-storage` version 1 and promise conditional
+writes, else `INCOMPATIBLE_STORE`) and reads the space's usage with the
+token, so a read-only token starts and can pull. A token the server does
+not accept, or a space it was not granted, refuses startup with a
+diagnostic that names `SLIVINGDOC_TOKEN` and `--bucket`.
+
+Account limits and refusals surface as `STORAGE_FAILURE` with their own reason:
+`STORAGE_FULL` (nothing was published, the edits stay, pulls keep
+working; deleting notes and committing again can compact the space),
+`REQUEST_LIMIT` (the monthly request allowance is used up; it resets on
+the first of the month, UTC), `RATE_LIMITED` (retryable), `ACCESS_DENIED`
+(for example a read-only token that commits), and `OBJECT_TOO_LARGE`.
+All but `RATE_LIMITED` are `retryable: false` and ask for the operator.
+The server's own explanation follows `The storage says:` in the message.
+[hosted-mode.md](./hosted-mode.md) has the details.
+
 ## MCP host configuration
 
 An MCP host starts the server as a child process and speaks MCP
@@ -444,7 +486,9 @@ credentials](#s3-credentials): the host passes these variables to the
 child process, and the AWS SDK chain picks them up. Omit it when the
 host already runs in a credentialed environment; replace it with
 `AWS_ENDPOINT_URL_S3` and static keys only for a local S3-compatible
-store such as SeaweedFS.
+store such as SeaweedFS. For [hosted storage](#hosted-storage), the
+`env` block carries `SLIVINGDOC_TOKEN` instead and `--bucket` names the
+space.
 
 Stdout carries only protocol messages; logs go to stderr. The host and
 the server share the visible directory: agents and humans edit files
@@ -616,5 +660,6 @@ your own recovery requirements.
 - [cli.md](./cli.md), [config.md](./config.md), [mcp-server.md](./mcp-server.md): the code behind each section above.
 - [security.md](./security.md): the trust model behind credentials and paths.
 - [storage.md](./storage.md), [s3store.md](./s3store.md): what the bucket holds and how it is addressed.
+- [hosted-mode.md](./hosted-mode.md): the hosted storage adapter, its limits, and compaction of a full space.
 - [conflicts.md](./conflicts.md), [checkpoints.md](./checkpoints.md): conflict and checkpoint mechanics.
 - [build.md](./build.md), [releasing.md](./releasing.md): installing and shipping binaries.

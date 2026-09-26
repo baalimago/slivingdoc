@@ -1,6 +1,6 @@
 # S3 adapter and the test S3 backend
 
-`internal/s3store` is the production `storage.ObjectStore` over the AWS SDK for Go v2: it joins the configured prefix, maps S3 conditional writes and errors to the storage sentinels, streams uploads and downloads, and writes the pack metadata headers. `internal/tests3` provides the pinned S3-compatible container (SeaweedFS) that the real-S3 tests run against. This doc answers "how does a protocol operation become an S3 request, and how do tests get a real S3?"
+`internal/s3store` is the production `storage.ObjectStore` over the AWS SDK for Go v2 (the other production adapter, used when `SLIVINGDOC_TOKEN` is set, is `internal/httpstore`, [hosted-mode.md](./hosted-mode.md)): it joins the configured prefix, maps S3 conditional writes and errors to the storage sentinels, streams uploads and downloads, and writes the pack metadata headers. `internal/tests3` provides the pinned S3-compatible container (SeaweedFS) that the real-S3 tests run against. This doc answers "how does a protocol operation become an S3 request, and how do tests get a real S3?"
 
 Read this when: changing S3 request shape, addressing, multipart thresholds, error mapping, credential loading, metadata headers, the SeaweedFS pin, or the shared test-container lease.
 
@@ -8,8 +8,9 @@ Read this when: changing S3 request shape, addressing, multipart thresholds, err
 
 | File | Purpose |
 |------|---------|
-| `internal/s3store/store.go` | `Store`, `Config` (`Bucket`, `Prefix`, `Region`, `Endpoint`, `AccessKey`, `SecretKey`, test-only `httpClient`, `retryMaxAttempts`), `Options` (`MultipartThreshold`, `MultipartPartSize`, `ForcePathStyle`), `New`, `ReadObject`, `PutObject`, `putSingle`, `putMultipart`, `abortTimeout`, `CreateObject`, `ReplaceObject`, `ListObjects`, `DeleteObjects`, `mapError`, `apiDetail`, `errDetail`, `httpErrorDetail`, `bodySnippet`, `encodeMeta`, `decodeMeta` |
-| `internal/s3store/store_test.go` | No-network unit tests: validation, `withDefaults`, key join, `mapError`, non-JSON error pages, metadata round trip, `TestAddressingProvesPathStyle` (recording HTTP client) |
+| `internal/s3store/store.go` | `Store`, `Config` (`Bucket`, `Prefix`, `Region`, `Endpoint`, `AccessKey`, `SecretKey`, test-only `httpClient`, `retryMaxAttempts`), `Options` (`MultipartThreshold`, `MultipartPartSize`, `ForcePathStyle`), `New`, `ReadObject`, `PutObject`, `putSingle`, `putMultipart`, `abortTimeout`, `CreateObject`, `ReplaceObject`, `ListObjects`, `DeleteObjects`, `mapError`, `apiDetail`, `errDetail`, `httpErrorDetail`, `bodySnippet` |
+| `internal/s3store/store_test.go` | No-network unit tests: validation, `withDefaults`, key join, `mapError`, non-JSON error pages, `TestAddressingProvesPathStyle`, `TestConfiguredEndpointBeatsServiceEndpointSettings`, `TestMultipartAbortsOnEveryFailure` (recording HTTP client) |
+| `internal/storage/metadata.go` | `Metadata.Fields` and `ParseMetadata`, the metadata encoding this adapter shares with `httpstore` (round trip in `internal/storage/metadata_test.go`) |
 | `internal/s3store/integration_test.go` | Real-S3 tests: `TestContractSuite` (runs `contract.Run`), `TestMultipartUpload`, `TestPrefixIsolation`, `TestConcurrentCAS`; `TestMain` calls `tests3.Terminate` |
 | `internal/tests3/s3.go` | `Image` (`chrislusf/seaweedfs:4.42`), `User`/`Pass`/`Bucket`/`Region`, `EndpointEnv`, `EndpointFileEnv`, `Suite`, `StoreConfig`, `Start`, `Ensure`, `Endpoint`, `Terminate`, `FreshPrefix`, `attach`, `attachFromFile`, `endpointFromFile`, `loopbackEndpoint`, `require`, `dockerAvailable`, `start`, `newRawClient` |
 | `internal/tests3/lease/main.go` | `tests3-lease`: owns one container for the whole `make test` run and writes its endpoint to `--ready-file` |
@@ -26,8 +27,8 @@ app.realStoreFactory(cfg)
       awsconfig.LoadDefaultConfig(WithRegion, WithBaseEndpoint, [static creds])
       s3.NewFromConfig(BaseEndpoint = Endpoint when set; UsePathStyle = Endpoint != "" || ForcePathStyle)
 
-ReadObject(key)     → GetObject(bucket, prefix/key)           → decodeMeta
-PutObject(key,r,m)  → size < threshold ? putSingle (PutObject + metadata)
+ReadObject(key)     → GetObject(bucket, prefix/key)           → storage.ParseMetadata
+PutObject(key,r,m)  → size < threshold ? putSingle (PutObject + m.Fields())
                                        : putMultipart (Create → UploadPart* → Complete; best-effort Abort on part, source-read, length or Complete failure)
 CreateObject(key)   → PutObject(IfNoneMatch: "*", application/json)
 ReplaceObject(k,e)  → PutObject(IfMatch: e, application/json); NoSuchKey → ErrPreconditionFailed
@@ -52,9 +53,9 @@ tests:  make test → tests3-lease --ready-file F → SLIVINGDOC_TESTS3_ENDPOINT
 
 **Conditional writes.** `CreateObject` sends `If-None-Match: *`; `ReplaceObject` sends `If-Match: <etag>`. Both require a non-empty returned ETag, else `ErrTransport`. The pinned SeaweedFS answers a conditional PUT against a missing key with `NoSuchKey` instead of 412, so `ReplaceObject` normalizes `ErrNotFound` to `ErrPreconditionFailed`: the precondition did not hold and nothing was mutated.
 
-**Error mapping (`mapError`).** API code `NoSuchKey` or `NotFound` wraps `ErrNotFound`; `PreconditionFailed` wraps `ErrPreconditionFailed` and is the only CAS loss; any other conditional-write refusal (for example 409 `ConditionalRequestConflict`) maps to `ErrTransport` and is resolved by the read-back path; everything else (access denied, server errors, timeouts, connection errors, credential failures) wraps `ErrTransport` and keeps a one-line reason: `CODE: message` (`apiDetail`), a status plus a tag-stripped, 160-rune body snippet for non-JSON error pages (`httpErrorDetail`, `bodySnippet`), or the collapsed error text (`errDetail`). The reason reaches only the startup diagnostic and the server log, never a tool result.
+**Error mapping (`mapError`).** S3 has no account refusals of its own: access denied and quota-like errors are `ErrTransport`, never `ErrAccessDenied` or `ErrQuotaExceeded`, so the hosted-mode reasons and compaction never apply to S3. API code `NoSuchKey` or `NotFound` wraps `ErrNotFound`; `PreconditionFailed` wraps `ErrPreconditionFailed` and is the only CAS loss; any other conditional-write refusal (for example 409 `ConditionalRequestConflict`) maps to `ErrTransport` and is resolved by the read-back path; everything else (access denied, server errors, timeouts, connection errors, credential failures) wraps `ErrTransport` and keeps a one-line reason: `CODE: message` (`apiDetail`), a status plus a tag-stripped, 160-rune body snippet for non-JSON error pages (`httpErrorDetail`, `bodySnippet`), or the collapsed error text (`errDetail`). The reason reaches only the startup diagnostic and the server log, never a tool result.
 
-**Metadata.** `encodeMeta` writes `slivingdoc-sha256`, `slivingdoc-size`, `slivingdoc-kind`, `slivingdoc-generation` (the SDK adds `x-amz-meta-`). `decodeMeta` leaves zero metadata when absent and returns an error, wrapped by `ReadObject` as `ErrIntegrity`, when a header is present but malformed.
+**Metadata.** `putSingle` and `putMultipart` send `storage.Metadata.Fields()` as user metadata: `slivingdoc-sha256`, `slivingdoc-size`, `slivingdoc-kind`, `slivingdoc-generation` (the SDK adds `x-amz-meta-`). `ReadObject` decodes them with `storage.ParseMetadata`, which leaves zero metadata when absent and returns an error, wrapped by `ReadObject` as `ErrIntegrity`, when a field is present but malformed ([storage.md](./storage.md)).
 
 **Listing and delete.** `ListObjects` strips `prefix/` from each key so callers get protocol keys to feed back into `DeleteObjects`. `DeleteObjects` sends at most 1,000 keys per request in quiet mode; absent keys are not errors.
 

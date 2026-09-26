@@ -69,6 +69,9 @@ Where the code has since diverged, the code wins and the note says so.
 37. The `pull` and `commit` subcommands expose the same two operations to humans; they reuse the serve startup surface and print the envelope as a candid text report.
 38. Read-only paths are per-process configuration (`--read-only-paths` / `SLIVINGDOC_READ_ONLY_PATHS`), not notebook or manifest state; they are enforced at commit (refuse and reset) and restored at pull. Writable paths (`--writable-paths` / `SLIVINGDOC_WRITABLE_PATHS`) are the same kind of configuration: the two sets resolve by longest match, a non-empty writable set protects every unmatched path, and both are advertised on every surface that lists a set.
 39. A first pull proceeds only into an empty directory, into one whose every file the notebook already has with identical bytes (a protected file only needs to exist in the notebook, which restores it), or against an empty notebook (seeding it with unprotected files); otherwise it is refused as `DIRECTORY_NOT_EMPTY`, naming the files, before L, the pulled marker or `state.json` changes ([pull.md](./pull.md)).
+40. The slivingdoc hosted storage API is a second `ObjectStore` adapter (`internal/httpstore`) below the unchanged protocol, selected by a non-empty `SLIVINGDOC_TOKEN` read from the environment only; `--bucket` names the space. Its server promises conditional writes, so startup runs `CheckAccess` instead of the write probe, and a read-only token can pull ([hosted-mode.md](./hosted-mode.md)).
+41. Store account refusals (full space, request allowance, throttling, denied credentials, oversized object) are `STORAGE_FAILURE` reasons; all but throttling are not retryable, and the store's own one-line message is appended to the caller's message.
+42. A commit refused because the space is full is published as a whole-state checkpoint when that shrinks the space, keeping no retained generation, so deleting notes frees room (an exception to decision 17).
 
 ### Deferred work
 
@@ -84,7 +87,7 @@ Outside v1:
 - Windows arm64 artifacts
 - a public Go SDK
 
-The versioned manifest permits storage-format evolution; MCP callers do not depend on the internal representation. A hosted storage backend is in progress in a separate PR.
+The versioned manifest permits storage-format evolution; MCP callers do not depend on the internal representation.
 
 ### Acceptance invariants
 
@@ -99,7 +102,7 @@ A change preserves all of these:
 - Cleanup never determines commit success.
 - The executable has no runtime Git or libgit2 installation requirement.
 - Unit tests can replace every network service with a deterministic fake.
-- Required integration tests run against a real S3-compatible store (SeaweedFS) through testcontainers.
+- Required integration tests run against a real S3-compatible store (SeaweedFS) through testcontainers; the hosted adapter runs the same contract suite against the in-process reference gateway.
 
 ## Gotchas
 
@@ -107,7 +110,7 @@ A change preserves all of these:
 
 ## Related
 
-- [storage.md](./storage.md), [commit.md](./commit.md), [checkpoints.md](./checkpoints.md): where the storage decisions are implemented.
+- [storage.md](./storage.md), [commit.md](./commit.md), [checkpoints.md](./checkpoints.md), [hosted-mode.md](./hosted-mode.md): where the storage decisions are implemented.
 - [build.md](./build.md): distribution decisions.
 - [testing.md](./testing.md): how decisions become scenarios.
 - [overview.md](./overview.md): the system summary.

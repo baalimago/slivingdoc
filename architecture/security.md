@@ -2,7 +2,7 @@
 
 The trust model: a local stdio child process, a filesystem boundary the caller cannot escape, private state the caller cannot address, credentials that never leave the process, and caller-facing text that never carries protected values. It answers "what can an MCP caller reach, and what keeps secrets and private state out of its view?"
 
-Read this when: changing the transport, request path handling, symlink or special-file handling, the private directory layout, credential loading, endpoint validation, redaction, or anything that puts new text into a tool result, the CLI report, or a startup diagnostic.
+Read this when: changing the transport, request path handling, symlink or special-file handling, the private directory layout, credential loading, the hosted API token, endpoint validation, redaction, or anything that puts new text into a tool result, the CLI report, or a startup diagnostic.
 
 ## Key files
 
@@ -17,8 +17,9 @@ Read this when: changing the transport, request path handling, symlink or specia
 | `internal/workspace/platform_unix.go`, `platform_windows.go` | No-follow open flags |
 | `internal/git/path.go` | `ValidatePath` (the notebook path rules), `ValidateContent`, `ValidateSnapshot` |
 | `internal/git/readonly.go`, `policy.go` | `NormalizeEntries`, `NewPolicy` (path-set entries obey `ValidatePath`) |
-| `internal/app/config.go` | `normalizeEndpoint` (refuses user information), `resolvePolicy`, `RootsOverlap` checks |
+| `internal/app/config.go` | `normalizeEndpoint` (refuses user information), `validateHosted` (token grammar, https unless loopback), `resolvePolicy`, `RootsOverlap` checks |
 | `internal/s3store/store.go` | `New`: AWS default credential chain; static keys only in tests |
+| `internal/httpstore/store.go` | `New` (no-redirect client), `ValidateEndpoint`, `IsLoopback`, `ValidateToken`, `request` (the token only in `Authorization`), `sanitize` (server text) |
 | `internal/mcp/errors.go` | `Redact`, `redactValues`, `invalidPathMessage`, `safeEngineDetail` |
 
 ## Flow
@@ -56,11 +57,11 @@ tools/call {path}
 
 **Private state.** The internal repository, state record and locks live under `<privateRoot>/<DerivedKey>`, created `0o700`. The key is a SHA-256 of the length-prefixed canonical path and the storage identity (endpoint, region, bucket, prefix, manifest version), so it does not expose the path and callers cannot select another workspace's state. The private root and the shared pack-cache root must not be at or below the workspace root (`RootsOverlap`, checked in `config.finish` and again in `workspace.Open`). Only `serve` uses an ephemeral session directory (random per process, removed at shutdown), and only when neither root is configured by flag or environment (`SLIVINGDOC_WORKSPACE_ROOT`, `SLIVINGDOC_PRIVATE_ROOT`); `pull` and `commit` default to the cwd and `<user-cache-dir>/slivingdoc` ([config.md](./config.md)).
 
-**Credentials.** slivingdoc has no authentication layer and no credential flag. The S3 client uses the AWS SDK default credential chain inside `internal/s3store`. Credentials and private repository data stay in the process: MCP callers see only the two tools and their envelopes. An endpoint URL with user information is refused at configuration time, so a secret cannot be echoed into a diagnostic. See [running.md, S3 credentials](./running.md#s3-credentials).
+**Credentials.** slivingdoc has no authentication layer and no credential flag. The S3 client uses the AWS SDK default credential chain inside `internal/s3store`. In hosted mode the only credential is the API token, read from `SLIVINGDOC_TOKEN` only, so it never appears in a process listing ([hosted-mode.md](./hosted-mode.md)). It travels only as `Authorization: Bearer` from `internal/httpstore` (never to `GET /v1`), and only over `https` unless the endpoint host is loopback (`validateHosted`, and `httpstore.ValidateEndpoint` again in `New`). The adapter's client never follows a redirect, so the token cannot be forwarded to another host and a redirected `PUT` cannot pass for a stored write. `AWS_ENDPOINT_URL_S3` and the other AWS variables cannot redirect the token; `--endpoint` can, because both modes share it. Credentials and private repository data stay in the process: MCP callers see only the two tools and their envelopes. An endpoint URL with user information is refused at configuration time, so a secret cannot be echoed into a diagnostic. See [running.md, S3 credentials](./running.md#s3-credentials).
 
-**Redaction.** Caller-facing text (tool results, the CLI report, startup diagnostics) never contains a credential, an S3 key, a private path, a Git object ID, or Git vocabulary. Notebook messages are written without them, and `mcp.Redact` removes pack keys, probe keys, 40-hex and 64-hex IDs, `AKIA...` key IDs and URL user information as defense in depth. Engine causes reach callers only through the `safeEngineDetail` allowlist; everything else is logged against the `diagnosticId`. Log `cause` fields additionally strip absolute paths (`redactValues`). See [errors.md](./errors.md).
+**Redaction.** Caller-facing text (tool results, the CLI report, startup diagnostics) never contains a credential, an S3 key, a private path, a Git object ID, or Git vocabulary. Notebook messages are written without them, and `mcp.Redact` removes `sld_` hosted API tokens, pack keys, probe keys, 40-hex and 64-hex IDs, `AKIA...` key IDs and URL user information as defense in depth. In a tool result or CLI report the only remote text is a hosted store refusal's `message`, cut to one printable ASCII line by `httpstore.sanitize`, redacted, and appended after `The storage says:`; it is untrusted server output. Startup diagnostics carry more remote text, all through `mcp.Redact`: the S3 probe diagnostic names the S3 error, and the hosted check names the server's error code, reason and message (sanitized) and, for an unknown server, its `api` field (quoted, not sanitized). Engine causes reach callers only through the `safeEngineDetail` allowlist; everything else is logged against the `diagnosticId`. Log `cause` fields additionally strip absolute paths (`redactValues`). See [errors.md](./errors.md).
 
-**Read-only paths are a guardrail, not a boundary.** The serve process holds the S3 credentials. An agent that can read that environment, or launch its own slivingdoc process, bypasses `--read-only-paths`/`--writable-paths`. The policy lives in the server configuration, never in the data ([running.md, Read-only paths](./running.md#read-only-paths)).
+**Read-only paths are a guardrail, not a boundary.** The serve process holds the S3 credentials or the hosted token. An agent that can read that environment, or launch its own slivingdoc process, bypasses `--read-only-paths`/`--writable-paths`. The policy lives in the server configuration, never in the data ([running.md, Read-only paths](./running.md#read-only-paths)).
 
 ## Gotchas
 
@@ -76,3 +77,4 @@ tools/call {path}
 - [config.md](./config.md): roots, endpoint and path-set validation.
 - [errors.md](./errors.md): redaction and the taxonomy.
 - [running.md](./running.md): operator guidance on credentials and sharing.
+- [hosted-mode.md](./hosted-mode.md): the hosted adapter's token, endpoint and redirect rules.

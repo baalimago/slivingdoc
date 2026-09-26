@@ -76,9 +76,9 @@ One MCP text item plus the structured `SuccessInfo`:
 
 - `files[].path` is relative to the request path in normalized slash form; ranges are one-based, inclusive, ordered, and non-overlapping; a file without markers has `ranges: []`.
 - The text item repeats code, reason, message, detail, files, action, retryable, diagnosticId, recovery, and both path sets (writable, read-only, then `path-rule:` when both are set), so a client that drops structured content keeps the full safe diagnostic.
-- `retryable` is true only for `REMOTE_BUSY`, `STORAGE_FAILURE`, `RECOVERY_FAILURE` (`mcp.retryable`).
+- `retryable` is true only for `REMOTE_BUSY`, `STORAGE_FAILURE`, `RECOVERY_FAILURE` (`mcp.retryable`), and false for the `STORAGE_FAILURE` store refusals a retry cannot change: `STORAGE_FULL`, `REQUEST_LIMIT`, `ACCESS_DENIED`, `OBJECT_TOO_LARGE`.
 - Message text may change between releases. `code`, `reason`, `action`, and every `files[].reason` may not.
-- No envelope field carries credentials, S3 keys, private paths, or Git IDs Most messages are fixed strings; a few put a pack key or Git ID into the text (`internal/notebook/remote.go`), and `Redact`, applied to every message, masks pack and probe keys, 40/64-hex IDs, access keys and URL userinfo. Raw causes go only to the log, keyed by `diagnosticId`.
+- No envelope field carries credentials, S3 keys, private paths, or Git IDs Most messages are fixed strings; a few put a pack key or Git ID into the text (`internal/notebook/remote.go`), and `Redact`, applied to every message, masks `sld_` API tokens, pack and probe keys, 40/64-hex IDs, access keys and URL userinfo. Raw causes go only to the log, keyed by `diagnosticId`. A hosted store refusal is the only message that carries text written outside slivingdoc: it ends with the server's own sanitized line after `The storage says:` ([hosted-mode.md](./hosted-mode.md)).
 - An error that is not a `*notebook.Error` and not a workspace path error maps to retryable `STORAGE_FAILURE`/`INTERNAL`; context cancellation stays a protocol error (`MapError` returns `false`).
 - `INCOMPATIBLE_STORE` is a startup diagnostic and never appears in a tool result.
 
@@ -100,6 +100,8 @@ The notebook emits every pairing below except `MALFORMED_INPUT` and `PATH_OUTSID
 | `REMOTE_BUSY` | `RETRIES_EXHAUSTED` | CAS lost every attempt | `RETRY` |
 | `STORAGE_FAILURE` | `MANIFEST_READ`, `PACK_DOWNLOAD`, `PACK_UPLOAD`, `MANIFEST_WRITE`, `LOCAL_STATE`, `INTERNAL` | Store or local-state failure with no accepted result | `RETRY` |
 | `STORAGE_FAILURE` | `PUBLICATION_UNPROVEN` | CAS response lost; acceptance not provable | `PULL` |
+| `STORAGE_FAILURE` | `RATE_LIMITED` | The store is throttling the account | `RETRY` |
+| `STORAGE_FAILURE` | `STORAGE_FULL`, `REQUEST_LIMIT`, `ACCESS_DENIED`, `OBJECT_TOO_LARGE` | The store refused for an account reason; the refused request stored nothing (after a lost manifest-write response whose read-back was refused, acceptance is unknown); not retryable | `OPERATOR` |
 | `STORAGE_INTEGRITY` | `MANIFEST_INVALID`, `PACK_INVALID`, `HISTORY_INVALID`, `ENGINE_FAILED` | Stored state untrusted, or engine failure | `OPERATOR` |
 | `RECOVERY_FAILURE` | `LOCAL_MUTATION_FAILED` | Failure after local mutation began, or (stage `entry`) the repair of an earlier one rewrote L instead of running the call | `PULL` if `resynchronized`, else `RETRY` |
 
@@ -122,7 +124,7 @@ Configured per process with `--read-only-paths` / `--writable-paths` (same for `
 - Refusal wording: with a writable set, `Only <writable> is/are writable in this server. Your changes elsewhere were discarded…` (`writableMessage`); otherwise `<entries> is/are read-only in this server…` naming the most specific violated read-only entry per path (`readOnlyMessage`, `violatedEntries`).
 - Pull enforcement: `pinProtected` restores changed protected paths from the baseline in the merge's local side, so the merge takes R there and local edits are discarded; the restore shows up in the ordinary diffstat. Invalid content under a protected path is still refused as `INVALID_CONTENT` before any restore.
 - Advertisement on four surfaces: server `instructions`, both tool descriptions (`writableDescriptionSuffix` then `readOnlyDescriptionSuffix`), the `readOnly`/`writable` arrays on every result, and the success text item. With both sets configured, the server instructions' read-only sentence ends in "where the two sets nest, the longest matching entry decides" instead of "write elsewhere", and the read-only tool-description suffix appends "and where the two sets nest the longest matching entry decides". `readOnly` always means the read-only entries alone, never the protected region.
-- This is a guardrail at the tool boundary, not a security boundary: the process holds the S3 credentials, so an agent that can read its environment or run its own slivingdoc bypasses it.
+- This is a guardrail at the tool boundary, not a security boundary: the process holds the S3 credentials or the hosted token, so an agent that can read its environment or run its own slivingdoc bypasses it.
 
 ## Gotchas
 

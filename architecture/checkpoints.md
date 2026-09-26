@@ -2,14 +2,14 @@
 
 Each normal commit adds one small incremental pack to the manifest's active tail. An unbounded tail makes a cold pull slow and request-heavy, so once the tail reaches a threshold the committing process compacts its oldest increments into one state-complete checkpoint pack, swaps it into `current` with the same ETag CAS as commits, keeps the replaced generation as a retained root, and then deletes storage no manifest references. All of it is best-effort and can never change the result of the commit that triggered it. This doc answers "when does a checkpoint run, what does it write, what does it keep, and what may cleanup delete".
 
-Read this when: changing the checkpoint trigger, compaction, retention count, shallow boundaries, cleanup rules, or the related metrics.
+Read this when: changing the checkpoint trigger, compaction (including the compaction of a full space), retention count, shallow boundaries, cleanup rules, or the related metrics.
 
 ## Key files
 
 | File | Purpose |
 |------|---------|
 | `internal/notebook/checkpoint.go` | `checkpointPlan`, `planCheckpoint`, `prefixPresent`, `runCheckpoint`, `acceptCheckpoint`, `failCheckpoint`, `checkpointAccepted`, `compactManifest`, `cleanup`, `failCleanup`, `cleanupRoots`, `recordTail`, `cleanupBatchSize` |
-| `internal/notebook/commit.go` | Trigger at the end of `attemptPublication`; `buildFirstProposal` (the generation-1 checkpoint) |
+| `internal/notebook/commit.go` | Trigger at the end of `attemptPublication`; `buildFirstProposal` (the generation-1 checkpoint); `buildCompactingProposal`, `acceptCompaction`, `discardCompaction` (a commit published as a checkpoint when the space is full) |
 | `internal/notebook/remote.go` | `importRemote` (imports checkpoint then tail; `MarkShallow`), `readRemote` (stale-pack restart) |
 | `internal/notebook/metrics.go` | `Checkpoint*` and `Cleanup*` counters, `TailCount`, `TailBytes` |
 | `internal/notebook/notebook.go` | `DefaultCheckpointPacks` (256), `MinCheckpointPacks`, `DefaultRetainedCheckpoints` (1), `MaxRetainedCheckpoints` (64) |
@@ -49,6 +49,7 @@ cleanup(cutoff)
 - Only an accepted, changing commit can trigger: after local acceptance, if the new manifest's active increment count is at least `checkpointPacks` (`--checkpoint-packs`, default 256, minimum 1), one effort runs. Retained tails do not count. A no-change commit, a pull, or a failed commit never triggers.
 - The effort runs synchronously inside the triggering `Commit` call. Every failure increments `CheckpointFailures`, logs a warning through `LoggerFrom(ctx)`, and returns; the commit's `OK` is already decided.
 - Only the pack count triggers. `TailBytes` is recorded so a byte threshold can be added later without a storage format change.
+- Separately, a commit whose increment upload is refused with `storage.ErrQuotaExceeded` may itself be published as a checkpoint of the whole state (`buildCompactingProposal`). That is part of the commit, not a best-effort effort: its manifest replaces the active checkpoint and whole tail and keeps no retained generation, whatever `--retained-checkpoints` says. After acceptance `acceptCompaction` counts a `CheckpointRuns`, records `CheckpointSize`, calls `MarkShallow`, and runs `cleanup` with the checkpoint's generation as the cutoff even when `MarkShallow` failed ([hosted-mode.md](./hosted-mode.md)).
 
 ### What a checkpoint contains
 
@@ -80,7 +81,7 @@ after:  C1(at I256) -> I257 -> I258
 
 ### Cleanup
 
-- Runs only after a successful checkpoint CAS followed by a successful local `MarkShallow`, or after a proved lost-response acceptance, with the checkpoint's cutoff.
+- Runs only after a successful checkpoint CAS followed by a successful local `MarkShallow`, after a proved lost-response acceptance, or after an accepted compacting commit (`acceptCompaction`), with the checkpoint's cutoff.
 - Lists only `packs/checkpoints/` and `packs/increments/` (following every continuation in the store), parses each key's generation, ignores malformed keys, and considers only keys with generation at or before the cutoff. `current` is never a candidate and orphans after the cutoff are never touched.
 - Before each delete batch of at most 1,000 keys, it rereads and strictly decodes `current` and rebuilds the full root set (active checkpoint, active increments, every retained checkpoint and increment). Only unreferenced candidates are deleted, so a stale listing can never delete a pack a newer manifest references. Deletable candidates include retired packs and never-accepted proposals.
 - Failures are recorded (`CleanupErrors`, warning) at batch granularity and retried by a later checkpoint's cleanup. If checkpoints never succeed, cleanup never runs and old proposals remain.
@@ -99,10 +100,11 @@ after:  C1(at I256) -> I257 -> I258
 - `runCheckpoint` shares `retryLimit` and the backoff waiter with commits, so a busy notebook can extend the latency of the commit that triggered it by up to the full retry budget.
 - The threshold default is 256 in code (`DefaultCheckpointPacks`), which also bounds how many increments a cold pull downloads while checkpoints succeed; failed checkpoints let the tail grow past it.
 - If the local `MarkShallow` after a successful checkpoint CAS fails, the effort counts as a failure and cleanup is skipped although the manifest is accepted. The next `readRemote` records the boundary, and a later checkpoint's cleanup reclaims the storage.
+- Known bug: a compacting commit whose local `Accept` fails after the CAS never reaches `acceptCompaction`, so its cleanup does not run; in a full space the unreferenced old chain can keep later commits refused as `STORAGE_FULL` until a later cleanup (a checkpoint's or a later compaction's) ([hosted-mode.md](./hosted-mode.md)).
 
 ## Related
 
 - [commit.md](./commit.md), [pull.md](./pull.md), [notebook.md](./notebook.md), [git-engine.md](./git-engine.md), [guarantees.md](./guarantees.md)
 - [running.md](./running.md#checkpoints-and-retention) (`--checkpoint-packs`, `--retained-checkpoints`)
 - `../AGENTS.md`: [Event Flow](../AGENTS.md#event-flow) (checkpoint and cleanup, synchronous inside the triggering commit), [Architecture](../AGENTS.md#architecture) (runtime layout of `packs/`)
-- Other concerns: [storage.md](./storage.md), [s3store.md](./s3store.md)
+- Other concerns: [storage.md](./storage.md), [s3store.md](./s3store.md), [hosted-mode.md](./hosted-mode.md) (compaction of a full space)

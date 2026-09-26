@@ -1,22 +1,23 @@
 # Configuration
 
-How one process turns flags, environment variables and defaults into a validated `config`, and how that becomes the `ServiceConfig`, the storage identity and the S3 client settings. It answers "where does `--bucket` (or any other setting) come from, what is its default, and what makes startup refuse it?"
+How one process turns flags, environment variables and defaults into a validated `config`, and how that becomes the `ServiceConfig`, the storage identity and the S3 or hosted store settings. It answers "where does `--bucket` (or any other setting) come from, what is its default, and what makes startup refuse it?"
 
-Read this when: adding or changing a flag or environment variable, changing a default or bound, touching the ephemeral session directory, the shared pack cache root, endpoint normalization, the read-only/writable path sets, or S3 credentials.
+Read this when: adding or changing a flag or environment variable, changing a default or bound, touching the ephemeral session directory, the shared pack cache root, endpoint normalization, the read-only/writable path sets, S3 credentials, or the hosted-mode token and space ([hosted-mode.md](./hosted-mode.md)).
 
 ## Key files
 
 | File | Purpose |
 |------|---------|
-| `internal/app/config.go` | `Flags` + `NewFlags` + `Bind` (the flag set), `loadConfig`, `Flags.resolve` (precedence and session dir), `config.finish` (validation), `resolvePolicy`, `resolveString`/`resolveBool`/`resolveInt`/`resolveRoot`, `normalizeEndpoint`, `absolute`, `splitPathEntries`, `parseUnsigned`, `stringFlag`/`boolFlag`/`intFlag`, `FlagReference`, `HelpText`, `defaultSessionDir`, `removeSessionDir` |
+| `internal/app/config.go` | `Flags` + `NewFlags` + `Bind` (the flag set), `loadConfig`, `Flags.resolve` (precedence and session dir), `config.hosted`, `DefaultHostedEndpoint`, `config.finish` (validation), `validateHosted`, `resolvePolicy`, `resolveString`/`resolveBool`/`resolveInt`/`resolveRoot`, `normalizeEndpoint`, `absolute`, `splitPathEntries`, `parseUnsigned`, `stringFlag`/`boolFlag`/`intFlag`, `FlagReference`, `HelpText`, `defaultSessionDir`, `removeSessionDir` |
 | `internal/app/service.go` | `ServiceConfig` (exported copy), `config.serviceConfig`, `Service.identity` (storage identity) |
-| `internal/app/app.go` | `realStoreFactory` (config to `s3store.Config` + `s3store.Options`), `ProcessOptions` (`Env`, `Cwd`, `CacheDir`, `Ephemeral`, `NewSessionDir`) |
+| `internal/app/app.go` | `realStoreFactory` (config to `httpstore.Config` when hosted, else `s3store.Config` + `s3store.Options`), `ProcessOptions` (`Env`, `Cwd`, `CacheDir`, `Ephemeral`, `NewSessionDir`) |
 | `internal/notebook/notebook.go` | The numeric defaults and bounds: `DefaultRetryLimit`, `MaxRetryLimit`, `DefaultCheckpointPacks`, `MinCheckpointPacks`, `DefaultRetainedCheckpoints`, `MaxRetainedCheckpoints` |
 | `internal/storage/key.go` | `ValidatePrefix` (prefix grammar) |
 | `internal/git/policy.go`, `internal/git/readonly.go` | `NewPolicy`, `OverlapError`, `NormalizeEntries` (path-set validation) |
 | `internal/workspace/path.go` | `RootsOverlap` |
 | `internal/workspace/identity.go` | `Identity`, `DerivedKey`, `SharedCacheDirName` (consume the normalized endpoint, region, bucket, prefix) |
 | `internal/s3store/store.go` | `Config`, `Options`, `New` (credentials and addressing) |
+| `internal/httpstore/store.go` | `ValidateSpace`, `ValidateToken`, `IsLoopback` (hosted-mode checks), `Config`, `New` |
 | `internal/pathutil/home.go` | `ExpandHome` (a leading `~/` in roots and paths) |
 
 ## Flow
@@ -28,14 +29,18 @@ app.Setup(engine, flags, opts) → setup(process)
   → loadConfig(p)                                   # parses p.args only when p.flags == nil
     → Flags.resolve(env, cwd, cacheDir, ephemeral, newSessionDir)
         environ(env) → resolveString/Bool/Int/Root per setting
+        SLIVINGDOC_TOKEN non-empty (hosted) → endpoint: --endpoint | SLIVINGDOC_ENDPOINT | DefaultHostedEndpoint
+        otherwise → region: --region | AWS_REGION | us-east-1; endpoint: --endpoint | AWS_ENDPOINT_URL_S3
         ephemeral && no root set → newSessionDir() → <session>/notebook, <session>/private
         sharedPackCache → <cacheDir>/slivingdoc/pack-cache
         --log-level set → slogcolor.ParseLevels (fail fast)
       → config.finish(cwd)
-          bucket required, ValidatePrefix, region required, normalizeEndpoint,
+          bucket required, ValidatePrefix, normalizeEndpoint,
+          hosted ? validateHosted (space, token, https unless loopback) : region required,
           absolute(roots), RootsOverlap checks, numeric bounds, resolvePolicy
   → config.serviceConfig() → NewService / StoreFactory
-  → realStoreFactory → s3store.New(Config{Bucket, Prefix, Region, Endpoint}, Options{ForcePathStyle})
+  → realStoreFactory → hosted ? httpstore.New(Config{Endpoint, Space: Bucket, Prefix, Token, UserAgent})
+                              : s3store.New(Config{Bucket, Prefix, Region, Endpoint}, Options{ForcePathStyle})
 ```
 
 ## Behavior
@@ -44,11 +49,12 @@ app.Setup(engine, flags, opts) → setup(process)
 
 | Setting | Flag | Environment | Default | Validation (`finish` unless noted) |
 |---|---|---|---|---|
-| Bucket | `--bucket` | `SLIVINGDOC_BUCKET` | none | required |
+| Hosted API token | none | `SLIVINGDOC_TOKEN` | empty (S3 mode) | hosted: `httpstore.ValidateToken` |
+| Bucket (hosted: space) | `--bucket` | `SLIVINGDOC_BUCKET` | none | required; hosted: `httpstore.ValidateSpace` |
 | Prefix | `--prefix` | `SLIVINGDOC_PREFIX` | `slivingdoc` | `storage.ValidatePrefix` |
-| Region | `--region` | `AWS_REGION` | `us-east-1` | non-empty |
-| Endpoint | `--endpoint` | `AWS_ENDPOINT_URL_S3` | empty (AWS resolution) | `normalizeEndpoint` |
-| Path style | `--path-style` | `SLIVINGDOC_PATH_STYLE` | `false` | `strconv.ParseBool` |
+| Region | `--region` | `AWS_REGION` | `us-east-1` | non-empty; not resolved when hosted |
+| Endpoint | `--endpoint` | `AWS_ENDPOINT_URL_S3`; hosted: `SLIVINGDOC_ENDPOINT` | empty (AWS resolution); hosted: `DefaultHostedEndpoint` (`https://api.slivingdoc.dev`) | `normalizeEndpoint`; hosted: `https` unless loopback |
+| Path style | `--path-style` | `SLIVINGDOC_PATH_STYLE` | `false` | `strconv.ParseBool`; unused when hosted |
 | Workspace root | `--workspace-root` | `SLIVINGDOC_WORKSPACE_ROOT` | serve with neither root configured: `<session>/notebook`; otherwise cwd | non-empty; made absolute |
 | Private root | `--private-root` | `SLIVINGDOC_PRIVATE_ROOT` | serve with neither root configured: `<session>/private`; otherwise `<user-cache-dir>/slivingdoc` | not at or below workspace root |
 | Shared pack cache | `--shared-pack-cache` | `SLIVINGDOC_SHARED_PACK_CACHE` | `false` | needs a user cache dir (checked in `Flags.resolve`); not at or below workspace root |
@@ -68,9 +74,11 @@ Not flags: `NO_COLOR` and `DEBUG_PERF` are read from the environment only ([logg
 
 **Bucket, prefix, endpoint.** `--bucket` names the S3 bucket; slivingdoc never creates or configures it. `--prefix` is empty or a slash-separated relative key prefix with no leading or trailing slash, empty segment, backslash, `.` or `..` segment (`ValidatePrefix`); one prefix holds one notebook, and the adapter joins it to protocol keys ([storage.md](./storage.md)). `--endpoint` must be an absolute `http`/`https` URL without user information, query or fragment; `normalizeEndpoint` lowercases scheme and host, removes a trailing slash and keeps a non-root path. A custom endpoint always uses path-style addressing; `--path-style` extends that to the default AWS endpoint (`s3store.New`).
 
-**Storage identity.** `Service.identity` builds `workspace.Identity{Endpoint, Region, Bucket, Prefix, ManifestVersion}` from the normalized values. `DerivedKey` hashes it with the canonical visible path to name the private directory, and `SharedCacheDirName` hashes it without the path to name the shared cache directory. Changing the endpoint spelling, region, bucket or prefix therefore selects different private state.
+**Hosted mode.** A non-empty `SLIVINGDOC_TOKEN` makes `config.hosted` true. `--bucket` then names the hosted space, the endpoint resolves from `--endpoint`, `SLIVINGDOC_ENDPOINT`, then `DefaultHostedEndpoint`, and `AWS_REGION`/`AWS_ENDPOINT_URL_S3` are not read (the region stays empty and is not required). After `normalizeEndpoint`, `validateHosted` refuses a space outside the `httpstore.ValidateSpace` grammar, a token that is not printable ASCII without white space (the message names `SLIVINGDOC_TOKEN`, never its value), and a non-`https` endpoint unless its host is loopback (`httpstore.IsLoopback`). See [hosted-mode.md](./hosted-mode.md).
 
-**Credentials.** No flag or environment variable of slivingdoc carries a credential. `realStoreFactory` leaves `s3store.Config.AccessKey`/`SecretKey` empty, so `awsconfig.LoadDefaultConfig` uses the AWS SDK default chain: `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/`AWS_SESSION_TOKEN`, the shared files with `AWS_PROFILE`, then ambient identity (SSO, ECS/EKS task roles, EC2 metadata). `AccessKey`/`SecretKey` are set only by tests (`tests3.Suite.StoreConfig`). An endpoint with user information is refused, so a secret cannot echo into a diagnostic. The operator view is in [running.md, S3 credentials](./running.md#s3-credentials).
+**Storage identity.** `Service.identity` builds `workspace.Identity{Endpoint, Region, Bucket, Prefix, ManifestVersion}` from the normalized values (in hosted mode: the hosted endpoint, an empty region, and the space; the token is not part of it). `DerivedKey` hashes it with the canonical visible path to name the private directory, and `SharedCacheDirName` hashes it without the path to name the shared cache directory. Changing the endpoint spelling, region, bucket or prefix therefore selects different private state.
+
+**Credentials.** No flag carries a credential. The only credential slivingdoc reads itself is the hosted API token, from `SLIVINGDOC_TOKEN` only, which travels only in the hosted adapter's `Authorization` header ([hosted-mode.md](./hosted-mode.md)). In S3 mode `realStoreFactory` leaves `s3store.Config.AccessKey`/`SecretKey` empty, so `awsconfig.LoadDefaultConfig` uses the AWS SDK default chain: `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/`AWS_SESSION_TOKEN`, the shared files with `AWS_PROFILE`, then ambient identity (SSO, ECS/EKS task roles, EC2 metadata). `AccessKey`/`SecretKey` are set only by tests (`tests3.Suite.StoreConfig`). An endpoint with user information is refused, so a secret cannot echo into a diagnostic. The operator view is in [running.md, S3 credentials](./running.md#s3-credentials).
 
 **Ephemeral session directory.** When `ProcessOptions.Ephemeral` is set (only `serve`) and neither root is configured, `resolve` calls `NewSessionDir` (default `os.MkdirTemp("", "slivingdoc-")`) and uses `<session>/notebook` and `<session>/private`. The random component keeps two servers apart; the durable notebook is the bucket. `Runtime.Close` removes the whole directory, and a refusal after creation removes it too. Configuring either root disables this: the workspace root then defaults to the startup cwd and the private root to `<user-cache-dir>/slivingdoc`, and neither is removed. `pull` and `commit` never take a session directory.
 
@@ -86,10 +94,11 @@ Not flags: `NO_COLOR` and `DEBUG_PERF` are read from the environment only ([logg
 
 ## Gotchas
 
-- `ServiceConfig` duplicates `config` field for field. A new setting that the service or store factory needs must be added to `config`, `ServiceConfig`, and `serviceConfig()`; `integrationtest.NewHarness` builds `ServiceConfig` directly and must be updated too.
+- `ServiceConfig` mirrors the storage, root, numeric and path-set fields of `config` but not all of them: it has no token (nor the session directory or logging fields), so a `ProcessOptions.StoreFactory` never sees hosted mode, and the hosted process scenarios use helper mode `real` (no injected factory). A new setting that the service or store factory needs must be added to `config`, `ServiceConfig`, and `serviceConfig()`; `integrationtest.NewHarness` builds `ServiceConfig` directly and must be updated too.
 - Adding a flag means: a field on `Flags`, a line in `Bind`, a resolve call in `resolve`, validation in `finish`, and a row in `FlagReference`. `TestReleaseBinaryCommandSurface` and the `serve -h` scenario assert the help text.
 - `SLIVINGDOC_LOG_TIMESTAMP` alone sets `logConfigured`, which makes `setup` rebuild the logger; `LOG_LEVEL` alone does not (the environment logger already honours it).
-- `AWS_REGION` and `AWS_ENDPOINT_URL_S3` are read by slivingdoc and passed explicitly (`WithRegion`, `WithBaseEndpoint`). The S3 client resolves its service endpoint again in `resolveBaseEndpoint`, over the load options first, then the environment, then the shared profile; so a non-empty `--endpoint` wins over `AWS_ENDPOINT_URL_S3` and a profile's `services` s3 `endpoint_url`. `AWS_IGNORE_CONFIGURED_ENDPOINT_URLS=true` or a profile's `ignore_configured_endpoint_urls = true` makes the configuration load drop every configured endpoint, `WithBaseEndpoint` included, which would send the traffic to AWS; `s3store.New` therefore also sets `BaseEndpoint` on the S3 client options, after the load, whenever an endpoint is configured. `TestConfiguredEndpointBeatsServiceEndpointSettings` covers all four settings, with negative-control rows showing that without an endpoint the ambient settings do redirect. An empty endpoint passes no load option, so `--endpoint=` does not clear a process `AWS_ENDPOINT_URL_S3`, and a generic `AWS_ENDPOINT_URL` or a profile `endpoint_url` redirects traffic without entering the storage identity or forcing path style. Other `AWS_*` variables reach the SDK only through `LoadDefaultConfig`.
+- `--endpoint` is shared by both modes: with `SLIVINGDOC_TOKEN` set in the environment, an S3 command line's `--endpoint` becomes the hosted endpoint and receives the token.
+- `AWS_REGION` and `AWS_ENDPOINT_URL_S3` are read by slivingdoc (in S3 mode only) and passed explicitly (`WithRegion`, `WithBaseEndpoint`). The S3 client resolves its service endpoint again in `resolveBaseEndpoint`, over the load options first, then the environment, then the shared profile; so a non-empty `--endpoint` wins over `AWS_ENDPOINT_URL_S3` and a profile's `services` s3 `endpoint_url`. `AWS_IGNORE_CONFIGURED_ENDPOINT_URLS=true` or a profile's `ignore_configured_endpoint_urls = true` makes the configuration load drop every configured endpoint, `WithBaseEndpoint` included, which would send the traffic to AWS; `s3store.New` therefore also sets `BaseEndpoint` on the S3 client options, after the load, whenever an endpoint is configured. `TestConfiguredEndpointBeatsServiceEndpointSettings` covers all four settings, with negative-control rows showing that without an endpoint the ambient settings do redirect. An empty endpoint passes no load option, so `--endpoint=` does not clear a process `AWS_ENDPOINT_URL_S3`, and a generic `AWS_ENDPOINT_URL` or a profile `endpoint_url` redirects traffic without entering the storage identity or forcing path style. Other `AWS_*` variables reach the SDK only through `LoadDefaultConfig`.
 
 ## Related
 

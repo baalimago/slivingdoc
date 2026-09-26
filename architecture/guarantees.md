@@ -43,7 +43,8 @@ Generic recovery:
 | Failure point | Result | Enforced by |
 |---------------|--------|-------------|
 | Before pack upload | Remote unchanged | `attemptPublication` order |
-| During pack upload | Remote unchanged; `STORAGE_FAILURE`/`PACK_UPLOAD` | `mapUploadError` |
+| During pack upload | Remote unchanged; `STORAGE_FAILURE`/`PACK_UPLOAD`, or the store refusal's own reason (`STORAGE_FULL`, `REQUEST_LIMIT`, `RATE_LIMITED`, `ACCESS_DENIED`, `OBJECT_TOO_LARGE`) | `mapUploadError`, `storageFailure` |
+| Increment upload refused, space full | Publish the commit as a smaller whole-state checkpoint if one exists, else `STORAGE_FULL`; L and P unchanged until acceptance | `buildCompactingProposal` ([hosted-mode.md](./hosted-mode.md)) |
 | Pack upload response lost | Read the unique key back, prove size and SHA-256; match continues, absent is a transport failure, different bytes is `STORAGE_INTEGRITY` | `UploadUnique`, `VerifyObject` |
 | After upload, before CAS | Pack is an unreferenced proposal; cleanup may delete it later | [checkpoints.md](./checkpoints.md) |
 | CAS precondition failure | Another writer won; merge again and retry | `publish` returns `errCASLost` |
@@ -93,6 +94,7 @@ Deterministic injection at operation boundaries, wired through `app.ServiceHooks
 
 - The workspace operation lock is held across a whole `Pull` or `Commit` (`Workspace.Hold`), so two concurrent operations on the same path, in one process or across processes, run one after the other; the second sees the first's result in L and P. In one process both operations share one `Workspace`; across processes each has its own in-memory copy of `state.json`, and `acquire` rereads the record once the file lock is held (`refreshState`), so the second process works from the baseline and recovery flag the first one wrote (`TestOperationsOnOneWorkspaceDoNotInterleave`, `TestScenarioOperationsOnOnePathDoNotInterleave`, `TestLockHolderRereadsState`).
 - `MarkPulled` runs outside `applyLocal`; its failure maps to `STORAGE_FAILURE`/`LOCAL_STATE` even though L was already rewritten (L and P are consistent at that point).
+- Known bug: a store refusal met while recovering (the resynchronizing `readRemote` of `entryRecovery`, `applyLocal` or `failAfterAccept`) does not surface with its own reason: `entryRecovery` wraps it and the other two drop it, so the result is retryable `RECOVERY_FAILURE` even for `ACCESS_DENIED` ([hosted-mode.md](./hosted-mode.md)).
 - A new failure boundary that mutates L must go through `applyLocked` (so the flag is durable first) and its caller must wrap it in `applyLocal` with the right stage and `RemoteAccepted` value.
 
 ## Related

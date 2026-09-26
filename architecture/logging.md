@@ -66,7 +66,7 @@ Runtime.Pull/Commit (CLI) → notebook.WithLogger(ctx, Module(base, "notebook"))
 
 - Bind a module once per component with `Module`, not per call: slog consults `Enabled` before building a record, so the level can only be resolved from an attribute bound on the logger.
 - `Runtime.logger` is the `app` module; passing it to the MCP server or notebook would put their records under the wrong module.
-- Reusable packages (`storage`, `s3store`, `git`, `git2`, `workspace`) do not log; they return typed errors (AGENTS code style). Only `cli`, `app`, `mcp`, and the notebook's best-effort paths log.
+- Reusable packages (`storage`, `s3store`, `httpstore`, `git`, `git2`, `workspace`) do not log; they return typed errors (AGENTS code style). Only `cli`, `app`, `mcp`, and the notebook's best-effort paths log.
 - Never log raw `err.Error()` of a notebook error at a caller-visible place; in logs, use `redactValues`.
 - `LogCapture` handlers accept every level; scenario assertions on log content do not depend on `LOG_LEVEL`.
 

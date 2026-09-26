@@ -2,9 +2,9 @@
 
 How slivingdoc is tested: one Go command and one npm command, the test layers from unit tests to black-box process scenarios, the seams that replace every external effect, the storage contract suite, fault injection and failpoints, and the pinned S3-compatible container. It answers "where does a test for this behavior go, what does it run against, and why is the gate so strict?"
 
-Read this when: adding or changing a test, a scenario, a fault or failpoint, the S3 test backend, the Makefile `test` target, coverage, or anything that could make the gate slow or flaky.
+Read this when: adding or changing a test, a scenario, a fault or failpoint, the S3 test backend, the hosted reference gateway, the Makefile `test` target, coverage, or anything that could make the gate slow or flaky.
 
-No test uses live AWS resources. Real-S3 tests use the pinned testcontainer image (currently SeaweedFS).
+No test uses live AWS resources or the live hosted service. Real-S3 tests use the pinned testcontainer image (currently SeaweedFS); hosted-mode tests use the in-process reference gateway `internal/httpstore/gatewaytest`.
 
 ## Key files
 
@@ -19,9 +19,12 @@ No test uses live AWS resources. Real-S3 tests use the pinned testcontainer imag
 | `internal/integrationtest/assertions.go` | `StateRecord`, `PackCacheDir`, `SharedPackCacheDir` |
 | `internal/integrationtest/logcapture.go` | `LogCapture` handler for log assertions |
 | `internal/integrationtest/main_test.go` | `TestMain` (helper-mode dispatch, `tests3.Start`), `helperMain` (runs `cli.Run` in a re-executed test binary), `spawnHelper`, `spawnHelperIn` |
-| `internal/integrationtest/scenario_*_test.go` | One file per use case: pull, commit, conflict, checkpoint, recovery, integrity, error taxonomy, readonly, writable, path security, validation, transport, config, cli, ephemeral, shared cache, logging, log flags, colour, result |
+| `internal/integrationtest/scenario_*_test.go` | One file per use case: pull, commit, conflict, checkpoint, recovery, integrity, error taxonomy, readonly, writable, path security, validation, transport, config, cli, ephemeral, shared cache, logging, log flags, colour, result, hosted |
+| `internal/integrationtest/scenario_hosted_test.go` | CLI processes (helper mode `real`, `SLIVINGDOC_TOKEN` set) against `gatewaytest`: round trip, storage full with compaction and `REQUEST_LIMIT`, a read-only token, startup refusals |
 | `internal/integrationtest/pure_test.go` | Unit tests of the recorder and fault wrapper |
 | `internal/storage/contract/suite.go` | `contract.Run(t, Factory)`: one `ObjectStore` suite for every backend |
+| `internal/httpstore/gatewaytest/gateway.go` | Test-only reference server of the hosted storage API over the fake store: grants, quotas, injected refusals ([hosted-mode.md](./hosted-mode.md)) |
+| `internal/httpstore/store_test.go` | `contract.Run` against the gateway, plus status mapping, retries, redirects, paging |
 | `internal/storage/fake/fake.go`, `inject.go` | In-memory store with real conditional writes; `Injector` shared with `faultStore` |
 | `internal/tests3/s3.go`, `internal/tests3/lease/main.go` | Pinned SeaweedFS suite and the `make test` lease (see [s3store.md](./s3store.md)) |
 | `internal/notebook/failpoints.go` | `notebook.Failpoints{CAS}` (after CAS acceptance, before local acceptance) |
@@ -74,8 +77,8 @@ process scenario
 |---|---|---|
 | Unit | all packages | pure validation and error mapping |
 | Component | `internal/git2` | real libgit2 trees, merges, packs, shallow history |
-| Contract | `internal/storage/contract` | one `ObjectStore` suite against the fake and real S3 |
-| Integration | `internal/notebook`, `internal/s3store` | publication, CAS, checkpoint, cleanup, S3 requests |
+| Contract | `internal/storage/contract` | one `ObjectStore` suite against the fake, real S3, and the hosted adapter over `gatewaytest` |
+| Integration | `internal/notebook`, `internal/s3store`, `internal/httpstore` | publication, CAS, checkpoint, cleanup, compaction of a full space, S3 and hosted API requests |
 | Scenario | `internal/integrationtest` | black-box MCP use cases over in-memory and process transports |
 | Protocol | `internal/mcp`, `internal/app` | schemas, envelopes, stdio, configuration, shutdown |
 | Release | root package | dependency baselines, checksum grammar, release reference, the built binary |
@@ -86,6 +89,7 @@ process scenario
 | Effect | Seam |
 |---|---|
 | S3 | `storage.ObjectStore` with `storage/fake`; `app.ProcessOptions.StoreFactory` |
+| Hosted storage API | `gatewaytest` (a local `httptest` server); `httpstore.Config.Client`, `Retries`, `Backoff` |
 | Git behavior | `git.Engine` / `git.Repository` interfaces with fake repositories in `notebook` and `workspace` tests |
 | libgit2 | real component tests in temporary directories |
 | Filesystem | per-test temporary roots |
@@ -97,7 +101,7 @@ process scenario
 
 **Scenarios are the spec.** Public behavior changes start in `internal/integrationtest`. MCP JSON-RPC is the only entry; scenarios never call notebook, git, workspace or storage functions directly. Where prose and a passing scenario disagree, the scenario wins. Do not change an assertion until you understand the contract it protects.
 
-**Store selection.** `NewHarness` with a nil `Store` builds the real `s3store` against the shared SeaweedFS on a fresh prefix; with an injected store, `Prefix` is required and `Bucket` defaults to `test-bucket`. Scenarios whose evidence must be real HTTP conditional writes use real S3: CAS races, competing checkpoint workers, the stale-reader restart, and cleanup after a checkpoint, plus CLI process scenarios (helper mode `real`) that need state across one-shot processes. Most other scenarios use `newFakeHarness` (`fake.New("scenario")`), which is contract-equivalent because `contract.Run` proves the fake and the adapter agree. The startup probe does not run in the harness (it lives in the process body), so recorder counts start at zero.
+**Store selection.** `NewHarness` with a nil `Store` builds the real `s3store` against the shared SeaweedFS on a fresh prefix; with an injected store, `Prefix` is required and `Bucket` defaults to `test-bucket`. Scenarios whose evidence must be real HTTP conditional writes use real S3: CAS races, competing checkpoint workers, the stale-reader restart, and cleanup after a checkpoint, plus CLI process scenarios (helper mode `real`) that need state across one-shot processes. Helper mode `real` leaves the store factory nil, so a scenario that sets `SLIVINGDOC_TOKEN` and `SLIVINGDOC_ENDPOINT` (the hosted scenarios) runs the real hosted adapter against a `gatewaytest` server instead; `sanitizedEnv` drops both variables from every other helper. Most other scenarios use `newFakeHarness` (`fake.New("scenario")`), which is contract-equivalent because `contract.Run` proves the fake and the adapter agree. The startup probe does not run in the harness (it lives in the process body), so recorder counts start at zero.
 
 **Faults.** `faultStore` wraps any base store, including real S3, and injects what a real store cannot produce on demand: one-shot or permanent failures by key or prefix, accept-then-error ambiguity (`AmbiguousNext`, `AmbiguousNextOp`), unprovable CAS read-back (`UnprovableNext`), corrupted reads, failing delete batches, and op+key barriers (`BlockNext`, `BlockPrefix`, `Release`, `Waiting`) with a 5 s bound so a failed assertion cannot strand a blocked operation. Barriers make CAS winners and losers deterministic. The fake store has the same injector with a 10 s bound.
 
@@ -121,6 +125,7 @@ process scenario
 
 - [storage.md](./storage.md): contract suite and fake.
 - [s3store.md](./s3store.md): `tests3` and the lease.
+- [hosted-mode.md](./hosted-mode.md): the reference gateway and the hosted scenarios.
 - [build.md](./build.md): libgit2 prerequisite, CI workflow.
 - [cli.md](./cli.md): the process body the process scenarios run.
 - [AGENTS.md, Integration Tests](../AGENTS.md#integration-tests) and [QA validation](../AGENTS.md#qa-validation).

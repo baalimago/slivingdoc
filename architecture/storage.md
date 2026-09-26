@@ -1,14 +1,15 @@
 # Storage protocol and the ObjectStore seam
 
-The S3 storage model and its Go boundary. `internal/storage` owns the object layout, the protocol key grammar, the versioned `current` manifest, pack integrity values, the startup compatibility probe, the ambiguity-resolving upload, and the `ObjectStore` interface every backend implements. It answers "what is stored where, what makes stored state valid, and what must a new backend guarantee?"
+The storage model and its Go boundary. `internal/storage` owns the object layout, the protocol key grammar, the versioned `current` manifest, pack integrity values and metadata fields, the semantic errors every backend maps to, the startup compatibility probe, the ambiguity-resolving upload, and the `ObjectStore` interface every backend implements (S3 in `internal/s3store`, the hosted API in `internal/httpstore`). It answers "what is stored where, what makes stored state valid, and what must a new backend guarantee?"
 
-Read this when: implementing a new `ObjectStore` backend (this is the seam; a hosted backend is in progress in a separate PR), changing the manifest schema or its validation, the key grammar, pack metadata, the probe, the upload retry rule, the contract suite, or the in-memory fake.
+Read this when: implementing a new `ObjectStore` backend (this is the seam), adding a semantic storage error, changing the manifest schema or its validation, the key grammar, pack metadata, the probe, the upload retry rule, the contract suite, or the in-memory fake.
 
 ## Key files
 
 | File | Purpose |
 |------|---------|
-| `internal/storage/store.go` | `ObjectStore` interface; sentinels `ErrNotFound`, `ErrPreconditionFailed`, `ErrTransport`, `ErrIncompatible`; `ETag`, `Metadata`, `ObjectInfo` |
+| `internal/storage/store.go` | `ObjectStore` interface; sentinels `ErrNotFound`, `ErrPreconditionFailed`, `ErrTransport`, `ErrIncompatible`, `ErrQuotaExceeded`, `ErrRequestLimit`, `ErrRateLimited`, `ErrAccessDenied`, `ErrTooLarge`; `Refusal`; `ETag`, `Metadata`, `ObjectInfo` |
+| `internal/storage/metadata.go` | `MetaSHA256`, `MetaSize`, `MetaKind`, `MetaGeneration` (field names), `Metadata.Fields`, `ParseMetadata` |
 | `internal/storage/key.go` | `PackKind` (`KindCheckpoint`, `KindIncrement`), `Key` + `String`/`MarshalJSON`, `ParseKey`, `ValidatePrefix`, `JoinKey`, `ErrInvalidKey`, `ErrInvalidPrefix` |
 | `internal/storage/manifest.go` | `CurrentKey`, `Manifest`, `Checkpoint`, `Increment`, `Retained`, `DecodeManifest`, `EncodeManifest`, `validateManifest`, `checkDescriptorKey`, `ErrIntegrity` |
 | `internal/storage/probe.go` | `Probe` (startup compatibility proof) |
@@ -16,17 +17,20 @@ Read this when: implementing a new `ObjectStore` backend (this is the seam; a ho
 | `internal/storage/sha256.go` | `SHA256`, `ParseSHA256` (canonical lowercase 64-hex), `ErrInvalidSHA256` |
 | `internal/storage/uuid.go` | `UUID`, `NewUUIDv7`, `ParseUUIDv7` (canonical lowercase v7, RFC 4122 variant), `ErrInvalidUUID` |
 | `internal/strictjson/json.go` | `Parse`, `Value`, `Field`, `RejectUnknown` (strict tree shared with the workspace state record) |
-| `internal/storage/contract/suite.go` | `contract.Run(t, Factory)`: the behavioral contract every backend must pass |
+| `internal/storage/contract/suite.go` | `contract.Run(t, Factory)`: the behavioral contract every backend must pass; `createRecorder` |
 | `internal/storage/fake/fake.go` | `fake.New(prefix)`: in-memory `Store` with real conditional-write semantics; `Op`, `FailNext`, `FailNextKey`, `AmbiguousNext`, `BlockNext`, `Unblock`, `Waiting`, `Bump`, `Calls`, `ObjectCount`, `etagFor` |
 | `internal/storage/fake/inject.go` | `Injector` (shared fault engine: one-shot and permanent failures by key or prefix, accept-then-error ambiguity, barriers with a bounded wait), `ErrBarrierTimeout` |
 | `internal/s3store/store.go` | The production AWS implementation ([s3store.md](./s3store.md)) |
+| `internal/httpstore/store.go` | The hosted storage API implementation ([hosted-mode.md](./hosted-mode.md)) |
 
-Consumers: `internal/notebook/remote.go` (`readCurrent`, `readRemote`), `internal/notebook/commit.go` (`uploadProposal`, `publish`), `internal/notebook/checkpoint.go` (`runCheckpoint`, `cleanup`), and `internal/app/app.go` (`buildService` runs `Probe`).
+Consumers: `internal/notebook/remote.go` (`readCurrent`, `readRemote`), `internal/notebook/commit.go` (`uploadProposal`, `publish`), `internal/notebook/checkpoint.go` (`runCheckpoint`, `cleanup`), and `internal/app/app.go` (`buildService` → `checkStore` runs `Probe`, or `CheckAccess` for a store that offers it).
 
 ## Flow
 
 ```text
-startup:  app.buildService → storeFactory → storage.Probe(ctx, store)
+startup:  app.buildService → storeFactory → checkStore
+            store has CheckAccess (hosted) → CheckAccess instead of the probe (hosted-mode.md)
+            otherwise → storage.Probe(ctx, store):
             CreateObject(probe/<uuid>) → CreateObject again (want ErrPreconditionFailed)
             → ReadObject (bytes + ETag) → ReplaceObject("wrong-etag") (want ErrPreconditionFailed)
             → ReadObject (unchanged) → ReplaceObject(etag) (new ETag) → ReadObject (new bytes)
@@ -63,7 +67,9 @@ S3 holds no bare repository and no `.git` directory. Protocol keys are relative 
 
 **IDs and digests.** Publication and checkpoint IDs are UUIDv7 in canonical lowercase `8-4-4-4-12` form with the RFC 4122 variant (`NewUUIDv7`, `ParseUUIDv7`). Pack checksums are the SHA-256 of the complete pack in canonical lowercase 64-hex (`ParseSHA256`). Git object IDs are SHA-1, 40 lowercase hex (`git.OID`). An ETag is only a concurrency token for `current`, never a content digest; multipart ETags are not digests either.
 
-**Pack metadata.** Every pack upload carries `Metadata{SHA256, Size, Kind, Generation}`, written by the backend as user metadata (`slivingdoc-sha256`, `slivingdoc-size`, `slivingdoc-kind`, `slivingdoc-generation` in S3). Metadata diagnoses and resumes uploads; the manifest descriptor is authoritative, and metadata alone never proves an object.
+**Pack metadata.** Every pack upload carries `Metadata{SHA256, Size, Kind, Generation}`. `Metadata.Fields` renders it as four named string fields (`slivingdoc-sha256`, `slivingdoc-size`, `slivingdoc-kind`, `slivingdoc-generation`, the `Meta*` constants), which S3 stores as user metadata and the hosted API as HTTP headers of the same names. `ParseMetadata` reads them back: an absent field leaves the zero value, a present but malformed one is an error that both adapters wrap as `ErrIntegrity`. Metadata diagnoses and resumes uploads; the manifest descriptor is authoritative, and metadata alone never proves an object.
+
+**Semantic errors.** Backends return errors wrapping these sentinels, and the notebook branches on them only: `ErrNotFound` (absent key), `ErrPreconditionFailed` (a conditional write did not hold, the only CAS loss), `ErrTransport` (failure with an unknown outcome, including a lost write response), `ErrIntegrity`, `ErrIncompatible` (startup only). The account refusals `ErrQuotaExceeded` (space or account full; nothing stored), `ErrRequestLimit` (request allowance used up), `ErrRateLimited` (throttled; nothing changed), `ErrAccessDenied` (credentials missing, revoked, read-only for a write, or not reaching the space) and `ErrTooLarge` (object larger than the store accepts) become their own `STORAGE_FAILURE` reasons ([errors.md](./errors.md)); only the hosted adapter raises them today. A backend may wrap any sentinel in `*Refusal{Err, Detail, Message}` (`httpstore` does so for every classified status, `ErrNotFound`, `ErrPreconditionFailed` and `ErrTransport` included): `Unwrap` returns `Err`, `Detail` is diagnostic text, and `Message` is one sanitized line written by the store for the person running the client. The notebook appends a non-empty `Message` to its own message only when the cause is one of the five refusal sentinels.
 
 **`current` manifest.** `current` is the only authoritative state index. An absent `current` is the empty notebook at generation 0; the first successful `CreateObject` writes generation 1; every successful replacement, including a checkpoint, increments the generation by exactly one. Generations never reset; a generation that wrapped to 0 fails `validateManifest` on encode, so the operation is rejected. Correctness never uses `ListObjects` to discover accepted state. Version 1 shape (field order is normative and is the struct order in `manifest.go`):
 
@@ -115,9 +121,9 @@ A backend is any type satisfying `storage.ObjectStore`, safe for concurrent use,
 - `ReplaceObject`: replace only if the ETag matches; wrap `ErrPreconditionFailed` for a stale ETag and for an absent key, without mutating; return a new non-empty ETag.
 - `ListObjects`: call `fn` with protocol keys (prefix stripped) for every object under the protocol prefix, following continuations; stop on `fn` error.
 - `DeleteObjects`: delete in bounded batches; an absent key is not an error; a partial failure wraps `ErrTransport`.
-- Map every other failure to `ErrTransport` and keep no SDK or HTTP type in the returned errors' public API.
+- Map an account refusal to the matching refusal sentinel, every other failure with an unknown outcome to `ErrTransport`, and keep no SDK or HTTP type in the returned errors' public API.
 
-Prove it by calling `contract.Run(t, factory)` from the backend's tests with a fresh isolated prefix per subtest, as `internal/storage/fake/fake_test.go` and `internal/s3store/integration_test.go` do. The suite covers conditional create, conditional replace, stale replace without mutation, replace of a missing key, read of a missing key, put/read round trip with metadata, `VerifyObject`, `UploadUnique`, list filtering and key form, delete tolerance, and `Probe`. Then wire it into `app.realStoreFactory` (or a sibling factory) so `app.Setup` probes it.
+Prove it by calling `contract.Run(t, factory)` from the backend's tests with a fresh isolated prefix per subtest, as `internal/storage/fake/fake_test.go`, `internal/s3store/integration_test.go` and `internal/httpstore/store_test.go` do. The suite covers conditional create, conditional replace, stale replace without mutation, replace of a missing key, read of a missing key, put/read round trip with metadata, `VerifyObject`, `UploadUnique`, list filtering and key form, delete tolerance, and `Probe`; it lists only below `packs/` and checks the probe's cleanup by reading back the keys the probe created (`createRecorder`), because the hosted API refuses a listing elsewhere. Then wire it into `app.realStoreFactory` so `app.Setup` checks it: `checkStore` runs `Probe`, unless the store implements `CheckAccess(ctx) error`, which then replaces the probe.
 
 ## Gotchas
 
@@ -131,6 +137,7 @@ Prove it by calling `contract.Run(t, factory)` from the backend's tests with a f
 ## Related
 
 - [s3store.md](./s3store.md): the AWS adapter and its S3 specifics.
+- [hosted-mode.md](./hosted-mode.md): the hosted storage adapter, its status mapping, and compaction of a full space.
 - [commit.md](./commit.md), [pull.md](./pull.md), [checkpoints.md](./checkpoints.md): the notebook side of the protocol.
 - [errors.md](./errors.md): how storage sentinels become notebook codes.
 - [testing.md](./testing.md): contract suite and fault layers.

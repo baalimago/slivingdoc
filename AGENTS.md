@@ -4,8 +4,8 @@
 
 `architecture/` holds one doc per command and subsystem: an overview, the
 product contract, pull, commit, conflicts, checkpoints, the notebook, the Git
-engine, the workspace, storage, the S3 store, the CLI, the
-MCP server, configuration, errors, logging, security, guarantees,
+engine, the workspace, storage, the S3 store, hosted storage mode, the CLI,
+the MCP server, configuration, errors, logging, security, guarantees,
 testing, build, releasing, running, and recorded decisions. Start at
 [architecture/README.md](architecture/README.md): it indexes every doc
 with a one-line summary and suggests a reading order per task. Open the
@@ -33,13 +33,14 @@ without re-checking the code:
 ## Architecture
 
 slivingdoc is a standalone MCP server that gives many agents one shared
-directory of UTF-8 text notes, stored durably in S3-compatible object storage.
-It uses Git data structures and merge behavior internally but never invokes a
+directory of UTF-8 text notes, stored durably in S3-compatible object storage
+or, when `SLIVINGDOC_TOKEN` is set, in a space of the slivingdoc hosted storage
+API (architecture/hosted-mode.md). It uses Git data structures and merge behavior internally but never invokes a
 Git executable and never exposes a Git repository. The contract is split
 by concern under [`architecture/`](architecture/README.md). Three states
 shape every operation. **L** is the caller-controlled visible directory.
 **P** is the server-owned private state (repository, baseline, locks).
-**R** is the accepted remote state indexed by the S3 object `current`.
+**R** is the accepted remote state indexed by the stored object `current`.
 
 ```text
      MCP client (agent)              human shell
@@ -80,6 +81,8 @@ shape every operation. **L** is the caller-controlled visible directory.
              |                 +----------------------------+
              |                 |  internal/s3store (AWS SDK)|
              |                 |  --> S3-compatible bucket  |
+             |                 |  or internal/httpstore     |
+             |                 |  --> hosted storage space  |
              |                 +----------------------------+
              v
 +--------------------------+
@@ -116,8 +119,10 @@ Supporting packages sit beside the main path. `internal/strictjson`
 supplies the strict JSON value tree shared by the manifest and
 `state.json`. `internal/storage/fake` and `internal/storage/contract`
 provide the deterministic object store and the one contract suite run
-against both the fake and the real S3 backend. `internal/tests3` starts
-the pinned S3-compatible testcontainers backend.
+against the fake, the real S3 backend, and the hosted adapter.
+`internal/tests3` starts the pinned S3-compatible testcontainers backend;
+`internal/httpstore/gatewaytest` is the in-process reference server of the
+hosted storage API.
 
 ### Package Map
 
@@ -296,8 +301,9 @@ lives in [`architecture/running.md`](architecture/running.md) and in `HelpText` 
 `FlagReference` of
 `internal/app/config.go`, which `slivingdoc serve -h` prints — that code
 copy is the authoritative one. Behavior worth remembering: `--bucket` is
-required, `--private-root` must not be at or below the workspace root,
-`--commit-retries` exhaustion is `REMOTE_BUSY`, and an invalid
+required (it names the hosted space when `SLIVINGDOC_TOKEN` is set, and the
+token is read from the environment only), `--private-root` must not be at or
+below the workspace root, `--commit-retries` exhaustion is `REMOTE_BUSY`, and an invalid
 `--read-only-paths` or `--writable-paths` entry refuses startup before any
 native or S3 dependency loads — as does a path named by both settings,
 which is a configuration error rather than a precedence rule.

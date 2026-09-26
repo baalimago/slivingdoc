@@ -1,7 +1,8 @@
 // Package app wires configuration, dependency construction, startup, and
 // shutdown for the slivingdoc process body: it parses flags and the
-// environment, opens the pinned native engine, proves the S3 compatibility
-// probe, and serves the two MCP tools over stdio until the client
+// environment, opens the pinned native engine, runs the startup store check
+// (the S3 compatibility probe or the hosted access check), and serves the
+// two MCP tools over stdio until the client
 // disconnects or a termination signal starts the bounded shutdown
 // (architecture/cli.md, product-contract.md, config.md, and security.md).
 package app
@@ -33,7 +34,8 @@ import (
 // builds keep the -dev suffix.
 var Version = "0.1.0-dev"
 
-// probeTimeout bounds the startup S3 compatibility probe.
+// probeTimeout bounds the startup store check: the S3 compatibility probe
+// or the hosted access check.
 const probeTimeout = 30 * time.Second
 
 // StoreFactory builds the semantic object-store boundary from a resolved
@@ -102,7 +104,7 @@ type process struct {
 }
 
 // Setup resolves the configuration, opens the pinned native engine, builds
-// the object store, proves the S3 compatibility probe, and wires the MCP
+// the object store, runs the startup store check, and wires the MCP
 // server. Every failure is a startup refusal: no transport runs and no tool
 // call is accepted. A non-nil flags holder is an already-parsed command
 // line, which is how the serve command supplies it; nil parses opts.Args.
@@ -182,10 +184,11 @@ func Setup(engine git.Engine, flags *Flags, opts ProcessOptions) (*Runtime, erro
 }
 
 // Runtime is a constructed process body: the configuration is validated,
-// the native engine is open, and the object store has passed the
-// compatibility probe. Serve runs the MCP server over it; Pull and Commit
-// run the same notebook operations directly for the CLI subcommands. Close
-// releases the service and the engine.
+// the native engine is open, and the object store has passed the startup
+// check (the S3 compatibility probe or the hosted access check). Serve runs
+// the MCP server over it; Pull and Commit run the same notebook operations
+// directly for the CLI subcommands. Close releases the service and the
+// engine.
 type Runtime struct {
 	p      process
 	svc    *Service
@@ -246,7 +249,7 @@ func (r *Runtime) Close() error {
 
 // setup is the startup half of the process body: validate the
 // configuration, open the native engine (the pinned-version check), then
-// build the store, prove the compatibility probe, and wire the service.
+// build the store, run the startup store check, and wire the service.
 func setup(p process) (*Runtime, error) {
 	base := p.logger
 	if base == nil {
@@ -298,7 +301,7 @@ func run(p process) error {
 	return rt.Serve(context.Background())
 }
 
-// buildService constructs the S3 store, proves the compatibility probe,
+// buildService constructs the S3 or hosted store, runs the startup check,
 // and wires the notebook service. Any failure is a startup refusal: no
 // transport runs and no operation is accepted.
 func buildService(p process, cfg config) (*Service, error) {
