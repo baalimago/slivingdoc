@@ -342,3 +342,27 @@ func TestScenarioMCPReqIDScoping(t *testing.T) {
 		t.Fatalf("harness 3 distinct request ids = %v, want the three calls", got)
 	}
 }
+
+// TestScenarioAbsentOrNullArguments proves that a call whose arguments
+// member is absent or null is the empty argument object
+// (architecture/mcp-server.md): notes_pull pulls the notebook root, and
+// notes_commit is refused only for its missing message.
+func TestScenarioAbsentOrNullArguments(t *testing.T) {
+	t.Parallel()
+	for name, args := range map[string]any{"absent": nil, "null": json.RawMessage("null")} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			h := newFakeHarness(t, HarnessConfig{})
+			root := h.Path("")
+			res := callWithArgs(t, h, "", toolPull, args)
+			h.assertEnvelope(t, ToolCall{Tool: toolPull, Path: root, Expect: CallExpectation{OK: true}}, res)
+			assertPulledMarker(t, h, root)
+
+			res = callWithArgs(t, h, "", toolCommit, args)
+			h.assertEnvelope(t, ToolCall{
+				Tool: toolCommit, Path: root,
+				Expect: CallExpectation{ErrorCode: "INVALID_REQUEST", Reason: "MALFORMED_INPUT", Action: "FIX_INPUT"},
+			}, res)
+		})
+	}
+}

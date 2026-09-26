@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -27,20 +28,40 @@ const (
 // path or a leading ~/ abbreviation, of at most 4,096 bytes without U+0000.
 // An omitted or empty path returns the empty string, which the handler resolves
 // to the server's notebook root. Unknown fields, duplicate fields, explicit
-// null, non-object arguments, and malformed JSON are rejected by the strict
-// parser before any semantic check.
+// null inside the object, non-object arguments, and malformed JSON are
+// rejected by the strict parser before any semantic check; an absent or
+// null arguments member is the empty object (parseArguments).
 func decodePull(raw json.RawMessage) (string, error) {
-	v, err := strictjson.Parse(raw)
+	v, err := parseArguments(raw)
 	if err != nil {
-		return "", fmt.Errorf("arguments are not a strict JSON object: %w", err)
-	}
-	if v.Kind != strictjson.Object {
-		return "", errors.New("arguments must be a JSON object")
+		return "", err
 	}
 	if err := v.RejectUnknown("path"); err != nil {
 		return "", err
 	}
 	return decodeOptionalPath(v)
+}
+
+// emptyArguments is the argument object an absent or null arguments member
+// stands for.
+var emptyArguments = json.RawMessage("{}")
+
+// parseArguments strictly parses the raw arguments member into an object.
+// An absent or null member is the empty object (architecture/mcp-server.md):
+// notes_pull then pulls the notebook root, and notes_commit reports the
+// missing message.
+func parseArguments(raw json.RawMessage) (strictjson.Value, error) {
+	if trimmed := bytes.TrimSpace(raw); len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		raw = emptyArguments
+	}
+	v, err := strictjson.Parse(raw)
+	if err != nil {
+		return strictjson.Value{}, fmt.Errorf("arguments are not a strict JSON object: %w", err)
+	}
+	if v.Kind != strictjson.Object {
+		return strictjson.Value{}, errors.New("arguments must be a JSON object")
+	}
+	return v, nil
 }
 
 // decodeOptionalPath reads the optional "path" field of an already strictly
@@ -66,12 +87,9 @@ func decodeOptionalPath(v strictjson.Value) (string, error) {
 // with the notebook's own reason. An omitted or empty path returns the
 // empty string, which the handler resolves to the server's notebook root.
 func decodeCommit(raw json.RawMessage) (path, message string, err error) {
-	v, err := strictjson.Parse(raw)
+	v, err := parseArguments(raw)
 	if err != nil {
-		return "", "", fmt.Errorf("arguments are not a strict JSON object: %w", err)
-	}
-	if v.Kind != strictjson.Object {
-		return "", "", errors.New("arguments must be a JSON object")
+		return "", "", err
 	}
 	if err := v.RejectUnknown("path", "message"); err != nil {
 		return "", "", err

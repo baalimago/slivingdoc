@@ -506,6 +506,39 @@ func TestOmittedPathResolvesToNotebookRoot(t *testing.T) {
 	}
 }
 
+// TestAbsentOrNullArgumentsAreTheEmptyObject proves that a call whose
+// arguments member is absent or null decodes as {}: notes_pull pulls the
+// notebook root, and notes_commit reports the missing message as
+// MALFORMED_INPUT without reaching the service (architecture/mcp-server.md).
+func TestAbsentOrNullArgumentsAreTheEmptyObject(t *testing.T) {
+	for name, args := range map[string]any{"absent": nil, "null": json.RawMessage("null")} {
+		t.Run(name, func(t *testing.T) {
+			svc := &fakeService{root: "/session/notebook"}
+			client, _ := newTestPair(t, svc)
+			res, err := client.CallTool(context.Background(), &sdk.CallToolParams{Name: toolPull, Arguments: args})
+			if err != nil {
+				t.Fatalf("CallTool(notes_pull) = %v", err)
+			}
+			assertSuccessInfo(t, res, &SuccessInfo{
+				Path: "/session/notebook", Code: "OK", Files: []ChangeFile{}, ReadOnly: []string{}, Writable: []string{},
+			})
+			commitRes, err := client.CallTool(context.Background(), &sdk.CallToolParams{Name: toolCommit, Arguments: args})
+			if err != nil {
+				t.Fatalf("CallTool(notes_commit) = %v", err)
+			}
+			assertErrorCode(t, commitRes, codeInvalidRequest, false)
+			svc.mu.Lock()
+			defer svc.mu.Unlock()
+			if len(svc.pulls) != 1 || svc.pulls[0] != "/session/notebook" {
+				t.Fatalf("service pulls = %v, want the notebook root", svc.pulls)
+			}
+			if len(svc.commits) != 0 {
+				t.Fatalf("service commits = %v, want none", svc.commits)
+			}
+		})
+	}
+}
+
 // TestInstructionsNameNotebookRoot proves the server tells the caller which
 // directory to edit before any tool call returns.
 func TestInstructionsNameNotebookRoot(t *testing.T) {
