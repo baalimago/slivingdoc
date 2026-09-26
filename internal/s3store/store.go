@@ -12,7 +12,6 @@ import (
 	"html"
 	"io"
 	"net/http"
-	"strconv"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -163,7 +162,7 @@ func (s *Store) ReadObject(ctx context.Context, key string) (io.ReadCloser, stor
 	if err != nil {
 		return nil, storage.ObjectInfo{}, mapError("get "+key, err)
 	}
-	meta, err := decodeMeta(out.Metadata)
+	meta, err := storage.ParseMetadata(out.Metadata)
 	if err != nil {
 		out.Body.Close()
 		return nil, storage.ObjectInfo{}, fmt.Errorf("s3store: get %s: %w: %w", key, storage.ErrIntegrity, err)
@@ -193,7 +192,7 @@ func (s *Store) putSingle(ctx context.Context, key string, r io.Reader, meta sto
 		Body:          r,
 		ContentLength: aws.Int64(int64(meta.Size)),
 		ContentType:   aws.String("application/octet-stream"),
-		Metadata:      encodeMeta(meta),
+		Metadata:      meta.Fields(),
 	})
 	if err != nil {
 		return mapError("put "+key, err)
@@ -209,7 +208,7 @@ func (s *Store) putMultipart(ctx context.Context, key string, r io.Reader, meta 
 		Bucket:      aws.String(s.bucket),
 		Key:         aws.String(full),
 		ContentType: aws.String("application/octet-stream"),
-		Metadata:    encodeMeta(meta),
+		Metadata:    meta.Fields(),
 	})
 	if err != nil {
 		return mapError("multipart create "+key, err)
@@ -461,60 +460,4 @@ func stripTags(b []byte) []byte {
 		}
 	}
 	return out
-}
-
-// Metadata header names (architecture section 9.1). The AWS SDK exposes
-// user metadata without the x-amz-meta- prefix, in lowercase.
-const (
-	metaSHA256     = "slivingdoc-sha256"
-	metaSize       = "slivingdoc-size"
-	metaKind       = "slivingdoc-kind"
-	metaGeneration = "slivingdoc-generation"
-)
-
-func encodeMeta(meta storage.Metadata) map[string]string {
-	return map[string]string{
-		metaSHA256:     meta.SHA256.String(),
-		metaSize:       strconv.FormatUint(meta.Size, 10),
-		metaKind:       string(meta.Kind),
-		metaGeneration: strconv.FormatUint(meta.Generation, 10),
-	}
-}
-
-// decodeMeta decodes the slivingdoc metadata headers. Absent headers leave
-// the zero metadata; present-but-malformed headers are an integrity error
-// because the object claims to be a protocol pack it cannot describe.
-func decodeMeta(md map[string]string) (storage.Metadata, error) {
-	var meta storage.Metadata
-	if len(md) == 0 {
-		return meta, nil
-	}
-	if v, ok := md[metaSHA256]; ok {
-		h, err := storage.ParseSHA256(v)
-		if err != nil {
-			return meta, fmt.Errorf("s3store: metadata %s: %w", metaSHA256, err)
-		}
-		meta.SHA256 = h
-	}
-	if v, ok := md[metaSize]; ok {
-		n, err := strconv.ParseUint(v, 10, 64)
-		if err != nil {
-			return meta, fmt.Errorf("s3store: metadata %s: %w", metaSize, err)
-		}
-		meta.Size = n
-	}
-	if v, ok := md[metaKind]; ok {
-		if !storage.PackKind(v).Valid() {
-			return meta, fmt.Errorf("s3store: metadata %s: invalid kind %q", metaKind, v)
-		}
-		meta.Kind = storage.PackKind(v)
-	}
-	if v, ok := md[metaGeneration]; ok {
-		n, err := strconv.ParseUint(v, 10, 64)
-		if err != nil {
-			return meta, fmt.Errorf("s3store: metadata %s: %w", metaGeneration, err)
-		}
-		meta.Generation = n
-	}
-	return meta, nil
 }

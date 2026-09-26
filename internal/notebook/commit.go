@@ -131,12 +131,31 @@ func (n *Notebook) attemptPublication(ctx context.Context, message string, baseT
 		return false, Result{}, err
 	}
 	if err := n.uploadProposal(ctx, proposal); err != nil {
-		return false, Result{}, err
+		// A full space refuses the increment. When the whole state as one
+		// checkpoint is smaller than what the space holds now, publish the
+		// commit as that checkpoint instead, so deleting notes frees room.
+		if !errors.Is(err, storage.ErrQuotaExceeded) || proposal.checkpointID != (storage.UUID{}) {
+			return false, Result{}, err
+		}
+		compacted, ok, cerr := n.buildCompactingProposal(remote, proposal)
+		if cerr != nil {
+			return false, Result{}, cerr
+		}
+		if !ok {
+			return false, Result{}, err
+		}
+		if err := n.uploadProposal(ctx, compacted); err != nil {
+			return false, Result{}, err
+		}
+		proposal = compacted
 	}
 
 	// The manifest CAS is the atomic acceptance action. Uploading the
 	// pack alone is only a proposal.
 	err = n.publish(ctx, remote, proposal)
+	if proposal.compacting && err != nil {
+		n.discardCompaction(ctx, proposal, err)
+	}
 	if errors.Is(err, errCASLost) {
 		return true, Result{}, nil
 	}
@@ -161,6 +180,9 @@ func (n *Notebook) attemptPublication(ctx context.Context, message string, baseT
 	// effort whose failure never changes this OK result (architecture
 	// section 13.1).
 	n.recordTail(proposal.manifest)
+	if proposal.compacting {
+		n.acceptCompaction(ctx, proposal)
+	}
 	if len(proposal.manifest.Increments) >= n.checkpointPacks {
 		n.runCheckpoint(ctx, proposal.manifest)
 	}
@@ -194,6 +216,9 @@ type proposal struct {
 	pack          git.Pack
 	manifest      storage.Manifest
 	baseline      workspace.Baseline
+	// compacting marks a commit published as a checkpoint that replaces
+	// the whole active chain because the space was full.
+	compacting bool
 }
 
 // buildProposal builds one attempt against the observed remote state: a
@@ -299,6 +324,98 @@ func (n *Notebook) buildIncrementProposal(ctx context.Context, remote remoteStat
 		manifest:      manifest,
 		baseline:      workspace.Baseline{RemoteGeneration: remote.generation + 1, Head: head, Tree: mergedTree},
 	}, nil
+}
+
+// buildCompactingProposal turns a refused increment proposal into one that
+// publishes the same commit as a checkpoint through the increment's
+// generation, replacing the active checkpoint and its whole tail. The space
+// is full, so no previous generation is retained: every older pack becomes
+// a cleanup candidate once the manifest CAS accepts the proposal. ok is
+// false when the checkpoint would not be smaller than the active chain it
+// and its retained generations reference, because then compaction frees no
+// space and would only move the account further past its limit.
+func (n *Notebook) buildCompactingProposal(remote remoteState, inc proposal) (proposal, bool, error) {
+	pack, err := git.ExportCheckpoint(n.ws.Repo(), inc.manifest.Head)
+	if err != nil {
+		return proposal{}, false, storageIntegrity(ReasonEngineFailed, err, "could not prepare the full notebook state for publication")
+	}
+	// Everything the manifest references is freed by the cleanup that
+	// follows acceptance, so it is the floor of what the space holds now.
+	referenced := chainSize(remote.manifest.Checkpoint, remote.manifest.Increments)
+	for _, r := range remote.manifest.Retained {
+		referenced += chainSize(r.Checkpoint, r.Increments)
+	}
+	if uint64(len(pack.Data)) >= referenced {
+		return proposal{}, false, nil
+	}
+	cpID, err := n.newID()
+	if err != nil {
+		return proposal{}, false, storageFailure(ReasonInternal, err, "generate checkpoint id")
+	}
+	key := storage.Key{Kind: storage.KindCheckpoint, Generation: inc.key.Generation, ID: cpID}
+	manifest := inc.manifest
+	manifest.Checkpoint = storage.Checkpoint{
+		ID:                cpID,
+		Publication:       inc.publicationID,
+		ThroughGeneration: inc.key.Generation,
+		Head:              inc.manifest.Head,
+		Key:               key,
+		SHA256:            pack.SHA256,
+		Size:              uint64(len(pack.Data)),
+	}
+	manifest.Increments = []storage.Increment{}
+	manifest.Retained = []storage.Retained{}
+	return proposal{
+		publicationID: inc.publicationID,
+		checkpointID:  cpID,
+		key:           key,
+		pack:          pack,
+		manifest:      manifest,
+		baseline:      inc.baseline,
+		compacting:    true,
+	}, true, nil
+}
+
+// acceptCompaction finishes an accepted compacting commit: it records the
+// checkpoint boundary and removes the packs the manifest no longer
+// references. Both are best effort, like an opportunistic checkpoint: a
+// failure is logged and never changes the accepted result.
+func (n *Notebook) acceptCompaction(ctx context.Context, p proposal) {
+	logger := LoggerFrom(ctx)
+	n.metrics.CheckpointRuns.Add(1)
+	n.metrics.CheckpointSize.Store(uint64(len(p.pack.Data)))
+	if err := git.MarkShallow(n.ws.Repo(), p.manifest.Head); err != nil {
+		// The boundary is local; freeing the space does not depend on it.
+		n.failCheckpoint(logger, "record checkpoint boundary", err)
+	}
+	n.cleanup(ctx, p.key.Generation)
+}
+
+// discardCompaction deletes the checkpoint pack of a compacting proposal
+// the manifest definitely did not accept: a lost CAS, or a definite refusal
+// of the manifest write. The space is full, so an orphan that large could
+// leave no room for the next compaction. Every other error may hide an
+// accepted manifest that references the pack (a lost response whose
+// follow-up read also failed), so the pack stays for a later cleanup.
+// Deletion is best effort.
+func (n *Notebook) discardCompaction(ctx context.Context, p proposal, cause error) {
+	var e *Error
+	definite := errors.Is(cause, errCASLost) || (errors.As(cause, &e) && e.Reason == ReasonManifestWrite)
+	if !definite {
+		return
+	}
+	if err := n.store.DeleteObjects(ctx, []string{p.key.String()}); err != nil {
+		n.failCleanup(LoggerFrom(ctx), "delete unaccepted compaction checkpoint", err)
+	}
+}
+
+// chainSize sums the pack sizes of one checkpoint and its increments.
+func chainSize(cp storage.Checkpoint, incs []storage.Increment) uint64 {
+	size := cp.Size
+	for _, i := range incs {
+		size += i.Size
+	}
+	return size
 }
 
 // publish performs the conditional manifest update: If-None-Match creation

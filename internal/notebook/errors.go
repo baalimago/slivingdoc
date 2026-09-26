@@ -15,6 +15,7 @@ import (
 	"fmt"
 
 	"github.com/baalimago/slivingdoc/internal/git"
+	"github.com/baalimago/slivingdoc/internal/storage"
 )
 
 // Code is the stable error taxonomy of notebook operations. The MCP layer
@@ -72,6 +73,11 @@ const (
 	ReasonManifestWrite       Reason = "MANIFEST_WRITE"
 	ReasonLocalState          Reason = "LOCAL_STATE"
 	ReasonInternal            Reason = "INTERNAL"
+	ReasonStorageFull         Reason = "STORAGE_FULL"
+	ReasonRequestLimit        Reason = "REQUEST_LIMIT"
+	ReasonRateLimited         Reason = "RATE_LIMITED"
+	ReasonAccessDenied        Reason = "ACCESS_DENIED"
+	ReasonObjectTooLarge      Reason = "OBJECT_TOO_LARGE"
 	ReasonManifestInvalid     Reason = "MANIFEST_INVALID"
 	ReasonPackInvalid         Reason = "PACK_INVALID"
 	ReasonHistoryInvalid      Reason = "HISTORY_INVALID"
@@ -127,6 +133,11 @@ var actionForPairing = map[codeReason]Action{
 	{CodeStorageFailure, ReasonManifestWrite}:       ActionRetry,
 	{CodeStorageFailure, ReasonLocalState}:          ActionRetry,
 	{CodeStorageFailure, ReasonInternal}:            ActionRetry,
+	{CodeStorageFailure, ReasonStorageFull}:         ActionOperator,
+	{CodeStorageFailure, ReasonRequestLimit}:        ActionOperator,
+	{CodeStorageFailure, ReasonRateLimited}:         ActionRetry,
+	{CodeStorageFailure, ReasonAccessDenied}:        ActionOperator,
+	{CodeStorageFailure, ReasonObjectTooLarge}:      ActionOperator,
 	{CodeStorageIntegrity, ReasonManifestInvalid}:   ActionOperator,
 	{CodeStorageIntegrity, ReasonPackInvalid}:       ActionOperator,
 	{CodeStorageIntegrity, ReasonHistoryInvalid}:    ActionOperator,
@@ -236,12 +247,50 @@ func storageIntegrity(reason Reason, cause error, format string, args ...any) er
 	}
 }
 
-// storageFailure builds a STORAGE_FAILURE error wrapping cause.
+// storageFailure builds a STORAGE_FAILURE error wrapping cause. A cause
+// the store refused for an account reason (a full space, a request limit,
+// denied credentials, an oversized object) replaces the operation's reason
+// and message, because the caller's next step is about the account, not
+// the operation.
 func storageFailure(reason Reason, cause error, format string, args ...any) error {
+	message := fmt.Sprintf(format, args...)
+	if r, m, ok := storeRefusal(cause); ok {
+		reason, message = r, m
+		var refusal *storage.Refusal
+		if errors.As(cause, &refusal) && refusal.Message != "" {
+			message += ". The storage says: " + refusal.Message
+		}
+	}
 	action, _ := actionFor(CodeStorageFailure, reason, nil)
 	return &Error{
 		Code: CodeStorageFailure, Reason: reason, Action: action,
-		Message: fmt.Sprintf(format, args...), Cause: cause,
+		Message: message, Cause: cause,
+	}
+}
+
+// storeRefusal names an account-level refusal of the store and the message
+// that tells the caller how to fix it. The third result reports whether
+// cause is such a refusal.
+func storeRefusal(cause error) (Reason, string, bool) {
+	switch {
+	case errors.Is(cause, storage.ErrQuotaExceeded):
+		return ReasonStorageFull, "the storage account that owns this space is full, so nothing was published; " +
+			"its owner must add storage (for slivingdoc.dev: upgrade at https://slivingdoc.dev), " +
+			"or delete notes to make room, then commit again. Pulls keep working", true
+	case errors.Is(cause, storage.ErrRequestLimit):
+		return ReasonRequestLimit, "the storage account that owns this space used its request allowance for the month, " +
+			"so nothing was published; its owner can raise the allowance (for slivingdoc.dev: upgrade at https://slivingdoc.dev) or wait until it resets " +
+			"on the first of the month (UTC), then commit again. Pulls keep working, more slowly", true
+	case errors.Is(cause, storage.ErrRateLimited):
+		return ReasonRateLimited, "the storage is slowing down requests from this account; wait, then retry", true
+	case errors.Is(cause, storage.ErrAccessDenied):
+		return ReasonAccessDenied, "the storage refused the credentials: the token is missing, revoked, " +
+			"read-only, or not granted this space. Check SLIVINGDOC_TOKEN and --bucket", true
+	case errors.Is(cause, storage.ErrTooLarge):
+		return ReasonObjectTooLarge, "the notebook data to upload is larger than the storage accepts in one object; " +
+			"nothing was published", true
+	default:
+		return "", "", false
 	}
 }
 

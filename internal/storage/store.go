@@ -24,7 +24,42 @@ var (
 	// ErrIncompatible reports that a store failed the startup capability
 	// probe and cannot serve the protocol.
 	ErrIncompatible = errors.New("storage: incompatible store")
+	// ErrQuotaExceeded reports that the store refused a write because the
+	// space, or the account that owns it, is full. Nothing was stored;
+	// reads keep working.
+	ErrQuotaExceeded = errors.New("storage: quota exceeded")
+	// ErrRequestLimit reports that the store refused a write because the
+	// account used its request allowance for the billing period. Nothing
+	// was stored; a retry fails until the allowance grows or resets.
+	ErrRequestLimit = errors.New("storage: request allowance used up")
+	// ErrRateLimited reports that the store is throttling the account's
+	// requests. Nothing changed; a later retry can succeed.
+	ErrRateLimited = errors.New("storage: rate limited")
+	// ErrAccessDenied reports that the store refused the credentials: they
+	// are missing, revoked, read-only for a write, or do not reach the
+	// configured space.
+	ErrAccessDenied = errors.New("storage: access denied")
+	// ErrTooLarge reports an object larger than the store accepts.
+	ErrTooLarge = errors.New("storage: object too large")
 )
+
+// Refusal carries the text a store wrote for the person running the
+// client alongside a semantic error. Callers match Err with errors.Is and
+// may show Message as is; Message is one sanitized line.
+type Refusal struct {
+	Err     error
+	Detail  string
+	Message string
+}
+
+func (r *Refusal) Error() string {
+	if r.Message == "" {
+		return r.Detail + ": " + r.Err.Error()
+	}
+	return r.Detail + ": " + r.Message + ": " + r.Err.Error()
+}
+
+func (r *Refusal) Unwrap() error { return r.Err }
 
 // ETag is an opaque concurrency token for conditional replacement. It is
 // never a content digest (architecture section 9.3): pack integrity comes
