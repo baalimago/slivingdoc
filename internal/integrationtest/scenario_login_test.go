@@ -924,3 +924,43 @@ func TestScenarioConcurrentLoginsKeepBoth(t *testing.T) {
 		t.Fatalf("revoked = %v, want nothing", got)
 	}
 }
+
+// TestScenarioTokenIgnoresABrokenCredentialsFile proves SLIVINGDOC_TOKEN
+// alone is enough: with no bucket, a credentials file that cannot be read
+// does not stop serve, which uses the token's own space and leaves the file
+// as it was.
+func TestScenarioTokenIgnoresABrokenCredentialsFile(t *testing.T) {
+	t.Parallel()
+	g, _, env, root := loginEnv(t)
+	if err := os.MkdirAll(credentialsDir(env), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	const broken = "{not json"
+	if err := os.WriteFile(credentialsPath(env), []byte(broken), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tokenEnv := append(append([]string(nil), env...), "SLIVINGDOC_TOKEN="+hostedToken, "SLIVINGDOC_ENDPOINT="+g.URL())
+
+	h := spawnHelper(t, "real", tokenEnv, "serve")
+	cs := h.connectClient(t)
+	served := filepath.Join(root, "served")
+	assertProcessCallOK(t, cs, toolPull, served, "")
+	writeCLIFile(t, filepath.Join(served, "a.md"), "token alone\n")
+	assertProcessCallOK(t, cs, toolCommit, served, "beside a broken credentials file")
+	if err := cs.Close(); err != nil {
+		t.Fatalf("close MCP client: %v", err)
+	}
+	if code := h.waitExit(t); code != 0 {
+		t.Fatalf("serve exit = %d; stderr: %s", code, h.stderrText(t))
+	}
+	if stderr := h.stderrText(t); !strings.Contains(stderr, "hosted space resolved") ||
+		!strings.Contains(stderr, "space="+hostedSpace) || !strings.Contains(stderr, "from=token") {
+		t.Fatalf("serve stderr = %s, want the token's space logged as resolved from the token", stderr)
+	}
+	if g.Stored(hostedSpace) == 0 {
+		t.Fatal("the token's space holds no pack bytes after a commit")
+	}
+	if data, err := os.ReadFile(credentialsPath(env)); err != nil || string(data) != broken {
+		t.Fatalf("credentials file = %q, %v; want it untouched", data, err)
+	}
+}

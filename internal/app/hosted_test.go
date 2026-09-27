@@ -193,6 +193,8 @@ func TestSetupHostedUsesTheTokensSpace(t *testing.T) {
 	g.AddSpace("notes", 1<<20)
 	g.Grant(hostedTestToken, "notes", false)
 	p := testProcess([]string{"SLIVINGDOC_TOKEN=" + hostedTestToken, "SLIVINGDOC_ENDPOINT=" + g.URL()})
+	var logs strings.Builder
+	p.stderr = &logs
 	var built string
 	p.storeFactory = func(ctx context.Context, cfg config) (storage.ObjectStore, error) {
 		built = cfg.bucket
@@ -205,6 +207,9 @@ func TestSetupHostedUsesTheTokensSpace(t *testing.T) {
 	t.Cleanup(func() { _ = rt.Close() })
 	if built != "notes" || rt.cfg.bucket != "notes" || rt.cfg.serviceConfig().Bucket != "notes" {
 		t.Fatalf("store built for %q, runtime bucket %q; want the token's space notes", built, rt.cfg.bucket)
+	}
+	if got := logs.String(); strings.Count(got, "hosted space resolved") != 1 || !strings.Contains(got, "space=notes") || !strings.Contains(got, "from=token") {
+		t.Fatalf("setup logs = %s, want one hosted space resolved record for notes from the token", got)
 	}
 }
 

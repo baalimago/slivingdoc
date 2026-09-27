@@ -108,7 +108,7 @@ func NewFlags() *Flags { return &Flags{} }
 // resolve the same holder.
 func (f *Flags) Bind(fs *flag.FlagSet) {
 	fs.Var(&f.storage, "storage", "storage backend: auto, hosted, or s3")
-	fs.Var(&f.bucket, "bucket", "S3 bucket, or the hosted space (default: the default login's, else the token's own)")
+	fs.Var(&f.bucket, "bucket", "S3 bucket, or the hosted space (default: with SLIVINGDOC_TOKEN the token's own, else the default login's)")
 	fs.Var(&f.prefix, "prefix", "S3 object prefix")
 	fs.Var(&f.region, "region", "S3 region")
 	fs.Var(&f.endpoint, "endpoint", "S3-compatible endpoint URL")
@@ -602,9 +602,10 @@ const FlagReference = `  --storage string              storage backend: auto, ho
                                 bucket plus S3 settings, or the token plus
                                 an S3 endpoint, is refused as ambiguous)
   --bucket string               S3 bucket (required), or the hosted space    SLIVINGDOC_BUCKET
-                                name (default: the default login's space,
-                                else the token's own; a token for another
-                                space than the bucket is refused)
+                                name (default: with SLIVINGDOC_TOKEN the
+                                token's own space, else the default login's;
+                                a token for another space than the bucket
+                                is refused)
   --prefix string               object prefix in the bucket or hosted space  SLIVINGDOC_PREFIX
                                 (default "slivingdoc")
   --region string               S3 region (default "us-east-1"; unused       AWS_REGION

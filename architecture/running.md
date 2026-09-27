@@ -117,9 +117,10 @@ or network dependency is touched.
 `serve`, `pull`, and `commit` read the same flags and environment
 variables. Flags override environment variables, and the environment
 overrides defaults.
-`--bucket` is required, except that it defaults to the space of the
-default login when `--storage` is not `s3`, and, with a hosted token, to
-the token's own space (the two must agree). `-h` on any of the three
+`--bucket` is required, except that with `SLIVINGDOC_TOKEN` it defaults
+to the token's own space, and otherwise to the space of the default login
+when `--storage` is not `s3`; a bucket that is given must be the token's
+space. `-h` on any of the three
 prints the same reference. A non-empty `SLIVINGDOC_TOKEN`, or a stored
 login for the space, switches to [hosted storage](#hosted-storage), which
 changes the meaning of `--bucket` and `--endpoint` as noted; `--storage`
@@ -128,7 +129,7 @@ makes the choice explicit ([Choosing the storage](#choosing-the-storage)).
 | Function                          | Flag                     | Environment variable              | Default                      |
 | --------------------------------- | ------------------------ | --------------------------------- | ---------------------------- |
 | Storage backend                   | `--storage`              | `SLIVINGDOC_STORAGE`              | `auto`                       |
-| Bucket or hosted space            | `--bucket`               | `SLIVINGDOC_BUCKET`               | S3: none (required); hosted: the default login's space, else the token's |
+| Bucket or hosted space            | `--bucket`               | `SLIVINGDOC_BUCKET`               | S3: none (required); hosted: the token's (`SLIVINGDOC_TOKEN`), else the default login's |
 | Object prefix                     | `--prefix`               | `SLIVINGDOC_PREFIX`               | `slivingdoc`                 |
 | S3 region                         | `--region`               | `AWS_REGION`                      | `us-east-1`                  |
 | S3 endpoint                       | `--endpoint`             | `AWS_ENDPOINT_URL_S3`             | empty (AWS resolution)       |
