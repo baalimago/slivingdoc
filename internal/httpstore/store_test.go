@@ -359,6 +359,29 @@ func TestGateway404Reasons(t *testing.T) {
 
 // The API answers If-Match on an absent object with 412, so a 404 on a
 // replace means the space is gone or the grant was revoked.
+// TestGatewayBeforeNextObject proves the gateway's hook runs once, only
+// for the matching object request and before serving it, so a space deleted
+// in it answers that very request with 404 no_space.
+func TestGatewayBeforeNextObject(t *testing.T) {
+	s, g := newGatewayStore(t)
+	ctx := context.Background()
+	var runs atomic.Int32
+	g.BeforeNextObject(http.MethodGet, storage.JoinKey(s.prefix, storage.CurrentKey), func() {
+		runs.Add(1)
+		g.DeleteSpace(testSpace)
+	})
+	if err := s.CheckAccess(ctx); err != nil || runs.Load() != 0 {
+		t.Fatalf("CheckAccess = %v with %d hook runs, want nil and 0", err, runs.Load())
+	}
+	if _, _, err := s.ReadObject(ctx, storage.CurrentKey); !errors.Is(err, storage.ErrAccessDenied) || runs.Load() != 1 {
+		t.Fatalf("read with the hook = %v after %d runs, want ErrAccessDenied after 1", err, runs.Load())
+	}
+	g.AddSpace(testSpace, 1<<20)
+	if _, _, err := s.ReadObject(ctx, storage.CurrentKey); !errors.Is(err, storage.ErrNotFound) || runs.Load() != 1 {
+		t.Fatalf("read after the hook = %v after %d runs, want ErrNotFound after 1", err, runs.Load())
+	}
+}
+
 func TestReplaceAnswered404IsAccessDenied(t *testing.T) {
 	s, g := newGatewayStore(t)
 	g.RefuseNext(http.MethodPut, http.StatusNotFound, "not_found")

@@ -331,6 +331,13 @@ func (h *Harness) RemoveFile(path string) {
 // imported" passes on a missing directory.
 func (h *Harness) FSSnapshot(dir string) map[string]string {
 	h.t.Helper()
+	return fsSnapshot(h.t, dir)
+}
+
+// fsSnapshot is FSSnapshot for scenarios without a harness, such as the
+// process scenarios that drive a spawned helper.
+func fsSnapshot(t *testing.T, dir string) map[string]string {
+	t.Helper()
 	out := map[string]string{}
 	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
@@ -351,7 +358,7 @@ func (h *Harness) FSSnapshot(dir string) map[string]string {
 		return nil
 	})
 	if err != nil {
-		h.t.Fatalf("snapshot %s: %v", dir, err)
+		t.Fatalf("snapshot %s: %v", dir, err)
 	}
 	return out
 }
