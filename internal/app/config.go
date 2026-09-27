@@ -522,9 +522,13 @@ func normalizeEndpoint(raw string) (string, error) {
 	}
 	u.Scheme = strings.ToLower(u.Scheme)
 	u.Host = strings.ToLower(u.Host)
-	u.Path = strings.TrimSuffix(u.Path, "/")
+	u.Path = strings.TrimRight(u.Path, "/")
 	u.RawPath = ""
-	return u.String(), nil
+	out := u.String()
+	if _, err := url.Parse(out); err != nil {
+		return "", errors.New("endpoint is not a valid URL")
+	}
+	return out, nil
 }
 
 // stringFlag records whether the flag was explicitly set, so an explicitly

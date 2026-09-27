@@ -399,6 +399,8 @@ func TestLoadConfigEndpointNormalization(t *testing.T) {
 		{name: "fragment rejected", env: "http://host:8333#f", want: "", valid: false},
 		{name: "empty query rejected", env: "http://host:8333/?", want: "", valid: false},
 		{name: "empty fragment rejected", env: "http://host:8333/#", want: "", valid: false},
+		{name: "every trailing slash removed", env: "http://host:8333//", want: "http://host:8333", valid: true},
+		{name: "unparsable normalized form rejected", env: "https://[fe80::1%25é]", want: "", valid: false},
 		{name: "relative rejected", env: "host:8333", want: "", valid: false},
 		{name: "ftp rejected", env: "ftp://host", want: "", valid: false},
 	}
