@@ -16,11 +16,14 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"runtime"
+	"strings"
 	"sync"
 	"time"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/baalimago/slivingdoc/internal/credentials"
 	"github.com/baalimago/slivingdoc/internal/git"
 	"github.com/baalimago/slivingdoc/internal/httpstore"
 	"github.com/baalimago/slivingdoc/internal/mcp"
@@ -324,6 +327,9 @@ func setup(p process) (*Runtime, error) {
 		removeSessionDir(cfg.sessionDir)
 		return nil, err
 	}
+	if resolved.hosted() {
+		logger.Info("hosted space resolved", "space", resolved.bucket, "from", resolved.bucketFrom.String())
+	}
 	return &Runtime{p: p, svc: svc, cfg: resolved, base: base, logger: logger}, nil
 }
 
@@ -351,7 +357,8 @@ func buildService(p process, cfg config) (*Service, config, error) {
 	defer cancel()
 	if cfg.hosted() {
 		var err error
-		if cfg, err = resolveHostedSpace(probeCtx, cfg); err != nil {
+		logins := func() (credentials.Set, error) { return loadLogins(environ(p.env), runtime.GOOS) }
+		if cfg, err = resolveHostedSpace(probeCtx, cfg, logins); err != nil {
 			return nil, config{}, err
 		}
 	}
@@ -372,11 +379,13 @@ func buildService(p process, cfg config) (*Service, config, error) {
 // resolveHostedSpace asks the hosted API which space the token reaches
 // (architecture/hosted-mode.md, architecture/login.md). With no bucket
 // that space is used. A bucket that names another space is refused rather
-// than either one preferred, whether it came from --bucket or
-// SLIVINGDOC_BUCKET, from the default login, or from the stored login the
-// token belongs to. A server that cannot answer keeps a given bucket,
-// whose access check then proves the token, and refuses a missing one.
-func resolveHostedSpace(ctx context.Context, cfg config) (config, error) {
+// than either one preferred, whether it came from --bucket,
+// SLIVINGDOC_BUCKET, or the stored login the token belongs to. A server
+// that cannot answer keeps a given bucket, whose access check then proves
+// the token. Without one, a SLIVINGDOC_TOKEN process falls back to the
+// default login's space when that login is for the same endpoint; logins
+// reads the stored logins only then.
+func resolveHostedSpace(ctx context.Context, cfg config, logins func() (credentials.Set, error)) (config, error) {
 	info, err := httpstore.DescribeToken(ctx, httpstore.Config{
 		Endpoint:  cfg.endpoint,
 		Token:     cfg.token,
@@ -386,11 +395,11 @@ func resolveHostedSpace(ctx context.Context, cfg config) (config, error) {
 	case errors.Is(err, httpstore.ErrTokenLookupUnsupported) && cfg.bucket != "":
 		return cfg, nil
 	case errors.Is(err, httpstore.ErrTokenLookupUnsupported):
-		return config{}, errors.New("app: hosted storage cannot name the token's space; pass the space name as --bucket or SLIVINGDOC_BUCKET")
+		return defaultLoginSpace(cfg, logins)
 	case err != nil:
 		return config{}, hostedCheckError(err, cfg.tokenOrigin)
 	case cfg.bucket == "":
-		cfg.bucket = info.Space
+		cfg.bucket, cfg.bucketFrom = info.Space, bucketFromToken
 		return cfg, nil
 	case cfg.bucket != info.Space:
 		return config{}, spaceMismatch(cfg, info.Space)
@@ -399,18 +408,35 @@ func resolveHostedSpace(ctx context.Context, cfg config) (config, error) {
 	}
 }
 
+// defaultLoginSpace is the fallback for a server that cannot name the
+// token's space: the default login's space, when that login was issued for
+// the endpoint the token goes to.
+func defaultLoginSpace(cfg config, logins func() (credentials.Set, error)) (config, error) {
+	const refusal = "app: hosted storage cannot name the token's space; pass the space name as --bucket or SLIVINGDOC_BUCKET"
+	set, err := logins()
+	if err != nil {
+		return config{}, fmt.Errorf("%s (the stored logins cannot supply it: %s)", refusal, mcp.Redact(err.Error()))
+	}
+	def, err := set.Default()
+	if err != nil || def.Endpoint != cfg.endpoint {
+		return config{}, errors.New(refusal)
+	}
+	cfg.bucket, cfg.bucketFrom = def.Space, bucketFromLogin
+	return cfg, nil
+}
+
 // spaceMismatch is the refusal for a token that reaches another space than
-// the bucket the configuration named, worded for where each came from.
+// the bucket the configuration named, worded for the setting that named it.
 func spaceMismatch(cfg config, tokenSpace string) error {
 	switch {
 	case cfg.tokenOrigin == originLogin:
 		return fmt.Errorf("app: the stored login for space %q holds a token that reaches hosted space %q; run 'slivingdoc login --bucket %s' again",
 			cfg.bucket, tokenSpace, cfg.bucket)
-	case cfg.bucketFrom == bucketFromLogin:
-		return fmt.Errorf("app: SLIVINGDOC_TOKEN reaches hosted space %q, not %q, the default login's space; pass --bucket %s to use the token, or unset SLIVINGDOC_TOKEN to use the login",
-			tokenSpace, cfg.bucket, tokenSpace)
+	case cfg.bucketFrom == bucketFromEnv:
+		return fmt.Errorf("app: the token reaches hosted space %q, not %q from SLIVINGDOC_BUCKET; unset SLIVINGDOC_BUCKET to use the token's space, or use a token made for %q",
+			tokenSpace, cfg.bucket, cfg.bucket)
 	default:
-		return fmt.Errorf("app: the token reaches hosted space %q, not %q from --bucket or SLIVINGDOC_BUCKET; drop --bucket to use the token's space, or use a token made for %q",
+		return fmt.Errorf("app: the token reaches hosted space %q, not %q from --bucket; drop --bucket to use the token's space, or use a token made for %q",
 			tokenSpace, cfg.bucket, cfg.bucket)
 	}
 }
@@ -585,10 +611,17 @@ func realStoreFactory(ctx context.Context, cfg config) (storage.ObjectStore, err
 // an opaque URL) is logged as unparsable.
 func endpointForLog(raw string) string {
 	u, err := url.Parse(raw)
-	if err != nil || u.Host == "" {
+	if err != nil || u.Scheme == "" || u.Hostname() == "" {
 		return "an unparsable URL"
 	}
-	return u.Scheme + "://" + u.Host
+	host, _, _ := strings.Cut(u.Hostname(), "%")
+	if strings.Contains(host, ":") {
+		host = "[" + host + "]"
+	}
+	if port := u.Port(); port != "" {
+		host += ":" + port
+	}
+	return u.Scheme + "://" + host
 }
 
 // logStorage records the store the configuration chose, so an operator
@@ -618,7 +651,8 @@ func logStorage(logger *slog.Logger, cfg config, env map[string]string) {
 	}
 	space := cfg.bucket
 	if space == "" && cfg.hosted() {
-		// resolveHostedSpace asks the API after this record.
+		// resolveHostedSpace asks the API after this record, and setup
+		// logs the space it resolved.
 		space = "the token's own"
 	}
 	logger.Info("storage selected", "backend", backend, "endpoint", endpoint, "space", space, "token", source)

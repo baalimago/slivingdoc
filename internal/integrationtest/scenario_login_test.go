@@ -401,20 +401,19 @@ func TestScenarioLoginAndTokenAgreeOnTheSpace(t *testing.T) {
 		t.Fatalf("space requests per token = %v, want the variable's token used", used)
 	}
 
-	// SLIVINGDOC_TOKEN for another space and no bucket: the default
-	// login's space and the token's disagree, so startup is refused.
+	// SLIVINGDOC_TOKEN for another space and no bucket: the token alone
+	// is enough, so its own space is used, not the default login's.
 	const otherSpace, otherToken = "other-notes", "sld_4444444444444444_b3RoZXItc3BhY2UtdG9rZW4tYmVzaWRlLXRoZS1sb2dpbi14eA"
 	g.AddSpace(otherSpace, 1<<20)
 	g.Grant(otherToken, otherSpace, false)
 	tokenEnv := with("SLIVINGDOC_TOKEN="+otherToken, "SLIVINGDOC_ENDPOINT="+g.URL())
-	code, stdout, stderr := runCLI(t, "real", tokenEnv, "pull", filepath.Join(root, "other"))
+	runCLIOK(t, "real", tokenEnv, nil, "pull", filepath.Join(root, "other"))
+	// A --bucket that names another space is refused with the flag's fix.
+	code, stdout, stderr := runCLI(t, "real", tokenEnv, "pull", "--bucket", hostedSpace, filepath.Join(root, "named"))
 	if code != 1 || strings.TrimSpace(stdout) != "" ||
-		!strings.Contains(stderr, `SLIVINGDOC_TOKEN reaches hosted space "other-notes", not "team-notes", the default login's space`) ||
-		!strings.Contains(stderr, "pass --bucket other-notes") {
-		t.Fatalf("pull with a token for another space than the default login's = exit %d, stdout %q, stderr %s", code, stdout, stderr)
+		!strings.Contains(stderr, `the token reaches hosted space "other-notes", not "team-notes" from --bucket`) {
+		t.Fatalf("pull with --bucket for another space than the token's = exit %d, stdout %q, stderr %s", code, stdout, stderr)
 	}
-	// Naming the token's space resolves it.
-	runCLIOK(t, "real", tokenEnv, nil, "pull", "--bucket", otherSpace, filepath.Join(root, "other"))
 
 	// A stored login whose token now reaches another space (moved on the
 	// site) is refused with the fix, not silently redirected.

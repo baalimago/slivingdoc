@@ -48,6 +48,7 @@ func TestLoadConfigDefaults(t *testing.T) {
 	}
 	want := config{
 		bucket:              "my-bucket",
+		bucketFrom:          bucketFromEnv,
 		prefix:              "slivingdoc",
 		region:              "us-east-1",
 		endpoint:            "",

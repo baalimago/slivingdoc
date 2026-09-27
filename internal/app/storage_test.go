@@ -150,8 +150,8 @@ func TestResolveStorage(t *testing.T) {
 			wantHosted: true, wantToken: loginToken, wantOrigin: originLogin, wantBucket: "notes", wantEndpoint: DefaultHostedEndpoint,
 		},
 		{
-			name: "auto: the bucket defaults with a token too", env: []string{notes, token},
-			wantHosted: true, wantToken: hostedTestToken, wantOrigin: originEnv, wantBucket: "notes", wantEndpoint: DefaultHostedEndpoint,
+			name: "auto: a token leaves the bucket to its own space", env: []string{notes, token},
+			wantHosted: true, wantToken: hostedTestToken, wantOrigin: originEnv, wantBucket: "", wantEndpoint: DefaultHostedEndpoint,
 		},
 		{
 			name: "auto: a login for another space keeps S3", env: []string{notes, "SLIVINGDOC_BUCKET=other"},

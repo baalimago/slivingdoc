@@ -88,15 +88,52 @@ type storageSelection struct {
 	endpoint   string
 }
 
-// bucketSource is where the bucket or space came from.
+// bucketSource is where the bucket or space came from, so a space
+// mismatch names the setting to change and the startup log names the
+// source.
 type bucketSource int
 
 const (
-	// bucketNamed is --bucket or SLIVINGDOC_BUCKET, or no bucket at all.
-	bucketNamed bucketSource = iota
+	bucketNone bucketSource = iota
+	// bucketFromFlag is --bucket.
+	bucketFromFlag
+	// bucketFromEnv is SLIVINGDOC_BUCKET.
+	bucketFromEnv
 	// bucketFromLogin is the default login's space.
 	bucketFromLogin
+	// bucketFromToken is the space the hosted API says the token reaches.
+	bucketFromToken
 )
+
+func (b bucketSource) String() string {
+	switch b {
+	case bucketFromFlag:
+		return "--bucket"
+	case bucketFromEnv:
+		return "SLIVINGDOC_BUCKET"
+	case bucketFromLogin:
+		return "default login"
+	case bucketFromToken:
+		return "token"
+	default:
+		return "none"
+	}
+}
+
+// resolveBucket returns the named bucket and which setting named it: an
+// explicitly set flag wins, even when empty, over SLIVINGDOC_BUCKET.
+func resolveBucket(f *Flags, env map[string]string) (string, bucketSource) {
+	switch {
+	case f.bucket.set && f.bucket.value != "":
+		return f.bucket.value, bucketFromFlag
+	case f.bucket.set:
+		return "", bucketNone
+	case env["SLIVINGDOC_BUCKET"] != "":
+		return env["SLIVINGDOC_BUCKET"], bucketFromEnv
+	default:
+		return "", bucketNone
+	}
+}
 
 func (s storageSelection) hosted() bool { return s.token != "" }
 
@@ -123,9 +160,11 @@ type storageInputs struct {
 //     the bucket came from the default login, or when no S3 signal is set;
 //     an explicit bucket with an S3 signal is a refusal. Otherwise S3.
 //
-// Outside s3 mode an omitted bucket is the default login's space, but only
-// when the outcome is hosted: a login that does not apply never names an
-// S3 bucket. A stored token is only used for the endpoint it was issued
+// With SLIVINGDOC_TOKEN the stored logins are never read here: an omitted
+// bucket stays empty and resolveHostedSpace asks the API for the token's
+// space. Otherwise, outside s3 mode, an omitted bucket is the default
+// login's space, but only when the outcome is hosted: a login that does
+// not apply never names an S3 bucket. A stored token is only used for the endpoint it was issued
 // for: an explicit endpoint that differs means the login does not apply.
 // No refusal echoes a token.
 func resolveStorage(f *Flags, env map[string]string, in storageInputs) (storageSelection, error) {
@@ -133,7 +172,8 @@ func resolveStorage(f *Flags, env map[string]string, in storageInputs) (storageS
 	if err != nil {
 		return storageSelection{}, err
 	}
-	sel := storageSelection{bucket: resolveString(&f.bucket, env["SLIVINGDOC_BUCKET"], "")}
+	var sel storageSelection
+	sel.bucket, sel.bucketFrom = resolveBucket(f, env)
 	if mode == storageS3 {
 		return sel, nil
 	}
@@ -141,26 +181,10 @@ func resolveStorage(f *Flags, env map[string]string, in storageInputs) (storageS
 	if err != nil {
 		return storageSelection{}, err
 	}
-	token := env["SLIVINGDOC_TOKEN"]
-	var signals []string
-	if mode == storageAuto {
-		signals = s3Signals(f, env, in)
-	}
-
-	var logins credentials.Set
-	if sel.bucket == "" || token == "" {
-		if logins, err = loadLogins(env, in.goos); err != nil {
-			return storageSelection{}, err
-		}
-	}
-	defaulted := false
-	if sel.bucket == "" {
-		if def, err := logins.Default(); err == nil {
-			sel.bucket, defaulted, sel.bucketFrom = def.Space, true, bucketFromLogin
-		}
-	}
-
-	if token != "" {
+	if token := env["SLIVINGDOC_TOKEN"]; token != "" {
+		// The token alone is enough: its space comes from the hosted API
+		// (resolveHostedSpace), and the stored logins are not read, so a
+		// broken credentials file never stops a token user.
 		if mode == storageAuto {
 			if dest := tokenDestinations(f, env); len(dest) > 0 {
 				return storageSelection{}, fmt.Errorf(
@@ -173,6 +197,20 @@ func resolveStorage(f *Flags, env map[string]string, in storageInputs) (storageS
 			sel.endpoint = DefaultHostedEndpoint
 		}
 		return sel, nil
+	}
+	var signals []string
+	if mode == storageAuto {
+		signals = s3Signals(f, env, in)
+	}
+	logins, err := loadLogins(env, in.goos)
+	if err != nil {
+		return storageSelection{}, err
+	}
+	defaulted := false
+	if sel.bucket == "" {
+		if def, err := logins.Default(); err == nil {
+			sel.bucket, defaulted, sel.bucketFrom = def.Space, true, bucketFromLogin
+		}
 	}
 	if sel.bucket == "" {
 		if mode == storageHosted {
@@ -188,7 +226,7 @@ func resolveStorage(f *Flags, env map[string]string, in storageInputs) (storageS
 	case errors.Is(err, credentials.ErrNoLogin) && mode == storageAuto:
 		if defaulted {
 			// The default login's space names no S3 bucket.
-			sel.bucket, sel.bucketFrom = "", bucketNamed
+			sel.bucket, sel.bucketFrom = "", bucketNone
 		}
 		return sel, nil
 	case errors.Is(err, credentials.ErrNoLogin):

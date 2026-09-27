@@ -2,12 +2,15 @@ package app
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
+	"github.com/baalimago/slivingdoc/internal/credentials"
 	"github.com/baalimago/slivingdoc/internal/httpstore"
 	"github.com/baalimago/slivingdoc/internal/httpstore/gatewaytest"
 	"github.com/baalimago/slivingdoc/internal/storage"
@@ -120,7 +123,7 @@ func TestResolveHostedSpace(t *testing.T) {
 	g.AddSpace("other", 1<<20)
 	g.Grant(hostedTestToken, "notes", false)
 	resolve := func(bucket, token string) (config, error) {
-		return resolveHostedSpace(context.Background(), config{endpoint: g.URL(), token: token, bucket: bucket})
+		return resolveHostedSpace(context.Background(), config{endpoint: g.URL(), token: token, bucket: bucket}, noLogins)
 	}
 	for _, bucket := range []string{"", "notes"} {
 		cfg, err := resolve(bucket, hostedTestToken)
@@ -305,9 +308,9 @@ func TestResolveHostedSpaceNamesWhereTheSpaceCameFrom(t *testing.T) {
 		want string
 	}{
 		{
-			"the variable's token against the default login's space",
-			config{bucket: "team", bucketFrom: bucketFromLogin, tokenOrigin: originEnv},
-			`SLIVINGDOC_TOKEN reaches hosted space "notes", not "team", the default login's space; pass --bucket notes`,
+			"SLIVINGDOC_BUCKET",
+			config{bucket: "team", bucketFrom: bucketFromEnv, tokenOrigin: originEnv},
+			`not "team" from SLIVINGDOC_BUCKET; unset SLIVINGDOC_BUCKET to use the token's space`,
 		},
 		{
 			"a stored login whose token reaches another space",
@@ -316,21 +319,68 @@ func TestResolveHostedSpaceNamesWhereTheSpaceCameFrom(t *testing.T) {
 		},
 		{
 			"a named bucket",
-			config{bucket: "team", tokenOrigin: originEnv},
-			`not "team" from --bucket or SLIVINGDOC_BUCKET`,
+			config{bucket: "team", bucketFrom: bucketFromFlag, tokenOrigin: originEnv},
+			`not "team" from --bucket; drop --bucket to use the token's space`,
 		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			cfg := row.cfg
 			cfg.endpoint, cfg.token = g.URL(), hostedTestToken
-			_, err := resolveHostedSpace(context.Background(), cfg)
+			_, err := resolveHostedSpace(context.Background(), cfg, noLogins)
 			if err == nil || !strings.Contains(err.Error(), row.want) {
 				t.Fatalf("resolveHostedSpace() = %v, want it to contain %q", err, row.want)
 			}
 		})
 	}
-	cfg, err := resolveHostedSpace(context.Background(), config{endpoint: g.URL(), token: hostedTestToken, bucket: "notes", bucketFrom: bucketFromLogin, tokenOrigin: originLogin})
+	cfg, err := resolveHostedSpace(context.Background(), config{endpoint: g.URL(), token: hostedTestToken, bucket: "notes", bucketFrom: bucketFromLogin, tokenOrigin: originLogin}, noLogins)
 	if err != nil || cfg.bucket != "notes" {
 		t.Fatalf("resolveHostedSpace() of an agreeing login = %q, %v", cfg.bucket, err)
+	}
+}
+
+func noLogins() (credentials.Set, error) { return credentials.Set{}, nil }
+
+// TestResolveHostedSpaceFallsBackToTheDefaultLogin proves a server without
+// the token lookup takes the default login's space only when that login is
+// for the token's endpoint, and that the stored logins are read only then.
+func TestResolveHostedSpaceFallsBackToTheDefaultLogin(t *testing.T) {
+	g := gatewaytest.Start(t)
+	g.AddSpace("notes", 1<<20)
+	g.Grant(hostedTestToken, "notes", false)
+	cfg := config{endpoint: g.URL(), token: hostedTestToken, tokenOrigin: originEnv}
+	read := 0
+	counting := func() (credentials.Set, error) { read++; return credentials.Set{}, nil }
+	if _, err := resolveHostedSpace(context.Background(), cfg, counting); err != nil || read != 0 {
+		t.Fatalf("resolve with the lookup = %v after %d reads; want no read of the stored logins", err, read)
+	}
+	g.DisableTokenLookup()
+	for _, row := range []struct {
+		name     string
+		endpoint string
+		want     string
+	}{
+		{"same endpoint", g.URL(), ""},
+		{"another endpoint", devEndpoint, "pass the space name as --bucket"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			dir := strings.TrimPrefix(writeLogins(t, &storedKey{row.endpoint, "notes"}, entry(row.endpoint, "notes", loginToken)), credentials.DirEnv+"=")
+			logins := func() (credentials.Set, error) {
+				return loadLogins(map[string]string{credentials.DirEnv: dir}, runtime.GOOS)
+			}
+			got, err := resolveHostedSpace(context.Background(), cfg, logins)
+			if row.want == "" {
+				if err != nil || got.bucket != "notes" || got.bucketFrom != bucketFromLogin {
+					t.Fatalf("resolve = %q from %v, %v; want the default login's space", got.bucket, got.bucketFrom, err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), row.want) {
+				t.Fatalf("resolve = %v, want it to contain %q", err, row.want)
+			}
+		})
+	}
+	broken := func() (credentials.Set, error) { return credentials.Set{}, errors.New("malformed credentials file") }
+	if _, err := resolveHostedSpace(context.Background(), cfg, broken); err == nil || !strings.Contains(err.Error(), "cannot supply it: malformed") {
+		t.Fatalf("resolve with a broken file = %v, want the refusal naming it", err)
 	}
 }
