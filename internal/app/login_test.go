@@ -270,6 +270,24 @@ func TestLoginRefusals(t *testing.T) {
 			t.Fatal("a refused login contacted the site")
 		}
 	})
+	t.Run("a directory other users can write", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("Windows has no group or other permission bits")
+		}
+		r := newLoginRig(t)
+		if err := os.Mkdir(r.dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(r.dir, 0o777); err != nil {
+			t.Fatal(err)
+		}
+		if err := r.login(t, "--bucket", "team-notes"); !errors.Is(err, credentials.ErrExposed) {
+			t.Fatalf("login = %v, want ErrExposed", err)
+		}
+		if len(r.site.Starts()) != 0 {
+			t.Fatal("a refused login contacted the site")
+		}
+	})
 	t.Run("no configuration directory", func(t *testing.T) {
 		r := newLoginRig(t)
 		opts := r.opts()

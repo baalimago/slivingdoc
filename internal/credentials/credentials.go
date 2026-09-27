@@ -307,12 +307,12 @@ func userConfigDir(getenv func(string) string, goos string) (string, error) {
 // but Windows: another user could read the tokens or plant their own. Save
 // refuses such a directory too.
 func (f File) Load() (Set, error) {
+	if err := f.checkPrivate(); err != nil {
+		return Set{}, err
+	}
 	data, err := os.ReadFile(f.Path())
 	if errors.Is(err, os.ErrNotExist) {
 		return Set{location: f.Path()}, nil
-	}
-	if err := f.checkPrivate(); err != nil {
-		return Set{}, err
 	}
 	if err != nil {
 		return Set{}, fmt.Errorf("credentials: read %s: %w", f.Path(), err)

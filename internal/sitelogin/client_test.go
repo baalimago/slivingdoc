@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/baalimago/slivingdoc/internal/credentials"
@@ -220,7 +221,8 @@ func TestIssuedTokenIsValidated(t *testing.T) {
 }
 
 // flakyDoer fails the first token polls: the first with no answer, the
-// others with a 502, then forwards to the real client.
+// second with a body that breaks while it is read, the others with a 502,
+// then forwards to the real client.
 type flakyDoer struct {
 	failures int
 	seen     int
@@ -231,6 +233,13 @@ func (d *flakyDoer) Do(req *http.Request) (*http.Response, error) {
 		d.seen++
 		if d.seen == 1 {
 			return nil, errors.New("connection reset")
+		}
+		if d.seen == 2 {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(io.MultiReader(strings.NewReader(`{"tok`), iotest.ErrReader(errors.New("unexpected EOF")))),
+				Header:     http.Header{},
+			}, nil
 		}
 		return &http.Response{
 			StatusCode: http.StatusBadGateway,
@@ -275,7 +284,7 @@ func TestWaitRetriesTransientFailures(t *testing.T) {
 func TestWaitReportsTheLastFailureAtExpiry(t *testing.T) {
 	site := sitetest.Start(t)
 	site.SetTiming(5, 60)
-	client, _ := flakyClient(t, site.URL(), 1000)
+	client, clk := flakyClient(t, site.URL(), 1000)
 	a, err := client.Start(context.Background(), StartRequest{Access: credentials.AccessWrite})
 	if err != nil {
 		t.Fatalf("Start() = %v", err)
@@ -283,6 +292,9 @@ func TestWaitReportsTheLastFailureAtExpiry(t *testing.T) {
 	_, err = client.Wait(context.Background(), a)
 	if !errors.Is(err, ErrCodeExpired) || !strings.Contains(err.Error(), "HTTP 502") {
 		t.Fatalf("Wait() = %v, want ErrCodeExpired naming the last failure", err)
+	}
+	if !clk.now.Equal(a.Deadline) {
+		t.Fatalf("Wait() slept until %v, want to stop at the deadline %v", clk.now, a.Deadline)
 	}
 }
 

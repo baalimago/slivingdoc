@@ -108,11 +108,15 @@ stored login. If you have both a login and AWS settings in the environment,
 slivingdoc refuses to guess: pass `--storage hosted` or `--storage s3`
 (`--storage s3` never sends a token anywhere).
 
-**Upgrading an S3 setup:** if you log in to a space with the same name as
-an S3 bucket you already use, an existing S3 command line or MCP entry for
-that bucket now either switches to hosted storage or, with AWS settings in
-its environment, refuses to start. Add `--storage s3` (or
-`SLIVINGDOC_STORAGE=s3`) to keep it on S3.
+**Upgrading an S3 setup:** a login changes only a command line or MCP entry
+that runs in the default `--storage auto`, sets no `SLIVINGDOC_TOKEN`, names
+the logged-in space as its bucket (`--bucket` or `SLIVINGDOC_BUCKET`), and
+either sets no endpoint or sets the endpoint the login was issued for
+(`--endpoint` or `SLIVINGDOC_ENDPOINT`). Such an entry for an S3 bucket of
+the same name now uses hosted storage; with AWS settings in its environment,
+or once that login has expired, it refuses to start instead. An entry that
+sets its own S3 endpoint stays on S3. Add `--storage s3` (or
+`SLIVINGDOC_STORAGE=s3`) to keep an entry on S3 whatever is stored.
 
 ## How it works
 

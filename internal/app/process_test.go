@@ -114,14 +114,14 @@ func spawnHelper(t *testing.T, mode string) *helperProc {
 	if err != nil {
 		t.Fatalf("stdout pipe: %v", err)
 	}
-	env := append(withoutStorageEnv(os.Environ()),
+	// A developer's stored login or storage choice never reaches the
+	// helper (architecture/login.md).
+	env := helperEnv(os.Environ(),
 		"SLIVINGDOC_PROCESS_HELPER="+mode,
 		"SLIVINGDOC_BUCKET=process-bucket",
 		"SLIVINGDOC_PREFIX=process-prefix",
 		"SLIVINGDOC_WORKSPACE_ROOT="+workspaceRoot,
 		"SLIVINGDOC_PRIVATE_ROOT="+privateRoot,
-		// A developer's stored login or storage choice never reaches the
-		// helper (architecture/login.md).
 		credentials.DirEnv+"="+t.TempDir(),
 	)
 	proc, err := os.StartProcess(os.Args[0], []string{os.Args[0]}, &os.ProcAttr{
@@ -365,18 +365,21 @@ func assertProtocolOnlyStdout(t *testing.T, data []byte) {
 	}
 }
 
-// withoutStorageEnv drops the variables that choose the store, the token
-// or the stored logins from env. Appending an override is not enough: the
-// helper's lookup would see the inherited entry too.
-func withoutStorageEnv(env []string) []string {
+// helperEnv drops the variables that choose the store, the token or the
+// site, and every name overrides sets, then appends overrides. Appending
+// alone is not enough: the child keeps the first entry of a duplicate name.
+func helperEnv(env []string, overrides ...string) []string {
+	drop := map[string]bool{"SLIVINGDOC_STORAGE": true, SiteEnv: true, "SLIVINGDOC_TOKEN": true, "SLIVINGDOC_ENDPOINT": true}
+	for _, kv := range overrides {
+		name, _, _ := strings.Cut(kv, "=")
+		drop[name] = true
+	}
 	var out []string
 	for _, kv := range env {
 		name, _, _ := strings.Cut(kv, "=")
-		switch name {
-		case credentials.DirEnv, "SLIVINGDOC_STORAGE", SiteEnv, "SLIVINGDOC_TOKEN", "SLIVINGDOC_ENDPOINT":
-			continue
+		if !drop[name] {
+			out = append(out, kv)
 		}
-		out = append(out, kv)
 	}
-	return out
+	return append(out, overrides...)
 }

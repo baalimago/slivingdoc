@@ -57,7 +57,7 @@ app.Setup(engine, flags, opts) → setup(process)
 |---|---|---|---|---|
 | Storage backend | `--storage` | `SLIVINGDOC_STORAGE` | `auto` | `auto`, `hosted` or `s3` (`parseStorageMode`); the selection rules are in [login.md](./login.md) |
 | Hosted API token | none | `SLIVINGDOC_TOKEN` | empty (a stored login, else S3 mode) | hosted: `httpstore.ValidateToken`; ignored with `--storage s3` |
-| Credentials directory | none | `SLIVINGDOC_CONFIG_DIR` | `<user-config-dir>/slivingdoc` | absolute (`credentials.Locate`); the file is read strictly unless `--storage s3`; an existing file other users can read or write, or a directory they can write, is refused (`credentials.ErrExposed`, not on Windows) |
+| Credentials directory | none | `SLIVINGDOC_CONFIG_DIR` | `<user-config-dir>/slivingdoc` | absolute (`credentials.Locate`); the file is read strictly unless `--storage s3`; an existing file other users can read or write, or an existing directory they can write (with or without the file), is refused (`credentials.ErrExposed`, not on Windows) |
 | Bucket (hosted: space) | `--bucket` | `SLIVINGDOC_BUCKET` | the default login's space unless `--storage s3`, else none | required; hosted: `httpstore.ValidateSpace` |
 | Prefix | `--prefix` | `SLIVINGDOC_PREFIX` | `slivingdoc` | `storage.ValidatePrefix` |
 | Region | `--region` | `AWS_REGION` | `us-east-1` | non-empty; not resolved when hosted |

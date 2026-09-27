@@ -287,15 +287,16 @@ type tokenAnswer struct {
 // Wait polls the approval until the site issues the token, the person
 // denies it, the code expires, or ctx ends. It pauses Interval before
 // every poll and adds five seconds after each slow_down answer. A poll that
-// gets no answer or a 5xx is retried with a doubling pause until the code
-// expires; any other error answer ends the wait. A token issued in an
+// gets no answer or a 5xx is retried with a doubling pause, never past the
+// code's expiry, until the code expires; any other error answer ends the wait. A token issued in an
 // answer outside the contract is returned inside a *RejectedTokenError.
 func (c *Client) Wait(ctx context.Context, a Approval) (Issued, error) {
 	interval := a.Interval
 	var failures int
 	var lastFailure error
 	for {
-		if err := c.sleep(ctx, retryWait(interval, failures)); err != nil {
+		wait := min(retryWait(interval, failures), max(a.Deadline.Sub(c.now()), 0))
+		if err := c.sleep(ctx, wait); err != nil {
 			return Issued{}, err
 		}
 		if !c.now().Before(a.Deadline) {
@@ -475,7 +476,10 @@ func (c *Client) post(ctx context.Context, path, token string, in, out any) erro
 	defer resp.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, bodyLimit))
 	if err != nil {
-		return fmt.Errorf("sitelogin: read answer: %w", err)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return fmt.Errorf("%w (%s): read the answer: %w", ErrUnreachable, c.site, err)
 	}
 	switch {
 	case resp.StatusCode >= 200 && resp.StatusCode < 300 && out == nil:
