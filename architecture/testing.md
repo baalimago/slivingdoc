@@ -113,6 +113,8 @@ process scenario
 
 **Process tests and the race sleep.** Process scenarios re-execute the race-built test binary as the process body. A race-built program sleeps `atexit_sleep_ms` (1000 ms by default) on every clean exit; with dozens of helpers per `-count=3` run that is about 45 s. `spawnHelperIn` sets `GORACE=atexit_sleep_ms=0` for helpers only. Race detection of the helper's work is unchanged; the `internal/app` package binary keeps the default and still observes the shutdown path.
 
+**Parallel slots.** `go test` runs at most `GOMAXPROCS` parallel tests at once (`-parallel` defaults to it), and a test that waits (on a child process, a barrier, a sleep) holds its slot while the CPU idles; the integration package is bound by slot time, not CPU. So a scenario never sleeps for a real lifetime or interval (the login helper's `Sleep` waits a hundredth of the site's interval; the lifecycle scenario gives minted tokens a 100 ms lifetime), and one that needs two processes at once starts both with `spawnHelper` and then waits for each (`TestScenarioConcurrentLoginsKeepBoth`), rather than running them as parallel subtests that take extra slots and wait for each other. A step whose rule a unit test already pins is not repeated as another process in a scenario.
+
 **Coverage.** 70 % statement coverage is the floor (the Makefile fails below it); 90 % is preferred. `-coverpkg=./...` is required because the black-box suite exercises other packages; per-package coverage understates it badly. `make cover` opens the last profile.
 
 **Other gates.** `make lint` runs gofumpt (list mode), `go vet`, staticcheck, and `go fix -diff`; `make fmt` applies gofumpt. These are not tests. AGENTS.md also lists `dupl -t 80` as a signal.

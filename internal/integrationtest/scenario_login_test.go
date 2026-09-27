@@ -230,10 +230,6 @@ func TestScenarioAccountLoginLifecycle(t *testing.T) {
 	runCLIExact(t, "real", env,
 		"  team-notes (read and write), owned by ada@example.test\n  second-space (read only), owned by bob@example.test\n",
 		"space")
-	code, _, stderr = runCLI(t, "real", env, "space", "missing-space")
-	if code != 1 || !strings.Contains(stderr, `does not reach space "missing-space" (it reaches team-notes, second-space)`) {
-		t.Fatalf("space for a space the login does not reach = exit %d, stderr %s", code, stderr)
-	}
 	runCLIExact(t, "real", env, "The default space is now team-notes (read and write), owned by ada@example.test\n", "space", hostedSpace)
 	runCLIExact(t, "real", env,
 		"* team-notes (read and write), owned by ada@example.test\n  second-space (read only), owned by bob@example.test\n",
@@ -241,12 +237,15 @@ func TestScenarioAccountLoginLifecycle(t *testing.T) {
 	// The space of another owner is reachable too, read only.
 	runCLIOK(t, "real", env, nil, "pull", "--space", second, filepath.Join(root, "second"))
 
-	site.SetMintLifetime(time.Second)
+	// A short lifetime makes renewal due within a tenth of a second; the
+	// internal/app unit tests pin the 80 % point over a fake clock.
+	const lifetime = 100 * time.Millisecond
+	site.SetMintLifetime(lifetime)
 	h := spawnHelper(t, "real", env, "serve")
 	cs := h.connectClient(t)
 	assertProcessCallOK(t, cs, toolPull, notes, "")
 	before := len(site.Mints())
-	time.Sleep(900 * time.Millisecond)
+	time.Sleep(lifetime)
 	writeCLIFile(t, filepath.Join(notes, "a.md"), "after a renewal\n")
 	assertProcessCallOK(t, cs, toolCommit, notes, "after a renewal")
 	if after := len(site.Mints()); after <= before {
@@ -282,9 +281,9 @@ func TestScenarioAccountLoginLifecycle(t *testing.T) {
 			t.Fatalf("revoked = %v; a minted token of the key survived the logout", revoked)
 		}
 	}
-	code, _, stderr = runCLI(t, "real", env, "space")
-	if code != 1 || !strings.Contains(stderr, "not logged in") {
-		t.Fatalf("space after logout = exit %d, stderr %s", code, stderr)
+	if data, err := os.ReadFile(credentialsPath(env)); err != nil || strings.Contains(string(data), loginKey) ||
+		strings.Contains(string(data), hostedSpace) {
+		t.Fatalf("credentials file after logout = %q (%v), want neither the key nor its default space", data, err)
 	}
 }
 
@@ -335,8 +334,6 @@ func TestScenarioStorageSelection(t *testing.T) {
 	notes := filepath.Join(root, "notes")
 	with := func(extra ...string) []string { return append(append([]string(nil), env...), extra...) }
 	s3 := []string{"AWS_ACCESS_KEY_ID=key", "AWS_SECRET_ACCESS_KEY=secret", "AWS_MAX_ATTEMPTS=1", "AWS_REGION=us-east-1"}
-	awsHome := t.TempDir()
-	writeCLIFile(t, filepath.Join(awsHome, ".aws", "config"), "[default]\n")
 
 	for _, row := range []struct {
 		name string
@@ -355,17 +352,6 @@ func TestScenarioStorageSelection(t *testing.T) {
 			name: "a login and AWS settings are ambiguous for an explicit bucket",
 			env:  with(append([]string{"SLIVINGDOC_BUCKET=" + hostedSpace}, s3...)...),
 			want: []string{"a stored login and S3 settings (AWS_ACCESS_KEY_ID", `for "team-notes"`, "--storage hosted or --storage s3"},
-		},
-		{
-			name: "a login and the shared AWS files are ambiguous for an explicit bucket",
-			env:  with("HOME=" + awsHome),
-			args: []string{"--bucket", hostedSpace},
-			want: []string{"a stored login and S3 settings", "~/.aws/config", "--storage hosted or --storage s3"},
-		},
-		{
-			name: "a login and --region are ambiguous for an explicit space",
-			args: []string{"--space", hostedSpace, "--region", "eu-north-1"},
-			want: []string{"a stored login and S3 settings (--region)", "--storage hosted or --storage s3"},
 		},
 		{
 			name: "the token and an S3 endpoint flag are ambiguous",
@@ -400,12 +386,6 @@ func TestScenarioStorageSelection(t *testing.T) {
 			name: "hosted at an endpoint without a login",
 			args: []string{"--storage", "hosted", "--endpoint", closedS3},
 			want: []string{"needs SLIVINGDOC_TOKEN or a stored login for " + closedS3, "the stored login is for " + g.URL()},
-		},
-		{
-			name: "hosted without a login",
-			env:  with(credentials.DirEnv + "=" + t.TempDir()),
-			args: []string{"--storage", "hosted", "--space", hostedSpace},
-			want: []string{"needs SLIVINGDOC_TOKEN or a stored login", "run 'slivingdoc login'"},
 		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
@@ -671,10 +651,6 @@ func TestScenarioTwoLoginsNeedAnEndpoint(t *testing.T) {
 		!strings.Contains(stderr, "pass --endpoint") {
 		t.Fatalf("pull with two logins = exit %d, stdout %q, stderr %s", code, stdout, stderr)
 	}
-	code, _, stderr = runCLI(t, "real", env, "space")
-	if code != 1 || !strings.Contains(stderr, "pass --endpoint") {
-		t.Fatalf("space with two logins = exit %d, stderr %s", code, stderr)
-	}
 	runCLIOK(t, "real", env, nil, "pull", "--endpoint", g2.URL(), filepath.Join(root, "second"))
 	runCLIExact(t, "real", env, "* team-notes (read only), owned by ada@example.test\n", "space", "--endpoint", g2.URL())
 	if mints := site.Mints(); len(mints) != 1 || mints[0].Key != secondKey || mints[0].Endpoint != g2.URL() || mints[0].Access != "read" {
@@ -790,15 +766,14 @@ func TestScenarioEarlierCredentialsFile(t *testing.T) {
 		site.URL()+`","token":"`+hostedToken+`","access":"write"}]}`)
 	mustDo(t, os.Chmod(credentialsDir(env), 0o700))
 	mustDo(t, os.Chmod(credentialsPath(env), 0o600))
-	for _, args := range [][]string{{"pull", filepath.Join(root, "notes")}, {"space"}, {"logout"}} {
-		code, stdout, stderr := runCLI(t, "real", env, args...)
-		if code != 1 || strings.TrimSpace(stdout) != "" || !strings.Contains(stderr, "from an earlier slivingdoc; run 'slivingdoc login' again") ||
-			strings.Contains(stderr, hostedToken) {
-			t.Fatalf("%v with an earlier file = exit %d, stdout %q, stderr %s", args, code, stdout, stderr)
-		}
+	// space and logout refuse it alike (internal/app unit tests).
+	code, stdout, stderr := runCLI(t, "real", env, "pull", filepath.Join(root, "notes"))
+	if code != 1 || strings.TrimSpace(stdout) != "" || !strings.Contains(stderr, "from an earlier slivingdoc; run 'slivingdoc login' again") ||
+		strings.Contains(stderr, hostedToken) {
+		t.Fatalf("pull with an earlier file = exit %d, stdout %q, stderr %s", code, stdout, stderr)
 	}
 	approve(site, g, loginKey, "write", loginExpiry)
-	code, stdout, stderr := runCLI(t, "real", env, "login", "--no-browser")
+	code, stdout, stderr = runCLI(t, "real", env, "login", "--no-browser")
 	if code != 0 || stdout != loggedIn(g, "read and write", withDefault)+"\n" ||
 		!strings.Contains(stderr, "The credentials file of an earlier slivingdoc was replaced; its tokens were not revoked") {
 		t.Fatalf("login over an earlier file = exit %d, stdout %q, stderr %s", code, stdout, stderr)
@@ -806,7 +781,9 @@ func TestScenarioEarlierCredentialsFile(t *testing.T) {
 	if g.Requests() != 0 || len(site.Revoked()) != 0 {
 		t.Fatal("the earlier file's token was sent somewhere")
 	}
-	runCLIOK(t, "real", env, nil, "pull", filepath.Join(root, "notes"))
+	if data, err := os.ReadFile(credentialsPath(env)); err != nil || !strings.Contains(string(data), `"version": 2`) || strings.Contains(string(data), hostedToken) {
+		t.Fatalf("credentials file after the login = %q (%v), want version 2 without the earlier token", data, err)
+	}
 }
 
 // TestScenarioLoginBrokenAnswers proves every way a login can lose a key
@@ -992,17 +969,18 @@ func TestScenarioConcurrentLoginsKeepBoth(t *testing.T) {
 	}
 	site.Queue(issue(loginKey, g), issue(secondKey, g2))
 	site.HoldIssues(2)
-	t.Run("logins", func(t *testing.T) {
-		for _, name := range []string{"first", "second"} {
-			t.Run(name, func(t *testing.T) {
-				t.Parallel()
-				code, stdout, stderr := runCLI(t, "real", env, "login", "--no-browser")
-				if code != 0 || !strings.HasPrefix(stdout, "Logged in as ") {
-					t.Fatalf("concurrent login = exit %d, stdout %q, stderr %s", code, stdout, stderr)
-				}
-			})
+	// Both processes run before either is waited for, so the site answers
+	// their issuing polls together; the test holds one parallel slot.
+	logins := []*helperProc{
+		spawnHelper(t, "real", env, "login", "--no-browser"),
+		spawnHelper(t, "real", env, "login", "--no-browser"),
+	}
+	for _, h := range logins {
+		code, stdout, stderr := h.runStdioProcess(t, nil)
+		if code != 0 || !strings.HasPrefix(stdout, "Logged in as ") {
+			t.Fatalf("concurrent login = exit %d, stdout %q, stderr %s", code, stdout, stderr)
 		}
-	})
+	}
 	for i, gw := range []*gatewaytest.Gateway{g, g2} {
 		runCLIOK(t, "real", env, nil, "pull", "--endpoint", gw.URL(), filepath.Join(root, []string{"first", "second"}[i]))
 		if gw.Requests() == 0 {
