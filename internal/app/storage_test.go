@@ -65,6 +65,15 @@ func TestResolveStorage(t *testing.T) {
 	notes := writeLogins(t, &storedKey{DefaultHostedEndpoint, "notes"}, entry(DefaultHostedEndpoint, "notes", loginToken))
 	dev := writeLogins(t, nil, entry(devEndpoint, "notes", loginToken))
 	token := "SLIVINGDOC_TOKEN=" + hostedTestToken
+	// A umask of 0002 leaves a config directory group-writable; with no
+	// credentials file in it, an S3 process never reads it.
+	shared := filepath.Join(t.TempDir(), "cfg")
+	if err := os.Mkdir(shared, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(shared, 0o775); err != nil {
+		t.Fatal(err)
+	}
 	tests := []struct {
 		name         string
 		env          []string
@@ -105,6 +114,10 @@ func TestResolveStorage(t *testing.T) {
 		},
 		{
 			name: "auto: no login keeps S3", env: []string{credentials.DirEnv + "=" + t.TempDir(), "SLIVINGDOC_BUCKET=notes"},
+			wantBucket: "notes",
+		},
+		{
+			name: "auto: a group-writable directory without a file keeps S3", env: []string{credentials.DirEnv + "=" + shared, "SLIVINGDOC_BUCKET=notes"},
 			wantBucket: "notes",
 		},
 		{

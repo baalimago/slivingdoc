@@ -353,14 +353,20 @@ func TestLoadRefusesExposedFiles(t *testing.T) {
 	if err := os.Remove(f.Path()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.Load(); !errors.Is(err, ErrExposed) {
-		t.Fatalf("Load() without a file in a world-writable directory = %v, want ErrExposed before any login starts", err)
+	if _, err := f.Load(); err != nil {
+		t.Fatalf("Load() without a file = %v; an exposed directory holding no file is not read", err)
+	}
+	if err := f.CheckDir(); !errors.Is(err, ErrExposed) {
+		t.Fatalf("CheckDir() of a world-writable directory = %v, want ErrExposed", err)
 	}
 	if err := os.RemoveAll(dir); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.Load(); err != nil {
 		t.Fatalf("Load() without a directory = %v, want an empty set", err)
+	}
+	if err := f.CheckDir(); err != nil {
+		t.Fatalf("CheckDir() without a directory = %v", err)
 	}
 }
 

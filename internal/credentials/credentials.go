@@ -307,12 +307,12 @@ func userConfigDir(getenv func(string) string, goos string) (string, error) {
 // but Windows: another user could read the tokens or plant their own. Save
 // refuses such a directory too.
 func (f File) Load() (Set, error) {
-	if err := f.checkPrivate(); err != nil {
-		return Set{}, err
-	}
 	data, err := os.ReadFile(f.Path())
 	if errors.Is(err, os.ErrNotExist) {
 		return Set{location: f.Path()}, nil
+	}
+	if err := f.checkPrivate(); err != nil {
+		return Set{}, err
 	}
 	if err != nil {
 		return Set{}, fmt.Errorf("credentials: read %s: %w", f.Path(), err)
@@ -325,14 +325,28 @@ func (f File) Load() (Set, error) {
 	return set, nil
 }
 
-// checkPrivate refuses an exposed directory or file; a missing one is
-// private.
-func (f File) checkPrivate() error {
+// CheckDir returns ErrExposed when the directory exists and group or
+// other can write it; a missing directory is private. Load checks it only
+// when the file exists, so a command that will write the file calls it
+// first.
+func (f File) CheckDir() error {
 	if !f.private {
 		return nil
 	}
 	if info, err := os.Stat(f.dir); err == nil && info.Mode().Perm()&0o022 != 0 {
 		return fmt.Errorf("%w: other users can write to %s; run 'chmod go-w %s'", ErrExposed, f.dir, f.dir)
+	}
+	return nil
+}
+
+// checkPrivate refuses an exposed directory or file; a missing one is
+// private.
+func (f File) checkPrivate() error {
+	if err := f.CheckDir(); err != nil {
+		return err
+	}
+	if !f.private {
+		return nil
 	}
 	if info, err := os.Stat(f.Path()); err == nil && info.Mode().Perm()&0o077 != 0 {
 		return fmt.Errorf("%w: other users can access %s; run 'chmod 600 %s'", ErrExposed, f.Path(), f.Path())

@@ -284,6 +284,9 @@ func TestLoginRefusals(t *testing.T) {
 		if err := r.login(t, "--bucket", "team-notes"); !errors.Is(err, credentials.ErrExposed) {
 			t.Fatalf("login = %v, want ErrExposed", err)
 		}
+		if err := r.logout(t, "--bucket", "team-notes"); !errors.Is(err, credentials.ErrExposed) {
+			t.Fatalf("logout = %v, want ErrExposed", err)
+		}
 		if len(r.site.Starts()) != 0 {
 			t.Fatal("a refused login contacted the site")
 		}

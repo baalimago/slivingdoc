@@ -82,6 +82,9 @@ func PrepareLogin(f *LoginFlags, opts ProcessOptions) (*Login, error) {
 	if _, err := file.Load(); err != nil {
 		return nil, fmt.Errorf("login: %w", err)
 	}
+	if err := file.CheckDir(); err != nil {
+		return nil, fmt.Errorf("login: %w", err)
+	}
 	space := f.bucket.value
 	if space != "" {
 		if err := httpstore.ValidateSpace(space); err != nil {
@@ -219,6 +222,9 @@ func PrepareLogout(f *LogoutFlags, opts ProcessOptions) (*Logout, error) {
 	}
 	set, err := file.Load()
 	if err != nil {
+		return nil, fmt.Errorf("logout: %w", err)
+	}
+	if err := file.CheckDir(); err != nil {
 		return nil, fmt.Errorf("logout: %w", err)
 	}
 	space := f.bucket.value

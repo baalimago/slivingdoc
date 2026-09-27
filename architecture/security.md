@@ -19,7 +19,7 @@ Read this when: changing the transport, request path handling, symlink or specia
 | `internal/git/readonly.go`, `policy.go` | `NormalizeEntries`, `NewPolicy` (path-set entries obey `ValidatePath`) |
 | `internal/app/config.go` | `normalizeEndpoint` (refuses user information), `validateHosted` (token grammar, https unless loopback), `resolvePolicy`, `RootsOverlap` checks |
 | `internal/app/storage.go` | `resolveStorage`: a stored token only at its own endpoint, `--storage s3` never reads a token ([login.md](./login.md)) |
-| `internal/credentials/credentials.go` | The credentials file: `File.Save` (directory 0700, file 0600, temp file and rename), `File.Load` (strict; errors never echo a token), `checkPrivate` (`ErrExposed`) |
+| `internal/credentials/credentials.go` | The credentials file: `File.Save` (directory 0700, file 0600, temp file and rename), `File.Load` (strict; errors never echo a token), `checkPrivate` and `CheckDir` (`ErrExposed`) |
 | `internal/sitelogin/client.go` | The login site client: `parseSite` (https unless loopback), `sameOrigin` (approval pages on the site's origin only), `issued` (validates the token, endpoint and emails), no redirects |
 | `internal/app/login.go` | `platformBrowser` (starts the opener with `os.StartProcess`, never a shell; on Windows only from an absolute `SystemRoot`), `Login.discard` (revokes a minted token that is not stored) |
 | `internal/s3store/store.go` | `New`: AWS default credential chain; static keys only in tests |
