@@ -115,7 +115,7 @@ S3 holds no bare repository and no `.git` directory. Protocol keys are relative 
 
 A backend is any type satisfying `storage.ObjectStore`, safe for concurrent use, that owns its prefix join. It must:
 
-- `ReadObject`: stream bytes and return `ObjectInfo{Size, ETag, Meta}`; wrap `ErrNotFound` for an absent key.
+- `ReadObject`: stream bytes and return `ObjectInfo{Size, ETag, Meta}`; wrap `ErrNotFound` for an absent key, and only when the key is known to be absent: a read of `current` that returns it is the empty notebook, so a backend that cannot tell an absent key from an unreachable store must return another error (the hosted adapter's `no_object` rule, [hosted-mode.md](./hosted-mode.md)).
 - `PutObject`: store immutable bytes with `Metadata`, streaming; a failure after bytes may have been accepted wraps `ErrTransport`.
 - `CreateObject`: create only if absent; wrap `ErrPreconditionFailed` if the key exists; return a non-empty ETag.
 - `ReplaceObject`: replace only if the ETag matches; wrap `ErrPreconditionFailed` for a stale ETag and for an absent key, without mutating; return a new non-empty ETag.

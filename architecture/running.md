@@ -451,7 +451,8 @@ Account limits and refusals surface as `STORAGE_FAILURE` with their own reason:
 working; deleting notes and committing again can compact the space),
 `REQUEST_LIMIT` (the monthly request allowance is used up; it resets on
 the first of the month, UTC), `RATE_LIMITED` (retryable), `ACCESS_DENIED`
-(for example a read-only token that commits), and `OBJECT_TOO_LARGE`.
+(a read-only token that commits, a revoked or ungranted token, a space
+that no longer exists, or an `--endpoint` that is not the storage API), and `OBJECT_TOO_LARGE`.
 All but `RATE_LIMITED` are `retryable: false` and ask for the operator.
 The server's own explanation follows `The storage says:` in the message.
 [hosted-mode.md](./hosted-mode.md) has the details.

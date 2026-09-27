@@ -11,7 +11,7 @@ Read this when: adding a new failure point, touching recovery or failpoints, cha
 | `internal/notebook/commit.go` | `attemptPublication` (publication order), `publish` (CAS outcomes), `uploadProposal`, `mapUploadError` |
 | `internal/notebook/remote.go` | `recoverState`, `recoveryReport`, `lookupPublication`, `readRemote` (stale-manifest restart) |
 | `internal/notebook/notebook.go` | `entryRecovery`, `applyLocal`, `failAfterAccept`, stage constants `stageEntry` … `stageReadOnly` |
-| `internal/notebook/errors.go` | `recoveryFailure`, `RecoveryReport`, `RemoteAccepted` (`yes`/`no`/`unknown`) |
+| `internal/notebook/errors.go` | `recoveryFailure` (a refused resynchronization takes the refusal's reason through `refusalMessage`), `RecoveryReport`, `RemoteAccepted` (`yes`/`no`/`unknown`) |
 | `internal/notebook/failpoints.go` | `Failpoints.CAS` |
 | `internal/workspace/materialize.go` | `applyLocked`, `markRecoveryRequired`, `Failpoints` (`Scan`, `Stage`, `Replace`, `Baseline`, `Recover`) |
 | `internal/workspace/workspace.go` | `Recover`, `withOpLock`, `openPrivateState` (recovery-required on open) |
@@ -32,6 +32,7 @@ Generic recovery:
         → readRemote (reread current, import packs, validate)
         → Workspace.Recover(baseline)   (only op allowed while recovery is required)
     → RECOVERY_FAILURE{stage, remoteAccepted, resynchronized}
+      reason LOCAL_MUTATION_FAILED, or the store refusal's reason when readRemote was refused
   next call: Pull/Commit → RecoveryRequired()? → entryRecovery (stage "entry", remoteAccepted "unknown")
     → always RECOVERY_FAILURE; the call does no work of its own
 ```
@@ -49,7 +50,7 @@ Generic recovery:
 | After upload, before CAS | Pack is an unreferenced proposal; cleanup may delete it later | [checkpoints.md](./checkpoints.md) |
 | CAS precondition failure | Another writer won; merge again and retry | `publish` returns `errCASLost` |
 | CAS response lost | Reread `current`, search active and retained descriptors for the publication ID | `publish`, `lookupPublication` |
-| CAS accepted, local accept fails | `RECOVERY_FAILURE`, stage `commit.accept`, `remoteAccepted=yes`, even if resync succeeds, and also when the failure came before L mutation began (reading the target tree, staging, a cancelled request) | `failAfterAccept` |
+| CAS accepted, local accept fails | `RECOVERY_FAILURE`, stage `commit.accept`, `remoteAccepted=yes`, even if resync succeeds, and also when the failure came before L mutation began (reading the target tree, staging, a cancelled request); an accepted compacting commit still runs its best-effort cleanup | `failAfterPublish`, `failAfterAccept` |
 | Merge conflict | Remote unchanged; L rewritten with markers | [conflicts.md](./conflicts.md) |
 | Retry exhaustion | `REMOTE_BUSY`; caller files untouched | `Commit` loop |
 | Checkpoint failure | Accepted state unchanged; metrics + warning | `failCheckpoint` |
@@ -62,7 +63,7 @@ Generic recovery:
 
 - There is no per-interruption recovery algorithm. Every mutation of L goes through `Workspace.applyLocked`, which stages the full target tree in P first (failure there leaves L intact and needs no recovery), then durably writes `recoveryRequired=true`, then rewrites L in place, then persists the new baseline with `recoveryRequired=false`.
 - `applyLocal` inspects `ws.RecoveryRequired()` after a failed mutation: set means the mutation had started, so it runs `recoverState` and returns `RECOVERY_FAILURE`; clear means nothing changed, so the plain workspace error passes through: `mcp.MapError` reports a non-context failure (reading the target tree, staging) as retryable `STORAGE_FAILURE`/`INTERNAL`, while a staging step ended by cancellation or a deadline stays a protocol error over MCP (the CLI returns the raw error). The lock is not taken here: it is held from the start of the operation (`holdWorkspace`), and failing to take it there, a cancelled or expired lock wait included, is `STORAGE_FAILURE`/`LOCAL_STATE` through `mapLocalError` before anything changed.
-- `recoverState` reports `stage` (`entry`, `pull.accept`, `commit.accept`, `commit.cas`, `merge.materialize`, `commit.readonly`), whether remote acceptance is known, and whether resync succeeded. A successful repair never turns the anomalous call into `OK`; action is `PULL` when resynchronized, else `RETRY`.
+- `recoverState` reports `stage` (`entry`, `pull.accept`, `commit.accept`, `commit.cas`, `merge.materialize`, `commit.readonly`), whether remote acceptance is known, and whether resync succeeded. A successful repair never turns the anomalous call into `OK`; action is `PULL` when resynchronized, else `RETRY`, except when a store refusal stopped the resynchronization (the refusal's reason and action; see Gotchas).
 - If repair fails, P stays marked. Every normal workspace operation then returns `ErrRecoveryRequired` (`withOpLock`), and the next `Pull` or `Commit` runs `entryRecovery` instead of its own work.
 - `workspace.Open` also enters recovery-required mode on a missing or corrupt `state.json`, a leftover `state.json.tmp`, an identity mismatch, or an unopenable repository (rebuilt empty and refilled from R).
 - Recovery may overwrite L: L is not a durability boundary, but every overwrite is reported. Recovery during a failing call is reported through that call's `RECOVERY_FAILURE`. Entry recovery at the start of the next call is reported too: it rewrites L to the accepted state, discarding edits made since the failure (or before an open-time anomaly), so `entryRecovery` always returns `RECOVERY_FAILURE` stage `entry` and never runs the call's own pull or commit. A successful repair is `resynchronized=true` with action `PULL` and a message (`entryRecovered`) saying edits were discarded; the following call runs normally (`TestPullEntryRecoveryRunsBeforeWork`, `TestScenarioRecoveryRepairImpossible`).
@@ -94,7 +95,7 @@ Deterministic injection at operation boundaries, wired through `app.ServiceHooks
 
 - The workspace operation lock is held across a whole `Pull` or `Commit` (`Workspace.Hold`), so two concurrent operations on the same path, in one process or across processes, run one after the other; the second sees the first's result in L and P. In one process both operations share one `Workspace`; across processes each has its own in-memory copy of `state.json`, and `acquire` rereads the record once the file lock is held (`refreshState`), so the second process works from the baseline and recovery flag the first one wrote (`TestOperationsOnOneWorkspaceDoNotInterleave`, `TestScenarioOperationsOnOnePathDoNotInterleave`, `TestLockHolderRereadsState`).
 - `MarkPulled` runs outside `applyLocal`; its failure maps to `STORAGE_FAILURE`/`LOCAL_STATE` even though L was already rewritten (L and P are consistent at that point).
-- Known bug: a store refusal met while recovering (the resynchronizing `readRemote` of `entryRecovery`, `applyLocal` or `failAfterAccept`) does not surface with its own reason: `entryRecovery` wraps it and the other two drop it, so the result is retryable `RECOVERY_FAILURE` even for `ACCESS_DENIED` ([hosted-mode.md](./hosted-mode.md)).
+- A store refusal of the resynchronizing `readRemote` (in `entryRecovery`, `applyLocal` or `failAfterAccept`) keeps the code `RECOVERY_FAILURE` and the report (`resynchronized=false`) but replaces the reason `LOCAL_MUTATION_FAILED` with the refusal's (`ACCESS_DENIED`, `RATE_LIMITED`, and so on), takes that refusal's action and a recovery-specific message (`recoveryRefusalMessages`, which makes no claim about publication), and is retryable only for `RATE_LIMITED`. The local cause and the resynchronization failure both stay in `Cause` (`recoveryFailure`). A refusal met by the local work itself, before recovery, is unchanged: that call's own `STORAGE_FAILURE` ([hosted-mode.md](./hosted-mode.md), [errors.md](./errors.md)).
 - A new failure boundary that mutates L must go through `applyLocked` (so the flag is durable first) and its caller must wrap it in `applyLocal` with the right stage and `RemoteAccepted` value.
 
 ## Related

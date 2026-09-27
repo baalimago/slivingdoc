@@ -208,6 +208,10 @@ func (s *Store) CheckAccess(ctx context.Context) error {
 	}
 	if resp.StatusCode != http.StatusOK {
 		defer drain(resp)
+		if resp.StatusCode == http.StatusNotFound {
+			// No storage API at this endpoint, whatever the body says.
+			return fmt.Errorf("httpstore: describe server: HTTP 404: no storage API at this endpoint: %w", storage.ErrIncompatible)
+		}
 		err := s.statusError(resp)
 		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
 			// The server is busy or down, not a different kind of server.
@@ -238,7 +242,7 @@ func (s *Store) CheckAccess(ctx context.Context) error {
 	case http.StatusOK:
 		return nil
 	case http.StatusNotFound:
-		return fmt.Errorf("httpstore: space %q does not exist or the token was not granted it: %w", s.name, storage.ErrAccessDenied)
+		return fmt.Errorf("httpstore: check space %q: %w", s.name, s.usageNotFound(resp))
 	default:
 		return fmt.Errorf("httpstore: check space %q: %w", s.name, s.statusError(resp))
 	}
@@ -517,19 +521,10 @@ type apiError struct {
 // diagnostic text, and its message, which is written for the person running
 // the client, travels as storage.Refusal.Message.
 func (s *Store) statusError(resp *http.Response) error {
-	var body apiError
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, errorBodyLimit))
-	_ = json.Unmarshal(raw, &body)
+	body := readAPIError(resp)
 	code := strings.ToLower(sanitize(body.Code, 64))
 	reason := strings.ToLower(sanitize(body.Reason, 64))
-	detail := "HTTP " + strconv.Itoa(resp.StatusCode)
-	if code != "" {
-		detail += " " + code
-	}
-	if reason != "" {
-		detail += " (" + reason + ")"
-	}
-	refusal := &storage.Refusal{Detail: detail, Message: sanitize(body.Message, 300)}
+	refusal := newRefusal(resp.StatusCode, body)
 	switch {
 	case (resp.StatusCode == http.StatusInsufficientStorage || code == "quota_exceeded") && reason == "request_limit":
 		refusal.Err = storage.ErrRequestLimit
@@ -539,8 +534,14 @@ func (s *Store) statusError(resp *http.Response) error {
 		refusal.Err = storage.ErrRateLimited
 	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
 		refusal.Err = storage.ErrAccessDenied
-	case resp.StatusCode == http.StatusNotFound:
+	case resp.StatusCode == http.StatusNotFound && body.Code == "not_found" && body.Reason == reasonNoObject:
 		refusal.Err = storage.ErrNotFound
+	case resp.StatusCode == http.StatusNotFound:
+		// Only no_object means absent. A missing space, an unknown route,
+		// or an older gateway's 404 without a reason must never read as an
+		// empty store, or a pull would delete the caller's notes.
+		refusal.Err = storage.ErrAccessDenied
+		return fmt.Errorf("%s: %w", s.unreachable(body.Reason), refusal)
 	case resp.StatusCode == http.StatusPreconditionFailed:
 		refusal.Err = storage.ErrPreconditionFailed
 	case resp.StatusCode == http.StatusRequestEntityTooLarge:
@@ -548,7 +549,7 @@ func (s *Store) statusError(resp *http.Response) error {
 	case resp.StatusCode >= 500:
 		refusal.Err = storage.ErrTransport
 	default:
-		return fmt.Errorf("server refused the request: %s", appendMessage(detail, refusal.Message))
+		return fmt.Errorf("server refused the request: %s", appendMessage(refusal.Detail, refusal.Message))
 	}
 	return refusal
 }
@@ -560,12 +561,64 @@ func appendMessage(detail, msg string) string {
 	return detail + ": " + msg
 }
 
+// readAPIError decodes a bounded error body; an undecodable body is the
+// zero value.
+func readAPIError(resp *http.Response) apiError {
+	var body apiError
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, errorBodyLimit))
+	_ = json.Unmarshal(raw, &body)
+	return body
+}
+
+// newRefusal carries a refusal's diagnostic detail (status, lowercased code
+// and reason) and the server's sanitized message; the caller sets Err.
+func newRefusal(status int, body apiError) *storage.Refusal {
+	detail := "HTTP " + strconv.Itoa(status)
+	if code := strings.ToLower(sanitize(body.Code, 64)); code != "" {
+		detail += " " + code
+	}
+	if reason := strings.ToLower(sanitize(body.Reason, 64)); reason != "" {
+		detail += " (" + reason + ")"
+	}
+	return &storage.Refusal{Detail: detail, Message: sanitize(body.Message, 300)}
+}
+
+// usageNotFound maps a 404 of the usage check, which addresses the space,
+// so no 404 there means an absent object: no_space keeps its own
+// description, and anything else says the endpoint serves no space API.
+// The gateway's message travels as the refusal's, like any other.
+func (s *Store) usageNotFound(resp *http.Response) error {
+	body := readAPIError(resp)
+	refusal := newRefusal(resp.StatusCode, body)
+	refusal.Err = storage.ErrAccessDenied
+	if body.Reason == "no_space" {
+		return fmt.Errorf("%s: %w", s.unreachable(body.Reason), refusal)
+	}
+	return fmt.Errorf("the endpoint has no such space API; check --endpoint: %w", refusal)
+}
+
+// reasonNoObject is the only 404 reason that means an absent object
+// (the gateway's API.md, Read).
+const reasonNoObject = "no_object"
+
+// unreachable describes a 404 that is not an absent object.
+func (s *Store) unreachable(reason string) string {
+	switch reason {
+	case "no_space":
+		return fmt.Sprintf("space %q does not exist or the token was not granted it", s.name)
+	case "no_endpoint":
+		return "the server has no such endpoint; check --endpoint"
+	default:
+		return fmt.Sprintf("space %q is not reachable: the server answered 404 without saying what is missing", s.name)
+	}
+}
+
 // writeError maps a refusal of a request addressed to the space. A 404
-// there means the space is unknown to this token, never an absent object.
+// there is never an absent object, even one that says no_object.
 func (s *Store) writeError(resp *http.Response) error {
 	err := s.statusError(resp)
 	if errors.Is(err, storage.ErrNotFound) {
-		return fmt.Errorf("space %q does not exist or the token was not granted it: %w", s.name, storage.ErrAccessDenied)
+		return fmt.Errorf("space %q answered 404 to a request addressed to the space: %w", s.name, storage.ErrAccessDenied)
 	}
 	return err
 }

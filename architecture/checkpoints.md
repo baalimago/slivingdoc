@@ -9,7 +9,7 @@ Read this when: changing the checkpoint trigger, compaction (including the compa
 | File | Purpose |
 |------|---------|
 | `internal/notebook/checkpoint.go` | `checkpointPlan`, `planCheckpoint`, `prefixPresent`, `runCheckpoint`, `acceptCheckpoint`, `failCheckpoint`, `checkpointAccepted`, `compactManifest`, `cleanup`, `failCleanup`, `cleanupRoots`, `recordTail`, `cleanupBatchSize` |
-| `internal/notebook/commit.go` | Trigger at the end of `attemptPublication`; `buildFirstProposal` (the generation-1 checkpoint); `buildCompactingProposal`, `acceptCompaction`, `discardCompaction` (a commit published as a checkpoint when the space is full) |
+| `internal/notebook/commit.go` | Trigger at the end of `attemptPublication`; `buildFirstProposal` (the generation-1 checkpoint); `buildCompactingProposal`, `acceptCompaction`, `failAfterPublish`, `discardCompaction` (a commit published as a checkpoint when the space is full) |
 | `internal/notebook/remote.go` | `importRemote` (imports checkpoint then tail; `MarkShallow`), `readRemote` (stale-pack restart) |
 | `internal/notebook/metrics.go` | `Checkpoint*` and `Cleanup*` counters, `TailCount`, `TailBytes` |
 | `internal/notebook/notebook.go` | `DefaultCheckpointPacks` (256), `MinCheckpointPacks`, `DefaultRetainedCheckpoints` (1), `MaxRetainedCheckpoints` (64) |
@@ -81,7 +81,7 @@ after:  C1(at I256) -> I257 -> I258
 
 ### Cleanup
 
-- Runs only after a successful checkpoint CAS followed by a successful local `MarkShallow`, after a proved lost-response acceptance, or after an accepted compacting commit (`acceptCompaction`), with the checkpoint's cutoff.
+- Runs only after a successful checkpoint CAS followed by a successful local `MarkShallow`, after a proved lost-response acceptance, or after an accepted compacting commit (`acceptCompaction`, or `failAfterPublish` when the commit's local acceptance failed), with the checkpoint's cutoff.
 - Lists only `packs/checkpoints/` and `packs/increments/` (following every continuation in the store), parses each key's generation, ignores malformed keys, and considers only keys with generation at or before the cutoff. `current` is never a candidate and orphans after the cutoff are never touched.
 - Before each delete batch of at most 1,000 keys, it rereads and strictly decodes `current` and rebuilds the full root set (active checkpoint, active increments, every retained checkpoint and increment). Only unreferenced candidates are deleted, so a stale listing can never delete a pack a newer manifest references. Deletable candidates include retired packs and never-accepted proposals.
 - Failures are recorded (`CleanupErrors`, warning) at batch granularity and retried by a later checkpoint's cleanup. If checkpoints never succeed, cleanup never runs and old proposals remain.
@@ -100,7 +100,6 @@ after:  C1(at I256) -> I257 -> I258
 - `runCheckpoint` shares `retryLimit` and the backoff waiter with commits, so a busy notebook can extend the latency of the commit that triggered it by up to the full retry budget.
 - The threshold default is 256 in code (`DefaultCheckpointPacks`), which also bounds how many increments a cold pull downloads while checkpoints succeed; failed checkpoints let the tail grow past it.
 - If the local `MarkShallow` after a successful checkpoint CAS fails, the effort counts as a failure and cleanup is skipped although the manifest is accepted. The next `readRemote` records the boundary, and a later checkpoint's cleanup reclaims the storage.
-- Known bug: a compacting commit whose local `Accept` fails after the CAS never reaches `acceptCompaction`, so its cleanup does not run; in a full space the unreferenced old chain can keep later commits refused as `STORAGE_FULL` until a later cleanup (a checkpoint's or a later compaction's) ([hosted-mode.md](./hosted-mode.md)).
 
 ## Related
 

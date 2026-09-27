@@ -3,8 +3,10 @@ package notebook
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
+	"github.com/baalimago/slivingdoc/internal/storage"
 	"github.com/baalimago/slivingdoc/internal/storage/fake"
 	"github.com/baalimago/slivingdoc/internal/workspace"
 )
@@ -137,4 +139,114 @@ func TestRecoverFailpointReportsFailedResync(t *testing.T) {
 		t.Fatalf("L after self-heal = %q, want the accepted content", got)
 	}
 	pullOK(t, nb)
+}
+
+// recoveryRefusals are the store refusals a resynchronizing read can meet,
+// with the reason, action and retryability the caller must see.
+var recoveryRefusals = []struct {
+	sentinel error
+	reason   Reason
+	action   Action
+}{
+	{storage.ErrAccessDenied, ReasonAccessDenied, ActionOperator},
+	{storage.ErrQuotaExceeded, ReasonStorageFull, ActionOperator},
+	{storage.ErrRequestLimit, ReasonRequestLimit, ActionOperator},
+	{storage.ErrRateLimited, ReasonRateLimited, ActionRetry},
+	{storage.ErrTooLarge, ReasonObjectTooLarge, ActionOperator},
+}
+
+// assertRecoveryRefused checks a RECOVERY_FAILURE whose resynchronization
+// the store refused: the code stays, the refusal's reason, action and
+// message surface, and the report says the directory was not repaired.
+func assertRecoveryRefused(t *testing.T, err error, stage string, reason Reason, action Action, refusal error) {
+	t.Helper()
+	ne := assertErrorCode(t, err, CodeRecoveryFailure)
+	if ne.Reason != reason || ne.Action != action {
+		t.Fatalf("reason/action = %s/%s, want %s/%s", ne.Reason, ne.Action, reason, action)
+	}
+	if ne.Recovery == nil || ne.Recovery.Stage != stage || ne.Recovery.Resynchronized {
+		t.Fatalf("recovery report = %+v, want %s / resynchronized=false", ne.Recovery, stage)
+	}
+	if !errors.Is(ne, refusal) {
+		t.Fatalf("cause = %v, want the refusal", ne.Cause)
+	}
+	if !strings.Contains(ne.Message, "could not resynchronize") || !strings.Contains(ne.Message, "The storage says: slow down") {
+		t.Fatalf("message = %q, want the recovery context and the store's own line", ne.Message)
+	}
+	for _, claim := range []string{"nothing was published", "commit again"} {
+		if strings.Contains(ne.Message, claim) {
+			t.Fatalf("message = %q claims %q, which is false after an accepted CAS", ne.Message, claim)
+		}
+	}
+}
+
+// A store refusal of the resynchronizing read surfaces with its own reason
+// and action on every recovery path: after an accepted CAS
+// (failAfterAccept), after a failed local mutation (applyLocal), and at
+// the entry of the next call (entryRecovery). The local cause stays in the
+// chain, and a P that required recovery keeps requiring it.
+func TestRecoveryResyncRefusalSurfaces(t *testing.T) {
+	for _, tt := range recoveryRefusals {
+		t.Run(string(tt.reason), func(t *testing.T) {
+			refusal := &storage.Refusal{Err: tt.sentinel, Detail: "read current", Message: "slow down"}
+
+			t.Run("after an accepted CAS", func(t *testing.T) {
+				store := fake.New("")
+				triggered := errors.New("injected CAS failure")
+				nb, w, _ := newNotebook(t, nbConfig{store: store, ids: &testIDSource{}, nbFail: &Failpoints{
+					CAS: func() error {
+						store.FailNextKey(fake.OpGet, storage.CurrentKey, refusal)
+						return triggered
+					},
+				}})
+				writeLocal(t, w, map[string]string{"a.md": "v1"})
+				pullOK(t, nb)
+				err := errOnly(nb.Commit(context.Background(), "first"))
+				assertRecoveryRefused(t, err, stageCAS, tt.reason, tt.action, refusal)
+				if !errors.Is(err, triggered) {
+					t.Fatalf("cause = %v, want the injected failure kept", err)
+				}
+			})
+
+			t.Run("after a failed local mutation, then at entry", func(t *testing.T) {
+				store := fake.New("")
+				triggered := errors.New("injected replace failure")
+				var fail bool
+				wsFail := &workspace.Failpoints{Replace: func() error {
+					if !fail {
+						return nil
+					}
+					fail = false
+					store.FailNextKey(fake.OpGet, storage.CurrentKey, refusal)
+					return triggered
+				}}
+				ids := &testIDSource{}
+				nb, w, _ := newNotebook(t, nbConfig{store: store, ids: ids, wsFail: wsFail})
+				pullOK(t, nb)
+				writeLocal(t, w, map[string]string{"a.md": "v1"})
+				commitOK(t, nb, "first")
+
+				other, ow, _ := newNotebook(t, nbConfig{store: store, ids: ids})
+				pullOK(t, other)
+				writeLocal(t, ow, map[string]string{"b.md": "v2"})
+				commitOK(t, other, "second")
+
+				fail = true
+				err := errOnly(nb.Pull(context.Background()))
+				assertRecoveryRefused(t, err, stagePull, tt.reason, tt.action, refusal)
+				if !strings.Contains(err.Error(), triggered.Error()) {
+					t.Fatalf("cause = %v, want the injected failure kept", err)
+				}
+
+				store.FailNextKey(fake.OpGet, storage.CurrentKey, refusal)
+				assertRecoveryRefused(t, errOnly(nb.Pull(context.Background())), stageEntry, tt.reason, tt.action, refusal)
+				if !w.RecoveryRequired() {
+					t.Fatal("a refused resynchronization must keep the recovery flag")
+				}
+
+				assertEntryRecovered(t, errOnly(nb.Pull(context.Background())))
+				pullOK(t, nb)
+			})
+		})
+	}
 }

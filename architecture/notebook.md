@@ -17,7 +17,7 @@ Read this when: wiring a notebook, changing a default or range, adding a metric,
 | `internal/notebook/metrics.go` | `Metrics`: atomic counters and gauges |
 | `internal/notebook/failpoints.go` | `Failpoints{CAS}` |
 | `internal/notebook/backoff.go` | `BackoffWaiter`, `exponentialBackoff.Wait` |
-| `internal/notebook/errors.go` | `Error`, `Code`, `Reason`, `FileReason`, `Action`, constructors (`invalidRequest`, `contentConflict`, `storageIntegrity`, `storageFailure`, `remoteBusy`, `recoveryFailure`), `errCASLost`, `errStaleManifest` |
+| `internal/notebook/errors.go` | `Error`, `Code`, `Reason`, `FileReason`, `Action`, constructors (`invalidRequest`, `contentConflict`, `storageIntegrity`, `storageFailure`, `remoteBusy`, `recoveryFailure`), `errCASLost`, `errManifestRefused`, `errStaleManifest` |
 | `internal/notebook/logger.go` | `WithLogger`, `LoggerFrom` (context logger for checkpoint, cleanup and cache warnings) |
 | `internal/app/service.go` | `Service.notebookFor`: the only production constructor call |
 
@@ -80,7 +80,7 @@ Notebook.Commit(ctx, message) → see commit.md
 
 ### Failpoints (`failpoints.go`)
 
-`Failpoints.CAS` fires after the manifest CAS accepted and before local acceptance. An error there goes through `failAfterAccept` (stage `commit.cas`, `remoteAccepted=yes`). The workspace keeps its own boundary failpoints; see [guarantees.md](./guarantees.md#failpoints).
+`Failpoints.CAS` fires after the manifest CAS accepted and before local acceptance. An error there goes through `failAfterPublish` and `failAfterAccept` (stage `commit.cas`, `remoteAccepted=yes`). The workspace keeps its own boundary failpoints; see [guarantees.md](./guarantees.md#failpoints).
 
 ### Backoff (`backoff.go`)
 
@@ -88,7 +88,7 @@ Notebook.Commit(ctx, message) → see commit.md
 
 ### Errors and recovery (`errors.go`, `notebook.go`)
 
-- Almost every failure is a `*notebook.Error` with `Code`, `Reason`, `Action` (from `actionForPairing`; for `RECOVERY_FAILURE`, `PULL` when resynchronized, else `RETRY`), `Message`, `Files`, optional `Recovery`, and `Cause` (unwrapped for `errors.Is`). Two exceptions come back unwrapped: a workspace error from `applyLocal` raised before the workspace set its recovery flag (never after a proved CAS, which always goes through `failAfterAccept`), and the context error from a cancelled backoff wait. `mcp.MapError` maps the first to `STORAGE_FAILURE`/`INTERNAL` (`RETRY`) and treats cancellation as a protocol error. See [product-contract.md](./product-contract.md).
+- Almost every failure is a `*notebook.Error` with `Code`, `Reason`, `Action` (from `actionForPairing`; for `RECOVERY_FAILURE`, `PULL` when resynchronized, else `RETRY`, or the refusal's action when a store refusal stopped the resynchronization), `Message`, `Files`, optional `Recovery`, and `Cause` (unwrapped for `errors.Is`). Two exceptions come back unwrapped: a workspace error from `applyLocal` raised before the workspace set its recovery flag (never after a proved CAS, which always goes through `failAfterAccept`), and the context error from a cancelled backoff wait. `mcp.MapError` maps the first to `STORAGE_FAILURE`/`INTERNAL` (`RETRY`) and treats cancellation as a protocol error. See [product-contract.md](./product-contract.md).
 - `storageFailure` turns a store refusal cause (`storage.ErrQuotaExceeded`, `ErrRequestLimit`, `ErrRateLimited`, `ErrAccessDenied`, `ErrTooLarge`) into its own reason and message via `storeRefusal`, appending a `storage.Refusal` message after `The storage says:` ([errors.md](./errors.md), [hosted-mode.md](./hosted-mode.md)).
 - `mapLocalError`: workspace `ErrInvalidContent`, `ErrSymlink`, `ErrUnsupportedFile`, `ErrInvalidPath` become `INVALID_REQUEST`/`INVALID_CONTENT` with the offending path from `ScanError`; any other workspace error before mutation is `STORAGE_FAILURE`/`LOCAL_STATE`.
 - `applyLocal(ctx, stage, accepted, fn)` wraps every call that mutates L. It runs `recoverState` and returns `RECOVERY_FAILURE` only when `ws.RecoveryRequired()` shows the flag was already durable; a failure before that (reading the target tree, staging; a cancelled request stays a protocol error; the operation lock is already held, so no lock wait fails here) returns the plain error. `failAfterAccept` handles every failure between a proved CAS and the end of local acceptance and always runs `recoverState` and returns `RECOVERY_FAILURE`. See [guarantees.md](./guarantees.md).

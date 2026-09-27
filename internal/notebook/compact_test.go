@@ -9,6 +9,7 @@ import (
 
 	"github.com/baalimago/slivingdoc/internal/storage"
 	"github.com/baalimago/slivingdoc/internal/storage/fake"
+	"github.com/baalimago/slivingdoc/internal/workspace"
 )
 
 // A full space refuses the increment of a commit that deletes notes. The
@@ -287,4 +288,123 @@ func (s *lossyStore) ReadObject(ctx context.Context, key string) (io.ReadCloser,
 		return nil, storage.ObjectInfo{}, storage.ErrTransport
 	}
 	return s.ObjectStore.ReadObject(ctx, key)
+}
+
+// checkpointKeys lists the stored checkpoint packs.
+func checkpointKeys(t *testing.T, store storage.ObjectStore) []string {
+	t.Helper()
+	var keys []string
+	if err := store.ListObjects(context.Background(), "packs/checkpoints/", func(key string) error {
+		keys = append(keys, key)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return keys
+}
+
+// A manifest write the store refused was definitely not accepted, whatever
+// reason the refusal gives the caller, so the compaction deletes its own
+// checkpoint pack: in the full space it would otherwise keep blocking the
+// next compaction.
+func TestCompactionRefusedManifestWriteDeletesItsCheckpoint(t *testing.T) {
+	for _, tt := range []struct {
+		sentinel error
+		reason   Reason
+	}{
+		{storage.ErrRateLimited, ReasonRateLimited},
+		{storage.ErrQuotaExceeded, ReasonStorageFull},
+		{storage.ErrRequestLimit, ReasonRequestLimit},
+		{storage.ErrAccessDenied, ReasonAccessDenied},
+		{storage.ErrTooLarge, ReasonObjectTooLarge},
+		{errors.New("server error"), ReasonManifestWrite},
+	} {
+		t.Run(string(tt.reason), func(t *testing.T) {
+			store := fake.New("")
+			nb, w, _ := newNotebook(t, nbConfig{store: store, ids: &testIDSource{}})
+			big := strings.Repeat("large note body\n", 400)
+
+			pullOK(t, nb)
+			writeLocal(t, w, map[string]string{"a.md": "keep\n", "b.md": big})
+			commitOK(t, nb, "first")
+			before := readManifest(t, store)
+
+			removeLocal(t, w, "b.md")
+			store.FailNext(fake.OpPut, storage.ErrQuotaExceeded)
+			store.FailNext(fake.OpReplace, &storage.Refusal{Err: tt.sentinel, Detail: "replace current"})
+			ne := assertErrorCode(t, errOnly(nb.Commit(context.Background(), "free space")), CodeStorageFailure)
+			if ne.Reason != tt.reason {
+				t.Fatalf("reason = %s, want %s", ne.Reason, tt.reason)
+			}
+			if m := readManifest(t, store); m.Generation != before.Generation {
+				t.Fatalf("generation = %d, want %d unchanged", m.Generation, before.Generation)
+			}
+			keys := checkpointKeys(t, store)
+			if len(keys) != 1 || keys[0] != before.Checkpoint.Key.String() {
+				t.Fatalf("checkpoint packs = %v, want only the accepted %s", keys, before.Checkpoint.Key)
+			}
+		})
+	}
+}
+
+// A compacting commit whose local acceptance fails after the manifest
+// accepted it still frees the space: the replaced chain is unreferenced
+// whatever happens locally, so its cleanup runs, and the call reports
+// RECOVERY_FAILURE with the remote acceptance known.
+func TestCompactionCleansUpWhenLocalAcceptFails(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		stage string
+		cas   bool
+	}{
+		{"accept fails", stageCommit, false},
+		{"failure after the CAS", stageCAS, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			store := fake.New("")
+			triggered := errors.New("injected failure after acceptance")
+			var fail bool
+			once := func() error {
+				if !fail {
+					return nil
+				}
+				fail = false
+				return triggered
+			}
+			cfg := nbConfig{store: store, ids: &testIDSource{}}
+			if tt.cas {
+				cfg.nbFail = &Failpoints{CAS: once}
+			} else {
+				cfg.wsFail = &workspace.Failpoints{Stage: once}
+			}
+			nb, w, _ := newNotebook(t, cfg)
+			big := strings.Repeat("large note body\n", 400)
+
+			pullOK(t, nb)
+			writeLocal(t, w, map[string]string{"a.md": "keep\n", "b.md": big})
+			commitOK(t, nb, "first")
+			writeLocal(t, w, map[string]string{"c.md": big + "more\n"})
+			commitOK(t, nb, "second")
+
+			removeLocal(t, w, "b.md")
+			removeLocal(t, w, "c.md")
+			store.FailNext(fake.OpPut, storage.ErrQuotaExceeded)
+			fail = true
+			ne := assertErrorCode(t, errOnly(nb.Commit(context.Background(), "free space")), CodeRecoveryFailure)
+			if ne.Recovery == nil || ne.Recovery.Stage != tt.stage || ne.Recovery.RemoteAccepted != RemoteAcceptedYes {
+				t.Fatalf("recovery report = %+v, want %s / yes", ne.Recovery, tt.stage)
+			}
+
+			m := readManifest(t, store)
+			if len(m.Increments) != 0 || len(m.Retained) != 0 {
+				t.Fatalf("manifest keeps %d increments and %d retained, want the compaction accepted", len(m.Increments), len(m.Retained))
+			}
+			if got := store.ObjectCount(); got != 2 {
+				t.Fatalf("objects = %d, want current and the new checkpoint: the replaced chain must be cleaned up", got)
+			}
+			if got := localSnapshot(t, w); len(got) != 1 || got["a.md"] != "keep\n" {
+				t.Fatalf("L after recovery = %v, want only a.md", got)
+			}
+		})
+	}
 }

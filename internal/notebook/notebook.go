@@ -246,7 +246,7 @@ func (n *Notebook) holdWorkspace(ctx context.Context) (context.Context, func(), 
 func (n *Notebook) entryRecovery(ctx context.Context) error {
 	report, err := n.recoverState(ctx, stageEntry, RemoteAcceptedUnknown)
 	if err != nil {
-		return recoveryFailure(report.public(), err)
+		return recoveryFailure(report.public(), nil, err)
 	}
 	return entryRecovered(report.public(), errEntryRecovered)
 }
@@ -264,8 +264,8 @@ func (n *Notebook) applyLocal(ctx context.Context, stage string, accepted Remote
 	if !n.ws.RecoveryRequired() {
 		return err
 	}
-	report, _ := n.recoverState(ctx, stage, accepted)
-	return recoveryFailure(report.public(), err)
+	report, rerr := n.recoverState(ctx, stage, accepted)
+	return recoveryFailure(report.public(), err, rerr)
 }
 
 // failAfterAccept handles a failure between the proved manifest acceptance
@@ -274,8 +274,8 @@ func (n *Notebook) applyLocal(ctx context.Context, stage string, accepted Remote
 // RECOVERY_FAILURE even when resynchronization succeeds
 // (architecture/guarantees.md).
 func (n *Notebook) failAfterAccept(ctx context.Context, stage string, cause error) error {
-	report, _ := n.recoverState(ctx, stage, RemoteAcceptedYes)
-	return recoveryFailure(report.public(), cause)
+	report, rerr := n.recoverState(ctx, stage, RemoteAcceptedYes)
+	return recoveryFailure(report.public(), cause, rerr)
 }
 
 // scanErrorFiles names the offending file of a scan rejection when known,

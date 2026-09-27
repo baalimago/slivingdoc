@@ -99,7 +99,7 @@ Rules the import graph follows (verified by `grep` over non-test imports):
 - `git` imports no internal package. Everything above it speaks `git.OID`, `git.Snapshot`, `git.Repository`.
 - `git2` imports only `git`. In production only `main.go` imports it; tests in `integrationtest`, `cmd/pull`, `cmd/commit`, `app`, `notebook`, and `workspace` import it for native runs. Every other package receives a `git.Engine`.
 - `s3store` imports only `storage`, and only `app` (`realStoreFactory`, the default when `ProcessOptions.StoreFactory` is nil) and `integrationtest` import it.
-- `httpstore` imports only `storage` (and the standard library); only `app` (`realStoreFactory`, `validateHosted`) imports it in production. `httpstore/gatewaytest` imports `storage` and `storage/fake` and is imported only by tests (`httpstore`, `app` in `hosted_test.go`, `integrationtest`).
+- `httpstore` imports only `storage` (and the standard library); only `app` (`realStoreFactory`, `validateHosted`) imports it in production. `httpstore/gatewaytest` imports `storage` and `storage/fake` and is imported only by tests (`httpstore`, `app` and `notebook` in their `hosted_test.go`, `integrationtest`).
 - `notebook` imports `workspace`, `git`, `storage`; it never imports `mcp` or `app`.
 - `workspace` imports `git` and `strictjson`; it never reads remote state.
 - `storage` imports `git` (for `git.OID` in the manifest) and `strictjson`.

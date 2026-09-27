@@ -179,7 +179,7 @@ func (n *Notebook) attemptPublication(ctx context.Context, message string, baseT
 
 	if fp := n.failpoints; fp != nil && fp.CAS != nil {
 		if err := fp.CAS(); err != nil {
-			return false, Result{}, n.failAfterAccept(ctx, stageCAS, err)
+			return false, Result{}, n.failAfterPublish(ctx, stageCAS, proposal, err)
 		}
 	}
 
@@ -187,7 +187,7 @@ func (n *Notebook) attemptPublication(ctx context.Context, message string, baseT
 	// is RECOVERY_FAILURE, including one before the workspace marked
 	// recovery (architecture/guarantees.md).
 	if err := n.ws.Accept(ctx, proposal.baseline); err != nil {
-		return false, Result{}, n.failAfterAccept(ctx, stageCommit, err)
+		return false, Result{}, n.failAfterPublish(ctx, stageCommit, proposal, err)
 	}
 
 	// The commit is accepted. Checkpoint scheduling is opportunistic:
@@ -391,6 +391,20 @@ func (n *Notebook) buildCompactingProposal(remote remoteState, inc proposal) (pr
 	}, true, nil
 }
 
+// failAfterPublish handles a local failure after the manifest accepted p.
+// The replaced chain of an accepted compacting proposal is unreferenced
+// whatever happens locally, so its cleanup runs here too: the space stays
+// full until it does. Cleanup is best effort and never changes the
+// RECOVERY_FAILURE result; the checkpoint boundary needs no marking,
+// because the recovery's resynchronizing read records it.
+func (n *Notebook) failAfterPublish(ctx context.Context, stage string, p proposal, cause error) error {
+	err := n.failAfterAccept(ctx, stage, cause)
+	if p.compacting {
+		n.cleanup(ctx, p.key.Generation)
+	}
+	return err
+}
+
 // acceptCompaction finishes an accepted compacting commit: it records the
 // checkpoint boundary and removes the packs the manifest no longer
 // references. Both are best effort, like an opportunistic checkpoint: a
@@ -414,9 +428,7 @@ func (n *Notebook) acceptCompaction(ctx context.Context, p proposal) {
 // follow-up read also failed), so the pack stays for a later cleanup.
 // Deletion is best effort.
 func (n *Notebook) discardCompaction(ctx context.Context, p proposal, cause error) {
-	var e *Error
-	definite := errors.Is(cause, errCASLost) || (errors.As(cause, &e) && e.Reason == ReasonManifestWrite)
-	if !definite {
+	if !errors.Is(cause, errCASLost) && !errors.Is(cause, errManifestRefused) {
 		return
 	}
 	if err := n.store.DeleteObjects(ctx, []string{p.key.String()}); err != nil {
@@ -466,7 +478,10 @@ func (n *Notebook) publish(ctx context.Context, remote remoteState, p proposal) 
 		}
 		return storageFailure(ReasonPublicationUnproven, err, "manifest acceptance cannot be proved; the proposal is not republished")
 	default:
-		return storageFailure(ReasonManifestWrite, err, "manifest CAS failed")
+		// The store answered and refused the write, so the manifest
+		// definitely did not accept the proposal. storageFailure may replace
+		// the reason with a store refusal's; the sentinel keeps the fact.
+		return storageFailure(ReasonManifestWrite, fmt.Errorf("%w: %w", errManifestRefused, err), "manifest CAS failed")
 	}
 }
 

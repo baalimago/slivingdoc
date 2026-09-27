@@ -115,6 +115,65 @@ func TestActionForRecoveryReport(t *testing.T) {
 	}
 }
 
+// TestActionForRecoveryRefusal checks that a RECOVERY_FAILURE carrying a
+// store refusal's reason takes the refusal's action, whatever the report.
+func TestActionForRecoveryRefusal(t *testing.T) {
+	for _, tt := range recoveryRefusals {
+		t.Run(string(tt.reason), func(t *testing.T) {
+			got, err := actionFor(CodeRecoveryFailure, tt.reason, &RecoveryReport{Resynchronized: true})
+			if err != nil {
+				t.Fatalf("actionFor(RECOVERY_FAILURE, %s) unexpected error: %v", tt.reason, err)
+			}
+			if got != tt.action {
+				t.Fatalf("actionFor(RECOVERY_FAILURE, %s) = %s, want %s", tt.reason, got, tt.action)
+			}
+		})
+	}
+}
+
+// TestRecoveryRefusalMessagesCoverEveryRefusal checks every refusal reason
+// has a recovery message, and that none claims a publication outcome.
+func TestRecoveryRefusalMessagesCoverEveryRefusal(t *testing.T) {
+	for _, tt := range recoveryRefusals {
+		t.Run(string(tt.reason), func(t *testing.T) {
+			ne := assertErrorCode(t, recoveryFailure(RecoveryReport{}, nil, tt.sentinel), CodeRecoveryFailure)
+			if ne.Reason != tt.reason {
+				t.Fatalf("reason = %s, want %s", ne.Reason, tt.reason)
+			}
+			msg, ok := recoveryRefusalMessages[tt.reason]
+			if !ok || msg == "" || !strings.HasSuffix(ne.Message, msg) {
+				t.Fatalf("message = %q, want it to end with the recovery message %q", ne.Message, msg)
+			}
+			for _, claim := range []string{"published", "commit again"} {
+				if strings.Contains(ne.Message, claim) {
+					t.Fatalf("message = %q claims %q", ne.Message, claim)
+				}
+			}
+		})
+	}
+	if len(recoveryRefusalMessages) != len(recoveryRefusals) {
+		t.Fatalf("recovery messages = %d, want one per refusal reason (%d)", len(recoveryRefusalMessages), len(recoveryRefusals))
+	}
+}
+
+// TestRecoveryFailureKeepsBothCauses checks the resynchronization failure
+// joins the local cause, and that a failure other than a store refusal
+// keeps LOCAL_MUTATION_FAILED.
+func TestRecoveryFailureKeepsBothCauses(t *testing.T) {
+	cause := errors.New("local")
+	resync := errors.New("resync")
+	ne := assertErrorCode(t, recoveryFailure(RecoveryReport{}, cause, resync), CodeRecoveryFailure)
+	if ne.Reason != ReasonLocalMutationFailed || ne.Action != ActionRetry {
+		t.Fatalf("reason/action = %s/%s, want LOCAL_MUTATION_FAILED/RETRY", ne.Reason, ne.Action)
+	}
+	if !errors.Is(ne, cause) || !errors.Is(ne, resync) {
+		t.Fatalf("cause = %v, want both failures", ne.Cause)
+	}
+	if entry := assertErrorCode(t, recoveryFailure(RecoveryReport{}, nil, resync), CodeRecoveryFailure); entry.Cause != resync {
+		t.Fatalf("entry cause = %v, want the resynchronization failure itself", entry.Cause)
+	}
+}
+
 // TestErrorConstructorsCarryReasonAndAction checks every constructor sets Reason
 // and Action.
 func TestErrorConstructorsCarryReasonAndAction(t *testing.T) {
@@ -136,8 +195,8 @@ func TestErrorConstructorsCarryReasonAndAction(t *testing.T) {
 		{"storageIntegrity", storageIntegrity(ReasonEngineFailed, cause, "merge failed"), CodeStorageIntegrity, ReasonEngineFailed, ActionOperator},
 		{"storageFailure", storageFailure(ReasonManifestRead, cause, "read current manifest"), CodeStorageFailure, ReasonManifestRead, ActionRetry},
 		{"remoteBusy", remoteBusy("exhausted"), CodeRemoteBusy, ReasonRetriesExhausted, ActionRetry},
-		{"recoveryFailure resynchronized", recoveryFailure(RecoveryReport{Resynchronized: true}, cause), CodeRecoveryFailure, ReasonLocalMutationFailed, ActionPull},
-		{"recoveryFailure not resynchronized", recoveryFailure(RecoveryReport{Resynchronized: false}, cause), CodeRecoveryFailure, ReasonLocalMutationFailed, ActionRetry},
+		{"recoveryFailure resynchronized", recoveryFailure(RecoveryReport{Resynchronized: true}, cause, nil), CodeRecoveryFailure, ReasonLocalMutationFailed, ActionPull},
+		{"recoveryFailure not resynchronized", recoveryFailure(RecoveryReport{Resynchronized: false}, cause, nil), CodeRecoveryFailure, ReasonLocalMutationFailed, ActionRetry},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

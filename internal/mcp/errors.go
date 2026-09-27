@@ -175,20 +175,26 @@ func redactValues(s string) string {
 	return strings.TrimSpace(absolutePathRE.ReplaceAllString(Redact(s), "${1}"+redacted))
 }
 
-// retryable reports whether a notebook error permits a retry. Storage
-// failures do, except the store's refusals that repeating cannot change:
-// a full space, a used-up request allowance, denied credentials, and an
-// oversized object.
+// retryable reports whether a notebook error permits a retry. Storage and
+// recovery failures do, except when a store refusal that repeating cannot
+// change caused them: a full space, a used-up request allowance, denied
+// credentials, and an oversized object.
 func retryable(code notebook.Code, reason notebook.Reason) bool {
 	switch code {
-	case notebook.CodeStorageFailure:
-		switch reason {
-		case notebook.ReasonStorageFull, notebook.ReasonRequestLimit, notebook.ReasonAccessDenied, notebook.ReasonObjectTooLarge:
-			return false
-		default:
-			return true
-		}
-	case notebook.CodeRemoteBusy, notebook.CodeRecoveryFailure:
+	case notebook.CodeStorageFailure, notebook.CodeRecoveryFailure:
+		return !permanentRefusal(reason)
+	case notebook.CodeRemoteBusy:
+		return true
+	default:
+		return false
+	}
+}
+
+// permanentRefusal reports whether reason names a store refusal a retry
+// cannot change.
+func permanentRefusal(reason notebook.Reason) bool {
+	switch reason {
+	case notebook.ReasonStorageFull, notebook.ReasonRequestLimit, notebook.ReasonAccessDenied, notebook.ReasonObjectTooLarge:
 		return true
 	default:
 		return false

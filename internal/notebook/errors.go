@@ -120,8 +120,10 @@ type codeReason struct {
 }
 
 // actionForPairing is the code/reason to action table in
-// architecture/product-contract.md; CodeRecoveryFailure branches on the
-// recovery report instead.
+// architecture/product-contract.md. actionFor handles CodeRecoveryFailure
+// itself: a store refusal reason (isRefusalReason) takes the
+// CodeStorageFailure pairing's action, and every other reason branches on
+// the recovery report.
 var actionForPairing = map[codeReason]Action{
 	{CodeInvalidRequest, ReasonMalformedInput}:      ActionFixInput,
 	{CodeInvalidRequest, ReasonPathOutsideRoot}:     ActionFixInput,
@@ -160,6 +162,11 @@ var errUnknownActionPairing = errors.New("notebook: programming error: no action
 // pairing returns ActionRetry and errUnknownActionPairing.
 func actionFor(code Code, reason Reason, report *RecoveryReport) (Action, error) {
 	if code == CodeRecoveryFailure {
+		if isRefusalReason(reason) {
+			// A store refusal stopped the resynchronization: the caller's
+			// next step is the refusal's, as for a STORAGE_FAILURE.
+			return actionFor(CodeStorageFailure, reason, nil)
+		}
 		if report != nil && report.Resynchronized {
 			return ActionPull, nil
 		}
@@ -226,6 +233,11 @@ func (e *Error) Unwrap() error { return e.Cause }
 // the race; commit maps it to a retry or REMOTE_BUSY at the bound.
 var errCASLost = errors.New("notebook: manifest CAS lost")
 
+// errManifestRefused marks a manifest write the store answered with a
+// refusal: the manifest definitely did not accept the proposal, unlike a
+// transport failure, whose acceptance is unknown.
+var errManifestRefused = errors.New("notebook: manifest write refused")
+
 // errStaleManifest is the internal signal that a referenced pack
 // disappeared during readRemote; the reader re-reads current and restarts
 // unless the manifest is unchanged.
@@ -264,17 +276,60 @@ func storageIntegrity(reason Reason, cause error, format string, args ...any) er
 // the operation.
 func storageFailure(reason Reason, cause error, format string, args ...any) error {
 	message := fmt.Sprintf(format, args...)
-	if r, m, ok := storeRefusal(cause); ok {
+	if r, m, ok := refusalMessage(cause); ok {
 		reason, message = r, m
-		var refusal *storage.Refusal
-		if errors.As(cause, &refusal) && refusal.Message != "" {
-			message += ". The storage says: " + refusal.Message
-		}
 	}
 	action, _ := actionFor(CodeStorageFailure, reason, nil)
 	return &Error{
 		Code: CodeStorageFailure, Reason: reason, Action: action,
 		Message: message, Cause: cause,
+	}
+}
+
+// refusalMessage is storeRefusal with the store's own sanitized line
+// appended to the message when the refusal carries one.
+func refusalMessage(cause error) (Reason, string, bool) {
+	reason, message, ok := storeRefusal(cause)
+	if !ok {
+		return "", "", false
+	}
+	return reason, message + storageSays(cause), true
+}
+
+// storageSays is the store's own sanitized line of a refusal, ready to
+// append to a message, or "" when the refusal carries none.
+func storageSays(cause error) string {
+	var refusal *storage.Refusal
+	if errors.As(cause, &refusal) && refusal.Message != "" {
+		return ". The storage says: " + refusal.Message
+	}
+	return ""
+}
+
+// recoveryRefusalMessages tell the caller why the store refused the read
+// that resynchronizes the notebook directory. Unlike storeRefusal's
+// messages they make no claim about publication: after an accepted CAS the
+// commit was published, and at entry acceptance is unknown.
+var recoveryRefusalMessages = map[Reason]string{
+	ReasonStorageFull: "the storage refused the read that repairs the notebook directory because the account that owns this space is full; " +
+		"its owner must add storage (for slivingdoc.dev: upgrade at https://slivingdoc.dev) or delete notes, then pull",
+	ReasonRequestLimit: "the storage refused the read that repairs the notebook directory because the account that owns this space used its " +
+		"request allowance for the month; its owner can raise the allowance (for slivingdoc.dev: upgrade at https://slivingdoc.dev) " +
+		"or wait until it resets on the first of the month (UTC), then pull",
+	ReasonRateLimited: "the storage is slowing down requests from this account, so the notebook directory could not be repaired yet; wait, then pull",
+	ReasonAccessDenied: "the storage refused the read that repairs the notebook directory: the token is missing, revoked, read-only, " +
+		"or not granted this space, the space does not exist, or --endpoint does not point at the storage API. " +
+		"Check SLIVINGDOC_TOKEN, --bucket and --endpoint, then pull",
+	ReasonObjectTooLarge: "the storage refused the read that repairs the notebook directory as larger than it serves; an operator must check the storage",
+}
+
+// isRefusalReason reports whether reason is one storeRefusal produces.
+func isRefusalReason(reason Reason) bool {
+	switch reason {
+	case ReasonStorageFull, ReasonRequestLimit, ReasonRateLimited, ReasonAccessDenied, ReasonObjectTooLarge:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -294,8 +349,9 @@ func storeRefusal(cause error) (Reason, string, bool) {
 	case errors.Is(cause, storage.ErrRateLimited):
 		return ReasonRateLimited, "the storage is slowing down requests from this account; wait, then retry", true
 	case errors.Is(cause, storage.ErrAccessDenied):
-		return ReasonAccessDenied, "the storage refused the credentials: the token is missing, revoked, " +
-			"read-only, or not granted this space. Check SLIVINGDOC_TOKEN and --bucket", true
+		return ReasonAccessDenied, "the storage refused the request: the token is missing, revoked, read-only, " +
+			"or not granted this space, the space does not exist, or --endpoint does not point at the storage API. " +
+			"Check SLIVINGDOC_TOKEN, --bucket and --endpoint", true
 	case errors.Is(cause, storage.ErrTooLarge):
 		return ReasonObjectTooLarge, "the notebook data to upload is larger than the storage accepts in one object; " +
 			"nothing was published", true
@@ -311,15 +367,31 @@ func remoteBusy(format string, args ...any) error {
 	return &Error{Code: CodeRemoteBusy, Reason: reason, Action: action, Message: fmt.Sprintf(format, args...)}
 }
 
-// recoveryFailure builds a RECOVERY_FAILURE error carrying the report and
-// the underlying cause.
-func recoveryFailure(report RecoveryReport, cause error) error {
-	const reason = ReasonLocalMutationFailed
+// recoveryFailure builds a RECOVERY_FAILURE error carrying the report, the
+// underlying cause, and the failure of the resynchronization, if any. A
+// nil cause means the resynchronization failure is the cause itself (entry
+// recovery). When the store refused the resynchronizing read, the error
+// keeps its code but takes the refusal's reason and action and a
+// recovery-specific message (recoveryRefusalMessages), so the caller sees
+// why recovery could not finish (architecture/guarantees.md).
+func recoveryFailure(report RecoveryReport, cause, resyncErr error) error {
+	reason := ReasonLocalMutationFailed
+	message := "unexpected failure after local mutation started; recovery ran"
+	if r, _, ok := storeRefusal(resyncErr); ok {
+		reason = r
+		message = "unexpected failure after local mutation started; recovery could not resynchronize the notebook directory: " +
+			recoveryRefusalMessages[r] + storageSays(resyncErr)
+	}
+	switch {
+	case cause == nil:
+		cause = resyncErr
+	case resyncErr != nil:
+		cause = errors.Join(cause, resyncErr)
+	}
 	action, _ := actionFor(CodeRecoveryFailure, reason, &report)
 	return &Error{
 		Code: CodeRecoveryFailure, Reason: reason, Action: action,
-		Message:  "unexpected failure after local mutation started; recovery ran",
-		Recovery: &report, Cause: cause,
+		Message: message, Recovery: &report, Cause: cause,
 	}
 }
 
