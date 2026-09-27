@@ -504,7 +504,8 @@ Whoever enters a code first decides it, so before anything is stored the
 login shows who approved it, the space and its owner, the access, the
 storage endpoint and the site. On a terminal it then asks `Store this
 login? [y/N]`; any answer but `y`, or Ctrl-C, revokes the new token and
-stores nothing. Without a terminal (a script) nothing is asked, so nobody
+stores nothing (a second Ctrl-C while that revocation runs, up to 10
+seconds, is ignored). Without a terminal (a script) nothing is asked, so nobody
 confirms who approved a first login; check the `Approved by` line. A login that
 would replace a stored login, or with `--default` a default login, that
 another account approved is refused and its token revoked, unless
@@ -558,8 +559,9 @@ log in again. The token is read once when a process starts, so restart
 `serve` (your MCP host) after logging in again. Every process logs, at
 Info on stderr, which store it chose: `storage selected backend=hosted
 endpoint=... space=... token=login` (or `env`, or `backend=s3 ...
-token=none`, with `(AWS_ENDPOINT_URL)` after an endpoint that came from
-that variable).
+token=none`; an S3 endpoint that comes from `AWS_ENDPOINT_URL_S3` or
+`AWS_ENDPOINT_URL` is logged as scheme and host with the variable's name,
+and none at all as `aws-default (SDK: env or profile)`).
 
 ### Choosing the storage
 
@@ -575,9 +577,11 @@ stored login: any of
 `~/.aws/credentials` or `~/.aws/config`. Then, in order:
 
 1. `SLIVINGDOC_TOKEN` is set: with the `--endpoint` flag,
-   `AWS_ENDPOINT_URL` or `AWS_ENDPOINT_URL_S3` (the settings that would
-   send it to an S3 host), startup is refused, naming them; pass
-   `--storage hosted` to send the token or `--storage s3`. Otherwise
+   `AWS_ENDPOINT_URL` or `AWS_ENDPOINT_URL_S3` (you pointed S3 at a
+   host), startup is refused, naming them, rather than guess the store;
+   pass `--storage hosted` to use hosted storage (the token goes only to
+   the hosted endpoint; hosted mode never reads the AWS endpoint
+   variables) or `--storage s3`. Otherwise
    hosted storage with that token, whatever other S3 settings exist: a
    region, AWS credentials and `~/.aws` files are not read in hosted mode. It
    wins over a stored login, so a read-only token in one MCP entry and a

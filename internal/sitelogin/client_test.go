@@ -412,6 +412,31 @@ func TestWaitReportsTheLastFailureAtExpiry(t *testing.T) {
 	}
 }
 
+func TestWaitHintsWhenStoppedAfterALostPoll(t *testing.T) {
+	site := sitetest.Start(t)
+	site.Next(sitetest.Script{Issue: issue()})
+	sleeps := 0
+	stop := func(ctx context.Context, _ time.Duration) error {
+		sleeps++
+		if sleeps > 1 {
+			return context.Canceled
+		}
+		return nil
+	}
+	client, err := New(Config{Site: site.URL(), Sleep: stop, Client: &flakyDoer{failures: 1}})
+	if err != nil {
+		t.Fatalf("New() = %v", err)
+	}
+	a, err := client.Start(context.Background(), StartRequest{Access: credentials.AccessWrite})
+	if err != nil {
+		t.Fatalf("Start() = %v", err)
+	}
+	_, err = client.Wait(context.Background(), a)
+	if !errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), TokenHint) {
+		t.Fatalf("Wait() = %v, want the stop with the hint: the unanswered poll may have claimed the code", err)
+	}
+}
+
 func TestWaitHintsAtExpiryAfterALostPoll(t *testing.T) {
 	site := sitetest.Start(t)
 	site.Next(sitetest.Script{Final: "expired_token"})

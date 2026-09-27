@@ -263,7 +263,7 @@ func TestScenarioStorageSelection(t *testing.T) {
 			name: "the token and an S3 endpoint flag are ambiguous",
 			env:  with("SLIVINGDOC_TOKEN="+hostedToken, "SLIVINGDOC_BUCKET="+hostedSpace),
 			args: []string{"--endpoint", closedS3},
-			want: []string{"SLIVINGDOC_TOKEN and an S3 endpoint (--endpoint)", "--storage hosted to send the token"},
+			want: []string{"SLIVINGDOC_TOKEN and an S3 endpoint (--endpoint)", "--storage hosted to use hosted storage (the token goes only to the hosted endpoint)"},
 		},
 		{
 			name: "the token and an AWS endpoint variable are ambiguous",

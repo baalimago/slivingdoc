@@ -219,9 +219,11 @@ defaults to your login's space. The most common flags:
     notebook directory and removes it at shutdown; the notes themselves live
     in the bucket. `pull` and `commit` default to the working directory.
 
-[^2]: With `SLIVINGDOC_TOKEN` set, `--endpoint` names the hosted API instead:
-    `SLIVINGDOC_ENDPOINT`, default `https://api.slivingdoc.dev`. A stored
-    login always uses the endpoint it was issued for.
+[^2]: In hosted mode `--endpoint` names the hosted API instead:
+    `SLIVINGDOC_ENDPOINT`, default `https://api.slivingdoc.dev`. Under the
+    default `--storage auto`, an `--endpoint` flag beside `SLIVINGDOC_TOKEN`
+    refuses to start; pass `--storage hosted` to mean the hosted API. A
+    stored login always uses the endpoint it was issued for.
 
 [^3]: `auto` uses `SLIVINGDOC_TOKEN`, else a `slivingdoc login` for the
     space, else S3, and refuses when S3 settings make that a guess (see

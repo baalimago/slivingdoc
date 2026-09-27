@@ -515,22 +515,25 @@ func realStoreFactory(ctx context.Context, cfg config) (storage.ObjectStore, err
 	return store, nil
 }
 
-// withoutUserinfo drops credentials written into an endpoint URL before
-// it is logged; a value that does not parse is logged as unparsable.
-func withoutUserinfo(raw string) string {
+// endpointForLog is an endpoint URL reduced to its scheme and host, so
+// neither user information nor a path reaches the log; a value without a
+// host (unparsable, or "user:secret@host" with no scheme, which parses as
+// an opaque URL) is logged as unparsable.
+func endpointForLog(raw string) string {
 	u, err := url.Parse(raw)
-	if err != nil {
+	if err != nil || u.Host == "" {
 		return "an unparsable URL"
 	}
-	u.User = nil
-	return u.String()
+	return u.Scheme + "://" + u.Host
 }
 
 // logStorage records the store the configuration chose, so an operator
 // can see at startup whether a stored login or SLIVINGDOC_TOKEN turned the
 // process hosted (architecture/login.md). It never logs the token. An S3
-// process with no endpoint of its own names AWS_ENDPOINT_URL when that is
-// set, since the AWS SDK then sends every request there.
+// process with no endpoint of its own names the variable the AWS SDK will
+// read instead (AWS_ENDPOINT_URL_S3, then AWS_ENDPOINT_URL: an explicitly
+// empty --endpoint does not clear them), and otherwise says the SDK may
+// still take one from the environment or a shared profile.
 func logStorage(logger *slog.Logger, cfg config, env map[string]string) {
 	backend, source, endpoint := "s3", "none", cfg.endpoint
 	if cfg.hosted() {
@@ -540,11 +543,14 @@ func logStorage(logger *slog.Logger, cfg config, env map[string]string) {
 			source = "login"
 		}
 	}
-	switch {
-	case endpoint == "" && env["AWS_ENDPOINT_URL"] != "":
-		endpoint = withoutUserinfo(env["AWS_ENDPOINT_URL"]) + " (AWS_ENDPOINT_URL)"
-	case endpoint == "":
-		endpoint = "aws-default"
+	if endpoint == "" {
+		endpoint = "aws-default (SDK: env or profile)"
+		for _, name := range []string{"AWS_ENDPOINT_URL_S3", "AWS_ENDPOINT_URL"} {
+			if env[name] != "" {
+				endpoint = endpointForLog(env[name]) + " (" + name + ")"
+				break
+			}
+		}
 	}
 	logger.Info("storage selected", "backend", backend, "endpoint", endpoint, "space", cfg.bucket, "token", source)
 }

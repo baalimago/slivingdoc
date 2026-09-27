@@ -352,14 +352,21 @@ func TestLogStorageNamesTheStoreAndItsSource(t *testing.T) {
 		env  map[string]string
 		want []string
 	}{
-		{"s3 at the AWS default", config{bucket: "b"}, nil, []string{"backend=s3", "endpoint=aws-default", "token=none"}},
+		{"s3 at the AWS default", config{bucket: "b"}, nil, []string{"backend=s3", `endpoint="aws-default (SDK: env or profile)"`, "token=none"}},
 		{
 			"s3 at AWS_ENDPOINT_URL",
 			config{bucket: "b"},
-			map[string]string{"AWS_ENDPOINT_URL": "https://user:secret@minio.local"},
+			map[string]string{"AWS_ENDPOINT_URL": "https://user:secret@minio.local/path"},
 			[]string{"backend=s3", `endpoint="https://minio.local (AWS_ENDPOINT_URL)"`},
 		},
+		{
+			"s3 at AWS_ENDPOINT_URL_S3 despite an empty --endpoint",
+			config{bucket: "b"},
+			map[string]string{"AWS_ENDPOINT_URL_S3": "https://s3.local", "AWS_ENDPOINT_URL": "https://minio.local"},
+			[]string{`endpoint="https://s3.local (AWS_ENDPOINT_URL_S3)"`},
+		},
 		{"s3 at a bad AWS_ENDPOINT_URL", config{bucket: "b"}, map[string]string{"AWS_ENDPOINT_URL": "http://[::1"}, []string{`endpoint="an unparsable URL (AWS_ENDPOINT_URL)"`}},
+		{"s3 at an AWS_ENDPOINT_URL without a scheme", config{bucket: "b"}, map[string]string{"AWS_ENDPOINT_URL": "user:secret@minio.local"}, []string{`endpoint="an unparsable URL (AWS_ENDPOINT_URL)"`}},
 		{"s3 at its own endpoint", config{bucket: "b", endpoint: "https://s3.local"}, map[string]string{"AWS_ENDPOINT_URL": "https://minio.local"}, []string{"endpoint=https://s3.local"}},
 		{"hosted through the environment", config{bucket: "b", token: "t", endpoint: DefaultHostedEndpoint, tokenOrigin: originEnv}, nil, []string{"backend=hosted", "token=env"}},
 		{"hosted through a login", config{bucket: "b", token: "t", endpoint: DefaultHostedEndpoint, tokenOrigin: originLogin}, nil, []string{"backend=hosted", "token=login"}},

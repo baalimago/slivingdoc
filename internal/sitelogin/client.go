@@ -338,9 +338,10 @@ func (c *Client) Wait(ctx context.Context, a Approval) (Issued, error) {
 	var failures int
 	var lastFailure error
 	// lost is set once a poll went unanswered: that poll may have been the
-	// one the site issued the token to, so a later expiry carries the hint.
+	// one the site issued the token to, so a later expiry or a stop during
+	// a later sleep carries the hint.
 	lost := noLostPoll
-	expired := func(err error) error {
+	afterLoss := func(err error) error {
 		if lost == lostPoll {
 			return fmt.Errorf("%w; %s", err, TokenHint)
 		}
@@ -349,13 +350,13 @@ func (c *Client) Wait(ctx context.Context, a Approval) (Issued, error) {
 	for {
 		wait := min(retryWait(interval, failures), max(a.Deadline.Sub(c.now()), 0))
 		if err := c.sleep(ctx, wait); err != nil {
-			return Issued{}, err
+			return Issued{}, afterLoss(err)
 		}
 		if !c.now().Before(a.Deadline) {
 			if lastFailure != nil {
-				return Issued{}, expired(fmt.Errorf("%w; the last poll failed: %w", ErrCodeExpired, lastFailure))
+				return Issued{}, afterLoss(fmt.Errorf("%w; the last poll failed: %w", ErrCodeExpired, lastFailure))
 			}
-			return Issued{}, expired(ErrCodeExpired)
+			return Issued{}, afterLoss(ErrCodeExpired)
 		}
 		var ans tokenAnswer
 		err := c.post(ctx, tokenPath, "", tokenBody{DeviceCode: a.deviceCode}, &ans)
@@ -383,7 +384,7 @@ func (c *Client) Wait(ctx context.Context, a Approval) (Issued, error) {
 			case "access_denied":
 				return Issued{}, withMessage(ErrDenied, refusal)
 			case "expired_token":
-				return Issued{}, expired(withMessage(ErrCodeExpired, refusal))
+				return Issued{}, afterLoss(withMessage(ErrCodeExpired, refusal))
 			}
 		}
 		if err != nil {
