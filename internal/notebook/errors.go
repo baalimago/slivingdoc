@@ -319,7 +319,7 @@ var recoveryRefusalMessages = map[Reason]string{
 	ReasonRateLimited: "the storage is slowing down requests from this account, so the notebook directory could not be repaired yet; wait, then pull",
 	ReasonAccessDenied: "the storage refused the read that repairs the notebook directory: the token is missing, revoked, read-only, " +
 		"or not granted this space, the space does not exist, or --endpoint does not point at the storage API. " +
-		"Check SLIVINGDOC_TOKEN, --bucket and --endpoint, then pull",
+		"Check SLIVINGDOC_TOKEN, --space and --endpoint, then pull",
 	ReasonObjectTooLarge: "the storage refused the read that repairs the notebook directory as larger than it serves; an operator must check the storage",
 }
 
@@ -351,7 +351,7 @@ func storeRefusal(cause error) (Reason, string, bool) {
 	case errors.Is(cause, storage.ErrAccessDenied):
 		return ReasonAccessDenied, "the storage refused the request: the token is missing, revoked, read-only, " +
 			"or not granted this space, the space does not exist, or --endpoint does not point at the storage API. " +
-			"Check SLIVINGDOC_TOKEN, --bucket and --endpoint", true
+			"Check SLIVINGDOC_TOKEN, --space and --endpoint", true
 	case errors.Is(cause, storage.ErrTooLarge):
 		return ReasonObjectTooLarge, "the notebook data to upload is larger than the storage accepts in one object; " +
 			"nothing was published", true

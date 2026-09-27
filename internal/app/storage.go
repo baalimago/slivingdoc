@@ -88,17 +88,25 @@ type storageSelection struct {
 	endpoint   string
 }
 
-// bucketSource is where the bucket or space came from, so a space
-// mismatch names the setting to change and the startup log names the
-// source.
+// bucketSource is where the bucket or space came from, in the spelling
+// the operator used, so a space mismatch names the setting to change and
+// the startup log names the source. --space and SLIVINGDOC_SPACE are the
+// hosted names of --bucket and SLIVINGDOC_BUCKET: one setting.
 type bucketSource int
 
 const (
 	bucketNone bucketSource = iota
+	// bucketCleared is an explicitly empty --bucket or --space, which
+	// does not fall back to the environment.
+	bucketCleared
 	// bucketFromFlag is --bucket.
 	bucketFromFlag
+	// bucketFromSpaceFlag is --space.
+	bucketFromSpaceFlag
 	// bucketFromEnv is SLIVINGDOC_BUCKET.
 	bucketFromEnv
+	// bucketFromSpaceEnv is SLIVINGDOC_SPACE.
+	bucketFromSpaceEnv
 	// bucketFromLogin is the default login's space.
 	bucketFromLogin
 	// bucketFromToken is the space the hosted API says the token reaches.
@@ -109,8 +117,12 @@ func (b bucketSource) String() string {
 	switch b {
 	case bucketFromFlag:
 		return "--bucket"
+	case bucketFromSpaceFlag:
+		return "--space"
 	case bucketFromEnv:
-		return "SLIVINGDOC_BUCKET"
+		return bucketEnv
+	case bucketFromSpaceEnv:
+		return spaceEnv
 	case bucketFromLogin:
 		return "default login"
 	case bucketFromToken:
@@ -120,18 +132,73 @@ func (b bucketSource) String() string {
 	}
 }
 
-// resolveBucket returns the named bucket and which setting named it: an
-// explicitly set flag wins, even when empty, over SLIVINGDOC_BUCKET.
-func resolveBucket(f *Flags, env map[string]string) (string, bucketSource) {
-	switch {
-	case f.bucket.set && f.bucket.value != "":
-		return f.bucket.value, bucketFromFlag
-	case f.bucket.set:
-		return "", bucketNone
-	case env["SLIVINGDOC_BUCKET"] != "":
-		return env["SLIVINGDOC_BUCKET"], bucketFromEnv
+// settingKind says whether the space came from a flag, the environment,
+// or neither.
+type settingKind int
+
+const (
+	kindOther settingKind = iota
+	kindFlag
+	kindEnv
+)
+
+func (b bucketSource) kind() settingKind {
+	switch b {
+	case bucketFromFlag, bucketFromSpaceFlag:
+		return kindFlag
+	case bucketFromEnv, bucketFromSpaceEnv:
+		return kindEnv
 	default:
-		return "", bucketNone
+		return kindOther
+	}
+}
+
+const (
+	bucketEnv = "SLIVINGDOC_BUCKET"
+	spaceEnv  = "SLIVINGDOC_SPACE"
+)
+
+// flagSpace resolves --bucket and --space, the two spellings of one flag.
+// Both given with different values is a refusal naming both; the same
+// value is fine. An explicitly empty flag is bucketCleared.
+func flagSpace(bucket, space *stringFlag) (string, bucketSource, error) {
+	switch {
+	case bucket.set && space.set && bucket.value != space.value:
+		return "", bucketNone, fmt.Errorf("--bucket %q and --space %q name different spaces; they are one setting, so pass one of them", bucket.value, space.value)
+	case space.set && space.value != "":
+		return space.value, bucketFromSpaceFlag, nil
+	case bucket.set && bucket.value != "":
+		return bucket.value, bucketFromFlag, nil
+	case bucket.set || space.set:
+		return "", bucketCleared, nil
+	default:
+		return "", bucketNone, nil
+	}
+}
+
+// resolveBucket returns the named bucket and which setting named it: a
+// flag wins, even when explicitly empty, over the environment, and
+// either spelling of one layer given twice must agree.
+func resolveBucket(f *Flags, env map[string]string) (string, bucketSource, error) {
+	value, from, err := flagSpace(&f.bucket, &f.space)
+	switch {
+	case err != nil:
+		return "", bucketNone, err
+	case from == bucketCleared:
+		return "", bucketNone, nil
+	case from != bucketNone:
+		return value, from, nil
+	}
+	b, sp := env[bucketEnv], env[spaceEnv]
+	switch {
+	case b != "" && sp != "" && b != sp:
+		return "", bucketNone, fmt.Errorf("%s %q and %s %q name different spaces; they are one setting, so set one of them", bucketEnv, b, spaceEnv, sp)
+	case sp != "":
+		return sp, bucketFromSpaceEnv, nil
+	case b != "":
+		return b, bucketFromEnv, nil
+	default:
+		return "", bucketNone, nil
 	}
 }
 
@@ -173,7 +240,10 @@ func resolveStorage(f *Flags, env map[string]string, in storageInputs) (storageS
 		return storageSelection{}, err
 	}
 	var sel storageSelection
-	sel.bucket, sel.bucketFrom = resolveBucket(f, env)
+	sel.bucket, sel.bucketFrom, err = resolveBucket(f, env)
+	if err != nil {
+		return storageSelection{}, err
+	}
 	if mode == storageS3 {
 		return sel, nil
 	}
@@ -214,7 +284,7 @@ func resolveStorage(f *Flags, env map[string]string, in storageInputs) (storageS
 	}
 	if sel.bucket == "" {
 		if mode == storageHosted {
-			return storageSelection{}, errors.New("--storage hosted needs a space: pass --bucket, or run 'slivingdoc login'")
+			return storageSelection{}, errors.New("--storage hosted needs a space: pass --space, or run 'slivingdoc login'")
 		}
 		return sel, nil
 	}
@@ -240,7 +310,7 @@ func resolveStorage(f *Flags, env map[string]string, in storageInputs) (storageS
 			sel.bucket, strings.Join(signals, ", "))
 	}
 	if err := login.Usable(in.now); err != nil {
-		return storageSelection{}, fmt.Errorf("%w; run 'slivingdoc login --bucket %s', or pass --storage s3 to use S3", err, sel.bucket)
+		return storageSelection{}, fmt.Errorf("%w; run 'slivingdoc login --space %s', or pass --storage s3 to use S3", err, sel.bucket)
 	}
 	sel.token, sel.origin, sel.endpoint = login.Token, originLogin, login.Endpoint
 	return sel, nil
@@ -277,7 +347,7 @@ func noLoginRefusal(logins credentials.Set, explicit, space string) error {
 	if others := logins.Space(space); explicit != "" && len(others) > 0 {
 		msg += fmt.Sprintf(" at %s; the stored login was issued for %s", explicit, others[0].Endpoint)
 	}
-	return fmt.Errorf("%s; run 'slivingdoc login --bucket %s'", msg, space)
+	return fmt.Errorf("%s; run 'slivingdoc login --space %s'", msg, space)
 }
 
 // tokenDestinations returns the settings beside SLIVINGDOC_TOKEN that say

@@ -129,7 +129,7 @@ func TestScenarioHostedServerWithoutTokenLookup(t *testing.T) {
 	if code == 0 || strings.TrimSpace(stdout) != "" {
 		t.Fatalf("pull without --bucket against an older server = exit %d, stdout %q; want a startup refusal", code, stdout)
 	}
-	if !strings.Contains(stderr, "pass the space name as --bucket") {
+	if !strings.Contains(stderr, "pass the space name as --space") {
 		t.Fatalf("startup refusal stderr = %q, want it to ask for --bucket", stderr)
 	}
 }
@@ -524,4 +524,57 @@ func incompressible(n int) string {
 		b.WriteByte('\n')
 	}
 	return b.String()
+}
+
+// TestScenarioHostedSpaceSpellings proves --space and SLIVINGDOC_SPACE are
+// the hosted names of --bucket and SLIVINGDOC_BUCKET: serve --space reaches
+// the space, the variable works for pull, two spellings with different
+// values are refused naming both, and a mismatch names the spelling used.
+func TestScenarioHostedSpaceSpellings(t *testing.T) {
+	t.Parallel()
+	g, named, root := hostedEnv(t, 1<<20)
+	g.AddSpace("other-notes", 1<<20)
+	tokenOnly := withoutBucket(named)
+
+	h := spawnHelper(t, "real", tokenOnly, "serve", "--space", hostedSpace)
+	cs := h.connectClient(t)
+	served := filepath.Join(root, "served")
+	assertProcessCallOK(t, cs, toolPull, served, "")
+	writeCLIFile(t, filepath.Join(served, "a.md"), "through --space\n")
+	assertProcessCallOK(t, cs, toolCommit, served, "serve --space")
+	if err := cs.Close(); err != nil {
+		t.Fatalf("close MCP client: %v", err)
+	}
+	if code := h.waitExit(t); code != 0 {
+		t.Fatalf("serve exit = %d; stderr: %s", code, h.stderrText(t))
+	}
+	if stderr := h.stderrText(t); !strings.Contains(stderr, "from=--space") {
+		t.Fatalf("serve stderr = %s, want the space logged as from --space", stderr)
+	}
+
+	viaEnv := filepath.Join(root, "env")
+	runCLIOK(t, "real", append(append([]string(nil), tokenOnly...), "SLIVINGDOC_SPACE="+hostedSpace), nil, "pull", viaEnv)
+	if got, err := os.ReadFile(filepath.Join(viaEnv, "a.md")); err != nil || string(got) != "through --space\n" {
+		t.Fatalf("SLIVINGDOC_SPACE workspace a.md = %q, %v; want the file served through --space", got, err)
+	}
+
+	for _, row := range []struct {
+		name  string
+		extra []string
+		args  []string
+		want  string
+	}{
+		{"two flags", nil, []string{"--bucket", hostedSpace, "--space", "other-notes"}, `--bucket "team-notes" and --space "other-notes" name different spaces`},
+		{"two variables", []string{"SLIVINGDOC_BUCKET=" + hostedSpace, "SLIVINGDOC_SPACE=other-notes"}, nil, `SLIVINGDOC_BUCKET "team-notes" and SLIVINGDOC_SPACE "other-notes" name different spaces`},
+		{"a --space the token does not reach", nil, []string{"--space", "other-notes"}, `not "other-notes" from --space; drop --space to use the token's space`},
+		{"a SLIVINGDOC_SPACE the token does not reach", []string{"SLIVINGDOC_SPACE=other-notes"}, nil, `not "other-notes" from SLIVINGDOC_SPACE; unset SLIVINGDOC_SPACE`},
+	} {
+		env := append(append([]string(nil), tokenOnly...), row.extra...)
+		args := append([]string{"pull"}, row.args...)
+		args = append(args, filepath.Join(root, "refused"))
+		code, stdout, stderr := runCLI(t, "real", env, args...)
+		if code != 1 || strings.TrimSpace(stdout) != "" || !strings.Contains(stderr, row.want) {
+			t.Fatalf("%s = exit %d, stdout %q, stderr %s; want a refusal containing %q", row.name, code, stdout, stderr, row.want)
+		}
+	}
 }

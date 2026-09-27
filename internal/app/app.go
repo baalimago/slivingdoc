@@ -379,8 +379,8 @@ func buildService(p process, cfg config) (*Service, config, error) {
 // resolveHostedSpace asks the hosted API which space the token reaches
 // (architecture/hosted-mode.md, architecture/login.md). With no bucket
 // that space is used. A bucket that names another space is refused rather
-// than either one preferred, whether it came from --bucket,
-// SLIVINGDOC_BUCKET, or the stored login the token belongs to. A server
+// than either one preferred, whether it came from --space or --bucket,
+// SLIVINGDOC_SPACE or SLIVINGDOC_BUCKET, or the stored login the token belongs to. A server
 // that cannot answer keeps a given bucket, whose access check then proves
 // the token. Without one, a SLIVINGDOC_TOKEN process falls back to the
 // default login's space when that login is for the same endpoint; logins
@@ -414,7 +414,7 @@ func resolveHostedSpace(ctx context.Context, cfg config, logins func() (credenti
 // readable credentials file, a default login, or one for this endpoint.
 func defaultLoginSpace(cfg config, logins func() (credentials.Set, error)) (config, error) {
 	const refusal = "app: hosted storage cannot name the token's space"
-	const fix = "pass the space name as --bucket or SLIVINGDOC_BUCKET"
+	const fix = "pass the space name as --space or SLIVINGDOC_SPACE"
 	set, err := logins()
 	if err != nil {
 		return config{}, fmt.Errorf("%s, and the stored logins cannot supply it: %w; fix or remove the credentials file, or %s",
@@ -460,14 +460,18 @@ func redactCause(err error, kinds ...error) error {
 func spaceMismatch(cfg config, tokenSpace string) error {
 	switch {
 	case cfg.tokenOrigin == originLogin:
-		return fmt.Errorf("app: the stored login for space %q holds a token that reaches hosted space %q; run 'slivingdoc login --bucket %s' again",
+		return fmt.Errorf("app: the stored login for space %q holds a token that reaches hosted space %q; run 'slivingdoc login --space %s' again",
 			cfg.bucket, tokenSpace, cfg.bucket)
-	case cfg.bucketFrom == bucketFromEnv:
-		return fmt.Errorf("app: the token reaches hosted space %q, not %q from SLIVINGDOC_BUCKET; unset SLIVINGDOC_BUCKET to use the token's space, or use a token made for %q",
-			tokenSpace, cfg.bucket, cfg.bucket)
+	case cfg.bucketFrom.kind() == kindEnv:
+		return fmt.Errorf("app: the token reaches hosted space %q, not %q from %s; unset %s to use the token's space, or use a token made for %q",
+			tokenSpace, cfg.bucket, cfg.bucketFrom, cfg.bucketFrom, cfg.bucket)
 	default:
-		return fmt.Errorf("app: the token reaches hosted space %q, not %q from --bucket; drop --bucket to use the token's space, or use a token made for %q",
-			tokenSpace, cfg.bucket, cfg.bucket)
+		name := cfg.bucketFrom.String()
+		if cfg.bucketFrom.kind() != kindFlag {
+			name = "--space"
+		}
+		return fmt.Errorf("app: the token reaches hosted space %q, not %q from %s; drop %s to use the token's space, or use a token made for %q",
+			tokenSpace, cfg.bucket, name, name, cfg.bucket)
 	}
 }
 
@@ -505,15 +509,15 @@ func hostedCheckError(err error, cfg config) error {
 	denied := errors.Is(err, storage.ErrAccessDenied)
 	switch {
 	case denied && cfg.tokenOrigin == originLogin:
-		return fmt.Errorf("app: hosted storage refused the stored login: %s; run 'slivingdoc login' again, or check --bucket", mcp.Redact(err.Error()))
+		return fmt.Errorf("app: hosted storage refused the stored login: %s; run 'slivingdoc login' again, or check --space", mcp.Redact(err.Error()))
 	case denied && cfg.bucketFrom == bucketFromLogin:
-		return fmt.Errorf("app: hosted storage refused the token: %s; check SLIVINGDOC_TOKEN, or pass --bucket: the space %q came from the default login", mcp.Redact(err.Error()), cfg.bucket)
+		return fmt.Errorf("app: hosted storage refused the token: %s; check SLIVINGDOC_TOKEN, or pass --space: the space %q came from the default login", mcp.Redact(err.Error()), cfg.bucket)
 	case denied && cfg.bucketFrom == bucketFromToken:
 		return fmt.Errorf("app: hosted storage refused the token: %s; check SLIVINGDOC_TOKEN: it named space %q but was then refused", mcp.Redact(err.Error()), cfg.bucket)
-	case denied && cfg.bucketFrom == bucketFromEnv:
-		return fmt.Errorf("app: hosted storage refused the token: %s; check SLIVINGDOC_TOKEN and SLIVINGDOC_BUCKET", mcp.Redact(err.Error()))
+	case denied && cfg.bucketFrom.kind() != kindOther:
+		return fmt.Errorf("app: hosted storage refused the token: %s; check SLIVINGDOC_TOKEN and %s", mcp.Redact(err.Error()), cfg.bucketFrom)
 	case denied:
-		return fmt.Errorf("app: hosted storage refused the token: %s; check SLIVINGDOC_TOKEN and --bucket", mcp.Redact(err.Error()))
+		return fmt.Errorf("app: hosted storage refused the token: %s; check SLIVINGDOC_TOKEN and --space", mcp.Redact(err.Error()))
 	case errors.Is(err, storage.ErrIncompatible):
 		return fmt.Errorf("app: INCOMPATIBLE_STORE: hosted storage check failed: %s", mcp.Redact(err.Error()))
 	default:

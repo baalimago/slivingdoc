@@ -78,7 +78,7 @@ type Config struct {
 	// Endpoint is the normalized server base URL without /v1, for example
 	// https://api.slivingdoc.dev.
 	Endpoint string
-	// Space is the space name, the CLI's --bucket.
+	// Space is the space name, the CLI's --space (or --bucket).
 	Space string
 	// Prefix is the notebook prefix inside the space; validated.
 	Prefix string

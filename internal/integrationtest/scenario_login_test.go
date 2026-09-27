@@ -100,7 +100,7 @@ func TestScenarioLoginThenPullAndCommit(t *testing.T) {
 	t.Parallel()
 	g, site, env, root := loginEnv(t)
 	approve(site, g, hostedToken, "write", loginExpiry, "authorization_pending", "slow_down", "authorization_pending")
-	code, stdout, stderr := runCLI(t, "real", env, "login", "--bucket", hostedSpace)
+	code, stdout, stderr := runCLI(t, "real", env, "login", "--space", hostedSpace)
 	want := loggedIn(g, "read and write", "until 2026-12-26 09:00 UTC") + "\n"
 	if code != 0 || stdout != want {
 		t.Fatalf("login = exit %d, stdout %q; want %q; stderr: %s", code, stdout, want, stderr)
@@ -297,7 +297,7 @@ func TestScenarioStorageSelection(t *testing.T) {
 			name: "hosted without a login",
 			env:  with(credentials.DirEnv + "=" + t.TempDir()),
 			args: []string{"--storage", "hosted", "--bucket", hostedSpace},
-			want: []string{"needs SLIVINGDOC_TOKEN or a stored login", "slivingdoc login --bucket team-notes"},
+			want: []string{"needs SLIVINGDOC_TOKEN or a stored login", "slivingdoc login --space team-notes"},
 		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
@@ -421,7 +421,7 @@ func TestScenarioLoginAndTokenAgreeOnTheSpace(t *testing.T) {
 	code, stdout, stderr = runCLI(t, "real", env, "pull", filepath.Join(root, "moved"))
 	if code != 1 || strings.TrimSpace(stdout) != "" ||
 		!strings.Contains(stderr, `the stored login for space "team-notes" holds a token that reaches hosted space "other-notes"`) ||
-		!strings.Contains(stderr, "run 'slivingdoc login --bucket team-notes' again") {
+		!strings.Contains(stderr, "run 'slivingdoc login --space team-notes' again") {
 		t.Fatalf("pull with a login whose token moved = exit %d, stdout %q, stderr %s", code, stdout, stderr)
 	}
 }
@@ -438,7 +438,7 @@ func TestScenarioExpiredLoginIsRefused(t *testing.T) {
 	if code != 1 || strings.TrimSpace(stdout) != "" {
 		t.Fatalf("pull with an expired login = exit %d, stdout %q; want a startup refusal", code, stdout)
 	}
-	for _, want := range []string{"stored login expired", "run 'slivingdoc login --bucket team-notes'"} {
+	for _, want := range []string{"stored login expired", "run 'slivingdoc login --space team-notes'"} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, want it to contain %q", stderr, want)
 		}
@@ -995,7 +995,7 @@ func TestScenarioOldServerTakesTheDefaultLoginsSpace(t *testing.T) {
 	code, stdout, stderr = runCLI(t, "real", with("SLIVINGDOC_TOKEN="+envToken, "SLIVINGDOC_ENDPOINT="+other.URL()), "pull", filepath.Join(root, "other"))
 	if code != 1 || strings.TrimSpace(stdout) != "" ||
 		!strings.Contains(stderr, "the default login is for "+g.URL()+", not "+other.URL()) ||
-		!strings.Contains(stderr, "pass the space name as --bucket or SLIVINGDOC_BUCKET") ||
+		!strings.Contains(stderr, "pass the space name as --space or SLIVINGDOC_SPACE") ||
 		strings.Contains(stderr, envToken) || strings.Contains(stderr, hostedToken) {
 		t.Fatalf("pull on an old server with the default login elsewhere = exit %d, stdout %q, stderr %s", code, stdout, stderr)
 	}

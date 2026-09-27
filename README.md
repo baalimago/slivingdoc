@@ -58,7 +58,7 @@ Rather not run a bucket? Create a space at [slivingdoc.dev](https://slivingdoc.d
 then log in from your terminal:
 
 ```sh
-slivingdoc login --bucket my-space      # or: npx -y slivingdoc login --bucket my-space
+slivingdoc login --space my-space      # or: npx -y slivingdoc login --space my-space
 ```
 
 It prints a code and opens an approval page in your browser (`--no-browser`
@@ -85,7 +85,7 @@ needs neither a token nor a bucket:
 ```
 
 For another logged-in space, name it and the store:
-`"serve", "--storage", "hosted", "--bucket", "other-space"` (`--bucket`
+`"serve", "--storage", "hosted", "--space", "other-space"` (`--space`
 alone also works when nothing on the machine configures S3). A later
 login keeps the default unless you pass `--default`. Logging in again for
 the same space at the same storage endpoint replaces the stored token and
@@ -118,7 +118,7 @@ you name must be the token's space, or startup is refused. slivingdoc refuses to
 between S3 and hosted storage: a token next to a setting that names an S3
 host (an `--endpoint` flag, `AWS_ENDPOINT_URL` or `AWS_ENDPOINT_URL_S3`;
 a region, AWS credentials and `~/.aws` files are fine), and a login for a
-`--bucket` you named next to S3 settings (an AWS variable,
+space you named next to S3 settings (an AWS variable,
 `~/.aws/credentials` or `~/.aws/config`, `--region`, `--path-style`),
 refuse to start until you pass
 `--storage hosted` or `--storage s3` (`--storage s3` never sends a token
@@ -127,7 +127,8 @@ anywhere). Each process logs which store and token source it chose.
 **Upgrading an S3 setup:** a login changes only a command line or MCP entry
 that runs in the default `--storage auto`, sets no `SLIVINGDOC_TOKEN`, and
 either names no bucket (the login's default space is then used) or names
-the logged-in space as its bucket (`--bucket` or `SLIVINGDOC_BUCKET`) on a
+the logged-in space as its bucket (`--bucket`, `--space`, `SLIVINGDOC_BUCKET`
+or `SLIVINGDOC_SPACE`) on a
 machine with no S3 settings at all, and either sets no endpoint or sets the
 endpoint the login was issued for. Such an entry now uses hosted storage;
 an entry that names the space as its bucket next to S3 settings refuses to
@@ -211,11 +212,14 @@ conflict markers. Secondly, the system only works for text (clean UTF-8).
 `serve`, `pull`, and `commit` read the same flags and environment
 variables. `--bucket` is required, unless you are logged in (it then
 defaults to your login's space) or give a hosted token (which names its
-own space). The most common flags:
+own space). `--space` and `SLIVINGDOC_SPACE` are the same setting under
+its hosted name; both spellings with different values are refused. The
+most common flags:
 
 | Flag               | Environment                 | Default             |
 | ------------------ | --------------------------- | ------------------- |
 | `--bucket`         | `SLIVINGDOC_BUCKET`         | — (required)[^3]    |
+| `--space`          | `SLIVINGDOC_SPACE`          | same as `--bucket`  |
 | `--workspace-root` | `SLIVINGDOC_WORKSPACE_ROOT` | temporary dir[^1]   |
 | `--endpoint`       | `AWS_ENDPOINT_URL_S3`[^2]   | AWS resolution      |
 | `--region`         | `AWS_REGION`                | `us-east-1`         |
@@ -235,9 +239,9 @@ own space). The most common flags:
 [^3]: `auto` uses `SLIVINGDOC_TOKEN`, else a `slivingdoc login` for the
     space, else S3, and refuses when S3 settings make that a guess (see
     [`architecture/login.md`](architecture/login.md)); `hosted` and `s3`
-    force the choice. With a hosted token `--bucket` is optional and
-    defaults to the one space the token reaches (or the default login's
-    space, which must match it); a `--bucket` naming another space is
+    force the choice. With a hosted token `--space` is optional and
+    defaults to the one space the token reaches (or, on an older server,
+    the default login's space); a `--space` naming another space is
     refused.
 
 `slivingdoc serve -h` prints the full reference, and

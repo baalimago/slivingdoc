@@ -30,6 +30,7 @@ const SiteEnv = "SLIVINGDOC_SITE"
 // LoginFlags are the login command's flags.
 type LoginFlags struct {
 	bucket     stringFlag
+	space      stringFlag
 	readOnly   boolFlag
 	site       stringFlag
 	noBrowser  boolFlag
@@ -42,7 +43,8 @@ func NewLoginFlags() *LoginFlags { return &LoginFlags{} }
 
 // Bind registers the login flags on fs.
 func (f *LoginFlags) Bind(fs *flag.FlagSet) {
-	fs.Var(&f.bucket, "bucket", "space to preselect on the approval page; the token must be for it")
+	fs.Var(&f.space, "space", "space to preselect on the approval page; the token must be for it")
+	fs.Var(&f.bucket, "bucket", "the same as --space")
 	fs.Var(&f.readOnly, "read-only", "ask for a read-only token")
 	fs.Var(&f.site, "site", "site that approves the login")
 	fs.Var(&f.noBrowser, "no-browser", "print the approval page without opening a browser")
@@ -53,6 +55,7 @@ func (f *LoginFlags) Bind(fs *flag.FlagSet) {
 // LogoutFlags are the logout command's flags.
 type LogoutFlags struct {
 	bucket stringFlag
+	space  stringFlag
 	site   stringFlag
 }
 
@@ -61,7 +64,8 @@ func NewLogoutFlags() *LogoutFlags { return &LogoutFlags{} }
 
 // Bind registers the logout flags on fs.
 func (f *LogoutFlags) Bind(fs *flag.FlagSet) {
-	fs.Var(&f.bucket, "bucket", "space to log out of (default: the default login's space)")
+	fs.Var(&f.space, "space", "space to log out of (default: the default login's space)")
+	fs.Var(&f.bucket, "bucket", "the same as --space")
 	fs.Var(&f.site, "site", "only log out of logins this site issued")
 }
 
@@ -100,10 +104,13 @@ func PrepareLogin(f *LoginFlags, opts ProcessOptions) (*Login, error) {
 	if err := file.CheckDir(); err != nil {
 		return nil, fmt.Errorf("login: %w", err)
 	}
-	space := f.bucket.value
+	space, from, err := flagSpace(&f.bucket, &f.space)
+	if err != nil {
+		return nil, fmt.Errorf("login: %w", err)
+	}
 	if space != "" {
 		if err := httpstore.ValidateSpace(space); err != nil {
-			return nil, fmt.Errorf("login: --bucket names the hosted space: %w", err)
+			return nil, fmt.Errorf("login: %s names the hosted space: %w", from, err)
 		}
 	}
 	siteSource := "--site"
@@ -314,7 +321,7 @@ func (l *Login) store(ctx context.Context, stored credentials.Login, agreed cons
 	}
 	if old, err := set.Lookup(stored.Key); err == nil {
 		if old.Site != stored.Site {
-			return storeOutcome{}, fmt.Errorf("login: the stored login for space %q at %s was issued by %s, not %s; log out of that login first (slivingdoc logout --bucket %s --site %s); nothing was stored",
+			return storeOutcome{}, fmt.Errorf("login: the stored login for space %q at %s was issued by %s, not %s; log out of that login first (slivingdoc logout --space %s --site %s); nothing was stored",
 				old.Space, mcp.Redact(old.Endpoint), mcp.Redact(old.Site), stored.Site, old.Space, mcp.Redact(old.Site))
 		}
 		if old.Account != stored.Account && agreed != confirmed {
@@ -438,7 +445,7 @@ type Logout struct {
 }
 
 // PrepareLogout chooses the stored logins to withdraw: every login for
-// --bucket, or for the default login's space, narrowed to those the
+// --space (or --bucket), or for the default login's space, narrowed to those the
 // configured site issued when --site or SLIVINGDOC_SITE names one.
 func PrepareLogout(f *LogoutFlags, opts ProcessOptions) (*Logout, error) {
 	env := environ(opts.Env)
@@ -450,11 +457,14 @@ func PrepareLogout(f *LogoutFlags, opts ProcessOptions) (*Logout, error) {
 	if err != nil {
 		return nil, fmt.Errorf("logout: %w", err)
 	}
-	space := f.bucket.value
+	space, _, err := flagSpace(&f.bucket, &f.space)
+	if err != nil {
+		return nil, fmt.Errorf("logout: %w", err)
+	}
 	if space == "" {
 		def, err := set.Default()
 		if err != nil {
-			return nil, fmt.Errorf("logout: not logged in: %w; pass --bucket to name a space", err)
+			return nil, fmt.Errorf("logout: not logged in: %w; pass --space to name a space", err)
 		}
 		space = def.Space
 	}

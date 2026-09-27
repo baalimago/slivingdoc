@@ -34,8 +34,9 @@ type config struct {
 	endpoint    string
 	token       string
 	tokenOrigin tokenOrigin
-	// bucketFrom says which setting named the bucket: --bucket,
-	// SLIVINGDOC_BUCKET, the default login, the token's own space, or none,
+	// bucketFrom says which setting named the bucket, in the spelling
+	// used: --bucket, --space, SLIVINGDOC_BUCKET, SLIVINGDOC_SPACE, the
+	// default login, the token's own space, or none,
 	// so a space mismatch or a refused token names the right fix.
 	bucketFrom          bucketSource
 	pathStyle           bool
@@ -85,6 +86,7 @@ const DefaultHostedEndpoint = "https://api.slivingdoc.dev"
 type Flags struct {
 	storage             stringFlag
 	bucket              stringFlag
+	space               stringFlag
 	prefix              stringFlag
 	region              stringFlag
 	endpoint            stringFlag
@@ -109,7 +111,8 @@ func NewFlags() *Flags { return &Flags{} }
 // resolve the same holder.
 func (f *Flags) Bind(fs *flag.FlagSet) {
 	fs.Var(&f.storage, "storage", "storage backend: auto, hosted, or s3")
-	fs.Var(&f.bucket, "bucket", "S3 bucket, or the hosted space (default: with SLIVINGDOC_TOKEN the token's own, else the default login's)")
+	fs.Var(&f.bucket, "bucket", "S3 bucket; the same setting as --space")
+	fs.Var(&f.space, "space", "hosted space, the hosted name of --bucket (default: with SLIVINGDOC_TOKEN the token's own, else the default login's)")
 	fs.Var(&f.prefix, "prefix", "S3 object prefix")
 	fs.Var(&f.region, "region", "S3 region")
 	fs.Var(&f.endpoint, "endpoint", "S3-compatible endpoint URL")
@@ -260,7 +263,7 @@ func (f *Flags) resolve(environment []string, cwd, cacheDir string, ephemeral bo
 // work; diagnostics never echo credentials or private values.
 func (cfg config) finish(cwd string) (config, error) {
 	if cfg.bucket == "" && !cfg.hosted() {
-		return config{}, errors.New("bucket is required (pass --bucket, or run 'slivingdoc login')")
+		return config{}, errors.New("bucket is required (pass --bucket for S3, or --space or 'slivingdoc login' for hosted storage)")
 	}
 	if err := storage.ValidatePrefix(cfg.prefix); err != nil {
 		return config{}, err
@@ -340,7 +343,8 @@ func resolvePolicy(readOnly, writable []string) (git.PathPolicy, error) {
 	return policy, nil
 }
 
-// validateHosted checks the hosted-mode settings: --bucket, when given, is
+// validateHosted checks the hosted-mode settings: the space (--space or
+// --bucket), when given, is
 // a valid space name, the token can travel in a header, and the token only ever travels
 // over HTTPS, except to a loopback test server. No diagnostic echoes the
 // token.
@@ -606,11 +610,14 @@ const FlagReference = `  --storage string              storage backend: auto, ho
                                 storage; otherwise S3; a login for a named
                                 bucket plus S3 settings, or the token plus
                                 an S3 endpoint, is refused as ambiguous)
-  --bucket string               S3 bucket (required), or the hosted space    SLIVINGDOC_BUCKET
-                                name (default: with SLIVINGDOC_TOKEN the
-                                token's own space, else the default login's;
-                                a token for another space than the bucket
-                                is refused)
+  --bucket string               S3 bucket (required for S3); the same        SLIVINGDOC_BUCKET
+                                setting as --space
+  --space string                hosted space, the hosted name of --bucket    SLIVINGDOC_SPACE
+                                (default: with SLIVINGDOC_TOKEN the token's
+                                own space, else the default login's; a token
+                                for another space is refused; --bucket and
+                                --space, or the two variables, with
+                                different values are refused)
   --prefix string               object prefix in the bucket or hosted space  SLIVINGDOC_PREFIX
                                 (default "slivingdoc")
   --region string               S3 region (default "us-east-1"; unused       AWS_REGION

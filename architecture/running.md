@@ -117,19 +117,21 @@ or network dependency is touched.
 `serve`, `pull`, and `commit` read the same flags and environment
 variables. Flags override environment variables, and the environment
 overrides defaults.
-`--bucket` is required, except that with `SLIVINGDOC_TOKEN` it defaults
-to the token's own space, and otherwise to the space of the default login
-when `--storage` is not `s3`; a bucket that is given must be the token's
-space. `-h` on any of the three
+`--bucket` is required for S3. `--space` (and `SLIVINGDOC_SPACE`) is the
+same setting under its hosted name; passing both spellings with different
+values refuses startup. In hosted mode the space defaults, with
+`SLIVINGDOC_TOKEN`, to the token's own space, and otherwise to the space
+of the default login when `--storage` is not `s3`; a space that is given
+must be the token's space. `-h` on any of the three
 prints the same reference. A non-empty `SLIVINGDOC_TOKEN`, or a stored
 login for the space, switches to [hosted storage](#hosted-storage), which
-changes the meaning of `--bucket` and `--endpoint` as noted; `--storage`
+changes the meaning of `--bucket`/`--space` and `--endpoint` as noted; `--storage`
 makes the choice explicit ([Choosing the storage](#choosing-the-storage)).
 
 | Function                          | Flag                     | Environment variable              | Default                      |
 | --------------------------------- | ------------------------ | --------------------------------- | ---------------------------- |
 | Storage backend                   | `--storage`              | `SLIVINGDOC_STORAGE`              | `auto`                       |
-| Bucket or hosted space            | `--bucket`               | `SLIVINGDOC_BUCKET`               | S3: none (required); hosted: the token's (`SLIVINGDOC_TOKEN`), else the default login's |
+| Bucket or hosted space            | `--bucket` or `--space`  | `SLIVINGDOC_BUCKET` or `SLIVINGDOC_SPACE` | S3: none (required); hosted: the token's (`SLIVINGDOC_TOKEN`), else the default login's |
 | Object prefix                     | `--prefix`               | `SLIVINGDOC_PREFIX`               | `slivingdoc`                 |
 | S3 region                         | `--region`               | `AWS_REGION`                      | `us-east-1`                  |
 | S3 endpoint                       | `--endpoint`             | `AWS_ENDPOINT_URL_S3`             | empty (AWS resolution)       |
@@ -356,7 +358,7 @@ startup:
 3. Ambient identity: SSO sessions, ECS/EKS task roles, and the EC2
    instance metadata service.
 
-slivingdoc's own flags shape _where_ the client points (`--bucket`,
+slivingdoc's own flags shape _where_ the client points (`--bucket`/`--space`,
 `--prefix`, `--region`, `--endpoint`), never _who it is_. No flag
 carries a credential, and a `--endpoint` URL with user information is
 refused, so a secret can never echo into a diagnostic.
@@ -438,9 +440,9 @@ hosted storage service ([slivingdoc.dev](https://slivingdoc.dev)). A
 non-empty `SLIVINGDOC_TOKEN`, or a stored login for the space
 ([Logging in](#logging-in)), selects it:
 
-- Each token reaches exactly one space, so `--bucket` is optional: at
+- Each token reaches exactly one space, so `--space` is optional: at
   startup the process asks the server which space the token reaches
-  (`GET /v1/token`) and uses it. A `--bucket` that names a different
+  (`GET /v1/token`) and uses it. A `--space` that names a different
   space refuses startup, naming both; one that names the same space
   changes nothing. When given, it is 1 to 63 lowercase letters, digits,
   and inner hyphens. `--prefix` still separates notebooks inside the
@@ -452,7 +454,7 @@ non-empty `SLIVINGDOC_TOKEN`, or a stored login for the space
   chain are not used, and `--path-style` is validated, then unused. Beside
   `SLIVINGDOC_TOKEN` a region, AWS credentials and the `~/.aws` files are
   simply ignored; `--region` counts only against a stored login for a
-  `--bucket` you named (see [Choosing the storage](#choosing-the-storage)),
+  `--space` you named (see [Choosing the storage](#choosing-the-storage)),
   and the `--endpoint` flag, `AWS_ENDPOINT_URL` or `AWS_ENDPOINT_URL_S3`
   beside the token refuse startup under `--storage auto`.
 - The token is read from the environment or the credentials file only, never from a flag, and
@@ -465,9 +467,10 @@ Startup does not run the S3 probe. It asks the server to describe itself
 writes, else `INCOMPATIBLE_STORE`) and reads the space's usage with the
 token, so a read-only token starts and can pull. A token the server does
 not accept, or a space it was not granted, refuses startup with a
-diagnostic that names `SLIVINGDOC_TOKEN` and `--bucket`, or, for a stored
+diagnostic that names `SLIVINGDOC_TOKEN` and the space setting you used
+(`--space` when none), or, for a stored
 login, says to run `slivingdoc login` again. A server too old to name a
-token's space still works when `--bucket` is given.
+token's space still works when `--space` is given.
 
 Account limits and refusals surface as `STORAGE_FAILURE` with their own reason:
 `STORAGE_FULL` (nothing was published, the edits stay, pulls keep
@@ -486,7 +489,7 @@ A person does not need to copy a token: `slivingdoc login` gets one
 through the browser and stores it.
 
 ```text
-$ slivingdoc login --bucket notes
+$ slivingdoc login --space notes
 To log in, open this page and approve the code BCDF-GHJK:
   https://www.slivingdoc.dev/cli/login#BCDF-GHJK
 (or open https://www.slivingdoc.dev/cli/login and enter the code)
@@ -504,7 +507,7 @@ a browser unless `--no-browser` is given or no browser starts (SSH,
 headless machines); then open it yourself, on any device. slivingdoc
 builds the page address itself from the site; the code travels after the
 `#`, so it never reaches a server log. On the page you sign in, pick the
-space (preselected by `--bucket`; a token for another space is refused)
+space (preselected by `--space`; a token for another space is refused)
 and the access (`--read-only` asks for read only), compare the code with
 the terminal, and approve. The code lives ten minutes at most.
 
@@ -551,7 +554,7 @@ site's tokens are only accepted for `https://api.slivingdoc.dev`. A login
 through one site never replaces or revokes a login another site issued for
 the same space and endpoint: log out of that one first.
 
-`slivingdoc logout` revokes the default login's token (`--bucket` names
+`slivingdoc logout` revokes the default login's token (`--space` names
 another space) at the site that issued it and removes it; a token the site
 reports as unknown (`401 invalid_token`) counts as revoked, and any other
 failure keeps the login so you can retry. If another `login` stored a newer
@@ -560,9 +563,9 @@ token is sent only to its storage endpoint and, when `login` or `logout`
 revokes it, to `/cli/v1/revoke` of the site that issued it.
 
 Once logged in, `slivingdoc pull ~/notes`, `slivingdoc commit ~/notes -m
-msg` and `slivingdoc serve` need neither `SLIVINGDOC_TOKEN` nor `--bucket`.
+msg` and `slivingdoc serve` need neither `SLIVINGDOC_TOKEN` nor `--space`.
 A stored login that has expired refuses startup with `run 'slivingdoc
-login --bucket <space>'` (or pass `--storage s3`), and a token the storage refuses at startup says to
+login --space <space>'` (or pass `--storage s3`), and a token the storage refuses at startup says to
 log in again. The token is read once when a process starts, so restart
 `serve` (your MCP host) after logging in again. Every process logs, at
 Info on stderr, which store it chose: `storage selected backend=hosted
@@ -596,7 +599,8 @@ stored login: any of
    login in another can sit side by side.
 2. No bucket is given and a default login exists: hosted storage with the
    default login, whatever S3 settings exist (S3 would have no bucket).
-3. The bucket is given (`--bucket` or `SLIVINGDOC_BUCKET`) and a stored
+3. The space is given (`--space`, `--bucket`, `SLIVINGDOC_SPACE` or
+   `SLIVINGDOC_BUCKET`) and a stored
    login for that space exists: with S3 settings, startup is refused,
    naming them; pass `--storage hosted` or `--storage s3`. Otherwise
    hosted storage with the login.
@@ -647,9 +651,9 @@ child process, and the AWS SDK chain picks them up. Omit it when the
 host already runs in a credentialed environment; replace it with
 `AWS_ENDPOINT_URL_S3` and static keys only for a local S3-compatible
 store such as SeaweedFS. For [hosted storage](#hosted-storage), the
-`env` block carries `SLIVINGDOC_TOKEN` instead, and `--bucket` can be
+`env` block carries `SLIVINGDOC_TOKEN` instead, and `--space` can be
 left out: the token names its space. After [`slivingdoc login`](#logging-in)
-neither is needed, and `"args": ["-y", "slivingdoc", "serve", "--bucket",
+neither is needed, and `"args": ["-y", "slivingdoc", "serve", "--space",
 "notes"]` with no `env` block uses the stored login.
 
 Stdout carries only protocol messages; logs go to stderr. The host and

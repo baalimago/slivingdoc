@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/json"
+	"flag"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -255,7 +256,7 @@ func TestResolveStorageRefusals(t *testing.T) {
 			"hosted without a token or a login",
 			[]string{empty, "SLIVINGDOC_BUCKET=notes"},
 			[]string{"--storage", "hosted"},
-			[]string{"needs SLIVINGDOC_TOKEN or a stored login", "slivingdoc login --bucket notes"},
+			[]string{"needs SLIVINGDOC_TOKEN or a stored login", "slivingdoc login --space notes"},
 		},
 		{
 			"hosted without a space",
@@ -273,7 +274,7 @@ func TestResolveStorageRefusals(t *testing.T) {
 			"an expired login",
 			[]string{expired, "SLIVINGDOC_BUCKET=notes"},
 			nil,
-			[]string{"expired 2001-01-01 00:00 UTC", "run 'slivingdoc login --bucket notes'", "--storage s3"},
+			[]string{"expired 2001-01-01 00:00 UTC", "run 'slivingdoc login --space notes'", "--storage s3"},
 		},
 		{
 			"two endpoints for one space",
@@ -437,5 +438,66 @@ func TestS3SignalsFindTheSharedAWSFiles(t *testing.T) {
 				t.Fatalf("s3Signals() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+// TestResolveBucketSpellings proves --space and SLIVINGDOC_SPACE are the
+// same setting as --bucket and SLIVINGDOC_BUCKET: a flag beats the
+// environment, an explicitly empty flag does not fall back, the spelling
+// used is recorded, and two spellings of one layer must agree.
+func TestResolveBucketSpellings(t *testing.T) {
+	for _, row := range []struct {
+		name     string
+		args     []string
+		env      []string
+		want     string
+		wantFrom bucketSource
+		wantErr  string
+	}{
+		{name: "--space", args: []string{"--space", "notes"}, want: "notes", wantFrom: bucketFromSpaceFlag},
+		{name: "--bucket", args: []string{"--bucket", "notes"}, want: "notes", wantFrom: bucketFromFlag},
+		{name: "both flags agreeing", args: []string{"--bucket", "notes", "--space", "notes"}, want: "notes", wantFrom: bucketFromSpaceFlag},
+		{name: "both flags differing", args: []string{"--bucket", "notes", "--space", "other"}, wantErr: `--bucket "notes" and --space "other" name different spaces`},
+		{name: "an empty --space against a --bucket", args: []string{"--bucket", "notes", "--space", ""}, wantErr: `--bucket "notes" and --space "" name different spaces`},
+		{name: "SLIVINGDOC_SPACE", env: []string{"SLIVINGDOC_SPACE=notes"}, want: "notes", wantFrom: bucketFromSpaceEnv},
+		{name: "SLIVINGDOC_BUCKET", env: []string{"SLIVINGDOC_BUCKET=notes"}, want: "notes", wantFrom: bucketFromEnv},
+		{name: "both variables agreeing", env: []string{"SLIVINGDOC_BUCKET=notes", "SLIVINGDOC_SPACE=notes"}, want: "notes", wantFrom: bucketFromSpaceEnv},
+		{name: "both variables differing", env: []string{"SLIVINGDOC_BUCKET=notes", "SLIVINGDOC_SPACE=other"}, wantErr: `SLIVINGDOC_BUCKET "notes" and SLIVINGDOC_SPACE "other" name different spaces`},
+		{name: "a flag beats the variables", args: []string{"--space", "flag"}, env: []string{"SLIVINGDOC_BUCKET=notes", "SLIVINGDOC_SPACE=other"}, want: "flag", wantFrom: bucketFromSpaceFlag},
+		{name: "--bucket beats SLIVINGDOC_SPACE", args: []string{"--bucket", "flag"}, env: []string{"SLIVINGDOC_SPACE=other"}, want: "flag", wantFrom: bucketFromFlag},
+		{name: "an empty --space does not fall back", args: []string{"--space", ""}, env: []string{"SLIVINGDOC_SPACE=notes"}, want: "", wantFrom: bucketNone},
+		{name: "an empty --bucket does not fall back", args: []string{"--bucket="}, env: []string{"SLIVINGDOC_SPACE=notes"}, want: "", wantFrom: bucketNone},
+		{name: "nothing", want: "", wantFrom: bucketNone},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			f := NewFlags()
+			fs := flag.NewFlagSet("test", flag.ContinueOnError)
+			f.Bind(fs)
+			if err := fs.Parse(row.args); err != nil {
+				t.Fatal(err)
+			}
+			got, from, err := resolveBucket(f, environ(row.env))
+			if row.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), row.wantErr) {
+					t.Fatalf("resolveBucket() = %v, want it to contain %q", err, row.wantErr)
+				}
+				if _, err := loadConfig(testProcess(row.env, row.args...)); err == nil || !strings.Contains(err.Error(), row.wantErr) {
+					t.Fatalf("loadConfig() = %v, want the same refusal", err)
+				}
+				return
+			}
+			if err != nil || got != row.want || from != row.wantFrom {
+				t.Fatalf("resolveBucket() = %q from %v, %v; want %q from %v", got, from, err, row.want, row.wantFrom)
+			}
+		})
+	}
+	for from, want := range map[bucketSource]string{
+		bucketFromFlag: "--bucket", bucketFromSpaceFlag: "--space", bucketFromEnv: "SLIVINGDOC_BUCKET",
+		bucketFromSpaceEnv: "SLIVINGDOC_SPACE", bucketFromLogin: "default login", bucketFromToken: "token",
+		bucketNone: "none", bucketCleared: "none",
+	} {
+		if from.String() != want {
+			t.Fatalf("%d.String() = %q, want %q", int(from), from, want)
+		}
 	}
 }

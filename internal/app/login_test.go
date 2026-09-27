@@ -893,3 +893,41 @@ func TestLoginAndLogoutNeverPrintStoredUserInformation(t *testing.T) {
 		})
 	}
 }
+
+// TestLoginAndLogoutTakeSpaceOrBucket proves --space and --bucket are one
+// setting on login and logout: either spelling works, and both with
+// different values are refused before the site is contacted.
+func TestLoginAndLogoutTakeSpaceOrBucket(t *testing.T) {
+	for _, op := range []string{"login", "logout"} {
+		r := newLoginRig(t)
+		var err error
+		if op == "login" {
+			err = r.login(t, "--bucket", "notes", "--space", "other")
+		} else {
+			err = r.logout(t, "--bucket", "notes", "--space", "other")
+		}
+		if err == nil || !strings.Contains(err.Error(), `--bucket "notes" and --space "other" name different spaces`) {
+			t.Fatalf("%s with two spaces = %v, want the refusal naming both", op, err)
+		}
+		if len(r.site.Starts()) != 0 {
+			t.Fatalf("%s with two spaces contacted the site", op)
+		}
+	}
+	r := newLoginRig(t)
+	if err := r.login(t, "--space", "No_Space"); err == nil || !strings.Contains(err.Error(), "login: --space names the hosted space") {
+		t.Fatalf("login --space with an invalid name = %v, want the refusal naming --space", err)
+	}
+	for _, args := range [][]string{{"--space", "notes"}, {"--bucket", "notes"}, {"--space", "notes", "--bucket", "notes"}} {
+		r := newLoginRig(t)
+		r.site.Next(approved("notes", loginToken, "write", DefaultHostedEndpoint))
+		if err := r.login(t, args...); err != nil {
+			t.Fatalf("login %v = %v", args, err)
+		}
+		if _, err := r.logins(t).Lookup(credentials.Key{Endpoint: DefaultHostedEndpoint, Space: "notes"}); err != nil {
+			t.Fatalf("login %v stored no login for notes: %v", args, err)
+		}
+		if err := r.logout(t, args...); err != nil {
+			t.Fatalf("logout %v = %v", args, err)
+		}
+	}
+}

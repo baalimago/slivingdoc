@@ -82,7 +82,7 @@ func (c *command) Run(ctx context.Context) error {
 const loginHelp = `slivingdoc login - log in to hosted storage through the browser
 
 Usage:
-  slivingdoc login [--bucket <space>] [--read-only] [--site <url>] [--no-browser]
+  slivingdoc login [--space <space>] [--read-only] [--site <url>] [--no-browser]
                    [--default] [--force]
 
 Prints an approval page and a code, opens the page in a browser, and waits
@@ -95,7 +95,7 @@ you answer y. The token is stored in
 <user-config-dir>/slivingdoc/credentials.json (SLIVINGDOC_CONFIG_DIR
 overrides the directory). A login made while no default is stored
 becomes the default login, and --default makes a later one the default; serve, pull and commit then use
-hosted storage for the default space without SLIVINGDOC_TOKEN or --bucket.
+hosted storage for the default space without SLIVINGDOC_TOKEN or --space.
 Logging in again for the same space replaces the stored token and revokes
 the old one when the same account approved both. Without a terminal
 nobody is asked, so check the "Approved by" line; a login that would
@@ -103,7 +103,9 @@ replace a login or a default another account approved is refused unless
 --force is given.
 
 Flags:
-  --bucket string   space to preselect; a token for another space is refused
+  --space string    space to preselect; a token for another space is refused
+  --bucket string   the same as --space (both with different values are
+                    refused)
   --read-only       ask for a read-only token
   --site string     site that approves the login              SLIVINGDOC_SITE
                     (default "https://www.slivingdoc.dev")
@@ -116,7 +118,7 @@ Flags:
 const logoutHelp = `slivingdoc logout - revoke and remove a stored login
 
 Usage:
-  slivingdoc logout [--bucket <space>] [--site <url>]
+  slivingdoc logout [--space <space>] [--site <url>]
 
 Revokes the stored token of the space at the site that issued it and
 removes it from the credentials file. A token the site no longer knows
@@ -125,6 +127,7 @@ stays stored, so the logout can be repeated. Logging out of the default
 login's space clears the default.
 
 Flags:
-  --bucket string   space to log out of (default: the default login's space)
+  --space string    space to log out of (default: the default login's space)
+  --bucket string   the same as --space
   --site string     only log out of logins this site issued   SLIVINGDOC_SITE
 `
