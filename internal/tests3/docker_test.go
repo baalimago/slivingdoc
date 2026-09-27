@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -35,9 +36,9 @@ type fakeDaemon struct {
 	failStart   bool
 	failInspect bool
 	failDelete  bool
-	listed      string // the JSON answer of the container list
-	filters     string // the filters query of the container list
-	attach      int    // status of the attach answer
+	listed      string     // the JSON answer of the container list
+	listQuery   url.Values // the query of the container list
+	attach      int        // status of the attach answer
 }
 
 func startFakeDaemon(t *testing.T) *fakeDaemon {
@@ -128,7 +129,7 @@ func (f *fakeDaemon) serve(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	case r.URL.Path == "/containers/json":
 		f.mu.Lock()
-		f.filters = r.URL.Query().Get("filters")
+		f.listQuery = r.URL.Query()
 		f.mu.Unlock()
 		_, _ = io.WriteString(w, f.listed)
 	case r.URL.Path == "/containers/c1/json":
@@ -295,19 +296,8 @@ func TestRemoveStale(t *testing.T) {
 	if err := f.client(t).removeStale(context.Background(), "org.slivingdoc.tests3", cutoff); err != nil {
 		t.Fatalf("removeStale() = %v", err)
 	}
-	var filters map[string][]string
-	if err := json.Unmarshal([]byte(f.filters), &filters); err != nil {
-		t.Fatal(err)
-	}
-	if strings.Join(filters["label"], ",") != "org.slivingdoc.tests3" || strings.Join(filters["status"], ",") != "created,exited" {
-		t.Fatalf("list filters = %v, want the suite label and the not-running states", filters)
-	}
-	var removed []string
-	for _, call := range f.called() {
-		if strings.HasPrefix(call, "DELETE ") {
-			removed = append(removed, call)
-		}
-	}
+	f.assertStaleList(t)
+	removed := f.deletes()
 	want := []string{"DELETE /containers/old?force=1", "DELETE /containers/gone?force=1", "DELETE /containers/removing?force=1"}
 	if strings.Join(removed, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("removals = %q, want %q", removed, want)
@@ -320,6 +310,61 @@ func TestRemoveStale(t *testing.T) {
 	f.listed = `not json`
 	if err := f.client(t).removeStale(context.Background(), "org.slivingdoc.tests3", cutoff); err == nil || !strings.Contains(err.Error(), "list stale containers") {
 		t.Fatalf("removeStale() with a bad list = %v, want the list error", err)
+	}
+}
+
+// assertStaleList checks that the container list asked for stopped
+// containers too (all=1: without it the daemon lists running ones only)
+// and filtered by the suite label and the not-running states.
+func (f *fakeDaemon) assertStaleList(t *testing.T) {
+	t.Helper()
+	f.mu.Lock()
+	query := f.listQuery
+	f.mu.Unlock()
+	if query.Get("all") != "1" {
+		t.Fatalf("list query = %v, want all=1", query)
+	}
+	var filters map[string][]string
+	if err := json.Unmarshal([]byte(query.Get("filters")), &filters); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(filters["label"], ",") != suiteLabel || strings.Join(filters["status"], ",") != "created,exited" {
+		t.Fatalf("list filters = %v, want the suite label and the not-running states", filters)
+	}
+}
+
+func (f *fakeDaemon) deletes() []string {
+	var removed []string
+	for _, call := range f.called() {
+		if strings.HasPrefix(call, "DELETE ") {
+			removed = append(removed, call)
+		}
+	}
+	return removed
+}
+
+// TestStartRemovesStaleContainersFirst proves start's sweep: it runs before
+// the image check, with the suite label, and removes a container created
+// before now minus startTimeout while keeping a newer one, which may be
+// another process's start in progress.
+func TestStartRemovesStaleContainersFirst(t *testing.T) {
+	f := startFakeDaemon(t)
+	now := time.Now()
+	f.listed = fmt.Sprintf(`[{"Id":"old","Created":%d},{"Id":"fresh","Created":%d}]`,
+		now.Add(-startTimeout-time.Minute).Unix(), now.Add(-startTimeout+time.Minute).Unix())
+	f.hasImage = false
+	f.pullError = "stop here"
+	if _, err := start(f.client(t)); err == nil || !strings.Contains(err.Error(), "stop here") {
+		t.Fatalf("start() = %v, want the pull's error after the sweep", err)
+	}
+	f.assertStaleList(t)
+	if removed := f.deletes(); strings.Join(removed, ",") != "DELETE /containers/old?force=1" {
+		t.Fatalf("removals = %q, want only the container older than the cutoff", removed)
+	}
+	calls := strings.Join(f.called(), "\n")
+	list, image := strings.Index(calls, "GET /containers/json"), strings.Index(calls, "GET /images/")
+	if list < 0 || image < 0 || list > image {
+		t.Fatalf("calls = %q, want the sweep before the image check", f.called())
 	}
 }
 

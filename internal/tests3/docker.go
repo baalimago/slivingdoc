@@ -332,14 +332,15 @@ func (c *container) discard() error {
 	if c.stdin != nil {
 		_ = c.stdin.Close()
 	}
-	return c.d.remove(c.id)
+	// Its own deadline: run's context may be what ended.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return c.d.remove(ctx, c.id)
 }
 
 // remove force-removes a container. A container that is already gone (404)
 // or already being removed (409) is not an error.
-func (d *dockerClient) remove(id string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+func (d *dockerClient) remove(ctx context.Context, id string) error {
 	err := d.call(ctx, http.MethodDelete, "/containers/"+id+"?force=1", nil, nil)
 	var answer *dockerError
 	if errors.As(err, &answer) && (answer.Status == http.StatusNotFound || answer.Status == http.StatusConflict) {
@@ -372,7 +373,7 @@ func (d *dockerClient) removeStale(ctx context.Context, label string, cutoff tim
 	var errs []error
 	for _, c := range listed {
 		if time.Unix(c.Created, 0).Before(cutoff) {
-			errs = append(errs, d.remove(c.ID))
+			errs = append(errs, d.remove(ctx, c.ID))
 		}
 	}
 	return errors.Join(errs...)
