@@ -194,7 +194,8 @@ func (d *dockerClient) ensureImage(ctx context.Context, image string) error {
 // splitImage splits a reference into its repository and tag. The tag
 // follows the last ':' after the final '/', so a registry's port
 // ("registry:5000/seaweedfs") is not taken for a tag; a reference without
-// a tag is "latest".
+// a tag is "latest". A digest reference ("name@sha256:...") is not
+// supported; the suite pins its image by tag.
 func splitImage(image string) (name, tag string) {
 	colon := strings.LastIndex(image, ":")
 	if colon <= strings.LastIndex(image, "/") {
@@ -250,20 +251,18 @@ func (d *dockerClient) run(ctx context.Context, spec containerSpec) (*container,
 		},
 	}
 	if err := d.call(ctx, http.MethodPost, "/containers/create?name="+name, create, &created); err != nil {
-		// The daemon may have created it before the answer was lost.
-		(&container{d: d, id: name}).discard()
-		return nil, "", fmt.Errorf("create container: %w", err)
+		// The daemon may have created it before the answer was lost. A
+		// create still in flight is removed later (removeStale).
+		return nil, "", errors.Join(fmt.Errorf("create container: %w", err), (&container{d: d, id: name}).discard())
 	}
 	c := &container{d: d, id: created.ID}
 	stdin, err := d.attachStdin(ctx, created.ID)
 	if err != nil {
-		c.discard()
-		return nil, "", fmt.Errorf("attach container: %w", err)
+		return nil, "", errors.Join(fmt.Errorf("attach container: %w", err), c.discard())
 	}
 	c.stdin = stdin
 	if err := d.call(ctx, http.MethodPost, "/containers/"+created.ID+"/start", nil, nil); err != nil {
-		c.discard()
-		return nil, "", fmt.Errorf("start container: %w", err)
+		return nil, "", errors.Join(fmt.Errorf("start container: %w", err), c.discard())
 	}
 	var inspected struct {
 		NetworkSettings struct {
@@ -273,13 +272,11 @@ func (d *dockerClient) run(ctx context.Context, spec containerSpec) (*container,
 		} `json:"NetworkSettings"`
 	}
 	if err := d.call(ctx, http.MethodGet, "/containers/"+created.ID+"/json", nil, &inspected); err != nil {
-		c.discard()
-		return nil, "", fmt.Errorf("inspect container: %w", err)
+		return nil, "", errors.Join(fmt.Errorf("inspect container: %w", err), c.discard())
 	}
 	bindings := inspected.NetworkSettings.Ports[spec.Port]
 	if len(bindings) == 0 || bindings[0].HostPort == "" {
-		c.discard()
-		return nil, "", fmt.Errorf("container publishes no host port for %s", spec.Port)
+		return nil, "", errors.Join(fmt.Errorf("container publishes no host port for %s", spec.Port), c.discard())
 	}
 	return c, bindings[0].HostPort, nil
 }
@@ -331,15 +328,52 @@ func (c *container) stop() {
 // discard ends a container run could not bring up: it closes the stdin
 // stream when one is attached and removes the container, which AutoRemove
 // leaves in place when it never started.
-func (c *container) discard() {
+func (c *container) discard() error {
 	if c.stdin != nil {
 		_ = c.stdin.Close()
 	}
-	c.remove()
+	return c.d.remove(c.id)
 }
 
-func (c *container) remove() {
+// remove force-removes a container. A container that is already gone (404)
+// or already being removed (409) is not an error.
+func (d *dockerClient) remove(id string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	_ = c.d.call(ctx, http.MethodDelete, "/containers/"+c.id+"?force=1", nil, nil)
+	err := d.call(ctx, http.MethodDelete, "/containers/"+id+"?force=1", nil, nil)
+	var answer *dockerError
+	if errors.As(err, &answer) && (answer.Status == http.StatusNotFound || answer.Status == http.StatusConflict) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("remove container %s: %w", id, err)
+	}
+	return nil
+}
+
+// removeStale removes the containers carrying label that never started or
+// have exited and were created before cutoff. It catches a container whose
+// create answer was lost while the create was still in flight, so the
+// removal by name in run found nothing: that container stays "created"
+// and AutoRemove never acts on it.
+func (d *dockerClient) removeStale(ctx context.Context, label string, cutoff time.Time) error {
+	filters, err := json.Marshal(map[string][]string{"label": {label}, "status": {"created", "exited"}})
+	if err != nil {
+		return fmt.Errorf("docker: encode filters: %w", err)
+	}
+	var listed []struct {
+		ID      string `json:"Id"`
+		Created int64  `json:"Created"`
+	}
+	query := url.Values{"all": {"1"}, "filters": {string(filters)}}
+	if err := d.call(ctx, http.MethodGet, "/containers/json?"+query.Encode(), nil, &listed); err != nil {
+		return fmt.Errorf("list stale containers: %w", err)
+	}
+	var errs []error
+	for _, c := range listed {
+		if time.Unix(c.Created, 0).Before(cutoff) {
+			errs = append(errs, d.remove(c.ID))
+		}
+	}
+	return errors.Join(errs...)
 }

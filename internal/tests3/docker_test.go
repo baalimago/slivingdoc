@@ -23,17 +23,21 @@ import (
 type fakeDaemon struct {
 	sock string
 
-	mu         sync.Mutex
-	calls      []string
-	created    map[string]any
-	name       string // the name query of the create request
-	loseCreate bool
-	stdin      chan net.Conn
-	hasImage   bool
-	pullError  string
-	noPort     bool
-	failStart  bool
-	attach     int // status of the attach answer
+	mu          sync.Mutex
+	calls       []string
+	created     map[string]any
+	name        string // the name query of the create request
+	loseCreate  bool
+	stdin       chan net.Conn
+	hasImage    bool
+	pullError   string
+	noPort      bool
+	failStart   bool
+	failInspect bool
+	failDelete  bool
+	listed      string // the JSON answer of the container list
+	filters     string // the filters query of the container list
+	attach      int    // status of the attach answer
 }
 
 func startFakeDaemon(t *testing.T) *fakeDaemon {
@@ -58,7 +62,11 @@ func startFakeDaemon(t *testing.T) *fakeDaemon {
 func (f *fakeDaemon) record(r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.calls = append(f.calls, r.Method+" "+r.URL.Path)
+	call := r.Method + " " + r.URL.Path
+	if r.URL.RawQuery != "" {
+		call += "?" + r.URL.RawQuery
+	}
+	f.calls = append(f.calls, call)
 }
 
 func (f *fakeDaemon) serve(w http.ResponseWriter, r *http.Request) {
@@ -118,13 +126,38 @@ func (f *fakeDaemon) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
+	case r.URL.Path == "/containers/json":
+		f.mu.Lock()
+		f.filters = r.URL.Query().Get("filters")
+		f.mu.Unlock()
+		_, _ = io.WriteString(w, f.listed)
 	case r.URL.Path == "/containers/c1/json":
+		if f.failInspect {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = io.WriteString(w, `{"message":"inspect failed"}`)
+			return
+		}
 		if f.noPort {
 			_, _ = io.WriteString(w, `{"NetworkSettings":{"Ports":{}}}`)
 			return
 		}
 		_, _ = io.WriteString(w, `{"NetworkSettings":{"Ports":{"8333/tcp":[{"HostIp":"127.0.0.1","HostPort":"40123"}]}}}`)
-	case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/containers/") && r.URL.Query().Get("force") == "1":
+	case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/containers/"):
+		switch {
+		case r.URL.Query().Get("force") != "1":
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		case f.failDelete:
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = io.WriteString(w, `{"message":"removal failed"}`)
+			return
+		case strings.HasSuffix(r.URL.Path, "/gone"):
+			w.WriteHeader(http.StatusNotFound)
+			return
+		case strings.HasSuffix(r.URL.Path, "/removing"):
+			w.WriteHeader(http.StatusConflict)
+			return
+		}
 		w.WriteHeader(http.StatusNoContent)
 	default:
 		w.WriteHeader(http.StatusNotFound)
@@ -190,7 +223,7 @@ func TestContainerLivesWhileItsStdinIsHeld(t *testing.T) {
 		t.Fatalf("create name = %q, want a unique slivingdoc-tests3- name", f.name)
 	}
 	calls := f.called()
-	want := []string{"GET /_ping", "GET /images/chrislusf/seaweedfs:4.42/json", "POST /containers/create", "POST /containers/c1/attach", "POST /containers/c1/start", "GET /containers/c1/json"}
+	want := []string{"GET /_ping", "GET /images/chrislusf/seaweedfs:4.42/json", "POST /containers/create?name=" + f.name, "POST /containers/c1/attach?stream=1&stdin=1", "POST /containers/c1/start", "GET /containers/c1/json"}
 	if strings.Join(calls, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("calls = %q, want %q", calls, want)
 	}
@@ -208,7 +241,7 @@ func TestEnsureImagePullsAMissingImage(t *testing.T) {
 	if err := f.client(t).ensureImage(context.Background(), Image); err != nil {
 		t.Fatalf("ensureImage() = %v", err)
 	}
-	if calls := f.called(); calls[len(calls)-1] != "POST /images/create" {
+	if calls := f.called(); calls[len(calls)-1] != "POST /images/create?fromImage=chrislusf%2Fseaweedfs&tag=4.42" {
 		t.Fatalf("calls = %q, want a pull", calls)
 	}
 	f.pullError = "toomanyrequests: rate limit"
@@ -230,7 +263,9 @@ func TestRunFailures(t *testing.T) {
 		{"create answer lost", func(f *fakeDaemon) { f.loseCreate = true }, "create container:", func(f *fakeDaemon) string { return f.name }},
 		{"attach refused", func(f *fakeDaemon) { f.attach = http.StatusConflict }, "attach container: docker: HTTP 409: cannot attach", nil},
 		{"start refused", func(f *fakeDaemon) { f.failStart = true }, "start container: docker: HTTP 500: port is already allocated", nil},
+		{"inspect failed", func(f *fakeDaemon) { f.failInspect = true }, "inspect container: docker: HTTP 500: inspect failed", nil},
 		{"no port", func(f *fakeDaemon) { f.noPort = true }, "publishes no host port", nil},
+		{"removal failed", func(f *fakeDaemon) { f.failStart = true; f.failDelete = true }, "remove container c1: docker: HTTP 500: removal failed", nil},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			f := startFakeDaemon(t)
@@ -242,10 +277,49 @@ func TestRunFailures(t *testing.T) {
 			if tt.removed != nil {
 				id = tt.removed(f)
 			}
-			if calls := f.called(); calls[len(calls)-1] != "DELETE /containers/"+id {
+			if calls := f.called(); calls[len(calls)-1] != "DELETE /containers/"+id+"?force=1" {
 				t.Fatalf("calls = %q, want the container %s removed", calls, id)
 			}
 		})
+	}
+}
+
+// TestRemoveStale proves that the leftovers of a run whose create answer
+// was lost are removed: labelled containers that never started or exited
+// and are older than the cutoff go; newer ones may still belong to a live
+// start and stay. A container already gone or being removed is no error.
+func TestRemoveStale(t *testing.T) {
+	f := startFakeDaemon(t)
+	cutoff := time.Unix(1_000, 0)
+	f.listed = `[{"Id":"old","Created":900},{"Id":"gone","Created":900},{"Id":"removing","Created":900},{"Id":"fresh","Created":1000}]`
+	if err := f.client(t).removeStale(context.Background(), "org.slivingdoc.tests3", cutoff); err != nil {
+		t.Fatalf("removeStale() = %v", err)
+	}
+	var filters map[string][]string
+	if err := json.Unmarshal([]byte(f.filters), &filters); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(filters["label"], ",") != "org.slivingdoc.tests3" || strings.Join(filters["status"], ",") != "created,exited" {
+		t.Fatalf("list filters = %v, want the suite label and the not-running states", filters)
+	}
+	var removed []string
+	for _, call := range f.called() {
+		if strings.HasPrefix(call, "DELETE ") {
+			removed = append(removed, call)
+		}
+	}
+	want := []string{"DELETE /containers/old?force=1", "DELETE /containers/gone?force=1", "DELETE /containers/removing?force=1"}
+	if strings.Join(removed, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("removals = %q, want %q", removed, want)
+	}
+
+	f.failDelete = true
+	if err := f.client(t).removeStale(context.Background(), "org.slivingdoc.tests3", cutoff); err == nil || !strings.Contains(err.Error(), "remove container old") {
+		t.Fatalf("removeStale() with a failing removal = %v, want the removal's error", err)
+	}
+	f.listed = `not json`
+	if err := f.client(t).removeStale(context.Background(), "org.slivingdoc.tests3", cutoff); err == nil || !strings.Contains(err.Error(), "list stale containers") {
+		t.Fatalf("removeStale() with a bad list = %v, want the list error", err)
 	}
 }
 

@@ -275,6 +275,15 @@ const seaweedScript = `echo '{
       ]
     }' > /etc/seaweedfs/s3.json && { weed server -s3 -s3.config /etc/seaweedfs/s3.json -dir /data & } && cat > /dev/null`
 
+// startTimeout bounds start, from the image check to the created bucket.
+// A live start therefore starts its container within startTimeout of
+// creating it, so a labelled container still not started after that
+// belongs to no live run (removeStale).
+const startTimeout = 2 * time.Minute
+
+// suiteLabel marks every container the suite creates.
+const suiteLabel = "org.slivingdoc.tests3"
+
 // readyTimeout bounds how long the S3 gateway may take to accept the
 // bucket after the container started.
 const readyTimeout = 30 * time.Second
@@ -283,8 +292,11 @@ const readyTimeout = 30 * time.Second
 // below a shared bucket and creates the test bucket, retrying until the S3
 // gateway accepts it.
 func start(d *dockerClient) (*Suite, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), startTimeout)
 	defer cancel()
+	if err := d.removeStale(ctx, suiteLabel, time.Now().Add(-startTimeout)); err != nil {
+		return nil, fmt.Errorf("s3 container leftovers: %w", err)
+	}
 	if err := d.ensureImage(ctx, Image); err != nil {
 		return nil, fmt.Errorf("s3 image: %w", err)
 	}
@@ -293,7 +305,7 @@ func start(d *dockerClient) (*Suite, error) {
 		Entrypoint: []string{"/bin/sh"},
 		Cmd:        []string{"-c", seaweedScript},
 		Port:       "8333/tcp",
-		Labels:     map[string]string{"org.slivingdoc.tests3": "seaweedfs"},
+		Labels:     map[string]string{suiteLabel: "seaweedfs"},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("start s3 container: %w", err)
