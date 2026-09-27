@@ -320,8 +320,9 @@ copy is the authoritative one. Behavior worth remembering:
   `GET /v1/token`, a given bucket is kept, and with none the default
   login's space is used when that login is for the same endpoint.
 - The token comes from `SLIVINGDOC_TOKEN` or the credentials file only,
-  never a flag. An environment token uses its own space and never reads
-  `credentials.json`.
+  never a flag. An environment token uses its own space and reads
+  `credentials.json` only for the fallback above: a server without
+  `GET /v1/token` and no bucket given.
 - In `--storage auto`, an environment token beside `--endpoint`,
   `AWS_ENDPOINT_URL` or `AWS_ENDPOINT_URL_S3` is refused. A stored login
   wins over S3 when the bucket was defaulted from it, or when an explicit
