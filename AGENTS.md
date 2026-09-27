@@ -122,7 +122,8 @@ supplies the strict JSON value tree shared by the manifest and
 `state.json`. `internal/storage/fake` and `internal/storage/contract`
 provide the deterministic object store and the one contract suite run
 against the fake, the real S3 backend, and the hosted adapter.
-`internal/tests3` starts the pinned S3-compatible testcontainers backend;
+`internal/tests3` starts the pinned S3-compatible backend container through
+a small Docker Engine API client;
 `internal/httpstore/gatewaytest` is the in-process reference server of the
 hosted storage API.
 
@@ -195,9 +196,10 @@ slivingdoc/
     |   `-- gatewaytest/     test-only reference server of the hosted API
     |-- strictjson/          neutral strict JSON value tree (manifest and
     |                        state.json)
-    |-- tests3/              testcontainers S3 backend helper (currently
-    |                        SeaweedFS) (one container per `go test`
-    |                        invocation)
+    |-- tests3/              S3 backend container over the Docker Engine
+    |                        API (currently SeaweedFS): one per test
+    |                        process, or one leased container under
+    |                        `make test`
     |-- pathutil/            ExpandHome: ~ expansion for notebook paths and roots
     |-- mcp/                 stdio MCP server: the two strict tool schemas,
     |                        strict decoding, self-contained safe error text,
@@ -469,7 +471,8 @@ An unrecognized internal error maps to retryable `STORAGE_FAILURE` rather
 than leaking. Two deliberate exceptions come from hosted storage
 (architecture/hosted-mode.md): `STORAGE_FAILURE` is not retryable for the
 account refusals a retry cannot change, and the hosted server's own
-message, sanitized and redacted, is appended to their message. That text
+message, sanitized and redacted, is appended to their message and to the
+retryable upload refusal of a renewed stored-login token. That text
 is untrusted server output in agent-facing results. Caller-facing text
 must never contain a credential, an S3 key, a private path, a Git object ID,
 or Git vocabulary.
