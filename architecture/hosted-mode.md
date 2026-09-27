@@ -1,6 +1,6 @@
 # Hosted storage mode and the HTTP adapter
 
-A process configured with an API token (`SLIVINGDOC_TOKEN`) stores the notebook through the slivingdoc hosted storage API instead of S3. `internal/httpstore` is the second production `storage.ObjectStore`: the six operations over HTTPS with a bearer token, addressed to one named space. The object layout, the manifest, and the publication protocol are unchanged; hosted mode is an adapter below the same notebook code, plus a notebook-side compaction that lets a full space shrink. The API contract is `cloud/API.md` in [baalimago/slivingdoc-cloud](https://github.com/baalimago/slivingdoc-cloud) (formerly slivingdoc-web); it names nothing provider-specific. This doc answers "what changes when a token is set, how does an HTTP answer become a notebook error, and what happens when the space is full?"
+A process configured with an API token (`SLIVINGDOC_TOKEN`, or a token stored by `slivingdoc login`, [login.md](./login.md)) stores the notebook through the slivingdoc hosted storage API instead of S3. `internal/httpstore` is the second production `storage.ObjectStore`: the six operations over HTTPS with a bearer token, addressed to one named space. The object layout, the manifest, and the publication protocol are unchanged; hosted mode is an adapter below the same notebook code, plus a notebook-side compaction that lets a full space shrink. The API contract is `cloud/API.md` in [baalimago/slivingdoc-cloud](https://github.com/baalimago/slivingdoc-cloud) (formerly slivingdoc-web); it names nothing provider-specific. This doc answers "what changes when a token is set, how does an HTTP answer become a notebook error, and what happens when the space is full?"
 
 Read this when: changing hosted-mode selection or its settings, the HTTP request shape, the status-to-error mapping, the startup access check, token handling, retries, quota handling or compaction, the reference gateway, or the hosted scenarios.
 
@@ -8,10 +8,11 @@ Read this when: changing hosted-mode selection or its settings, the HTTP request
 
 | File | Purpose |
 |------|---------|
-| `internal/httpstore/store.go` | `API` (`slivingdoc-storage`), `Version` (1), `Config` (`Endpoint`, `Space`, `Prefix`, `Token`, `UserAgent`, `Client`, `Retries`, `Backoff`), `Doer`, `Store`, `New`, `ValidateSpace`, `ValidateToken`, `ValidateEndpoint`, `IsLoopback`, `ErrInvalidSpace`, `ErrInvalidToken`, `CheckAccess`, `ReadObject`, `PutObject`, `CreateObject`, `ReplaceObject`, `putSmall`, `ListObjects`, `DeleteObjects`, `objectURL`, `request`, `send`, `do`, `statusError`, `readAPIError`, `newRefusal`, `reasonNoObject`, `unreachable`, `usageNotFound`, `writeError`, `sanitize` |
+| `internal/httpstore/store.go` | `API` (`slivingdoc-storage`), `Version` (1), `Config` (`Endpoint`, `Space`, `Prefix`, `Token`, `UserAgent`, `Client`, `Retries`, `Backoff`), `Doer`, `Store`, `New`, `ValidateSpace`, `ValidateToken`, `ValidateEndpoint`, `IsLoopback`, `ErrInvalidSpace`, `ErrInvalidToken`, `CheckAccess`, `ReadObject`, `PutObject`, `CreateObject`, `ReplaceObject`, `putSmall`, `ListObjects`, `DeleteObjects`, `objectURL`, `request`, `send`, `do`, `statusError`, `readAPIError`, `newRefusal`, `reasonNoObject`, `unreachable`, `usageNotFound`, `writeError`, `Sanitize` |
 | `internal/httpstore/gatewaytest/gateway.go` | Test-only reference server of the API over the in-memory fake: `Start`, `URL`, `AddSpace`, `Grant`, `DeleteSpace`, `SetQuota`, `SetPageSize`, `RefuseNext`, `RefuseNextWithReason`, `Stored`, `Requests`, `MaxPackBytes`, `MaxSmallBytes`; `operation`, `authorize`, `notFound` (the 404 reasons) |
 | `internal/httpstore/store_test.go` | Contract suite against the gateway (with and without a prefix), `CheckAccess`, status table, retries, redirects, paging, delete batches, misbehaving servers, request headers, the 404 reasons (`TestRead404MapsByReason`, `TestGateway404Reasons`, `TestGatewayNoSpaceIsOneBody`, `TestCheckAccessUsage404ByReason`, `TestGatewayDescriptionAndListPrefix`) |
-| `internal/app/config.go` | `config.hosted`, `DefaultHostedEndpoint`, `validateHosted`, the hosted branch of `Flags.resolve`, `FlagReference` |
+| `internal/app/config.go` | `config.hosted`, `config.tokenOrigin`, `DefaultHostedEndpoint`, `validateHosted`, the hosted branch of `Flags.resolve`, `FlagReference` |
+| `internal/app/storage.go` | `resolveStorage`: `--storage`, the variable's token or a stored login, and the endpoint a stored token may reach ([login.md](./login.md)) |
 | `internal/app/app.go` | `realStoreFactory` (hosted branch builds `httpstore.New`), `accessChecker`, `checkStore`, the `hosted` field of the `serving` record |
 | `internal/storage/store.go` | `ErrQuotaExceeded`, `ErrRequestLimit`, `ErrRateLimited`, `ErrAccessDenied`, `ErrTooLarge`, `Refusal` |
 | `internal/storage/metadata.go` | `MetaSHA256`, `MetaSize`, `MetaKind`, `MetaGeneration`, `Metadata.Fields`, `ParseMetadata` (pack metadata as HTTP headers of the same names) |
@@ -26,8 +27,11 @@ Read this when: changing hosted-mode selection or its settings, the HTTP request
 ## Flow
 
 ```text
-Flags.resolve: SLIVINGDOC_TOKEN non-empty → config.hosted()
-  endpoint = --endpoint | SLIVINGDOC_ENDPOINT | DefaultHostedEndpoint   (AWS variables ignored)
+Flags.resolve → resolveStorage (login.md): --storage s3 → S3, never hosted
+  SLIVINGDOC_TOKEN non-empty → config.hosted(), tokenOrigin env
+    endpoint = --endpoint | SLIVINGDOC_ENDPOINT | DefaultHostedEndpoint   (AWS variables ignored)
+  else a usable stored login for the space → config.hosted(), tokenOrigin login
+    endpoint = the login's own (an explicit endpoint must equal it)
   normalizeEndpoint → validateHosted (space grammar, token grammar, https unless loopback)
 
 app.buildService → realStoreFactory → httpstore.New(Config{Endpoint, Space: bucket, Prefix, Token,
@@ -57,13 +61,14 @@ commit on a full space (notebook, any store):
 
 ## Behavior
 
-**Selection and settings.** A non-empty `SLIVINGDOC_TOKEN` selects hosted mode (`config.hosted`); the token has no flag, so it never appears in a process listing.
+**Selection and settings.** A non-empty `SLIVINGDOC_TOKEN` selects hosted mode (`config.hosted`) unless `--storage s3` is given; without it, a stored login for the space selects hosted mode too, and `--storage auto|hosted|s3` decides when both a login and AWS settings are present ([login.md](./login.md), Which storage a process uses). The token has no flag, so it never appears in a process listing.
 
 | Setting             | Flag         | Environment           | Default                      |
 | ------------------- | ------------ | --------------------- | ---------------------------- |
-| Hosted API token    | none         | `SLIVINGDOC_TOKEN`    | empty (S3 mode)              |
-| Space               | `--bucket`   | `SLIVINGDOC_BUCKET`   | required                     |
-| Hosted API endpoint | `--endpoint` | `SLIVINGDOC_ENDPOINT` | `https://api.slivingdoc.dev` |
+| Storage backend     | `--storage`  | `SLIVINGDOC_STORAGE`  | `auto`                       |
+| Hosted API token    | none         | `SLIVINGDOC_TOKEN`    | empty (a stored login, else S3 mode) |
+| Space               | `--bucket`   | `SLIVINGDOC_BUCKET`   | the default login's space, else required |
+| Hosted API endpoint | `--endpoint` | `SLIVINGDOC_ENDPOINT` | `https://api.slivingdoc.dev`; with a stored login, its own |
 | Prefix in the space | `--prefix`   | `SLIVINGDOC_PREFIX`   | `slivingdoc`                 |
 
 In hosted mode `--bucket` names the space and must match `httpstore.ValidateSpace` (1 to 63 lowercase letters, digits and inner hyphens). The endpoint is `--endpoint`, else `SLIVINGDOC_ENDPOINT`, else `DefaultHostedEndpoint`; `AWS_ENDPOINT_URL_S3` and `AWS_REGION` are not read, so they can never redirect a token, and the region check is skipped (`--region` is accepted and unused; `--path-style` is still parsed and validated, then unused). The endpoint goes through the same `normalizeEndpoint` as in S3 mode, then `validateHosted` requires `https` unless the host is loopback (`localhost` or a loopback IP, `httpstore.IsLoopback`), and requires the token to be non-empty printable ASCII without white space (`httpstore.ValidateToken`; the refusal names `SLIVINGDOC_TOKEN` and never echoes the value). `httpstore.New` repeats the endpoint, space, token and prefix checks. `Runtime.Serve` logs `hosted=true|false` in its `serving` record.
@@ -73,7 +78,7 @@ In hosted mode `--bucket` names the space and must match `httpstore.ValidateSpac
 1. `GET /v1` without the token. A 200 answer must decode to `api` `slivingdoc-storage`, `version` 1, and `conditionalWrites` true; anything else, including a non-200 answer or an undecodable body, wraps `ErrIncompatible`, except a 429 or a 5xx, which is a plain check failure. An unreachable server is a plain check failure too. A 404, whatever its reason, is `ErrIncompatible` alone: there is no storage API at this endpoint. Any other non-200 answer also wraps its `statusError` sentinel, so a 401 or 403 here is reported as a token refusal, which `checkStore` tests first.
 2. `GET /v1/spaces/{space}/usage` with the token. It is read-only, so a read-only token passes. A 404 is `ErrAccessDenied` whatever its reason (`usageNotFound`): `no_space` says the space does not exist or the token was not granted it, and anything else (`no_endpoint`, no reason, even `no_object`) says the endpoint has no such space API (check `--endpoint`); the gateway's message travels as the refusal's `Message`, as for every other refusal. A 401 or 403 is `ErrAccessDenied` too, through `statusError`; any other non-200 is a plain check failure.
 
-`checkStore` turns `ErrAccessDenied` into `app: hosted storage refused the token: ...; check SLIVINGDOC_TOKEN and --bucket`, `ErrIncompatible` into `app: INCOMPATIBLE_STORE: hosted storage check failed: ...`, and anything else into `app: hosted storage check failed: ...`, each through `mcp.Redact`. All run within `probeTimeout` (30 s) before any transport serves.
+`checkStore` turns `ErrAccessDenied` into `app: hosted storage refused the token: ...; check SLIVINGDOC_TOKEN and --bucket` (for a token from a stored login, `config.tokenOrigin` `originLogin`: `app: hosted storage refused the stored login: ...; run 'slivingdoc login' again, or check --bucket`), `ErrIncompatible` into `app: INCOMPATIBLE_STORE: hosted storage check failed: ...`, and anything else into `app: hosted storage check failed: ...`, each through `mcp.Redact`. All run within `probeTimeout` (30 s) before any transport serves.
 
 **Requests.** Every request carries `Accept-Encoding: identity` (a transparently decompressed body would lose its length) and `User-Agent: slivingdoc/<version>`; every request except `GET /v1` carries `Authorization: Bearer <token>`, the only place the token travels. `objectURL` path-escapes each key segment and percent-encodes a `.` or `..` segment so nothing resolves out of the space. Pack uploads are one streamed `PUT` with an exact `Content-Length` and `application/octet-stream`; the four metadata fields travel as HTTP headers named by `storage.MetaSHA256` and its siblings, and `ReadObject` parses them back with `storage.ParseMetadata` (a malformed field is `ErrIntegrity`). `ReadObject` takes `Size` from `Content-Length` and the ETag from the `ETag` header. `CreateObject`/`ReplaceObject` send the bytes with `If-None-Match: *` / `If-Match`, and a success without an `ETag` header is `ErrTransport`. `ListObjects` joins the prefix, strips it from each returned key, refuses a key outside the requested prefix (`ErrIntegrity`) and a repeated cursor (`ErrTransport`). A transport failure before any response is `ErrTransport` (ambiguous for a write).
 
@@ -125,18 +130,19 @@ Because the compacted manifest keeps no retained generation, another writer's pu
 
 ## Gotchas
 
-- `--endpoint` is shared with S3 mode: an S3 command line that passes `--endpoint` sends the token to that host if `SLIVINGDOC_TOKEN` is also set in the environment. Only the AWS variables are ignored.
+- `--endpoint` is shared with S3 mode: under `--storage auto` (the default) an S3 command line that passes `--endpoint` still sends the token to that host if `SLIVINGDOC_TOKEN` is also set in the environment; only the AWS variables are ignored. `--storage s3` closes this: it never reads the token. A stored login is safe either way, because it is only used at the endpoint it was issued for ([login.md](./login.md)).
 - `ReplaceObject` relies on the API answering `If-Match` on an absent object with 412; a 404 there means the space is gone or the grant was revoked (`ErrAccessDenied`), never CAS contention.
 - A 507 must never be retried and never become `ErrTransport`: `do` excludes it explicitly, and the compaction branch matches `ErrQuotaExceeded` only.
 - A space that stops being reachable while `serve` runs (deleted, or the grant revoked or moved) answers 404 `no_space`, which is `ACCESS_DENIED` on every read: a pull, a first pull, or an entry recovery is refused with L and P untouched (`TestHostedUnreachableSpacePullKeepsNotes`, `TestHostedUnreachableSpaceFirstPullKeepsFiles`, `TestHostedUnreachableSpaceEntryRecoveryKeepsNotes`); `CheckAccess` alone could only catch it at startup. Do not loosen the `no_object` test: `readCurrent` reads `ErrNotFound` on `current` as the empty notebook.
 - A store refusal can also stop a recovery: when the resynchronizing `readRemote` of `entryRecovery`, `applyLocal` or `failAfterAccept` is refused (a revoked token, throttling), the call is still `RECOVERY_FAILURE` with `resynchronized=false`, but it carries the refusal's reason and action and a recovery message that makes no claim about publication (`recoveryFailure`, `recoveryRefusalMessages`), and it is not retryable unless the reason is `RATE_LIMITED` ([guarantees.md](./guarantees.md), [errors.md](./errors.md)).
-- `internal/integrationtest` drops `SLIVINGDOC_TOKEN` and `SLIVINGDOC_ENDPOINT` from spawned helpers (`sanitizedEnv`), so a developer's token never turns an S3 scenario into a hosted one.
+- `internal/integrationtest` drops `SLIVINGDOC_TOKEN`, `SLIVINGDOC_ENDPOINT`, `SLIVINGDOC_STORAGE`, `SLIVINGDOC_SITE` and `SLIVINGDOC_CONFIG_DIR` from spawned helpers (`sanitizedEnv`) and gives each helper an empty credentials directory, so neither a developer's token nor their login turns an S3 scenario into a hosted one.
 - A custom `Config.Client` bypasses the no-redirect client; only tests set it.
 
 ## Related
 
 - [storage.md](./storage.md): the `ObjectStore` seam, the semantic errors, the metadata fields, and the contract suite.
 - [s3store.md](./s3store.md): the other production adapter.
+- [login.md](./login.md): `slivingdoc login`, the stored token, and `--storage`.
 - [config.md](./config.md) and [running.md](./running.md): every flag and variable, including the hosted ones.
 - [commit.md](./commit.md) and [checkpoints.md](./checkpoints.md): publication, cleanup and shallow history that compaction reuses.
 - [errors.md](./errors.md): how the store refusals become tool results.

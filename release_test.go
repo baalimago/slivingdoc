@@ -167,7 +167,14 @@ var slivingdocEnv = map[string]bool{
 	"SLIVINGDOC_COMMIT_RETRIES":   true,
 	"SLIVINGDOC_CHECKPOINT_PACKS": true, "SLIVINGDOC_RETAINED_CHECKPOINTS": true,
 	"NO_COLOR": true, "LOG_LEVEL": true,
+	"SLIVINGDOC_TOKEN": true, "SLIVINGDOC_ENDPOINT": true, "SLIVINGDOC_STORAGE": true,
+	"SLIVINGDOC_SITE": true, "SLIVINGDOC_CONFIG_DIR": true,
 }
+
+// releaseConfigDir is the credentials directory of every spawned binary: a
+// path nobody creates, so a developer's own 'slivingdoc login' never
+// reaches the release checks (architecture/login.md).
+var releaseConfigDir = filepath.Join(os.TempDir(), "slivingdoc-release-test-no-login")
 
 // sanitizedEnv is the ambient environment without any slivingdoc
 // configuration. Everything else is preserved, because the same spawner
@@ -182,7 +189,7 @@ func sanitizedEnv() []string {
 		}
 		out = append(out, kv)
 	}
-	return out
+	return append(out, "SLIVINGDOC_CONFIG_DIR="+releaseConfigDir)
 }
 
 // startAndWait runs name with args and collects its streams and exit code.

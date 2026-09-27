@@ -4,7 +4,7 @@ How slivingdoc is tested: one Go command and one npm command, the test layers fr
 
 Read this when: adding or changing a test, a scenario, a fault or failpoint, the S3 test backend, the hosted reference gateway, the Makefile `test` target, coverage, or anything that could make the gate slow or flaky.
 
-No test uses live AWS resources or the live hosted service. Real-S3 tests use the pinned testcontainer image (currently SeaweedFS); hosted-mode tests use the in-process reference gateway `internal/httpstore/gatewaytest`.
+No test uses live AWS resources, the live hosted service, or the live site. Real-S3 tests use the pinned testcontainer image (currently SeaweedFS); hosted-mode tests use the in-process reference gateway `internal/httpstore/gatewaytest`; login tests use the reference site `internal/sitelogin/sitetest`.
 
 ## Key files
 
@@ -18,9 +18,11 @@ No test uses live AWS resources or the live hosted service. Real-S3 tests use th
 | `internal/integrationtest/scenario.go` | Scenario DSL types: `ToolCall`, `CallExpectation`, `Expectations`, `FSAssertions`, `S3Assertions`, `LogExpectations`, ... |
 | `internal/integrationtest/assertions.go` | `StateRecord`, `PackCacheDir`, `SharedPackCacheDir` |
 | `internal/integrationtest/logcapture.go` | `LogCapture` handler for log assertions |
-| `internal/integrationtest/main_test.go` | `TestMain` (helper-mode dispatch, `tests3.Start`), `helperMain` (runs `cli.Run` in a re-executed test binary), `spawnHelper`, `spawnHelperIn` |
-| `internal/integrationtest/scenario_*_test.go` | One file per use case: pull, commit, conflict, checkpoint, recovery, integrity, error taxonomy, readonly, writable, path security, validation, transport, config, cli, ephemeral, shared cache, logging, log flags, colour, result, hosted |
+| `internal/integrationtest/main_test.go` | `TestMain` (helper-mode dispatch, `tests3.Start`), `helperMain` (runs `cli.Run` in a re-executed test binary; its `OpenBrowser` always fails and its `Sleep` waits a hundredth of the asked time), `spawnHelper`, `spawnHelperIn` (a fresh `SLIVINGDOC_CONFIG_DIR` per helper), `sanitizedEnv` |
+| `internal/integrationtest/scenario_*_test.go` | One file per use case: pull, commit, conflict, checkpoint, recovery, integrity, error taxonomy, readonly, writable, path security, validation, transport, config, cli, ephemeral, shared cache, logging, log flags, colour, result, hosted, login |
 | `internal/integrationtest/scenario_hosted_test.go` | CLI processes (helper mode `real`, `SLIVINGDOC_TOKEN` set) against `gatewaytest`: round trip, storage full with compaction and `REQUEST_LIMIT`, a read-only token, startup refusals |
+| `internal/integrationtest/scenario_login_test.go` | CLI processes against `sitetest` and `gatewaytest` with a shared `SLIVINGDOC_CONFIG_DIR` and no `SLIVINGDOC_TOKEN`: login then pull and commit, login again (revocation, owner line), denied/expired/refused polls, `--storage` selection (an S3 choice is proven by a probe failure against a closed loopback port with `AWS_MAX_ATTEMPTS=1` and no gateway request), an expired login, logout ([login.md](./login.md)) |
+| `internal/sitelogin/sitetest/site.go` | Test-only reference site of the CLI login routes with scripted approvals ([login.md](./login.md)) |
 | `internal/integrationtest/pure_test.go` | Unit tests of the recorder and fault wrapper |
 | `internal/storage/contract/suite.go` | `contract.Run(t, Factory)`: one `ObjectStore` suite for every backend |
 | `internal/httpstore/gatewaytest/gateway.go` | Test-only reference server of the hosted storage API over the fake store: grants, quotas, injected refusals ([hosted-mode.md](./hosted-mode.md)) |
@@ -90,6 +92,8 @@ process scenario
 |---|---|
 | S3 | `storage.ObjectStore` with `storage/fake`; `app.ProcessOptions.StoreFactory` |
 | Hosted storage API | `gatewaytest` (a local `httptest` server); `httpstore.Config.Client`, `Retries`, `Backoff` |
+| Login site, browser, poll timing, host name | `sitetest` (a local `httptest` server); `sitelogin.Config.Sleep`, `Now`; `app.ProcessOptions.OpenBrowser`, `Sleep`, `Hostname` |
+| Stored logins | `SLIVINGDOC_CONFIG_DIR` in the injected environment (`credentials.Locate` never reads the real process environment) |
 | Git behavior | `git.Engine` / `git.Repository` interfaces with fake repositories in `notebook` and `workspace` tests |
 | libgit2 | real component tests in temporary directories |
 | Filesystem | per-test temporary roots |
@@ -101,7 +105,7 @@ process scenario
 
 **Scenarios are the spec.** Public behavior changes start in `internal/integrationtest`. MCP JSON-RPC is the only entry; scenarios never call notebook, git, workspace or storage functions directly. Where prose and a passing scenario disagree, the scenario wins. Do not change an assertion until you understand the contract it protects.
 
-**Store selection.** `NewHarness` with a nil `Store` builds the real `s3store` against the shared SeaweedFS on a fresh prefix; with an injected store, `Prefix` is required and `Bucket` defaults to `test-bucket`. Scenarios whose evidence must be real HTTP conditional writes use real S3: CAS races, competing checkpoint workers, the stale-reader restart, and cleanup after a checkpoint, plus CLI process scenarios (helper mode `real`) that need state across one-shot processes. Helper mode `real` leaves the store factory nil, so a scenario that sets `SLIVINGDOC_TOKEN` and `SLIVINGDOC_ENDPOINT` (the hosted scenarios) runs the real hosted adapter against a `gatewaytest` server instead; `sanitizedEnv` drops both variables from every other helper. Most other scenarios use `newFakeHarness` (`fake.New("scenario")`), which is contract-equivalent because `contract.Run` proves the fake and the adapter agree. The startup probe does not run in the harness (it lives in the process body), so recorder counts start at zero.
+**Store selection.** `NewHarness` with a nil `Store` builds the real `s3store` against the shared SeaweedFS on a fresh prefix; with an injected store, `Prefix` is required and `Bucket` defaults to `test-bucket`. Scenarios whose evidence must be real HTTP conditional writes use real S3: CAS races, competing checkpoint workers, the stale-reader restart, and cleanup after a checkpoint, plus CLI process scenarios (helper mode `real`) that need state across one-shot processes. Helper mode `real` leaves the store factory nil, so a scenario that sets `SLIVINGDOC_TOKEN` and `SLIVINGDOC_ENDPOINT` (the hosted scenarios) runs the real hosted adapter against a `gatewaytest` server instead; `sanitizedEnv` drops both variables from every other helper, together with `SLIVINGDOC_STORAGE`, `SLIVINGDOC_SITE` and `SLIVINGDOC_CONFIG_DIR`, and `spawnHelperIn` gives every helper an empty credentials directory, so a developer's login never makes a scenario hosted; the login scenarios pass one directory to every process they chain. Most other scenarios use `newFakeHarness` (`fake.New("scenario")`), which is contract-equivalent because `contract.Run` proves the fake and the adapter agree. The startup probe does not run in the harness (it lives in the process body), so recorder counts start at zero.
 
 **Faults.** `faultStore` wraps any base store, including real S3, and injects what a real store cannot produce on demand: one-shot or permanent failures by key or prefix, accept-then-error ambiguity (`AmbiguousNext`, `AmbiguousNextOp`), unprovable CAS read-back (`UnprovableNext`), corrupted reads, failing delete batches, and op+key barriers (`BlockNext`, `BlockPrefix`, `Release`, `Waiting`) with a 5 s bound so a failed assertion cannot strand a blocked operation. Barriers make CAS winners and losers deterministic. The fake store has the same injector with a 10 s bound.
 

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/baalimago/slivingdoc/internal/app"
 	"github.com/baalimago/slivingdoc/internal/cli"
+	"github.com/baalimago/slivingdoc/internal/credentials"
 	"github.com/baalimago/slivingdoc/internal/git2"
 	"github.com/baalimago/slivingdoc/internal/storage"
 	"github.com/baalimago/slivingdoc/internal/storage/fake"
@@ -57,6 +59,22 @@ func helperMain(mode string) int {
 		Stdout:   os.Stdout,
 		Stderr:   os.Stderr,
 		Signals:  make(chan os.Signal, 1), // the helper never receives OS signals
+		// No scenario ever starts a browser: a failing opener proves that
+		// the login treats a missing browser as non-fatal.
+		OpenBrowser: func(string) error { return errors.New("no browser in the integration helper") },
+		// The login poll waits a hundredth of what the site asks for, so a
+		// slow_down (five more seconds) costs 50 ms; the sitelogin unit
+		// tests pin the exact durations.
+		Sleep: func(ctx context.Context, d time.Duration) error {
+			timer := time.NewTimer(d / 100)
+			defer timer.Stop()
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-timer.C:
+				return nil
+			}
+		},
 	}
 	switch mode {
 	case "fake":
@@ -155,6 +173,10 @@ func spawnHelperIn(t *testing.T, dir, mode string, extraEnv []string, args ...st
 		"SLIVINGDOC_PREFIX=integration-prefix",
 		"SLIVINGDOC_WORKSPACE_ROOT="+workspaceRoot,
 		"SLIVINGDOC_PRIVATE_ROOT="+privateRoot,
+		// An empty credentials directory of its own: a developer's
+		// 'slivingdoc login' never turns a scenario hosted
+		// (architecture/login.md). Login scenarios pass their own.
+		credentials.DirEnv+"="+t.TempDir(),
 	)
 	env = overrideEnv(env, extraEnv)
 	// The race runtime sleeps atexit_sleep_ms (default 1 s) on every clean
@@ -216,7 +238,8 @@ func overrideEnv(env, overrides []string) []string {
 }
 
 // sanitizedEnv returns the test process environment without AWS credential
-// and endpoint variables or a hosted API token, so a spawned helper can
+// and endpoint variables, a hosted API token, or a storage, site or
+// credentials-directory choice, so a spawned helper can
 // never observe the developer's cloud configuration. It also drops
 // NO_COLOR: terminal-colour scenarios model their own environment and must
 // not inherit a user's output preference.
@@ -230,7 +253,8 @@ func sanitizedEnv() []string {
 			"AWS_ENDPOINT_URL", "AWS_CA_BUNDLE", "AWS_SHARED_CREDENTIALS_FILE",
 			"AWS_CONFIG_FILE", "SLIVINGDOC_BUCKET", "SLIVINGDOC_PREFIX",
 			"SLIVINGDOC_WORKSPACE_ROOT", "SLIVINGDOC_PRIVATE_ROOT",
-			"SLIVINGDOC_SHARED_PACK_CACHE", "SLIVINGDOC_TOKEN", "SLIVINGDOC_ENDPOINT", "NO_COLOR":
+			"SLIVINGDOC_SHARED_PACK_CACHE", "SLIVINGDOC_TOKEN", "SLIVINGDOC_ENDPOINT",
+			"SLIVINGDOC_STORAGE", "SLIVINGDOC_SITE", credentials.DirEnv, "NO_COLOR":
 			continue
 		}
 		out = append(out, kv)

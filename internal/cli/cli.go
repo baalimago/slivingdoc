@@ -15,6 +15,7 @@ import (
 	"github.com/baalimago/go_away_boilerplate/pkg/cmd"
 
 	"github.com/baalimago/slivingdoc/cmd/commit"
+	"github.com/baalimago/slivingdoc/cmd/login"
 	"github.com/baalimago/slivingdoc/cmd/pull"
 	"github.com/baalimago/slivingdoc/cmd/serve"
 	"github.com/baalimago/slivingdoc/cmd/version"
@@ -36,6 +37,10 @@ Run 'slivingdoc serve -h' for the full flag and environment reference.
 Humans sync the shared directory directly with 'slivingdoc pull <path>'
 and 'slivingdoc commit <path> -m <message>'.
 
+For hosted storage, 'slivingdoc login' stores a token through the browser,
+so serve, pull and commit need no SLIVINGDOC_TOKEN; --storage auto|hosted|s3
+chooses between a login and S3 explicitly. 'slivingdoc logout' revokes it.
+
 Logging is configured by the environment; serve, pull, and commit also
 take --log-level and --log-timestamp, which override it:
   LOG_LEVEL   per-module levels, for example "cli=warn,mcp=debug,info".
@@ -54,6 +59,8 @@ func Commands(engine git.Engine, opts app.ProcessOptions) map[string]cmd.Command
 		"serve|s":   serve.Command(engine, opts),
 		"pull|p":    pull.Command(engine, opts),
 		"commit|c":  commit.Command(engine, opts),
+		"login":     login.Command(opts),
+		"logout":    login.LogoutCommand(opts),
 		"version|v": version.Command(opts.Stdout),
 	}
 }

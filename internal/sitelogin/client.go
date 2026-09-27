@@ -1,0 +1,461 @@
+// Package sitelogin is the client of the site's CLI login routes
+// (architecture/login.md): POST /cli/v1/start opens a device approval,
+// POST /cli/v1/token polls it until a person approves or denies it in the
+// browser, and POST /cli/v1/revoke withdraws an issued token. The client
+// validates everything the site answers before a caller prints it, opens
+// it in a browser, or stores it, and never follows a redirect.
+package sitelogin
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"strings"
+	"time"
+
+	"github.com/baalimago/slivingdoc/internal/credentials"
+	"github.com/baalimago/slivingdoc/internal/httpstore"
+)
+
+// DefaultSite is the site a login uses when none is configured.
+const DefaultSite = "https://www.slivingdoc.dev"
+
+// The contract's route paths.
+const (
+	startPath  = "/cli/v1/start"
+	tokenPath  = "/cli/v1/token"
+	revokePath = "/cli/v1/revoke"
+)
+
+// slowDownStep is what a slow_down answer adds to the poll interval.
+const slowDownStep = 5 * time.Second
+
+// minInterval bounds how fast the client polls whatever the site says.
+const minInterval = time.Second
+
+// bodyLimit bounds how much of any answer is read.
+const bodyLimit = 16 << 10
+
+// clientLimit is the longest client label the start route accepts.
+const clientLimit = 64
+
+var (
+	// ErrDenied reports that the person denied the login in the browser.
+	ErrDenied = errors.New("sitelogin: the login was denied in the browser")
+	// ErrCodeExpired reports a device code the site no longer knows: it
+	// expired, or it was already claimed.
+	ErrCodeExpired = errors.New("sitelogin: the login code expired before it was approved")
+	// ErrProtocol reports an answer outside the wire contract.
+	ErrProtocol = errors.New("sitelogin: unexpected answer from the site")
+	// ErrRefused reports an error answer of the site.
+	ErrRefused = errors.New("sitelogin: the site refused the request")
+)
+
+// Doer sends one HTTP request. *http.Client satisfies it.
+type Doer interface {
+	Do(*http.Request) (*http.Response, error)
+}
+
+// Config binds a client to one site.
+type Config struct {
+	// Site is the normalized site origin, for example
+	// https://www.slivingdoc.dev.
+	Site string
+	// UserAgent is sent with every request.
+	UserAgent string
+	// Client sends the requests; nil uses a client that never follows a
+	// redirect.
+	Client Doer
+	// Sleep waits d or until ctx ends; nil waits on a timer.
+	Sleep func(ctx context.Context, d time.Duration) error
+	// Now is the clock of the code's expiry; nil is time.Now.
+	Now func() time.Time
+}
+
+// Client talks to one site's CLI login routes.
+type Client struct {
+	site      *url.URL
+	userAgent string
+	client    Doer
+	sleep     func(context.Context, time.Duration) error
+	now       func() time.Time
+}
+
+// New validates the site and returns a client. The site must be an
+// absolute https origin, or http to this machine only: the approval and
+// the token travel over it.
+func New(cfg Config) (*Client, error) {
+	site, err := parseSite(cfg.Site)
+	if err != nil {
+		return nil, err
+	}
+	client := cfg.Client
+	if client == nil {
+		client = &http.Client{
+			Timeout: 30 * time.Second,
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		}
+	}
+	sleep := cfg.Sleep
+	if sleep == nil {
+		sleep = timerSleep
+	}
+	now := cfg.Now
+	if now == nil {
+		now = time.Now
+	}
+	return &Client{site: site, userAgent: cfg.UserAgent, client: client, sleep: sleep, now: now}, nil
+}
+
+// Site is the normalized site origin.
+func (c *Client) Site() string { return c.site.String() }
+
+func parseSite(raw string) (*url.URL, error) {
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return nil, errors.New("sitelogin: the site must be an absolute http or https URL")
+	}
+	if u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") {
+		return nil, errors.New("sitelogin: the site must be an origin without a path, user information, query or fragment")
+	}
+	if u.Scheme != "https" && !httpstore.IsLoopback(u.Hostname()) {
+		return nil, errors.New("sitelogin: the site must use https so the login is never sent in clear text")
+	}
+	return &url.URL{Scheme: strings.ToLower(u.Scheme), Host: strings.ToLower(u.Host)}, nil
+}
+
+func timerSleep(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
+}
+
+// StartRequest asks the site for a device approval.
+type StartRequest struct {
+	// Space preselects a space on the approval page; empty lets the person
+	// choose.
+	Space  string
+	Access credentials.Access
+	// Client labels the token, usually the host name; it is cut to the
+	// printable ASCII the route accepts.
+	Client string
+}
+
+// Approval is an open device approval.
+type Approval struct {
+	deviceCode string
+	// UserCode is what the person compares on the approval page.
+	UserCode string
+	// URI is the approval page; CompleteURI carries the code already.
+	URI         string
+	CompleteURI string
+	// Interval is the pause between two polls.
+	Interval time.Duration
+	// Deadline is when the site forgets the approval.
+	Deadline time.Time
+}
+
+type startBody struct {
+	Space  string `json:"space,omitempty"`
+	Access string `json:"access"`
+	Client string `json:"client,omitempty"`
+}
+
+type startAnswer struct {
+	DeviceCode              string `json:"deviceCode"`
+	UserCode                string `json:"userCode"`
+	VerificationURI         string `json:"verificationUri"`
+	VerificationURIComplete string `json:"verificationUriComplete"`
+	Interval                int    `json:"interval"`
+	ExpiresIn               int    `json:"expiresIn"`
+}
+
+// Start opens a device approval.
+func (c *Client) Start(ctx context.Context, req StartRequest) (Approval, error) {
+	var ans startAnswer
+	if err := c.post(ctx, startPath, "", startBody{
+		Space:  req.Space,
+		Access: string(req.Access),
+		Client: label(req.Client),
+	}, &ans); err != nil {
+		return Approval{}, err
+	}
+	if ans.DeviceCode == "" || !printable(ans.DeviceCode) {
+		return Approval{}, fmt.Errorf("%w: no usable device code", ErrProtocol)
+	}
+	if ans.UserCode == "" || len(ans.UserCode) > clientLimit || !printable(ans.UserCode) {
+		return Approval{}, fmt.Errorf("%w: no usable user code", ErrProtocol)
+	}
+	uri, err := c.sameOrigin(ans.VerificationURI)
+	if err != nil {
+		return Approval{}, fmt.Errorf("%w: verificationUri: %w", ErrProtocol, err)
+	}
+	complete, err := c.sameOrigin(ans.VerificationURIComplete)
+	if err != nil {
+		return Approval{}, fmt.Errorf("%w: verificationUriComplete: %w", ErrProtocol, err)
+	}
+	if ans.ExpiresIn <= 0 || ans.Interval < 0 {
+		return Approval{}, fmt.Errorf("%w: interval %d, expiresIn %d", ErrProtocol, ans.Interval, ans.ExpiresIn)
+	}
+	return Approval{
+		deviceCode:  ans.DeviceCode,
+		UserCode:    ans.UserCode,
+		URI:         uri,
+		CompleteURI: complete,
+		Interval:    max(time.Duration(ans.Interval)*time.Second, minInterval),
+		Deadline:    c.now().Add(time.Duration(ans.ExpiresIn) * time.Second),
+	}, nil
+}
+
+// sameOrigin accepts an approval page on the site's own origin only, so
+// the page a browser opens, or a person is told to open, can never be
+// another host or another scheme.
+func (c *Client) sameOrigin(raw string) (string, error) {
+	if !printable(raw) {
+		return "", errors.New("not a printable URL")
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", errors.New("not a URL")
+	}
+	if strings.ToLower(u.Scheme) != c.site.Scheme || strings.ToLower(u.Host) != c.site.Host || u.User != nil {
+		return "", fmt.Errorf("not on %s", c.site)
+	}
+	return raw, nil
+}
+
+// Issued is the token an approved login returns.
+type Issued struct {
+	Token    string
+	Space    string
+	Access   credentials.Access
+	Expires  credentials.Expiry
+	Endpoint string
+	// Account is the email of the person who approved the code, and Owner
+	// the email of the space's owner. Whoever submits a code first decides
+	// it, so a caller shows both: that is how a person notices that
+	// someone else approved their login.
+	Account string
+	Owner   string
+}
+
+type tokenBody struct {
+	DeviceCode string `json:"deviceCode"`
+}
+
+type tokenAnswer struct {
+	Token     string  `json:"token"`
+	Space     string  `json:"space"`
+	Access    string  `json:"access"`
+	ExpiresAt *string `json:"expiresAt"`
+	Endpoint  string  `json:"endpoint"`
+	Account   string  `json:"account"`
+	Owner     string  `json:"owner"`
+}
+
+// Wait polls the approval until the site issues the token, the person
+// denies it, the code expires, or ctx ends. It pauses Interval before
+// every poll and adds five seconds after each slow_down answer.
+func (c *Client) Wait(ctx context.Context, a Approval) (Issued, error) {
+	interval := a.Interval
+	for {
+		if err := c.sleep(ctx, interval); err != nil {
+			return Issued{}, err
+		}
+		if !c.now().Before(a.Deadline) {
+			return Issued{}, ErrCodeExpired
+		}
+		var ans tokenAnswer
+		err := c.post(ctx, tokenPath, "", tokenBody{DeviceCode: a.deviceCode}, &ans)
+		var refusal *Refusal
+		if errors.As(err, &refusal) {
+			switch refusal.Code {
+			case "authorization_pending":
+				continue
+			case "slow_down":
+				interval += slowDownStep
+				continue
+			case "access_denied":
+				return Issued{}, withMessage(ErrDenied, refusal)
+			case "expired_token":
+				return Issued{}, withMessage(ErrCodeExpired, refusal)
+			}
+		}
+		if err != nil {
+			return Issued{}, err
+		}
+		return issued(ans)
+	}
+}
+
+// withMessage adds the site's message for a person to a terminal poll
+// outcome.
+func withMessage(outcome error, r *Refusal) error {
+	if r.Message == "" {
+		return outcome
+	}
+	return fmt.Errorf("%w (the site says: %s)", outcome, r.Message)
+}
+
+// emailLimit bounds the account and owner the client prints.
+const emailLimit = 254
+
+func issued(ans tokenAnswer) (Issued, error) {
+	if err := httpstore.ValidateToken(ans.Token); err != nil {
+		return Issued{}, fmt.Errorf("%w: the token cannot be used", ErrProtocol)
+	}
+	if err := httpstore.ValidateSpace(ans.Space); err != nil {
+		return Issued{}, fmt.Errorf("%w: %w", ErrProtocol, err)
+	}
+	access, err := credentials.ParseAccess(ans.Access)
+	if err != nil {
+		return Issued{}, fmt.Errorf("%w: %w", ErrProtocol, err)
+	}
+	if err := httpstore.ValidateEndpoint(ans.Endpoint); err != nil {
+		return Issued{}, fmt.Errorf("%w: %w", ErrProtocol, err)
+	}
+	if !usableEmail(ans.Account) {
+		return Issued{}, fmt.Errorf("%w: no usable account", ErrProtocol)
+	}
+	if !usableEmail(ans.Owner) {
+		return Issued{}, fmt.Errorf("%w: no usable owner", ErrProtocol)
+	}
+	out := Issued{Token: ans.Token, Space: ans.Space, Access: access, Endpoint: ans.Endpoint, Account: ans.Account, Owner: ans.Owner}
+	if ans.ExpiresAt != nil {
+		at, err := time.Parse(time.RFC3339, *ans.ExpiresAt)
+		if err != nil {
+			return Issued{}, fmt.Errorf("%w: expiresAt is not RFC 3339", ErrProtocol)
+		}
+		out.Expires = credentials.ExpiresAt(at)
+	}
+	return out, nil
+}
+
+// Revoke withdraws token at the site. A token the site no longer knows
+// (401) is already withdrawn, so it counts as done.
+func (c *Client) Revoke(ctx context.Context, token string) error {
+	if err := httpstore.ValidateToken(token); err != nil {
+		return errors.New("sitelogin: the stored token cannot be sent")
+	}
+	err := c.post(ctx, revokePath, token, nil, nil)
+	var refusal *Refusal
+	if errors.As(err, &refusal) && refusal.Status == http.StatusUnauthorized {
+		return nil
+	}
+	return err
+}
+
+// Refusal is an error answer of the site: its status, its error code and
+// its message, sanitized to one printable line.
+type Refusal struct {
+	Status  int
+	Code    string
+	Message string
+}
+
+func (r *Refusal) Error() string {
+	msg := fmt.Sprintf("sitelogin: the site answered HTTP %d", r.Status)
+	if r.Code != "" {
+		msg += " " + r.Code
+	}
+	if r.Message != "" {
+		msg += ": " + r.Message
+	}
+	return msg
+}
+
+func (r *Refusal) Unwrap() error { return ErrRefused }
+
+type errorAnswer struct {
+	Error   string `json:"error"`
+	Message string `json:"message"`
+}
+
+// post sends one JSON request. A non-empty token authenticates it; a nil
+// out expects 204 and no body.
+func (c *Client) post(ctx context.Context, path, token string, in, out any) error {
+	var body io.Reader
+	if in != nil {
+		data, err := json.Marshal(in)
+		if err != nil {
+			return fmt.Errorf("sitelogin: encode request: %w", err)
+		}
+		body = bytes.NewReader(data)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.site.String()+path, body)
+	if err != nil {
+		return fmt.Errorf("sitelogin: build request: %w", err)
+	}
+	if in != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	req.Header.Set("Accept", "application/json")
+	if c.userAgent != "" {
+		req.Header.Set("User-Agent", c.userAgent)
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := c.client.Do(req)
+	if err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return fmt.Errorf("sitelogin: %s unreachable: %w", c.site, err)
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(resp.Body, bodyLimit))
+	if err != nil {
+		return fmt.Errorf("sitelogin: read answer: %w", err)
+	}
+	switch {
+	case resp.StatusCode >= 200 && resp.StatusCode < 300 && out == nil:
+		return nil
+	case resp.StatusCode == http.StatusOK:
+		if err := json.Unmarshal(data, out); err != nil {
+			return fmt.Errorf("%w: the body is not the expected JSON", ErrProtocol)
+		}
+		return nil
+	default:
+		var ans errorAnswer
+		_ = json.Unmarshal(data, &ans)
+		return &Refusal{Status: resp.StatusCode, Code: httpstore.Sanitize(ans.Error, 64), Message: httpstore.Sanitize(ans.Message, 300)}
+	}
+}
+
+// label keeps the printable ASCII of a client label, cut to the length
+// the route accepts.
+func label(s string) string {
+	var b strings.Builder
+	for _, r := range strings.TrimSpace(s) {
+		if r >= ' ' && r <= '~' && b.Len() < clientLimit {
+			b.WriteRune(r)
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
+// usableEmail accepts an account or owner the client can print on one
+// terminal line.
+func usableEmail(s string) bool { return s != "" && len(s) <= emailLimit && printable(s) }
+
+func printable(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] <= ' ' || s[i] > '~' {
+			return false
+		}
+	}
+	return true
+}

@@ -137,26 +137,31 @@ func TestCheckStoreHosted(t *testing.T) {
 		return s
 	}
 
-	if err := checkStore(context.Background(), newStore(t, hostedTestToken)); err != nil {
+	if err := checkStore(context.Background(), newStore(t, hostedTestToken), originEnv); err != nil {
 		t.Fatalf("checkStore with a read-only token = %v, want success without the write probe", err)
 	}
 	if g.Stored("notes") != 0 {
 		t.Fatal("the hosted check wrote to the space")
 	}
 
-	err := checkStore(context.Background(), newStore(t, "sld_unknown"))
+	err := checkStore(context.Background(), newStore(t, "sld_unknown"), originEnv)
 	if err == nil || !strings.Contains(err.Error(), "refused the token") || strings.Contains(err.Error(), "sld_unknown") {
 		t.Fatalf("checkStore with an unknown token = %v, want a redacted token refusal", err)
 	}
+	err = checkStore(context.Background(), newStore(t, "sld_unknown"), originLogin)
+	if err == nil || !strings.Contains(err.Error(), "refused the stored login") ||
+		!strings.Contains(err.Error(), "run 'slivingdoc login' again") || strings.Contains(err.Error(), "sld_unknown") {
+		t.Fatalf("checkStore with an unknown stored login = %v, want a redacted refusal that says to log in again", err)
+	}
 
 	g.RefuseNext(http.MethodGet, http.StatusNotFound, "not_found")
-	err = checkStore(context.Background(), newStore(t, hostedTestToken))
+	err = checkStore(context.Background(), newStore(t, hostedTestToken), originEnv)
 	if err == nil || !strings.Contains(err.Error(), "INCOMPATIBLE_STORE") {
 		t.Fatalf("checkStore against a server without /v1 = %v, want INCOMPATIBLE_STORE", err)
 	}
 
 	g.RefuseNextWithReason(http.MethodGet, http.StatusTooManyRequests, "rate_limited", "slow_reads")
-	err = checkStore(context.Background(), newStore(t, hostedTestToken))
+	err = checkStore(context.Background(), newStore(t, hostedTestToken), originEnv)
 	if err == nil || !strings.Contains(err.Error(), "hosted storage check failed") || strings.Contains(err.Error(), "INCOMPATIBLE_STORE") {
 		t.Fatalf("checkStore while throttled = %v, want a check failure that is not INCOMPATIBLE_STORE", err)
 	}
@@ -164,7 +169,7 @@ func TestCheckStoreHosted(t *testing.T) {
 
 func TestCheckStoreProbesPlainStores(t *testing.T) {
 	store := &refusingStore{err: storage.ErrTransport}
-	err := checkStore(context.Background(), store)
+	err := checkStore(context.Background(), store, originEnv)
 	if err == nil || !strings.Contains(err.Error(), "S3 compatibility probe failed") {
 		t.Fatalf("checkStore on a plain store = %v, want the probe diagnostic", err)
 	}

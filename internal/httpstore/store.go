@@ -522,8 +522,8 @@ type apiError struct {
 // the client, travels as storage.Refusal.Message.
 func (s *Store) statusError(resp *http.Response) error {
 	body := readAPIError(resp)
-	code := strings.ToLower(sanitize(body.Code, 64))
-	reason := strings.ToLower(sanitize(body.Reason, 64))
+	code := strings.ToLower(Sanitize(body.Code, 64))
+	reason := strings.ToLower(Sanitize(body.Reason, 64))
 	refusal := newRefusal(resp.StatusCode, body)
 	switch {
 	case (resp.StatusCode == http.StatusInsufficientStorage || code == "quota_exceeded") && reason == "request_limit":
@@ -574,13 +574,13 @@ func readAPIError(resp *http.Response) apiError {
 // and reason) and the server's sanitized message; the caller sets Err.
 func newRefusal(status int, body apiError) *storage.Refusal {
 	detail := "HTTP " + strconv.Itoa(status)
-	if code := strings.ToLower(sanitize(body.Code, 64)); code != "" {
+	if code := strings.ToLower(Sanitize(body.Code, 64)); code != "" {
 		detail += " " + code
 	}
-	if reason := strings.ToLower(sanitize(body.Reason, 64)); reason != "" {
+	if reason := strings.ToLower(Sanitize(body.Reason, 64)); reason != "" {
 		detail += " (" + reason + ")"
 	}
-	return &storage.Refusal{Detail: detail, Message: sanitize(body.Message, 300)}
+	return &storage.Refusal{Detail: detail, Message: Sanitize(body.Message, 300)}
 }
 
 // usageNotFound maps a 404 of the usage check, which addresses the space,
@@ -640,9 +640,9 @@ func drain(resp *http.Response) {
 	_ = resp.Body.Close()
 }
 
-// sanitize keeps printable ASCII, collapses white space, and bounds the
+// Sanitize keeps printable ASCII, collapses white space, and bounds the
 // length, so server text stays one safe diagnostic line.
-func sanitize(s string, limit int) string {
+func Sanitize(s string, limit int) string {
 	var b strings.Builder
 	for _, r := range s {
 		if r >= ' ' && r <= '~' {

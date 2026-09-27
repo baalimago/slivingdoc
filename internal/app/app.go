@@ -73,6 +73,17 @@ type ProcessOptions struct {
 	// Logger is the process logger. Nil builds one from the environment
 	// (LOG_LEVEL and NO_COLOR) over Stderr.
 	Logger *slog.Logger
+
+	// OpenBrowser opens the login approval page. Nil starts the platform
+	// opener (xdg-open, open, or the Windows URL handler); tests inject one
+	// so no browser ever starts (architecture/login.md).
+	OpenBrowser func(url string) error
+
+	// Sleep waits between two login polls. Nil waits on a timer.
+	Sleep func(ctx context.Context, d time.Duration) error
+
+	// Hostname labels a login's token. Nil is os.Hostname.
+	Hostname func() (string, error)
 }
 
 // process is the resolved environment of the process body. Setup fills
@@ -315,7 +326,7 @@ func buildService(p process, cfg config) (*Service, error) {
 	}
 	probeCtx, cancel := context.WithTimeout(context.Background(), probeTimeout)
 	defer cancel()
-	if err := checkStore(probeCtx, store); err != nil {
+	if err := checkStore(probeCtx, store, cfg.tokenOrigin); err != nil {
 		return nil, err
 	}
 	return NewService(p.engine, store, cfg.serviceConfig(), p.hooks)
@@ -330,7 +341,9 @@ type accessChecker interface {
 
 // checkStore proves the store before any request is served: the hosted
 // access check when the store offers one, else the S3 compatibility probe.
-func checkStore(ctx context.Context, store storage.ObjectStore) error {
+// origin names where a hosted token came from, so a refused token points
+// at the fix that applies: the variable, or logging in again.
+func checkStore(ctx context.Context, store storage.ObjectStore, origin tokenOrigin) error {
 	checker, ok := store.(accessChecker)
 	if !ok {
 		if err := storage.Probe(ctx, store); err != nil {
@@ -344,6 +357,8 @@ func checkStore(ctx context.Context, store storage.ObjectStore) error {
 	switch {
 	case err == nil:
 		return nil
+	case errors.Is(err, storage.ErrAccessDenied) && origin == originLogin:
+		return fmt.Errorf("app: hosted storage refused the stored login: %s; run 'slivingdoc login' again, or check --bucket", mcp.Redact(err.Error()))
 	case errors.Is(err, storage.ErrAccessDenied):
 		return fmt.Errorf("app: hosted storage refused the token: %s; check SLIVINGDOC_TOKEN and --bucket", mcp.Redact(err.Error()))
 	case errors.Is(err, storage.ErrIncompatible):

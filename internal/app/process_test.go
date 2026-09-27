@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/baalimago/slivingdoc/internal/credentials"
 	"github.com/baalimago/slivingdoc/internal/git"
 	"github.com/baalimago/slivingdoc/internal/git2"
 	"github.com/baalimago/slivingdoc/internal/mcp"
@@ -119,6 +120,10 @@ func spawnHelper(t *testing.T, mode string) *helperProc {
 		"SLIVINGDOC_PREFIX=process-prefix",
 		"SLIVINGDOC_WORKSPACE_ROOT="+workspaceRoot,
 		"SLIVINGDOC_PRIVATE_ROOT="+privateRoot,
+		// A developer's stored login or storage choice never reaches the
+		// helper (architecture/login.md).
+		credentials.DirEnv+"="+t.TempDir(),
+		"SLIVINGDOC_STORAGE=",
 	)
 	proc, err := os.StartProcess(os.Args[0], []string{os.Args[0]}, &os.ProcAttr{
 		Env:   env,

@@ -4,7 +4,8 @@
 
 `architecture/` holds one doc per command and subsystem: an overview, the
 product contract, pull, commit, conflicts, checkpoints, the notebook, the Git
-engine, the workspace, storage, the S3 store, hosted storage mode, the CLI,
+engine, the workspace, storage, the S3 store, hosted storage mode, login and
+storage selection, the CLI,
 the MCP server, configuration, errors, logging, security, guarantees,
 testing, build, releasing, running, and recorded decisions. Start at
 [architecture/README.md](architecture/README.md): it indexes every doc
@@ -34,8 +35,9 @@ without re-checking the code:
 
 slivingdoc is a standalone MCP server that gives many agents one shared
 directory of UTF-8 text notes, stored durably in S3-compatible object storage
-or, when `SLIVINGDOC_TOKEN` is set, in a space of the slivingdoc hosted storage
-API (architecture/hosted-mode.md). It uses Git data structures and merge behavior internally but never invokes a
+or, when `SLIVINGDOC_TOKEN` is set or `slivingdoc login` stored a token for
+the space, in a space of the slivingdoc hosted storage API
+(architecture/hosted-mode.md, architecture/login.md). It uses Git data structures and merge behavior internally but never invokes a
 Git executable and never exposes a Git repository. The contract is split
 by concern under [`architecture/`](architecture/README.md). Three states
 shape every operation. **L** is the caller-controlled visible directory.
@@ -51,7 +53,7 @@ shape every operation. **L** is the caller-controlled visible directory.
 +----------------------------------------------+
 |  main.go -> internal/cli                     |
 |  command router: serve | pull | commit |     |
-|  version                                     |
+|  login | logout | version                    |
 +----------------------+-----------------------+
                        |
                        v
@@ -133,6 +135,8 @@ slivingdoc/
 |   |-- serve/               serve|s: the MCP stdio server over internal/app
 |   |-- pull/                pull|p: one-shot notes_pull for humans
 |   |-- commit/              commit|c: one-shot notes_commit for humans
+|   |-- login/               login and logout: browser device login, stored
+|   |                        hosted token, revocation
 |   `-- version/             version|v: the exact "slivingdoc <semver>" line
 |-- release_test.go          release layer: dependency baselines, checksum
 |                            grammar, release reference, built binary
@@ -179,7 +183,13 @@ slivingdoc/
     |   `-- fake/            deterministic in-memory ObjectStore
     |-- s3store/             the ONLY production AWS SDK package: S3 adapter, prefix
     |                        join, multipart upload, semantic error mapping
-    |-- httpstore/           hosted storage API adapter (SLIVINGDOC_TOKEN):
+    |-- credentials/         the stored logins: strict versioned
+    |                        credentials.json (0600, temp file + rename)
+    |-- sitelogin/           client of the site's CLI login routes (start,
+    |   |                    token polling, revoke)
+    |   `-- sitetest/        test-only reference site with scripted approvals
+    |-- httpstore/           hosted storage API adapter (SLIVINGDOC_TOKEN or a
+    |                        stored login):
     |   |                    bearer token, space, status-to-semantic error
     |   |                    mapping, access check instead of the probe
     |   `-- gatewaytest/     test-only reference server of the hosted API
@@ -252,7 +262,7 @@ Checkpoint and cleanup (synchronous inside the triggering commit, best-effort)
 
 `main.go` is one call: `os.Exit(cli.Run(ctx, os.Args, git2.New(), opts))`.
 `internal/cli` holds the command map (`serve|s`, `pull|p`, `commit|c`,
-`version|v`) and routes through `go_away_boilerplate/pkg/cmd`. Each `cmd/`
+`login`, `logout`, `version|v`) and routes through `go_away_boilerplate/pkg/cmd`. Each `cmd/`
 package implements `cmd.Command`. The router parses the selected command's
 flag set, then calls `Setup` and `Run`.
 
@@ -281,7 +291,8 @@ line ranges) with a nonzero exit. `commit` requires
    libgit2 is exactly the pinned v1.9.6 and refuses any other ABI.
 4. **Build the object store.** The `StoreFactory` seam builds the
    `internal/s3store` adapter, or the `internal/httpstore` adapter when
-   `SLIVINGDOC_TOKEN` is set; tests substitute the deterministic fake.
+   `SLIVINGDOC_TOKEN` or a stored login selects hosted mode (`--storage`,
+   architecture/login.md); tests substitute the deterministic fake.
 5. **Probe the store.** `storage.Probe` proves the endpoint honors
    `If-None-Match`, `If-Match`, and read-after-write. A hosted store runs
    its `CheckAccess` instead (server description plus a read-only space
@@ -301,8 +312,11 @@ lives in [`architecture/running.md`](architecture/running.md) and in `HelpText` 
 `FlagReference` of
 `internal/app/config.go`, which `slivingdoc serve -h` prints — that code
 copy is the authoritative one. Behavior worth remembering: `--bucket` is
-required (it names the hosted space when `SLIVINGDOC_TOKEN` is set, and the
-token is read from the environment only), `--private-root` must not be at or
+required (it names the hosted space in hosted mode, and defaults to the
+default login's space outside `--storage s3`; the token is read from the
+environment or the credentials file only), `--storage auto` refuses a stored
+login plus AWS settings as ambiguous, a stored token is only sent to the
+endpoint it was issued for, `--private-root` must not be at or
 below the workspace root, `--commit-retries` exhaustion is `REMOTE_BUSY`, and an invalid
 `--read-only-paths` or `--writable-paths` entry refuses startup before any
 native or S3 dependency loads — as does a path named by both settings,
