@@ -265,3 +265,85 @@ func TestNewMintedTokensUsesTheDefaults(t *testing.T) {
 		t.Fatalf("newMintedTokens() = %+v, %v", tokens, err)
 	}
 }
+
+// TestMintedTokensCompareWallClocks proves renewal is scheduled on the wall
+// clock: the renewal time carries no monotonic reading, so a machine that
+// slept past it (its monotonic clock stopped meanwhile) renews on waking.
+func TestMintedTokensCompareWallClocks(t *testing.T) {
+	site, tokens, _ := mintRig(t, credentials.AccessWrite)
+	tokens.now = time.Now // a reading with a monotonic clock
+	site.SetMintLifetime(time.Hour)
+	mustToken(t, tokens)
+	tokens.mu.Lock()
+	renewAt := tokens.renewAt
+	tokens.mu.Unlock()
+	if strings.Contains(renewAt.String(), "m=") {
+		t.Fatalf("renewal time %v carries a monotonic reading", renewAt)
+	}
+	// Past the renewal time on the wall clock alone, a new token is minted.
+	tokens.now = func() time.Time { return renewAt.Add(time.Second) }
+	mustToken(t, tokens)
+	if got := len(site.Mints()); got != 2 {
+		t.Fatalf("mints = %d after the wall clock passed the renewal time, want 2", got)
+	}
+}
+
+// TestMintedTokensAreSafeConcurrently runs Token and Rejected from many
+// goroutines at once, under -race: every caller gets a token the site
+// minted, and refusals never leave a caller without one.
+func TestMintedTokensAreSafeConcurrently(t *testing.T) {
+	site, tokens, _ := mintRig(t, credentials.AccessWrite)
+	var wg sync.WaitGroup
+	errs := make(chan error, 64)
+	for range 32 {
+		wg.Go(func() {
+			token, err := tokens.Token(context.Background())
+			if err != nil {
+				errs <- err
+				return
+			}
+			tokens.Rejected(token)
+		})
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("Token() = %v", err)
+	}
+	token := mustToken(t, tokens)
+	minted := map[string]bool{}
+	for _, m := range site.Mints() {
+		minted[m.Token] = true
+	}
+	if !minted[token] || token == loginToken {
+		t.Fatal("Token() = a token the site never minted")
+	}
+}
+
+// TestMintedTokensWaitWithinTheCallersContext proves a caller waiting for
+// another caller's mint gives up when its own context ends, and the mint
+// in flight still completes for its caller.
+func TestMintedTokensWaitWithinTheCallersContext(t *testing.T) {
+	site, tokens, _ := mintRig(t, credentials.AccessWrite)
+	entered, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	site.OnMint(func(sitetest.Minted) {
+		once.Do(func() { close(entered) })
+		<-release
+	})
+	first := make(chan error, 1)
+	go func() {
+		_, err := tokens.Token(context.Background())
+		first <- err
+	}()
+	<-entered
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if _, err := tokens.Token(ctx); !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, storage.ErrTransport) {
+		t.Fatalf("Token() while another mint runs, past the caller's deadline = %v, want its deadline", err)
+	}
+	close(release)
+	if err := <-first; err != nil {
+		t.Fatalf("the mint in flight = %v", err)
+	}
+}

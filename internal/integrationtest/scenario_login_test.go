@@ -756,9 +756,9 @@ func mustDo(t *testing.T, err error) {
 }
 
 // TestScenarioEarlierCredentialsFile proves a credentials file an earlier
-// build wrote, with one token per space, refuses startup and the space
-// command with the fix, and that a new login replaces it without sending
-// its tokens anywhere.
+// build wrote, with one token per space, refuses startup with the fix, and
+// that a new login revokes its tokens at the site that issued them and
+// replaces it, never sending them to the storage API.
 func TestScenarioEarlierCredentialsFile(t *testing.T) {
 	t.Parallel()
 	g, site, env, root := loginEnv(t)
@@ -772,14 +772,18 @@ func TestScenarioEarlierCredentialsFile(t *testing.T) {
 		strings.Contains(stderr, hostedToken) {
 		t.Fatalf("pull with an earlier file = exit %d, stdout %q, stderr %s", code, stdout, stderr)
 	}
+	// The site issued the earlier token, so the login that replaces the
+	// file revokes it there; it never goes to the storage API.
+	site.Issued(hostedToken, g.URL())
 	approve(site, g, loginKey, "write", loginExpiry)
 	code, stdout, stderr = runCLI(t, "real", env, "login", "--no-browser")
 	if code != 0 || stdout != loggedIn(g, "read and write", withDefault)+"\n" ||
-		!strings.Contains(stderr, "The credentials file of an earlier slivingdoc was replaced; its tokens were not revoked") {
+		!strings.Contains(stderr, "The credentials file of an earlier slivingdoc was replaced; 1 of its tokens were revoked.") ||
+		strings.Contains(stderr, hostedToken) {
 		t.Fatalf("login over an earlier file = exit %d, stdout %q, stderr %s", code, stdout, stderr)
 	}
-	if g.Requests() != 0 || len(site.Revoked()) != 0 {
-		t.Fatal("the earlier file's token was sent somewhere")
+	if revoked := site.Revoked(); g.Requests() != 0 || len(revoked) != 1 || revoked[0] != hostedToken {
+		t.Fatalf("revoked = %v after %d storage requests, want the earlier token revoked at its site only", revoked, g.Requests())
 	}
 	if data, err := os.ReadFile(credentialsPath(env)); err != nil || !strings.Contains(string(data), `"version": 2`) || strings.Contains(string(data), hostedToken) {
 		t.Fatalf("credentials file after the login = %q (%v), want version 2 without the earlier token", data, err)

@@ -236,7 +236,8 @@ func TestLoginStoresTheKeyAndItsOnlySpace(t *testing.T) {
 }
 
 func TestLoginChoosesTheDefaultSpace(t *testing.T) {
-	two := []sitetest.Space{notesSpace, space("team", "bob@example.test", "read")}
+	// A team owns "team": the site sends no owner email for it.
+	two := []sitetest.Space{notesSpace, space("team", "", "read")}
 	t.Run("several spaces leave it to the space command", func(t *testing.T) {
 		r := newLoginRig(t)
 		r.site.SetSpaces(loginToken, two...)
@@ -247,7 +248,7 @@ func TestLoginChoosesTheDefaultSpace(t *testing.T) {
 		if r.defaultSpace(t, DefaultHostedEndpoint) != "" || strings.Contains(r.out.String(), "default space") {
 			t.Fatalf("stdout = %q, want no default space", r.out.String())
 		}
-		if !strings.Contains(r.errOut.String(), "    team (read only), owned by bob@example.test\n") ||
+		if !strings.Contains(r.errOut.String(), "    team (read only), owned by a team\n") ||
 			!strings.Contains(r.errOut.String(), "Run 'slivingdoc space <name>' to choose the default space") {
 			t.Fatalf("stderr = %q, want the spaces and the hint", r.errOut.String())
 		}
@@ -494,34 +495,48 @@ func TestLoginRefusals(t *testing.T) {
 	})
 }
 
-// earlierFile is a version 1 credentials file, one token per space.
-const earlierFile = `{"version":1,"logins":[{"endpoint":"https://api.slivingdoc.dev","space":"notes","site":"https://www.slivingdoc.dev","token":"` +
-	otherToken + `","access":"write"}]}`
+// earlierFile is a version 1 credentials file, one token per space: one
+// issued by site, and one by a site nothing answers at.
+func earlierFile(site string) string {
+	return `{"version":1,"logins":[` +
+		`{"endpoint":"https://api.slivingdoc.dev","space":"notes","site":"` + site + `","token":"` + otherToken + `","access":"write"},` +
+		`{"endpoint":"https://api.slivingdoc.dev","space":"team","site":"http://127.0.0.1:1","token":"` + thirdToken + `","access":"read"}]}`
+}
 
 func TestLoginReplacesAnEarlierFile(t *testing.T) {
 	r := newLoginRig(t)
-	r.writeFile(t, earlierFile)
+	r.writeFile(t, earlierFile(r.site.URL()))
 	if err := r.logout(t); !errors.Is(err, credentials.ErrOutdated) || !strings.Contains(err.Error(), "run 'slivingdoc login' again") {
 		t.Fatalf("logout of an earlier file = %v, want ErrOutdated", err)
 	}
 	if err := r.space(t); !errors.Is(err, credentials.ErrOutdated) {
 		t.Fatalf("space with an earlier file = %v, want ErrOutdated", err)
 	}
-	r.loginOnce(t, loginToken, []sitetest.Space{notesSpace})
-	r.writeFile(t, earlierFile)
+	if got := r.site.Revoked(); len(got) != 0 {
+		t.Fatalf("revoked = %v; only a login that replaces the file revokes its tokens", got)
+	}
+	r.site.Issued(otherToken, DefaultHostedEndpoint)
 	r.site.SetSpaces(loginToken, notesSpace)
 	r.site.Next(approved(loginToken, "write", DefaultHostedEndpoint))
 	if err := r.login(t); err != nil {
 		t.Fatalf("login over an earlier file = %v", err)
 	}
-	if !strings.Contains(r.errOut.String(), "The credentials file of an earlier slivingdoc was replaced; its tokens were not revoked") {
-		t.Fatalf("stderr = %q, want the note about the earlier tokens", r.errOut.String())
+	for _, want := range []string{
+		"The credentials file of an earlier slivingdoc was replaced; 1 of its tokens were revoked.",
+		"1 could not be revoked (at http://127.0.0.1:1:", "revoke them on the Tokens page",
+	} {
+		if !strings.Contains(r.errOut.String(), want) {
+			t.Fatalf("stderr = %q, want it to contain %q", r.errOut.String(), want)
+		}
+	}
+	if strings.Contains(r.errOut.String()+r.out.String(), otherToken) || strings.Contains(r.errOut.String(), thirdToken) {
+		t.Fatal("the login printed an earlier token")
 	}
 	if l := r.stored(t); l.Key != loginToken {
 		t.Fatalf("stored = %+v", l)
 	}
-	if got := r.site.Revoked(); len(got) != 0 {
-		t.Fatalf("revoked = %v; the earlier file's tokens are never sent", got)
+	if got := r.site.Revoked(); len(got) != 1 || got[0] != otherToken {
+		t.Fatalf("revoked = %v, want the earlier file's token of this site", got)
 	}
 }
 
@@ -1153,5 +1168,45 @@ func TestSpaceRefusesAnExpiredOrChangedLogin(t *testing.T) {
 	}
 	if err := op.Run(context.Background()); err == nil || !strings.Contains(err.Error(), "the stored login changed") {
 		t.Fatalf("space after another login = %v, want the refusal", err)
+	}
+}
+
+// TestLoginKeepsAStoredKeyWhenTheLockFails proves a lock that cannot be
+// released after the login was saved does not revoke the key the file now
+// holds: the login reports the error, the key stays stored, and the key it
+// replaced is still revoked.
+func TestLoginKeepsAStoredKeyWhenTheLockFails(t *testing.T) {
+	r := newLoginRig(t)
+	r.loginOnce(t, loginToken, []sitetest.Space{notesSpace})
+	r.site.SetSpaces(otherToken, notesSpace)
+	r.site.Next(approved(otherToken, "write", DefaultHostedEndpoint))
+	f := NewLoginFlags()
+	fs := flag.NewFlagSet("test", flag.ContinueOnError)
+	f.Bind(fs)
+	if err := fs.Parse([]string{"--no-browser"}); err != nil {
+		t.Fatal(err)
+	}
+	l, err := PrepareLogin(f, r.opts())
+	if err != nil {
+		t.Fatalf("PrepareLogin() = %v", err)
+	}
+	l.unlock = func(lock *credentials.Lock) error {
+		if err := lock.Unlock(); err != nil {
+			return err
+		}
+		return errors.New("unlock failed")
+	}
+	err = l.Run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "the login was stored, but unlock failed") {
+		t.Fatalf("login with a failing unlock = %v, want the stored login and the unlock error", err)
+	}
+	if got := r.stored(t); got.Key != otherToken {
+		t.Fatalf("stored = %+v, want the new key kept", got)
+	}
+	if got := r.site.Revoked(); len(got) != 1 || got[0] != loginToken {
+		t.Fatalf("revoked = %v, want only the replaced key", got)
+	}
+	if !strings.Contains(r.out.String(), "Logged in as ada@example.test") {
+		t.Fatalf("stdout = %q, want the result line", r.out.String())
 	}
 }

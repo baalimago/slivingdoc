@@ -76,7 +76,7 @@ func TestSpacesRefusesAnswersOutsideTheContract(t *testing.T) {
 		"null list":            `{"spaces":null}`,
 		"not json":             `{`,
 		"bad name":             `{"spaces":[{"name":"No_Space","owner":"a@example.test","access":"write"}]}`,
-		"no owner":             `{"spaces":[{"name":"notes","owner":"","access":"write"}]}`,
+		"owner not an email":   `{"spaces":[{"name":"notes","owner":"` + strings.Repeat("a", 255) + `","access":"write"}]}`,
 		"bad access":           `{"spaces":[{"name":"notes","owner":"a@example.test","access":"admin"}]}`,
 		"listed twice":         `{"spaces":[{"name":"notes","owner":"a@example.test","access":"write"},{"name":"notes","owner":"a@example.test","access":"read"}]}`,
 		"owner with an escape": `{"spaces":[{"name":"notes","owner":"a\u001b[2J@example.test","access":"write"}]}`,
@@ -87,6 +87,11 @@ func TestSpacesRefusesAnswersOutsideTheContract(t *testing.T) {
 				t.Fatalf("Spaces() = %v, want ErrProtocol", err)
 			}
 		})
+	}
+	// A team owns a space with no owner email: it is listed, not refused.
+	team, _ := newClient(t, answer(t, http.StatusOK, `{"spaces":[{"name":"notes","owner":"","access":"write"},{"name":"team","access":"read"}]}`))
+	if got, err := team.Spaces(context.Background(), testToken); err != nil || len(got) != 2 || got[0].Owner != "" || got[1].Owner != "" {
+		t.Fatalf("Spaces() with team-owned spaces = %+v, %v; want both listed without an owner", got, err)
 	}
 	empty, _ := newClient(t, answer(t, http.StatusOK, `{"spaces":[]}`))
 	if got, err := empty.Spaces(context.Background(), testToken); err != nil || len(got) != 0 {
@@ -170,7 +175,7 @@ func TestMintRefusesAnswersOutsideTheContract(t *testing.T) {
 		{"write when read was asked", "access", "write", true},
 		{"bad access", "access", "admin", true},
 		{"plain http endpoint", "endpoint", "http://api.example.test", true},
-		{"no owner", "owner", "", true},
+		{"owner not an email", "owner", strings.Repeat("a", 255), true},
 		{"bad expiry", "expiresAt", "soon", true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -187,6 +192,13 @@ func TestMintRefusesAnswersOutsideTheContract(t *testing.T) {
 				t.Fatalf("Mint() = %#v, want the token returned for revocation exactly when it is sendable", err)
 			}
 		})
+	}
+	team := map[string]string{}
+	maps.Copy(team, good)
+	team["owner"] = ""
+	teamClient, _ := newClient(t, answer(t, http.StatusOK, jsonOf(t, team)))
+	if got, err := teamClient.Mint(context.Background(), testToken, "notes", credentials.AccessRead); err != nil || got.Owner != "" || got.Token != minted {
+		t.Fatalf("Mint() of a team-owned space = %+v, %v; want the token without an owner", got, err)
 	}
 	noExpiry, _ := newClient(t, answer(t, http.StatusOK, `{"token":"`+minted+`","space":"notes","access":"write","endpoint":"`+endpoint+`","owner":"ada@example.test"}`))
 	if _, err := noExpiry.Mint(context.Background(), testToken, "notes", ""); !errors.Is(err, ErrProtocol) {

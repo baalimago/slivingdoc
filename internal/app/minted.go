@@ -38,6 +38,10 @@ type mintedTokens struct {
 	access credentials.Access
 	now    func() time.Time
 
+	// minting admits one mint at a time; a caller waiting for it gives up
+	// when its own context ends. mu guards token and renewAt only and is
+	// never held across a request.
+	minting chan struct{}
 	mu      sync.Mutex
 	token   string
 	renewAt time.Time
@@ -61,19 +65,51 @@ func newMintedTokens(login credentials.Login, space string, doer sitelogin.Doer,
 	if login.Access == credentials.AccessRead {
 		access = credentials.AccessRead
 	}
-	return &mintedTokens{client: client, key: login.Key, space: space, endpoint: login.Endpoint, access: access, now: now}, nil
+	return &mintedTokens{
+		client: client, key: login.Key, space: space, endpoint: login.Endpoint, access: access, now: now,
+		minting: make(chan struct{}, 1),
+	}, nil
+}
+
+// wallNow is the clock without its monotonic reading, so renewal compares
+// wall times: a machine that slept past a token's renewal time renews it
+// on waking, which a monotonic comparison would not.
+func (m *mintedTokens) wallNow() time.Time { return m.now().Round(0) }
+
+// current returns the held token while its renewal time is still ahead.
+func (m *mintedTokens) current() (string, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.token != "" && m.wallNow().Before(m.renewAt) {
+		return m.token, true
+	}
+	return "", false
 }
 
 // Token returns the current minted token, minting one when there is none
-// or its renewal time has come. Concurrent callers wait for one mint.
+// or its renewal time has come. Concurrent callers wait for one mint, each
+// only as long as its own context allows.
 func (m *mintedTokens) Token(ctx context.Context) (string, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.token != "" && m.now().Before(m.renewAt) {
-		return m.token, nil
+	if token, ok := m.current(); ok {
+		return token, nil
+	}
+	select {
+	case m.minting <- struct{}{}:
+	case <-ctx.Done():
+		return "", fmt.Errorf("wait for a token: %w: %w", ctx.Err(), storage.ErrTransport)
+	}
+	defer func() { <-m.minting }()
+	// Another caller may have minted while this one waited.
+	if token, ok := m.current(); ok {
+		return token, nil
 	}
 	return m.mint(ctx)
 }
+
+// Renews reports that the tokens are short-lived and renewable, so the
+// store can tell a refusal of an expired or replaced token from a refused
+// credential (httpstore.RenewingSource).
+func (m *mintedTokens) Renews() bool { return true }
 
 // Rejected forgets token when it is still the current one, so the next
 // Token call mints another; a refusal of an older token changes nothing.
@@ -85,11 +121,11 @@ func (m *mintedTokens) Rejected(token string) {
 	}
 }
 
-// mint trades the key for a token; the caller holds m.mu. A token the site
+// mint trades the key for a token; the caller holds m.minting. A token the site
 // minted in an answer outside the contract, or for another endpoint, is
 // revoked, best effort, rather than left valid unseen.
 func (m *mintedTokens) mint(ctx context.Context) (string, error) {
-	asked := m.now()
+	asked := m.wallNow()
 	minted, err := m.client.Mint(ctx, m.key, m.space, m.access)
 	var rejected *sitelogin.RejectedError
 	if errors.As(err, &rejected) {
@@ -109,6 +145,8 @@ func (m *mintedTokens) mint(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("the minted token expires %s, which is not after this machine's clock (%s); check the system clock: %w",
 			minted.Expires.Describe(), asked.UTC().Format(time.RFC3339), storage.ErrIncompatible)
 	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.token = minted.Token
 	m.renewAt = asked.Add(lifetime * renewalNumerator / renewalDenominator)
 	return m.token, nil

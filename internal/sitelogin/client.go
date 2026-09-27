@@ -483,7 +483,7 @@ func expiry(raw *string) (credentials.Expiry, error) {
 // Space is one space an account CLI key reaches.
 type Space struct {
 	Name string
-	// Owner is the email of the space's owner.
+	// Owner is the email of the space's owner; empty when a team owns it.
 	Owner string
 	// Access is what the key may do in the space: the grant, capped by the
 	// key.
@@ -523,7 +523,7 @@ func (c *Client) Spaces(ctx context.Context, key string) ([]Space, error) {
 			return nil, fmt.Errorf("%w: spaces[%d]: %s is listed twice", ErrProtocol, i, sp.Name)
 		}
 		seen[sp.Name] = true
-		if !usableEmail(sp.Owner) {
+		if !usableOwner(sp.Owner) {
 			return nil, fmt.Errorf("%w: spaces[%d]: no usable owner", ErrProtocol, i)
 		}
 		access, err := credentials.ParseAccess(sp.Access)
@@ -543,7 +543,7 @@ type Minted struct {
 	Access   credentials.Access
 	Expires  credentials.Expiry
 	Endpoint string
-	// Owner is the email of the space's owner.
+	// Owner is the email of the space's owner; empty when a team owns it.
 	Owner string
 }
 
@@ -595,7 +595,7 @@ func (c *Client) Mint(ctx context.Context, key, space string, access credentials
 	if err := httpstore.ValidateEndpoint(ans.Endpoint); err != nil {
 		return Minted{}, reject("%w", err)
 	}
-	if !usableEmail(ans.Owner) {
+	if !usableOwner(ans.Owner) {
 		return Minted{}, reject("no usable owner")
 	}
 	expires, err := expiry(ans.ExpiresAt)
@@ -731,6 +731,10 @@ func label(s string) string {
 // usableEmail accepts an account or owner the client can print on one
 // terminal line.
 func usableEmail(s string) bool { return s != "" && len(s) <= emailLimit && printable(s) }
+
+// usableOwner accepts a space owner's email, or none: a team owns the
+// space.
+func usableOwner(s string) bool { return s == "" || usableEmail(s) }
 
 func printable(s string) bool {
 	for i := 0; i < len(s); i++ {

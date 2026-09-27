@@ -399,8 +399,10 @@ func (f File) Load() (Set, error) {
 		return Set{}, fmt.Errorf("%w %s: larger than %d bytes", ErrMalformed, f.Path(), maxFileSize)
 	}
 	set, err := decode(data)
-	if errors.Is(err, errOutdatedFile) {
-		return Set{}, fmt.Errorf("%w (%s)", ErrOutdated, f.Path())
+	var outdated *OutdatedFileError
+	if errors.As(err, &outdated) {
+		outdated.Path = f.Path()
+		return Set{}, outdated
 	}
 	if err != nil {
 		return Set{}, fmt.Errorf("%w %s: %w", ErrMalformed, f.Path(), err)
@@ -557,11 +559,58 @@ const (
 	fieldExpiresAt     = "expiresAt"
 	fieldAccount       = "account"
 	fieldSpace         = "space"
+	// fieldToken is a version 1 login's token.
+	fieldToken = "token"
 )
 
-// errOutdatedFile is decode's report of an earlier build's file; Load
-// wraps it as ErrOutdated.
-var errOutdatedFile = errors.New("version 1 holds one token per space")
+// OutdatedFileError is ErrOutdated for a file an earlier build wrote, with
+// the tokens it held and the site that issued each, so the login that
+// replaces the file can revoke them. Error never contains a token.
+type OutdatedFileError struct {
+	Path   string
+	Tokens []OutdatedToken
+}
+
+// OutdatedToken is one token of an earlier build's file.
+type OutdatedToken struct {
+	Site  string
+	Token string
+}
+
+func (e *OutdatedFileError) Error() string {
+	return fmt.Sprintf("%s (%s)", ErrOutdated.Error(), e.Path)
+}
+
+func (e *OutdatedFileError) Unwrap() error { return ErrOutdated }
+
+// outdatedTokens reads, leniently, the tokens of a version 1 file: an
+// entry without a plain site URL or a sendable token is skipped, since the
+// file is being replaced either way and its tokens are revoked best
+// effort.
+func outdatedTokens(root strictjson.Value) []OutdatedToken {
+	list, ok := root.Field(fieldLogins)
+	if !ok || list.Kind != strictjson.Array {
+		return nil
+	}
+	var tokens []OutdatedToken
+	for _, item := range list.Arr {
+		if item.Kind != strictjson.Object {
+			continue
+		}
+		site, err := urlField(item, fieldSite)
+		if err != nil {
+			continue
+		}
+		token, err := stringField(item, fieldToken)
+		if err != nil || httpstore.ValidateToken(token) != nil {
+			continue
+		}
+		if !slices.Contains(tokens, OutdatedToken{Site: site, Token: token}) {
+			tokens = append(tokens, OutdatedToken{Site: site, Token: token})
+		}
+	}
+	return tokens
+}
 
 func decode(data []byte) (Set, error) {
 	root, err := strictjson.Parse(data)
@@ -577,7 +626,7 @@ func decode(data []byte) (Set, error) {
 	}
 	switch {
 	case ver.Num == outdatedVersion:
-		return Set{}, errOutdatedFile
+		return Set{}, &OutdatedFileError{Tokens: outdatedTokens(root)}
 	case ver.Num != FormatVersion:
 		return Set{}, fmt.Errorf("version %d is not %d; a newer slivingdoc wrote it", ver.Num, FormatVersion)
 	}

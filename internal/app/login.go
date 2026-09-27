@@ -81,6 +81,9 @@ type Login struct {
 	hostname   string
 	// hostErr is why the host name could not label the key, if so.
 	hostErr error
+	// unlock releases the credentials lock; nil is Lock.Unlock. Tests
+	// make it fail.
+	unlock func(*credentials.Lock) error
 }
 
 // PrepareLogin validates the login flags against the environment and
@@ -215,6 +218,12 @@ func (l *Login) Run(ctx context.Context) error {
 	}
 	l.report(ctx, stored, spaces, outcome)
 	fmt.Fprintln(l.opts.Out(), loggedIn(stored, outcome.defaultSpace))
+	if outcome.unlockErr != nil {
+		// The key is stored and usable; only the lock beside it could not
+		// be released, which the next login, logout or space waits on.
+		return fmt.Errorf("login: the login was stored, but %w; remove %s if no other login, logout or space command runs",
+			outcome.unlockErr, credentials.LockName)
+	}
 	return nil
 }
 
@@ -257,9 +266,14 @@ func approvedBy(l credentials.Login, spaces []sitelogin.Space) string {
 	return b.String()
 }
 
-// describeSpace is one listed space: its name, access and owner.
+// describeSpace is one listed space: its name, access and owner, "a team"
+// when no person owns it.
 func describeSpace(s sitelogin.Space) string {
-	return fmt.Sprintf("%s (%s), owned by %s", s.Name, s.Access.Describe(), s.Owner)
+	owner := s.Owner
+	if owner == "" {
+		owner = "a team"
+	}
+	return fmt.Sprintf("%s (%s), owned by %s", s.Name, s.Access.Describe(), owner)
 }
 
 // spaceNames lists the space names for a refusal; "no space" for none.
@@ -309,12 +323,23 @@ func (l *Login) confirm(ctx context.Context, errOut io.Writer) (consent, error) 
 
 // storeOutcome is what storing a login changed: the login it replaced,
 // nil when there was none; the default space before and after, empty for
-// none; and whether an earlier build's file was replaced.
+// none; whether an earlier build's file was replaced; and why the lock
+// could not be released after the login was saved, if so.
 type storeOutcome struct {
 	replaced     *credentials.Login
 	priorDefault string
 	defaultSpace string
 	file         fileOutcome
+	// earlier is what revoking the replaced earlier file's tokens did.
+	earlier   earlierRevocation
+	unlockErr error
+}
+
+// earlierRevocation counts the tokens of a replaced earlier file that were
+// revoked, and holds why each other one was not.
+type earlierRevocation struct {
+	revoked int
+	failed  []error
 }
 
 // fileOutcome is whether storing a login replaced an earlier build's
@@ -336,16 +361,30 @@ func (l *Login) store(ctx context.Context, stored credentials.Login, spaces []si
 	if err != nil {
 		return storeOutcome{}, fmt.Errorf("login: %w; nothing was stored", err)
 	}
+	saved := false
 	defer func() {
-		if err := lock.Unlock(); err != nil && errOut == nil {
+		unlock := l.unlock
+		if unlock == nil {
+			unlock = (*credentials.Lock).Unlock
+		}
+		err := unlock(lock)
+		switch {
+		case err == nil:
+		case saved:
+			// The key is on disk: failing the login now would revoke a
+			// key the file holds, so the error is reported beside it.
+			out.unlockErr = err
+		case errOut == nil:
 			errOut = fmt.Errorf("login: %w", err)
 		}
 	}()
 	// Read under the lock, so a login that finished in another terminal
 	// meanwhile keeps its entry.
 	set, err := l.file.Load()
-	if errors.Is(err, credentials.ErrOutdated) {
+	var outdated *credentials.OutdatedFileError
+	if errors.As(err, &outdated) {
 		set, out.file = credentials.Set{}, fileReplaced
+		out.earlier = l.revokeEarlier(ctx, outdated.Tokens)
 	} else if err != nil {
 		return storeOutcome{}, fmt.Errorf("login: %w; nothing was stored", err)
 	}
@@ -373,7 +412,29 @@ func (l *Login) store(ctx context.Context, stored credentials.Login, spaces []si
 	if err := l.file.Save(set); err != nil {
 		return storeOutcome{}, fmt.Errorf("login: store the login: %w", err)
 	}
+	saved = true
 	return out, nil
+}
+
+// revokeEarlier revokes, best effort, each token of an earlier build's
+// file at the site that issued it, before the file is replaced: the new
+// login does not own them, and nothing would list them afterwards.
+func (l *Login) revokeEarlier(ctx context.Context, tokens []credentials.OutdatedToken) earlierRevocation {
+	rctx, cancel := revocationContext(ctx)
+	defer cancel()
+	var out earlierRevocation
+	for _, t := range tokens {
+		client, err := siteClient(t.Site, l.opts)
+		if err == nil {
+			err = client.Revoke(rctx, t.Token)
+		}
+		if err != nil {
+			out.failed = append(out.failed, fmt.Errorf("at %s: %s", mcp.Redact(t.Site), mcp.Redact(err.Error())))
+			continue
+		}
+		out.revoked++
+	}
+	return out
 }
 
 // chooseDefault is the default space after a login: the one asked for,
@@ -410,7 +471,11 @@ func (l *Login) report(ctx context.Context, stored credentials.Login, spaces []s
 		fmt.Fprintln(errOut, "Run 'slivingdoc space <name>' to choose the default space, or pass --space to serve, pull and commit.")
 	}
 	if out.file == fileReplaced {
-		fmt.Fprintln(errOut, "The credentials file of an earlier slivingdoc was replaced; its tokens were not revoked, so revoke them on the Tokens page if they are no longer needed.")
+		fmt.Fprintf(errOut, "The credentials file of an earlier slivingdoc was replaced; %d of its tokens were revoked.\n", out.earlier.revoked)
+		if len(out.earlier.failed) > 0 {
+			fmt.Fprintf(errOut, "%d could not be revoked (%s); revoke them on the Tokens page.\n",
+				len(out.earlier.failed), errors.Join(out.earlier.failed...))
+		}
 	}
 	replaced := out.replaced
 	if replaced == nil || replaced.Key == stored.Key {

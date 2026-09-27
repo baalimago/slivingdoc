@@ -16,6 +16,7 @@ import (
 const (
 	loginToken  = "sld_1111111111111111_c3RvcmVkLWxvZ2luLXRva2VuLWZvci1hcHAtdGVzdHMteHg"
 	otherToken  = "sld_2222222222222222_b3RoZXItbG9naW4tdG9rZW4tZm9yLWFwcC10ZXN0cy14eHg"
+	thirdToken  = "sld_3333333333333333_dGhpcmQtbG9naW4tdG9rZW4tZm9yLWFwcC10ZXN0cy14eHh4"
 	devEndpoint = "https://api.dev.slivingdoc.dev"
 	longAgo     = "2001-01-01T00:00:00Z"
 )

@@ -520,7 +520,8 @@ code lives ten minutes at most.
 
 Whoever enters a code first decides it, so before anything is stored the
 login shows who approved it, the access, the storage endpoint, the site,
-and every space the login reaches with its owner. On a terminal it then
+and every space the login reaches with its owner (`a team` for a space a
+team owns). On a terminal it then
 asks `Store this login? [y/N]`; any answer but `y`, or Ctrl-C, revokes the
 new key and stores nothing (a second Ctrl-C while that revocation runs, up
 to 10 seconds, is ignored). Without a terminal (a script) nothing is
@@ -531,7 +532,7 @@ replaced key is revoked only when the same account approved it;
 otherwise it stays valid and the login says to revoke it on the site's
 Tokens page if it is no longer needed.
 
-The key is an account CLI key (90 days, label `CLI login (<hostname>)`),
+The key is an account CLI key (90 days, label `CLI login on <client>`, the client being this host's name),
 visible and revocable on the site's Tokens page. It never reaches the
 storage service: each `serve`, `pull` or `commit` trades it at the site
 for a token of one space that lasts an hour, keeps that token in memory
@@ -543,7 +544,9 @@ names another directory), mode 0600, with one login per storage endpoint
 and that endpoint's default space. Logging in again replaces the stored
 key. A credentials file from an earlier slivingdoc (one token per space)
 is refused by every command with `run 'slivingdoc login' again`; `login`
-replaces it and says its tokens were not revoked. The file, and its
+first revokes each of its tokens at its site, best effort, then replaces
+it and says how many were revoked and which could not be (revoke those on
+the Tokens page). The file, and its
 directory, must belong to you and must not be accessible to other users:
 like ssh, slivingdoc refuses a symbolic link or anything but a regular
 file, a file or directory another user owns, a file group or other can

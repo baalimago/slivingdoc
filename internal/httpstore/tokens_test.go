@@ -12,12 +12,16 @@ import (
 )
 
 // rotating is a TokenSource that moves to its next token once the current
-// one is rejected, and fails once it has none left.
+// one is rejected, and fails once it has none left. renews makes it a
+// source of short-lived tokens (RenewingSource).
 type rotating struct {
 	mu       sync.Mutex
 	tokens   []string
 	rejected []string
+	renews   bool
 }
+
+func (r *rotating) Renews() bool { return r.renews }
 
 var errNoMoreTokens = errors.New("no more tokens")
 
@@ -78,18 +82,36 @@ func TestRefusedTokenIsReplacedOnce(t *testing.T) {
 	rc.Close()
 }
 
+// TestStreamedUploadIsNotReplayed proves a streamed upload refused with 401
+// is sent once: for a source of short-lived tokens it fails with
+// ErrCredentialRenewed, which a retry resolves, and otherwise with the
+// access refusal; either way the next upload carries the next token.
 func TestStreamedUploadIsNotReplayed(t *testing.T) {
-	s, g, src := rotatingStore(t, testToken, secondToken)
-	g.Revoke(testToken)
-	data := []byte("pack bytes")
-	key, meta := packFixture(t, data, 1)
-	before := g.Requests()
-	err := s.PutObject(context.Background(), key.String(), bytes.NewReader(data), meta)
-	if !errors.Is(err, storage.ErrAccessDenied) || g.Requests()-before != 1 || len(src.rejected) != 1 {
-		t.Fatalf("PutObject() with a revoked token = %v after %d requests, want one ErrAccessDenied", err, g.Requests()-before)
-	}
-	if err := s.PutObject(context.Background(), key.String(), bytes.NewReader(data), meta); err != nil {
-		t.Fatalf("the next PutObject() = %v, want the next token", err)
+	for _, tt := range []struct {
+		name   string
+		renews bool
+		want   error
+		not    error
+	}{
+		{"renewing source", true, storage.ErrCredentialRenewed, storage.ErrAccessDenied},
+		{"fixed source", false, storage.ErrAccessDenied, storage.ErrCredentialRenewed},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			s, g, src := rotatingStore(t, testToken, secondToken)
+			src.renews = tt.renews
+			g.Revoke(testToken)
+			data := []byte("pack bytes")
+			key, meta := packFixture(t, data, 1)
+			before := g.Requests()
+			err := s.PutObject(context.Background(), key.String(), bytes.NewReader(data), meta)
+			if !errors.Is(err, tt.want) || errors.Is(err, tt.not) || errors.Is(err, storage.ErrTransport) ||
+				g.Requests()-before != 1 || len(src.rejected) != 1 {
+				t.Fatalf("PutObject() with a revoked token = %v after %d requests, want one %v", err, g.Requests()-before, tt.want)
+			}
+			if err := s.PutObject(context.Background(), key.String(), bytes.NewReader(data), meta); err != nil {
+				t.Fatalf("the next PutObject() = %v, want the next token", err)
+			}
+		})
 	}
 }
 

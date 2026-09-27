@@ -105,12 +105,26 @@ type Config struct {
 // TokenSource supplies the bearer token of every request. Token returns
 // the token to send now; Rejected reports one the server answered 401 to,
 // so the next Token call returns another. The store sends a replayable
-// request once more with that other token; a streamed upload fails with
-// the 401 and the next request uses the new token. Both are called
-// concurrently.
+// request once more with that other token; a streamed upload fails, and
+// the next request uses the new token. Both are called concurrently.
 type TokenSource interface {
 	Token(ctx context.Context) (string, error)
 	Rejected(token string)
+}
+
+// RenewingSource is a TokenSource of short-lived tokens. A streamed upload
+// such a source's token was refused for fails with
+// storage.ErrCredentialRenewed, which a retry resolves, instead of the
+// access refusal a fixed token's 401 is.
+type RenewingSource interface {
+	TokenSource
+	Renews() bool
+}
+
+// renews reports whether tokens are short-lived and renewable.
+func renews(tokens TokenSource) bool {
+	r, ok := tokens.(RenewingSource)
+	return ok && r.Renews()
 }
 
 // staticToken is the TokenSource of a fixed Config.Token.
@@ -618,7 +632,9 @@ func (s *Store) request(ctx context.Context, method, target string, body io.Read
 // send performs one request. A failure before any response is ambiguous
 // for a write: the request may have landed. A 401 reports the token to the
 // source; a replayable request goes once more when the source then has
-// another token, and a streamed one returns the 401.
+// another token. A streamed one returns the 401, or, for a RenewingSource,
+// storage.ErrCredentialRenewed, so the caller retries instead of reporting
+// a refused credential.
 func (s *Store) send(req *http.Request) (*http.Response, error) {
 	resp, err := s.sendOnce(req)
 	if err != nil || resp.StatusCode != http.StatusUnauthorized {
@@ -630,7 +646,11 @@ func (s *Store) send(req *http.Request) (*http.Response, error) {
 	}
 	s.tokens.Rejected(used)
 	if req.Body != nil && req.Body != http.NoBody && req.GetBody == nil {
-		return resp, nil
+		if !renews(s.tokens) {
+			return resp, nil
+		}
+		drain(resp)
+		return nil, fmt.Errorf("the server refused the token of an upload that cannot be sent again: %w", storage.ErrCredentialRenewed)
 	}
 	next, err := s.tokens.Token(req.Context())
 	if err != nil {

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -342,11 +343,25 @@ func TestLoadRefusesMalformedFiles(t *testing.T) {
 func TestLoadRefusesAnEarlierFile(t *testing.T) {
 	f := testFile(t)
 	writeRaw(t, f, `{"version":1,"logins":[{"endpoint":"https://api.slivingdoc.dev","space":"notes",`+
-		`"site":"https://www.slivingdoc.dev","token":"`+testToken+`","access":"write"}],"default":{"x":1}}`)
+		`"site":"https://www.slivingdoc.dev","token":"`+testToken+`","access":"write"},`+
+		`{"space":"team","site":"https://www.slivingdoc.dev","token":"`+testToken+`"},`+
+		`{"site":"https://user:pw@evil.example","token":"`+testToken+`"},{"site":"https://www.slivingdoc.dev","token":"sld bad"},`+
+		`{"token":"`+testToken+`"},"not an object"],"default":{"x":1}}`)
 	_, err := f.Load()
 	if !errors.Is(err, ErrOutdated) || errors.Is(err, ErrMalformed) || !strings.Contains(err.Error(), "slivingdoc login") ||
 		!strings.Contains(err.Error(), f.Path()) || strings.Contains(err.Error(), testToken) {
 		t.Fatalf("Load() of a version 1 file = %v, want ErrOutdated naming login and the file, not the token", err)
+	}
+	// The tokens come back for revocation: each sendable one with a plain
+	// site once; an entry without either is skipped.
+	var outdated *OutdatedFileError
+	if !errors.As(err, &outdated) || outdated.Path != f.Path() ||
+		!slices.Equal(outdated.Tokens, []OutdatedToken{{Site: "https://www.slivingdoc.dev", Token: testToken}}) {
+		t.Fatalf("Load() of a version 1 file = %#v, want its one sendable token", err)
+	}
+	writeRaw(t, f, `{"version":1}`)
+	if _, err := f.Load(); !errors.As(err, &outdated) || len(outdated.Tokens) != 0 {
+		t.Fatalf("Load() of a version 1 file without logins = %v, want ErrOutdated and no tokens", err)
 	}
 }
 
