@@ -50,6 +50,7 @@ type Gateway struct {
 	spaces   map[string]*space
 	grants   map[string]grant
 	refusals []refusal
+	hooks    []hook
 	pageSize int
 	requests int
 	used     map[string]int
@@ -71,6 +72,12 @@ type refusal struct {
 	status int
 	code   string
 	reason string
+}
+
+type hook struct {
+	method string
+	key    string
+	fn     func()
 }
 
 // Start runs a gateway for the test and stops it at cleanup.
@@ -135,6 +142,17 @@ func (g *Gateway) RefuseNextWithReason(method string, status int, code, reason s
 	g.refusals = append(g.refusals, refusal{method: method, status: status, code: code, reason: reason})
 }
 
+// BeforeNextObject runs fn once, just before the gateway serves the next
+// request with method for the object key (the full key, with its prefix),
+// so a test can change the gateway between two requests of one operation:
+// for example, delete the space after a one-shot command's startup access
+// check and before it reads current. fn may call any Gateway method.
+func (g *Gateway) BeforeNextObject(method, key string, fn func()) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.hooks = append(g.hooks, hook{method: method, key: key, fn: fn})
+}
+
 // Stored returns the pack bytes a space holds.
 func (g *Gateway) Stored(name string) int64 {
 	g.mu.Lock()
@@ -165,6 +183,9 @@ func (g *Gateway) serve(w http.ResponseWriter, r *http.Request) {
 	if rf, ok := g.nextRefusal(r.Method); ok {
 		writeReasonError(w, rf.status, rf.code, rf.reason)
 		return
+	}
+	if fn := g.nextHook(r); fn != nil {
+		fn()
 	}
 	if (r.URL.Path == "/v1" || r.URL.Path == "/v1/") && r.Method == http.MethodGet {
 		writeJSON(w, http.StatusOK, map[string]any{
@@ -238,6 +259,24 @@ func (g *Gateway) nextRefusal(method string) (refusal, bool) {
 		}
 	}
 	return refusal{}, false
+}
+
+// nextHook removes and returns the first hook registered for this request's
+// method and object key, or nil. The caller runs it without the lock.
+func (g *Gateway) nextHook(r *http.Request) func() {
+	m := routeRE.FindStringSubmatch(r.URL.Path)
+	if m == nil {
+		return nil
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for i, h := range g.hooks {
+		if h.method == r.Method && m[2] == "objects/"+h.key {
+			g.hooks = append(g.hooks[:i], g.hooks[i+1:]...)
+			return h.fn
+		}
+	}
+	return nil
 }
 
 // routeMatch classifies a request against the gateway's operation table.

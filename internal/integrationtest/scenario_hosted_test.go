@@ -3,19 +3,29 @@ package integrationtest
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
+	"fmt"
+	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
+	"github.com/baalimago/slivingdoc/internal/app"
+	"github.com/baalimago/slivingdoc/internal/httpstore"
 	"github.com/baalimago/slivingdoc/internal/httpstore/gatewaytest"
+	"github.com/baalimago/slivingdoc/internal/notebook"
+	"github.com/baalimago/slivingdoc/internal/workspace"
 )
 
 const (
 	hostedSpace  = "team-notes"
 	hostedToken  = "sld_0123456789abcdef_aG9zdGVkLXRva2VuLWZvci1pbnRlZ3JhdGlvbi10ZXN0cw"
 	hostedReader = "sld_fedcba9876543210_cmVhZC1vbmx5LXRva2VuLWZvci1pbnRlZ3JhdGlvbi10ZQ"
+	// hostedPrefix is the notebook prefix spawnHelper gives every helper.
+	hostedPrefix = "integration-prefix"
 )
 
 // hostedEnv starts a reference storage API with one space and returns the
@@ -225,6 +235,217 @@ func TestScenarioHostedStartupRefusals(t *testing.T) {
 			}
 		})
 	}
+}
+
+// hostedCuts make the space unreachable for hostedToken while a notebook
+// is in use, the two ways the gateway then answers 404 no_space: the space
+// is deleted, or the token's grant moves to another space.
+var hostedCuts = []struct {
+	name string
+	cut  func(g *gatewaytest.Gateway)
+}{
+	{"space deleted", func(g *gatewaytest.Gateway) { g.DeleteSpace(hostedSpace) }},
+	{"grant moved", moveHostedGrant},
+}
+
+func moveHostedGrant(g *gatewaytest.Gateway) {
+	g.AddSpace("elsewhere", 1<<20)
+	g.Grant(hostedToken, "elsewhere", false)
+}
+
+// hostedLocalEdit edits a published note and adds an unpublished one, so a
+// refused pull has local work to lose as well as published notes.
+func hostedLocalEdit(t *testing.T, notes string) {
+	t.Helper()
+	writeCLIFile(t, filepath.Join(notes, "a.md"), "first note, edited locally\n")
+	writeCLIFile(t, filepath.Join(notes, "draft.md"), "not yet committed\n")
+}
+
+// assertTreeKept fails when the notebook directory differs from before in
+// any file or byte.
+func assertTreeKept(t *testing.T, notes string, before map[string]string) {
+	t.Helper()
+	if after := fsSnapshot(t, notes); !maps.Equal(before, after) {
+		t.Fatalf("notebook directory after the refusal = %v, want it byte-identical to %v", after, before)
+	}
+}
+
+// TestScenarioHostedSpaceGoneMidSession proves a long-running serve process
+// never reads a space that became unreachable as an empty notebook. After
+// the space is deleted or the grant moves, notes_pull and notes_commit are
+// STORAGE_FAILURE/ACCESS_DENIED, action OPERATOR, not retryable, and the
+// notebook directory is byte-identical, with and without a local edit. The
+// startup access check passed long before, so only the read of current can
+// tell an unreachable space from an empty one (architecture/hosted-mode.md).
+func TestScenarioHostedSpaceGoneMidSession(t *testing.T) {
+	t.Parallel()
+	for _, row := range hostedCuts {
+		for _, edit := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/local edit %v", row.name, edit), func(t *testing.T) {
+				t.Parallel()
+				g, env, root := hostedEnv(t, 1<<20)
+				h := spawnHelper(t, "real", env, "serve")
+				cs := h.connectClient(t)
+				notes := filepath.Join(root, "notes")
+
+				assertProcessCallOK(t, cs, toolPull, notes, "")
+				writeCLIFile(t, filepath.Join(notes, "a.md"), "first note\n")
+				writeCLIFile(t, filepath.Join(notes, "sub", "b.md"), "second note\n")
+				assertProcessCallOK(t, cs, toolCommit, notes, "two notes")
+				if got := assertProcessCallOK(t, cs, toolPull, notes, ""); got.Generation != 1 {
+					t.Fatalf("pull after the commit = generation %d, want 1", got.Generation)
+				}
+				if edit {
+					hostedLocalEdit(t, notes)
+				}
+				before := fsSnapshot(t, notes)
+
+				row.cut(g)
+				for _, tool := range []string{toolPull, toolCommit} {
+					got := processError(t, cs, tool, notes, "after the space is gone")
+					if got.Code != "STORAGE_FAILURE" || got.Reason != "ACCESS_DENIED" || got.Action != "OPERATOR" || got.Retryable {
+						t.Fatalf("%s on an unreachable space = %s/%s/%s retryable %v, want STORAGE_FAILURE/ACCESS_DENIED/OPERATOR not retryable; message: %s",
+							tool, got.Code, got.Reason, got.Action, got.Retryable, got.Message)
+					}
+					if strings.Contains(got.Message, hostedToken) {
+						t.Fatalf("%s refusal leaks the token: %s", tool, got.Message)
+					}
+					assertTreeKept(t, notes, before)
+				}
+
+				if err := cs.Close(); err != nil {
+					t.Fatalf("close MCP client: %v", err)
+				}
+				if code := h.waitExit(t); code != 0 {
+					t.Fatalf("serve exit = %d, want 0; stderr: %s", code, h.stderrText(t))
+				}
+			})
+		}
+	}
+}
+
+// TestScenarioHostedSpaceGoneDuringOneShotPull proves the one-shot pull has
+// the same guarantee when the space becomes unreachable after its startup
+// access check passed and before it reads current: exit 1 with the
+// ACCESS_DENIED report, and the notebook directory byte-identical. A
+// space already unreachable when the process starts is refused by the
+// access check (TestScenarioHostedStartupRefusals).
+func TestScenarioHostedSpaceGoneDuringOneShotPull(t *testing.T) {
+	t.Parallel()
+	for _, row := range hostedCuts {
+		for _, edit := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/local edit %v", row.name, edit), func(t *testing.T) {
+				t.Parallel()
+				g, env, root := hostedEnv(t, 1<<20)
+				env = append(env, "SLIVINGDOC_PREFIX="+hostedPrefix)
+				notes := filepath.Join(root, "notes")
+				runCLIOK(t, "real", env, nil, "pull", notes)
+				writeCLIFile(t, filepath.Join(notes, "a.md"), "first note\n")
+				writeCLIFile(t, filepath.Join(notes, "sub", "b.md"), "second note\n")
+				runCLIOK(t, "real", env, nil, "commit", notes, "-m", "two notes")
+				if edit {
+					hostedLocalEdit(t, notes)
+				}
+				before := fsSnapshot(t, notes)
+
+				var cut atomic.Bool
+				g.BeforeNextObject(http.MethodGet, hostedPrefix+"/current", func() {
+					row.cut(g)
+					cut.Store(true)
+				})
+				code, stdout, stderr := runCLI(t, "real", env, "pull", notes)
+				if !cut.Load() {
+					t.Fatalf("the pull never read current; exit %d, stdout %q, stderr %s", code, stdout, stderr)
+				}
+				if code != 1 {
+					t.Fatalf("pull of an unreachable space = exit %d, want 1; stdout: %q stderr: %s", code, stdout, stderr)
+				}
+				for _, want := range []string{
+					"STORAGE_FAILURE · ACCESS_DENIED",
+					"SLIVINGDOC_TOKEN",
+					"retryable: false",
+					"next: operator attention needed",
+				} {
+					if !strings.Contains(stdout, want) {
+						t.Fatalf("unreachable-space report %q does not contain %q", stdout, want)
+					}
+				}
+				if strings.Contains(stdout+stderr, hostedToken) {
+					t.Fatal("the unreachable-space report leaks the token")
+				}
+				assertTreeKept(t, notes, before)
+			})
+		}
+	}
+}
+
+// TestScenarioHostedSpaceGoneEntryRecovery proves entry recovery never
+// resynchronizes the notebook directory to an empty notebook when the space
+// became unreachable. A pull whose replacement fails while the grant moves
+// away is RECOVERY_FAILURE/ACCESS_DENIED, not resynchronized; the next pull
+// runs entry recovery and is refused the same way at stage entry; L stays
+// byte-identical throughout. Once the grant is back, entry recovery
+// resynchronizes to the accepted state. The in-process harness runs the
+// real hosted adapter here because the workspace failpoints are reachable
+// only through it.
+func TestScenarioHostedSpaceGoneEntryRecovery(t *testing.T) {
+	t.Parallel()
+	g := gatewaytest.Start(t)
+	g.AddSpace(hostedSpace, 1<<20)
+	g.Grant(hostedToken, hostedSpace, false)
+	store, err := httpstore.New(httpstore.Config{
+		Endpoint: g.URL(), Space: hostedSpace, Prefix: hostedPrefix, Token: hostedToken, Retries: -1,
+	})
+	if err != nil {
+		t.Fatalf("httpstore.New() = %v", err)
+	}
+	h := NewHarness(t, HarnessConfig{
+		Store: store, Prefix: hostedPrefix, Bucket: hostedSpace, Endpoint: g.URL(),
+		Hooks: &app.ServiceHooks{Workspace: &workspace.Failpoints{}, Notebook: &notebook.Failpoints{}},
+	})
+	other := newSharedHarness(t, store, hostedPrefix, HarnessConfig{Bucket: hostedSpace, Endpoint: g.URL()})
+	path := h.Path("notes")
+	commitFirst(t, h, path, "a.md", "kept\n", "first")
+	otherPath := other.Path("notes")
+	other.assertOK(t, other.Pull("", otherPath))
+	other.WriteFile(otherPath+"/b.md", "remote\n")
+	other.assertOK(t, other.Commit("", otherPath, "second"))
+	before := fsSnapshot(t, path)
+
+	var fired atomic.Bool
+	h.WorkspaceFailpoints().Replace = func() error {
+		if !fired.CompareAndSwap(false, true) {
+			return nil
+		}
+		moveHostedGrant(g)
+		return errors.New("injected replacement failure")
+	}
+	denied := func(stage, accepted string) CallExpectation {
+		return CallExpectation{
+			ErrorCode: codeRecoveryFailure, Reason: "ACCESS_DENIED", Action: "OPERATOR", Retryable: new(false),
+			Recovery: &RecoveryExpectation{Stage: stage, RemoteAccepted: accepted, Resynchronized: new(false)},
+			NoText:   []string{hostedToken},
+		}
+	}
+	h.assertEnvelope(t, ToolCall{Tool: toolPull, Path: path, Expect: denied("pull.accept", "no")}, h.Pull("", path))
+	assertTreeKept(t, path, before)
+	if !h.StateRecord(t, path).RecoveryRequired {
+		t.Fatal("the failed replacement must leave P requiring recovery")
+	}
+
+	h.assertEnvelope(t, ToolCall{Tool: toolPull, Path: path, Expect: denied("entry", "unknown")}, h.Pull("", path))
+	assertTreeKept(t, path, before)
+	if !h.StateRecord(t, path).RecoveryRequired {
+		t.Fatal("a refused entry recovery must keep P requiring recovery")
+	}
+
+	g.Grant(hostedToken, hostedSpace, false)
+	h.assertEnvelope(t, ToolCall{Tool: toolPull, Path: path, Expect: CallExpectation{
+		ErrorCode: codeRecoveryFailure, Action: "PULL",
+		Recovery: &RecoveryExpectation{Stage: "entry", RemoteAccepted: "unknown", Resynchronized: new(true)},
+	}}, h.Pull("", path))
+	assertVisibleFiles(t, h, path, map[string]string{"a.md": "kept\n", "b.md": "remote\n"})
+	h.assertOK(t, h.Pull("", path))
 }
 
 // incompressible returns about n bytes of hex text that compression cannot
