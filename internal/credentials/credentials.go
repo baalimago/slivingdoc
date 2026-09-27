@@ -263,12 +263,16 @@ func (s Set) where() string {
 // File is the credentials file of one configuration directory.
 type File struct {
 	dir string
-	// private says whether the platform has POSIX owners and permission
-	// bits that Load checks: every one but Windows.
+	// private says whether Load checks POSIX owners and permission bits:
+	// on a platform built with them (hasOwners), unless goos is Windows.
 	private bool
 	// uid is the effective user that must own the file and its directory.
 	uid int
 }
+
+// checksOwners is whether a File for goos checks owners and modes: the
+// build has them, and goos is not Windows, whose ACLs they do not describe.
+func checksOwners(goos string) bool { return hasOwners && goos != "windows" }
 
 // Locate resolves the credentials file from the environment: DirEnv when
 // set, else <user configuration directory>/slivingdoc. getenv and goos are
@@ -279,13 +283,13 @@ func Locate(getenv func(string) string, goos string) (File, error) {
 		if !filepath.IsAbs(dir) {
 			return File{}, fmt.Errorf("%w: %s must be an absolute path", ErrNoConfigDir, DirEnv)
 		}
-		return File{dir: filepath.Clean(dir), private: goos != "windows", uid: os.Geteuid()}, nil
+		return File{dir: filepath.Clean(dir), private: checksOwners(goos), uid: os.Geteuid()}, nil
 	}
 	base, err := userConfigDir(getenv, goos)
 	if err != nil {
 		return File{}, err
 	}
-	return File{dir: filepath.Join(base, "slivingdoc"), private: goos != "windows", uid: os.Geteuid()}, nil
+	return File{dir: filepath.Join(base, "slivingdoc"), private: checksOwners(goos), uid: os.Geteuid()}, nil
 }
 
 // Path is the credentials file path.

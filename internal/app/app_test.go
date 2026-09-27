@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -342,4 +343,38 @@ func containsCode(data []byte, want string) bool {
 		return false
 	}
 	return m["code"] == want
+}
+
+func TestLogStorageNamesTheStoreAndItsSource(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		cfg  config
+		env  map[string]string
+		want []string
+	}{
+		{"s3 at the AWS default", config{bucket: "b"}, nil, []string{"backend=s3", "endpoint=aws-default", "token=none"}},
+		{
+			"s3 at AWS_ENDPOINT_URL",
+			config{bucket: "b"},
+			map[string]string{"AWS_ENDPOINT_URL": "https://user:secret@minio.local"},
+			[]string{"backend=s3", `endpoint="https://minio.local (AWS_ENDPOINT_URL)"`},
+		},
+		{"s3 at a bad AWS_ENDPOINT_URL", config{bucket: "b"}, map[string]string{"AWS_ENDPOINT_URL": "http://[::1"}, []string{`endpoint="an unparsable URL (AWS_ENDPOINT_URL)"`}},
+		{"s3 at its own endpoint", config{bucket: "b", endpoint: "https://s3.local"}, map[string]string{"AWS_ENDPOINT_URL": "https://minio.local"}, []string{"endpoint=https://s3.local"}},
+		{"hosted through the environment", config{bucket: "b", token: "t", endpoint: DefaultHostedEndpoint, tokenOrigin: originEnv}, nil, []string{"backend=hosted", "token=env"}},
+		{"hosted through a login", config{bucket: "b", token: "t", endpoint: DefaultHostedEndpoint, tokenOrigin: originLogin}, nil, []string{"backend=hosted", "token=login"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf strings.Builder
+			logStorage(slog.New(slog.NewTextHandler(&buf, nil)), tt.cfg, tt.env)
+			for _, want := range tt.want {
+				if !strings.Contains(buf.String(), want) {
+					t.Fatalf("record = %q, want %q", buf.String(), want)
+				}
+			}
+			if strings.Contains(buf.String(), "secret") {
+				t.Fatalf("record = %q leaks the endpoint's password", buf.String())
+			}
+		})
+	}
 }

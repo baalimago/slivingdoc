@@ -214,8 +214,9 @@ func TestScenarioLoginPollOutcomes(t *testing.T) {
 }
 
 // TestScenarioStorageSelection proves --storage and its automatic choice
-// from the outside: SLIVINGDOC_TOKEN beats a stored login; a login plus
-// AWS settings is refused as ambiguous until --storage decides; s3 never
+// from the outside: SLIVINGDOC_TOKEN beats a stored login and is refused
+// only beside an S3 endpoint; a login for a named bucket plus S3 settings
+// is refused as ambiguous until --storage decides; s3 never
 // sends a token or a login to the hosted API; hosted without a login is
 // refused; and a login is only used for the endpoint it was issued for.
 func TestScenarioStorageSelection(t *testing.T) {
@@ -262,12 +263,12 @@ func TestScenarioStorageSelection(t *testing.T) {
 			name: "the token and an S3 endpoint flag are ambiguous",
 			env:  with("SLIVINGDOC_TOKEN="+hostedToken, "SLIVINGDOC_BUCKET="+hostedSpace),
 			args: []string{"--endpoint", closedS3},
-			want: []string{"SLIVINGDOC_TOKEN and S3 settings (--endpoint)", "--storage hosted to send the token"},
+			want: []string{"SLIVINGDOC_TOKEN and an S3 endpoint (--endpoint)", "--storage hosted to send the token"},
 		},
 		{
-			name: "the token and AWS settings are ambiguous",
-			env:  with(append([]string{"SLIVINGDOC_TOKEN=" + hostedToken, "SLIVINGDOC_ENDPOINT=" + g.URL()}, s3...)...),
-			want: []string{"SLIVINGDOC_TOKEN and S3 settings (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION)"},
+			name: "the token and an AWS endpoint variable are ambiguous",
+			env:  with(append([]string{"SLIVINGDOC_TOKEN=" + hostedToken, "SLIVINGDOC_ENDPOINT=" + g.URL(), "AWS_ENDPOINT_URL_S3=" + closedS3}, s3...)...),
+			want: []string{"SLIVINGDOC_TOKEN and an S3 endpoint (AWS_ENDPOINT_URL_S3)"},
 		},
 		{
 			name: "s3 ignores the token and the login",
@@ -336,6 +337,42 @@ func TestScenarioStorageSelection(t *testing.T) {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("pull stderr = %q, want it to contain %q", stderr, want)
 		}
+	}
+}
+
+// TestScenarioTokenServesBesideAWSSettings proves the README's CI setup
+// on an ordinary machine: SLIVINGDOC_TOKEN with serve --bucket goes hosted
+// even though a region, AWS credentials and the shared AWS files are
+// configured, since none of them names a host the token could reach.
+func TestScenarioTokenServesBesideAWSSettings(t *testing.T) {
+	t.Parallel()
+	g := gatewaytest.Start(t)
+	g.AddSpace(hostedSpace, 1<<20)
+	g.Grant(hostedToken, hostedSpace, false)
+	env, root := cliRoots(t)
+	home := t.TempDir()
+	writeCLIFile(t, filepath.Join(home, ".aws", "config"), "[default]\nregion = eu-north-1\n")
+	env = append(env,
+		"HOME="+home, "AWS_REGION=eu-north-1", "AWS_ACCESS_KEY_ID=key", "AWS_SECRET_ACCESS_KEY=secret",
+		"SLIVINGDOC_TOKEN="+hostedToken, "SLIVINGDOC_ENDPOINT="+g.URL(), "SLIVINGDOC_BUCKET=",
+	)
+	h := spawnHelper(t, "real", env, "serve", "--bucket", hostedSpace)
+	cs := h.connectClient(t)
+	notes := filepath.Join(root, "notes")
+	assertProcessCallOK(t, cs, toolPull, notes, "")
+	writeCLIFile(t, filepath.Join(notes, "ci.md"), "from CI\n")
+	assertProcessCallOK(t, cs, toolCommit, notes, "beside AWS settings")
+	if err := cs.Close(); err != nil {
+		t.Fatalf("close MCP client: %v", err)
+	}
+	if code := h.waitExit(t); code != 0 {
+		t.Fatalf("serve exit = %d; stderr: %s", code, h.stderrText(t))
+	}
+	if used := g.Used(); used[hostedToken] == 0 || g.Stored(hostedSpace) == 0 {
+		t.Fatalf("space requests per token = %v, stored %d; want the commit through the token", used, g.Stored(hostedSpace))
+	}
+	if stderr := h.stderrText(t); !strings.Contains(stderr, "backend=hosted") || !strings.Contains(stderr, "token=env") {
+		t.Fatalf("serve stderr = %s, want the hosted startup record", stderr)
 	}
 }
 
@@ -572,8 +609,9 @@ func assertNothingStored(t *testing.T, env []string) {
 // TestScenarioCredentialsFileMustBeTheUsers proves a credentials file or
 // directory another user could read, write or have planted refuses
 // startup before any request reaches the storage API: a symbolic link, a
-// FIFO, a file group or other can read, a directory group can write, a
-// file over 1 MiB, and a file another user owns.
+// FIFO, a file group or other can read, a directory group can write, and
+// a file over 1 MiB. The owner check is pinned by the credentials unit
+// tests, which need no root to fake another owner.
 func TestScenarioCredentialsFileMustBeTheUsers(t *testing.T) {
 	t.Parallel()
 	if runtime.GOOS == "windows" {
@@ -602,12 +640,6 @@ func TestScenarioCredentialsFileMustBeTheUsers(t *testing.T) {
 		{"a file over 1 MiB", func(t *testing.T, file string) {
 			mustDo(t, os.WriteFile(file, []byte(strings.Repeat(" ", 1<<20+1)), 0o600))
 		}, "larger than 1048576 bytes"},
-		{"another user's file", func(t *testing.T, file string) {
-			if os.Geteuid() != 0 {
-				t.Skip("giving the file to another user needs root")
-			}
-			mustDo(t, os.Chown(file, 65534, 65534))
-		}, "is owned by user 65534"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
@@ -802,9 +834,10 @@ func TestScenarioLoginThroughTheDefaultSite(t *testing.T) {
 	}
 }
 
-// TestScenarioConcurrentLoginsKeepBoth proves two logins that store at the
-// same moment both land in the credentials file: the site answers both
-// issuing polls together, and the credentials lock orders the writes.
+// TestScenarioConcurrentLoginsKeepBoth shows two logins whose tokens the
+// site issues together both end up stored and usable. Whether their writes
+// overlap depends on scheduling, so this does not prove the lock;
+// TestLockSerializesLogins in internal/credentials does.
 func TestScenarioConcurrentLoginsKeepBoth(t *testing.T) {
 	t.Parallel()
 	g, site, env, root := loginEnv(t)

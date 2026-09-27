@@ -677,9 +677,13 @@ func TestLoginRefusesWhatItDidNotAskFor(t *testing.T) {
 		}
 	})
 	t.Run("the default site with another endpoint", func(t *testing.T) {
-		client, err := siteClient(sitelogin.DefaultSite, ProcessOptions{})
+		// The default port and a trailing dot still name the default site.
+		client, err := siteClient("https://www.slivingdoc.dev.:443", ProcessOptions{})
 		if err != nil {
 			t.Fatal(err)
+		}
+		if client.Site() != sitelogin.DefaultSite {
+			t.Fatalf("site = %q, want the default site", client.Site())
 		}
 		l := &Login{client: client, access: credentials.AccessWrite}
 		issued := sitelogin.Issued{Token: loginToken, Space: "notes", Access: credentials.AccessWrite, Endpoint: devEndpoint}
@@ -779,5 +783,70 @@ func TestInterruptibleWithoutSignalsWatchesTheOS(t *testing.T) {
 	stop()
 	if ctx.Err() == nil {
 		t.Fatal("stop did not end the context")
+	}
+}
+
+// interruptingStdin delivers a termination signal when the prompt reads
+// the answer, then blocks as a person who never types would, until the
+// test ends.
+type interruptingStdin struct {
+	sig   chan os.Signal
+	ended chan struct{}
+}
+
+func (r interruptingStdin) Read([]byte) (int, error) {
+	r.sig <- os.Interrupt
+	<-r.ended
+	return 0, io.EOF
+}
+
+func TestLoginInterruptedAtThePromptRevokes(t *testing.T) {
+	r := newLoginRig(t)
+	r.site.Next(approved("notes", loginToken, "write", DefaultHostedEndpoint))
+	sig := make(chan os.Signal, 1)
+	stdin := interruptingStdin{sig: sig, ended: make(chan struct{})}
+	t.Cleanup(func() { close(stdin.ended) })
+	opts := r.opts()
+	opts.Terminal = func() TerminalState { return OnTerminal }
+	opts.Stdin, opts.Signals = stdin, sig
+	f := NewLoginFlags()
+	err := invoke(t, f, f.Bind, func(f *LoginFlags) (operation, error) { return PrepareLogin(f, opts) }, nil)
+	if err == nil || !strings.Contains(err.Error(), "not confirmed") || strings.Contains(err.Error(), "revoking the issued token failed") {
+		t.Fatalf("login interrupted at the prompt = %v, want the refusal with the token revoked", err)
+	}
+	if got := r.site.Revoked(); len(got) != 1 || got[0] != loginToken {
+		t.Fatalf("revoked = %v, want the unconfirmed token despite the interrupt", got)
+	}
+	if len(r.logins(t).Logins()) != 0 {
+		t.Fatal("an interrupted login was stored")
+	}
+}
+
+func TestLogoutKeepsANewerLogin(t *testing.T) {
+	r := newLoginRig(t)
+	r.site.Next(approved("notes", loginToken, "write", DefaultHostedEndpoint))
+	if err := r.login(t); err != nil {
+		t.Fatalf("login = %v", err)
+	}
+	// The logout reads the login, then another process logs in again for
+	// the same space before the logout removes it.
+	logout, err := PrepareLogout(NewLogoutFlags(), r.opts())
+	if err != nil {
+		t.Fatalf("PrepareLogout() = %v", err)
+	}
+	r.site.Next(approved("notes", otherToken, "write", DefaultHostedEndpoint))
+	if err := r.login(t); err != nil {
+		t.Fatalf("second login = %v", err)
+	}
+	r.out.Reset()
+	if err := logout.Run(context.Background()); err != nil {
+		t.Fatalf("logout = %v", err)
+	}
+	if want := "Revoked the token for space \"notes\" at https://api.slivingdoc.dev; a newer login for it was kept\n"; r.out.String() != want {
+		t.Fatalf("stdout = %q, want %q", r.out.String(), want)
+	}
+	got, err := r.logins(t).Lookup(credentials.Key{Endpoint: DefaultHostedEndpoint, Space: "notes"})
+	if err != nil || got.Token != otherToken {
+		t.Fatalf("stored = %+v, %v; want the newer login kept", got, err)
 	}
 }

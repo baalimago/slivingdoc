@@ -69,11 +69,16 @@ func TestNewValidatesTheSite(t *testing.T) {
 		}
 	}
 	for site, want := range map[string]string{
-		"http://127.0.0.1:8788":       "http://127.0.0.1:8788",
-		"http://localhost:8788/":      "http://localhost:8788",
-		"https://WWW.Slivingdoc.dev":  "https://www.slivingdoc.dev",
-		"http://[::1]:9000":           "http://[::1]:9000",
-		"https://www.slivingdoc.dev/": "https://www.slivingdoc.dev",
+		"http://127.0.0.1:8788":            "http://127.0.0.1:8788",
+		"http://localhost:8788/":           "http://localhost:8788",
+		"https://WWW.Slivingdoc.dev":       "https://www.slivingdoc.dev",
+		"http://[::1]:9000":                "http://[::1]:9000",
+		"https://www.slivingdoc.dev/":      "https://www.slivingdoc.dev",
+		"https://www.slivingdoc.dev:443":   DefaultSite,
+		"https://WWW.slivingdoc.dev.:443/": DefaultSite,
+		"https://www.slivingdoc.dev:8443":  "https://www.slivingdoc.dev:8443",
+		"http://localhost:80":              "http://localhost",
+		"http://[::1]:80":                  "http://[::1]",
 	} {
 		c, err := New(Config{Site: site})
 		if err != nil || c.Site() != want {
@@ -162,8 +167,8 @@ func TestWaitStopsAtTheDeadline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Start() = %v", err)
 	}
-	if _, err := client.Wait(context.Background(), a); !errors.Is(err, ErrCodeExpired) {
-		t.Fatalf("Wait() = %v, want ErrCodeExpired", err)
+	if _, err := client.Wait(context.Background(), a); !errors.Is(err, ErrCodeExpired) || strings.Contains(err.Error(), TokenHint) {
+		t.Fatalf("Wait() = %v, want ErrCodeExpired without the hint: every poll was answered", err)
 	}
 	if got := site.Polls(); got != 2 {
 		t.Fatalf("polls = %d, want 2 (at 5 s and 10 s; 15 s is past the 12 s life)", got)
@@ -399,11 +404,25 @@ func TestWaitReportsTheLastFailureAtExpiry(t *testing.T) {
 		t.Fatalf("Start() = %v", err)
 	}
 	_, err = client.Wait(context.Background(), a)
-	if !errors.Is(err, ErrCodeExpired) || !strings.Contains(err.Error(), "HTTP 502") {
-		t.Fatalf("Wait() = %v, want ErrCodeExpired naming the last failure", err)
+	if !errors.Is(err, ErrCodeExpired) || !strings.Contains(err.Error(), "HTTP 502") || !strings.Contains(err.Error(), TokenHint) {
+		t.Fatalf("Wait() = %v, want ErrCodeExpired naming the last failure, with the hint", err)
 	}
 	if !clk.now.Equal(a.Deadline) {
 		t.Fatalf("Wait() slept until %v, want to stop at the deadline %v", clk.now, a.Deadline)
+	}
+}
+
+func TestWaitHintsAtExpiryAfterALostPoll(t *testing.T) {
+	site := sitetest.Start(t)
+	site.Next(sitetest.Script{Final: "expired_token"})
+	client, _ := flakyClient(t, site.URL(), 2)
+	a, err := client.Start(context.Background(), StartRequest{Access: credentials.AccessWrite})
+	if err != nil {
+		t.Fatalf("Start() = %v", err)
+	}
+	_, err = client.Wait(context.Background(), a)
+	if !errors.Is(err, ErrCodeExpired) || !strings.Contains(err.Error(), TokenHint) {
+		t.Fatalf("Wait() = %v, want expired_token with the hint: an unanswered poll may have claimed the code", err)
 	}
 }
 

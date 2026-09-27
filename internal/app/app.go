@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/url"
 	"os"
 	"os/signal"
 	"sync"
@@ -311,7 +312,7 @@ func setup(p process) (*Runtime, error) {
 		base = rebuilt
 		logger = Module(base, ModuleApp)
 	}
-	logStorage(logger, cfg)
+	logStorage(logger, cfg, environ(p.env))
 	if err := p.engine.Open(); err != nil {
 		removeSessionDir(cfg.sessionDir)
 		return nil, fmt.Errorf("app: open native engine: %w", err)
@@ -495,6 +496,9 @@ func realStoreFactory(ctx context.Context, cfg config) (storage.ObjectStore, err
 			UserAgent: "slivingdoc/" + Version,
 		})
 		if err != nil {
+			// %s over the redacted text, not %w: the cause can quote the
+			// token, and a wrapped error would carry it past the redaction
+			// to any caller that prints the chain.
 			return nil, fmt.Errorf("app: create hosted store: %s", mcp.Redact(err.Error()))
 		}
 		return store, nil
@@ -511,10 +515,23 @@ func realStoreFactory(ctx context.Context, cfg config) (storage.ObjectStore, err
 	return store, nil
 }
 
+// withoutUserinfo drops credentials written into an endpoint URL before
+// it is logged; a value that does not parse is logged as unparsable.
+func withoutUserinfo(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "an unparsable URL"
+	}
+	u.User = nil
+	return u.String()
+}
+
 // logStorage records the store the configuration chose, so an operator
 // can see at startup whether a stored login or SLIVINGDOC_TOKEN turned the
-// process hosted (architecture/login.md). It never logs the token.
-func logStorage(logger *slog.Logger, cfg config) {
+// process hosted (architecture/login.md). It never logs the token. An S3
+// process with no endpoint of its own names AWS_ENDPOINT_URL when that is
+// set, since the AWS SDK then sends every request there.
+func logStorage(logger *slog.Logger, cfg config, env map[string]string) {
 	backend, source, endpoint := "s3", "none", cfg.endpoint
 	if cfg.hosted() {
 		backend = "hosted"
@@ -523,7 +540,10 @@ func logStorage(logger *slog.Logger, cfg config) {
 			source = "login"
 		}
 	}
-	if endpoint == "" {
+	switch {
+	case endpoint == "" && env["AWS_ENDPOINT_URL"] != "":
+		endpoint = withoutUserinfo(env["AWS_ENDPOINT_URL"]) + " (AWS_ENDPOINT_URL)"
+	case endpoint == "":
 		endpoint = "aws-default"
 	}
 	logger.Info("storage selected", "backend", backend, "endpoint", endpoint, "space", cfg.bucket, "token", source)

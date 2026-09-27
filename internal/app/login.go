@@ -11,7 +11,9 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
+	"time"
 
 	"golang.org/x/term"
 
@@ -190,7 +192,7 @@ func (l *Login) Run(ctx context.Context) error {
 		agreed = confirmed
 	}
 	if l.opts.terminal() == OnTerminal {
-		if agreed, err = l.confirm(errOut); err != nil {
+		if agreed, err = l.confirm(ctx, errOut); err != nil {
 			return l.discard(ctx, stored.Token, err)
 		}
 		if agreed != confirmed {
@@ -243,13 +245,30 @@ func approvedBy(issued sitelogin.Issued, site string) string {
 
 // confirm asks the person at the terminal whether to store the login; only
 // y or yes, in any case, agrees.
-func (l *Login) confirm(errOut io.Writer) (consent, error) {
+func (l *Login) confirm(ctx context.Context, errOut io.Writer) (consent, error) {
 	fmt.Fprint(errOut, "Store this login? [y/N] ")
-	line, err := bufio.NewReader(l.opts.stdin()).ReadString('\n')
-	if err != nil && !errors.Is(err, io.EOF) {
-		return notConfirmed, fmt.Errorf("login: read the answer: %w; nothing was stored", err)
+	type answer struct {
+		line string
+		err  error
 	}
-	switch strings.ToLower(strings.TrimSpace(line)) {
+	answered := make(chan answer, 1)
+	go func() {
+		line, err := bufio.NewReader(l.opts.stdin()).ReadString('\n')
+		answered <- answer{line, err}
+	}()
+	var got answer
+	select {
+	case <-ctx.Done():
+		// An interrupt at the prompt is a no; the read is left to the
+		// process exit.
+		fmt.Fprintln(errOut)
+		return notConfirmed, nil
+	case got = <-answered:
+	}
+	if got.err != nil && !errors.Is(got.err, io.EOF) {
+		return notConfirmed, fmt.Errorf("login: read the answer: %w; nothing was stored", got.err)
+	}
+	switch strings.ToLower(strings.TrimSpace(got.line)) {
 	case "y", "yes":
 		return confirmed, nil
 	default:
@@ -351,7 +370,9 @@ func (l *Login) report(ctx context.Context, stored credentials.Login, out storeO
 			replaced.Space, account(*replaced), account(stored))
 		return
 	}
-	if err := revoke(ctx, *replaced, l.opts); err != nil {
+	rctx, cancel := revocationContext(ctx)
+	defer cancel()
+	if err := revoke(rctx, *replaced, l.opts); err != nil {
 		fmt.Fprintf(errOut, "The earlier token for space %q could not be revoked (%s); revoke it on the Tokens page.\n",
 			replaced.Space, mcp.Redact(err.Error()))
 	}
@@ -370,11 +391,24 @@ func describeKey(k credentials.Key) string {
 	return fmt.Sprintf("space %q at %s", k.Space, k.Endpoint)
 }
 
+// revocationTimeout bounds a revocation that runs after the login's own
+// context may have ended.
+const revocationTimeout = 10 * time.Second
+
+// revocationContext keeps ctx's values but not its cancellation, so an
+// interrupt that refused a login still revokes the token it was given,
+// within revocationTimeout.
+func revocationContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), revocationTimeout)
+}
+
 // discard revokes an issued token the login refuses to store, so it does
 // not stay valid unseen, and returns cause; a failed revocation is added to
 // it.
 func (l *Login) discard(ctx context.Context, token string, cause error) error {
-	if err := l.client.Revoke(ctx, token); err != nil {
+	rctx, cancel := revocationContext(ctx)
+	defer cancel()
+	if err := l.client.Revoke(rctx, token); err != nil {
 		return fmt.Errorf("%w; revoking the issued token failed too (%s), revoke it on the Tokens page", cause, mcp.Redact(err.Error()))
 	}
 	return cause
@@ -453,20 +487,25 @@ func PrepareLogout(f *LogoutFlags, opts ProcessOptions) (*Logout, error) {
 // be repeated.
 func (l *Logout) Run(ctx context.Context) error {
 	var failed []error
-	var removed []credentials.Key
+	var revoked []credentials.Login
 	for _, login := range l.logins {
 		if err := revoke(ctx, login, l.opts); err != nil {
 			failed = append(failed, fmt.Errorf("space %q at %s: %s", login.Space, login.Endpoint, mcp.Redact(err.Error())))
 			continue
 		}
-		removed = append(removed, login.Key)
+		revoked = append(revoked, login)
 	}
-	if len(removed) > 0 {
-		if err := l.remove(ctx, removed); err != nil {
+	if len(revoked) > 0 {
+		kept, err := l.remove(ctx, revoked)
+		if err != nil {
 			return err
 		}
-		for _, k := range removed {
-			fmt.Fprintf(l.opts.Out(), "Logged out of space %q at %s; the token was revoked\n", k.Space, k.Endpoint)
+		for _, login := range revoked {
+			if slices.Contains(kept, login.Key) {
+				fmt.Fprintf(l.opts.Out(), "Revoked the token for space %q at %s; a newer login for it was kept\n", login.Space, login.Endpoint)
+				continue
+			}
+			fmt.Fprintf(l.opts.Out(), "Logged out of space %q at %s; the token was revoked\n", login.Space, login.Endpoint)
 		}
 	}
 	if len(failed) > 0 {
@@ -476,11 +515,13 @@ func (l *Logout) Run(ctx context.Context) error {
 }
 
 // remove deletes the revoked logins from the file under the credentials
-// lock; a login another process removed meanwhile is already gone.
-func (l *Logout) remove(ctx context.Context, keys []credentials.Key) (errOut error) {
+// lock. A login another process removed meanwhile is already gone; one
+// another process replaced with a newer token since it was read is kept,
+// and its key returned, because deleting it would orphan a live token.
+func (l *Logout) remove(ctx context.Context, revoked []credentials.Login) (kept []credentials.Key, errOut error) {
 	lock, err := l.file.Lock(ctx)
 	if err != nil {
-		return fmt.Errorf("logout: %w", err)
+		return nil, fmt.Errorf("logout: %w", err)
 	}
 	defer func() {
 		if err := lock.Unlock(); err != nil && errOut == nil {
@@ -489,17 +530,28 @@ func (l *Logout) remove(ctx context.Context, keys []credentials.Key) (errOut err
 	}()
 	set, err := l.file.Load()
 	if err != nil {
-		return fmt.Errorf("logout: %w", err)
+		return nil, fmt.Errorf("logout: %w", err)
 	}
-	for _, k := range keys {
-		if err := set.Remove(k); err != nil && !errors.Is(err, credentials.ErrNoLogin) {
-			return fmt.Errorf("logout: %w", err)
+	for _, login := range revoked {
+		current, err := set.Lookup(login.Key)
+		if errors.Is(err, credentials.ErrNoLogin) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("logout: %w", err)
+		}
+		if current.Token != login.Token {
+			kept = append(kept, login.Key)
+			continue
+		}
+		if err := set.Remove(login.Key); err != nil {
+			return nil, fmt.Errorf("logout: %w", err)
 		}
 	}
 	if err := l.file.Save(set); err != nil {
-		return fmt.Errorf("logout: %w", err)
+		return nil, fmt.Errorf("logout: %w", err)
 	}
-	return nil
+	return kept, nil
 }
 
 func revoke(ctx context.Context, login credentials.Login, opts ProcessOptions) error {

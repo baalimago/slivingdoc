@@ -44,7 +44,8 @@ const (
 
 // awsSignals returns the environment variables that mean the operator
 // configured S3 on purpose. In auto mode they make a stored login for an
-// explicit bucket, or SLIVINGDOC_TOKEN, a refusal rather than a guess.
+// explicit bucket a refusal rather than a guess; SLIVINGDOC_TOKEN is
+// refused only beside the ones that name a destination (destinationSignals).
 // Any variable starting with awsContainerPrefix counts too, and so do the
 // shared AWS files (awsFiles) and the S3-only flags --region and
 // --path-style (s3Signals).
@@ -55,6 +56,14 @@ func awsSignals() []string {
 		"AWS_ROLE_ARN", "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_ENDPOINT_URL", "AWS_ENDPOINT_URL_S3",
 		"SLIVINGDOC_PATH_STYLE",
 	}
+}
+
+// destinationSignals are the S3 settings that name the host a request
+// goes to. Beside SLIVINGDOC_TOKEN in auto mode they are a refusal: the
+// token would follow them to that host. A region or AWS credentials name
+// no host and the hosted adapter never reads them, so they are not.
+func destinationSignals() []string {
+	return []string{"AWS_ENDPOINT_URL", "AWS_ENDPOINT_URL_S3"}
 }
 
 // awsContainerPrefix starts the container credential variables of the
@@ -97,8 +106,8 @@ type storageInputs struct {
 //     ignored and never read.
 //   - hosted: SLIVINGDOC_TOKEN if set, else the stored login for the space;
 //     neither is a refusal.
-//   - auto: SLIVINGDOC_TOKEN → hosted, unless --endpoint or an S3 signal
-//     is set too (refusal). Else a stored login for the space → hosted when
+//   - auto: SLIVINGDOC_TOKEN → hosted, unless the --endpoint flag,
+//     AWS_ENDPOINT_URL or AWS_ENDPOINT_URL_S3 is set too (refusal). Else a stored login for the space → hosted when
 //     the bucket came from the default login, or when no S3 signal is set;
 //     an explicit bucket with an S3 signal is a refusal. Otherwise S3.
 //
@@ -140,13 +149,12 @@ func resolveStorage(f *Flags, env map[string]string, in storageInputs) (storageS
 	}
 
 	if token != "" {
-		if f.endpoint.set {
-			signals = append([]string{"--endpoint"}, signals...)
-		}
-		if mode == storageAuto && len(signals) > 0 {
-			return storageSelection{}, fmt.Errorf(
-				"SLIVINGDOC_TOKEN and S3 settings (%s) are both configured; pass --storage hosted to send the token, or --storage s3",
-				strings.Join(signals, ", "))
+		if mode == storageAuto {
+			if dest := tokenDestinations(f, env); len(dest) > 0 {
+				return storageSelection{}, fmt.Errorf(
+					"SLIVINGDOC_TOKEN and an S3 endpoint (%s) are both configured; pass --storage hosted to send the token there, or --storage s3",
+					strings.Join(dest, ", "))
+			}
 		}
 		sel.token, sel.origin, sel.endpoint = token, originEnv, explicit
 		if sel.endpoint == "" {
@@ -224,6 +232,22 @@ func noLoginRefusal(logins credentials.Set, explicit, space string) error {
 		msg += fmt.Sprintf(" at %s; the stored login was issued for %s", explicit, others[0].Endpoint)
 	}
 	return fmt.Errorf("%s; run 'slivingdoc login --bucket %s'", msg, space)
+}
+
+// tokenDestinations returns the settings that would send SLIVINGDOC_TOKEN
+// to an S3 host: the --endpoint flag and the destinationSignals that are
+// set. SLIVINGDOC_ENDPOINT alone names the hosted API and is not one.
+func tokenDestinations(f *Flags, env map[string]string) []string {
+	var set []string
+	if f.endpoint.set {
+		set = append(set, "--endpoint")
+	}
+	for _, name := range destinationSignals() {
+		if env[name] != "" {
+			set = append(set, name)
+		}
+	}
+	return set
 }
 
 // s3Signals returns what configures S3 on purpose, in a fixed order: the

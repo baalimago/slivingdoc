@@ -69,7 +69,8 @@ the space, its owner, the access and the storage endpoint, and asks
 `Store this login? [y/N]`; answer `y` only if that was you. The token is
 stored in your user configuration directory
 (`~/.config/slivingdoc/credentials.json` on Linux; `SLIVINGDOC_CONFIG_DIR`
-moves it), and your first login becomes the default login, so the MCP host
+moves it), and a login made while no default is stored (your first)
+becomes the default login, so the MCP host
 needs neither a token nor a bucket:
 
 ```json
@@ -108,10 +109,12 @@ space name:
 
 The token replaces the AWS settings. Everything else works the same way.
 `SLIVINGDOC_TOKEN` wins over a stored login. slivingdoc refuses to guess
-between S3 and hosted storage: a token next to S3 settings (an AWS
-variable, `~/.aws/credentials` or `~/.aws/config`, `--region`,
-`--path-style`) or next to an `--endpoint` flag, and a login for a
-`--bucket` you named next to S3 settings, refuse to start until you pass
+between S3 and hosted storage: a token next to a setting that names an S3
+host (an `--endpoint` flag, `AWS_ENDPOINT_URL` or `AWS_ENDPOINT_URL_S3`;
+a region, AWS credentials and `~/.aws` files are fine), and a login for a
+`--bucket` you named next to S3 settings (an AWS variable,
+`~/.aws/credentials` or `~/.aws/config`, `--region`, `--path-style`),
+refuse to start until you pass
 `--storage hosted` or `--storage s3` (`--storage s3` never sends a token
 anywhere). Each process logs which store and token source it chose.
 
@@ -125,8 +128,8 @@ an entry that names the space as its bucket next to S3 settings refuses to
 start instead, as does one whose login has expired. An entry that sets its
 own S3 endpoint stays on S3. Add `--storage s3` (or `SLIVINGDOC_STORAGE=s3`)
 to keep an entry on S3 whatever is stored. A hosted entry that sets
-`SLIVINGDOC_TOKEN` next to AWS settings, or passes `--endpoint` as a flag,
-now needs `--storage hosted`.
+`SLIVINGDOC_TOKEN` next to `AWS_ENDPOINT_URL` or `AWS_ENDPOINT_URL_S3`, or
+passes `--endpoint` as a flag, now needs `--storage hosted`.
 
 ## How it works
 

@@ -528,3 +528,12 @@ func TestLockSerializesLogins(t *testing.T) {
 		t.Fatal("Lock() below a file = nil, want an error")
 	}
 }
+
+func TestChecksOwnersFollowsTheBuild(t *testing.T) {
+	if checksOwners("windows") {
+		t.Fatal("a Windows file checks POSIX owners")
+	}
+	if got := checksOwners(runtime.GOOS); got != (hasOwners && runtime.GOOS != "windows") {
+		t.Fatalf("checksOwners(%q) = %v, want the build's hasOwners", runtime.GOOS, got)
+	}
+}

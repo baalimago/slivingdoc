@@ -442,8 +442,12 @@ non-empty `SLIVINGDOC_TOKEN`, or a stored login for the space
   `https://api.slivingdoc.dev` (with a stored login: the endpoint it was
   issued for). It must be `https`, except to a loopback
   address. `AWS_ENDPOINT_URL_S3`, `AWS_REGION`, and the AWS credential
-  chain are not used; `--region` is ignored, and `--path-style` is still
-  validated, then unused.
+  chain are not used, and `--path-style` is validated, then unused. Beside
+  `SLIVINGDOC_TOKEN` a region, AWS credentials and the `~/.aws` files are
+  simply ignored; `--region` counts only against a stored login for a
+  `--bucket` you named (see [Choosing the storage](#choosing-the-storage)),
+  and the `--endpoint` flag, `AWS_ENDPOINT_URL` or `AWS_ENDPOINT_URL_S3`
+  beside the token refuse startup under `--storage auto`.
 - The token is read from the environment or the credentials file only, never from a flag, and
   must be printable ASCII (0x21 to 0x7E) without white space. It travels only in
   the `Authorization` header and never appears in a diagnostic, a log
@@ -499,8 +503,9 @@ the terminal, and approve. The code lives ten minutes at most.
 Whoever enters a code first decides it, so before anything is stored the
 login shows who approved it, the space and its owner, the access, the
 storage endpoint and the site. On a terminal it then asks `Store this
-login? [y/N]`; any answer but `y` revokes the new token and stores
-nothing. Without a terminal (a script) nothing is asked, but a login that
+login? [y/N]`; any answer but `y`, or Ctrl-C, revokes the new token and
+stores nothing. Without a terminal (a script) nothing is asked, so nobody
+confirms who approved a first login; check the `Approved by` line. A login that
 would replace a stored login, or with `--default` a default login, that
 another account approved is refused and its token revoked, unless
 `--force` is given. A replaced token is revoked only when the same account
@@ -512,8 +517,9 @@ The token is an ordinary one-space token (90 days, label
 It is stored in `<user-config-dir>/slivingdoc/credentials.json`
 (`~/.config/slivingdoc/` on Linux, `~/Library/Application Support/slivingdoc/`
 on macOS, `%AppData%\slivingdoc\` on Windows; `SLIVINGDOC_CONFIG_DIR`
-names another directory), mode 0600. The first login becomes the default
-login, whose space `serve`, `pull` and `commit` use when no bucket is
+names another directory), mode 0600. A login made while no default is
+stored (the first one, or the first after logging out of the default)
+becomes the default login, whose space `serve`, `pull` and `commit` use when no bucket is
 given; a later login keeps the existing default and says so, and
 `--default` switches it, with a line naming the old and the new default.
 Logging in again for the same space at the same storage endpoint replaces
@@ -539,7 +545,10 @@ the same space and endpoint: log out of that one first.
 `slivingdoc logout` revokes the default login's token (`--bucket` names
 another space) at the site that issued it and removes it; a token the site
 reports as unknown (`401 invalid_token`) counts as revoked, and any other
-failure keeps the login so you can retry.
+failure keeps the login so you can retry. If another `login` stored a newer
+token for the same space meanwhile, logout keeps it and says so. A stored
+token is sent only to its storage endpoint and, when `login` or `logout`
+revokes it, to `/cli/v1/revoke` of the site that issued it.
 
 Once logged in, `slivingdoc pull ~/notes`, `slivingdoc commit ~/notes -m
 msg` and `slivingdoc serve` need neither `SLIVINGDOC_TOKEN` nor `--bucket`.
@@ -549,12 +558,14 @@ log in again. The token is read once when a process starts, so restart
 `serve` (your MCP host) after logging in again. Every process logs, at
 Info on stderr, which store it chose: `storage selected backend=hosted
 endpoint=... space=... token=login` (or `env`, or `backend=s3 ...
-token=none`).
+token=none`, with `(AWS_ENDPOINT_URL)` after an endpoint that came from
+that variable).
 
 ### Choosing the storage
 
 `--storage` (`SLIVINGDOC_STORAGE`) is `auto` by default. In `auto`, these
-count as configuring S3 on purpose ("S3 settings"): any of
+count as configuring S3 on purpose ("S3 settings"), which matters for a
+stored login: any of
 `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`,
 `AWS_PROFILE`, `AWS_REGION`, `AWS_DEFAULT_REGION`, `AWS_CONFIG_FILE`,
 `AWS_SHARED_CREDENTIALS_FILE`, `AWS_ROLE_ARN`,
@@ -563,9 +574,12 @@ count as configuring S3 on purpose ("S3 settings"): any of
 `--region` or `--path-style` flag given; or an existing
 `~/.aws/credentials` or `~/.aws/config`. Then, in order:
 
-1. `SLIVINGDOC_TOKEN` is set: with S3 settings or an `--endpoint` flag,
-   startup is refused, naming them; pass `--storage hosted` to send the
-   token or `--storage s3`. Otherwise hosted storage with that token. It
+1. `SLIVINGDOC_TOKEN` is set: with the `--endpoint` flag,
+   `AWS_ENDPOINT_URL` or `AWS_ENDPOINT_URL_S3` (the settings that would
+   send it to an S3 host), startup is refused, naming them; pass
+   `--storage hosted` to send the token or `--storage s3`. Otherwise
+   hosted storage with that token, whatever other S3 settings exist: a
+   region, AWS credentials and `~/.aws` files are not read in hosted mode. It
    wins over a stored login, so a read-only token in one MCP entry and a
    login in another can sit side by side.
 2. No bucket is given and a default login exists: hosted storage with the

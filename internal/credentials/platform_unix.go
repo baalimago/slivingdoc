@@ -13,6 +13,9 @@ import (
 // checked with fstat.
 const openFlags = os.O_RDONLY | unix.O_NOFOLLOW | unix.O_NONBLOCK
 
+// hasOwners: files here have POSIX owners and permission bits.
+const hasOwners = true
+
 func fileOwner(file *os.File) (int, error) {
 	var st unix.Stat_t
 	if err := unix.Fstat(int(file.Fd()), &st); err != nil {

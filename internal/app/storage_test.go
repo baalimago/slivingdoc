@@ -63,7 +63,23 @@ func writeLogins(t *testing.T, def *storedKey, logins ...storedLogin) string {
 	return credentials.DirEnv + "=" + dir
 }
 
+// awsHomeDir is a home directory holding both shared AWS files.
+func awsHomeDir(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, ".aws"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"credentials", "config"} {
+		if err := os.WriteFile(filepath.Join(home, ".aws", name), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return home
+}
+
 func TestResolveStorage(t *testing.T) {
+	awsHome := awsHomeDir(t)
 	notes := writeLogins(t, &storedKey{DefaultHostedEndpoint, "notes"}, entry(DefaultHostedEndpoint, "notes", loginToken))
 	dev := writeLogins(t, nil, entry(devEndpoint, "notes", loginToken))
 	token := "SLIVINGDOC_TOKEN=" + hostedTestToken
@@ -107,6 +123,19 @@ func TestResolveStorage(t *testing.T) {
 			name: "auto: an explicit bucket takes a login when nothing configures S3", env: []string{notes, "HOME=" + t.TempDir()},
 			args:       []string{"--bucket", "notes"},
 			wantHosted: true, wantToken: loginToken, wantOrigin: originLogin, wantBucket: "notes", wantEndpoint: DefaultHostedEndpoint,
+		},
+		{
+			name: "auto: the token ignores a region, AWS credentials and the shared AWS files",
+			env: []string{
+				token, "SLIVINGDOC_BUCKET=notes", "AWS_REGION=eu-north-1", "AWS_DEFAULT_REGION=eu-north-1",
+				"AWS_PROFILE=p", "AWS_ACCESS_KEY_ID=k", "HOME=" + awsHome,
+			},
+			args:       []string{"--region", "eu-north-1"},
+			wantHosted: true, wantToken: hostedTestToken, wantOrigin: originEnv, wantBucket: "notes", wantEndpoint: DefaultHostedEndpoint,
+		},
+		{
+			name: "auto: the token with the hosted endpoint variable", env: []string{token, "SLIVINGDOC_BUCKET=notes", "SLIVINGDOC_ENDPOINT=" + devEndpoint},
+			wantHosted: true, wantToken: hostedTestToken, wantOrigin: originEnv, wantBucket: "notes", wantEndpoint: devEndpoint,
 		},
 		{
 			name: "auto: a login selects hosted", env: []string{notes, "SLIVINGDOC_BUCKET=notes"},
@@ -194,15 +223,7 @@ func TestResolveStorageRefusals(t *testing.T) {
 		entry(DefaultHostedEndpoint, "notes", loginToken), entry(devEndpoint, "notes", otherToken), entry(DefaultHostedEndpoint, "team", otherToken))
 	twoEndpointsDefault := writeLogins(t, &storedKey{devEndpoint, "notes"},
 		entry(DefaultHostedEndpoint, "notes", loginToken), entry(devEndpoint, "notes", otherToken))
-	awsHome := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(awsHome, ".aws"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	for _, name := range []string{"credentials", "config"} {
-		if err := os.WriteFile(filepath.Join(awsHome, ".aws", name), nil, 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
+	awsHome := awsHomeDir(t)
 	malformedDir := filepath.Join(t.TempDir(), "cfg")
 	if err := os.Mkdir(malformedDir, 0o700); err != nil {
 		t.Fatal(err)
@@ -339,13 +360,13 @@ func TestResolveStorageRefusals(t *testing.T) {
 			"the token and an endpoint flag are ambiguous",
 			[]string{"SLIVINGDOC_TOKEN=" + hostedTestToken, "SLIVINGDOC_BUCKET=notes"},
 			[]string{"--endpoint", "https://minio.local"},
-			[]string{"SLIVINGDOC_TOKEN and S3 settings (--endpoint)", "--storage hosted", "--storage s3"},
+			[]string{"SLIVINGDOC_TOKEN and an S3 endpoint (--endpoint)", "--storage hosted", "--storage s3"},
 		},
 		{
-			"the token and AWS settings are ambiguous",
-			[]string{"SLIVINGDOC_TOKEN=" + hostedTestToken, "SLIVINGDOC_BUCKET=notes", "AWS_REGION=eu-north-1"},
+			"the token and the AWS endpoint variables are ambiguous",
+			[]string{"SLIVINGDOC_TOKEN=" + hostedTestToken, "SLIVINGDOC_BUCKET=notes", "AWS_ENDPOINT_URL=https://minio.local", "AWS_ENDPOINT_URL_S3=https://minio.local", "AWS_REGION=eu-north-1"},
 			nil,
-			[]string{"SLIVINGDOC_TOKEN and S3 settings (AWS_REGION)"},
+			[]string{"SLIVINGDOC_TOKEN and an S3 endpoint (AWS_ENDPOINT_URL, AWS_ENDPOINT_URL_S3)"},
 		},
 	}
 	for _, tt := range tests {

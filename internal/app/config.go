@@ -590,8 +590,9 @@ func parseUnsigned(s string) (int, error) {
 const FlagReference = `  --storage string              storage backend: auto, hosted, or s3         SLIVINGDOC_STORAGE
                                 (default "auto": SLIVINGDOC_TOKEN, else a
                                 stored login for the space, selects hosted
-                                storage; otherwise S3; a login plus AWS
-                                settings is refused as ambiguous)
+                                storage; otherwise S3; a login for a named
+                                bucket plus S3 settings, or the token plus
+                                an S3 endpoint, is refused as ambiguous)
   --bucket string               S3 bucket, or the hosted space name in       SLIVINGDOC_BUCKET
                                 hosted mode (required, except that hosted
                                 and auto default to the space of the

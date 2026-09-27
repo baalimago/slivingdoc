@@ -93,13 +93,14 @@ the space and its owner, the access, the storage endpoint and the site; on
 a terminal it asks "Store this login? [y/N]" and revokes the token unless
 you answer y. The token is stored in
 <user-config-dir>/slivingdoc/credentials.json (SLIVINGDOC_CONFIG_DIR
-overrides the directory). The first login becomes the default login, and
---default makes a later one the default; serve, pull and commit then use
+overrides the directory). A login made while no default is stored
+becomes the default login, and --default makes a later one the default; serve, pull and commit then use
 hosted storage for the default space without SLIVINGDOC_TOKEN or --bucket.
 Logging in again for the same space replaces the stored token and revokes
-the old one when the same account approved both. Without a terminal, a
-login that would replace a login or a default another account approved is
-refused unless --force is given.
+the old one when the same account approved both. Without a terminal
+nobody is asked, so check the "Approved by" line; a login that would
+replace a login or a default another account approved is refused unless
+--force is given.
 
 Flags:
   --bucket string   space to preselect; a token for another space is refused

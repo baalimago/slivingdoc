@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -178,7 +179,25 @@ func parseSite(raw string) (*url.URL, error) {
 	if u.Scheme != "https" && !httpstore.IsLoopback(u.Hostname()) {
 		return nil, errors.New("sitelogin: the site must use https so the login is never sent in clear text")
 	}
-	return &url.URL{Scheme: strings.ToLower(u.Scheme), Host: strings.ToLower(u.Host)}, nil
+	return &url.URL{Scheme: strings.ToLower(u.Scheme), Host: canonicalHost(u)}, nil
+}
+
+// canonicalHost is u's host in the one spelling a site is compared by:
+// lower case, without a trailing dot, and without the scheme's default
+// port, so https://www.slivingdoc.dev.:443 is the default site.
+func canonicalHost(u *url.URL) string {
+	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
+	port := u.Port()
+	if (port == "443" && strings.EqualFold(u.Scheme, "https")) || (port == "80" && strings.EqualFold(u.Scheme, "http")) {
+		port = ""
+	}
+	if port == "" {
+		if strings.Contains(host, ":") {
+			return "[" + host + "]"
+		}
+		return host
+	}
+	return net.JoinHostPort(host, port)
 }
 
 func timerSleep(ctx context.Context, d time.Duration) error {
@@ -318,6 +337,15 @@ func (c *Client) Wait(ctx context.Context, a Approval) (Issued, error) {
 	interval := a.Interval
 	var failures int
 	var lastFailure error
+	// lost is set once a poll went unanswered: that poll may have been the
+	// one the site issued the token to, so a later expiry carries the hint.
+	lost := noLostPoll
+	expired := func(err error) error {
+		if lost == lostPoll {
+			return fmt.Errorf("%w; %s", err, TokenHint)
+		}
+		return err
+	}
 	for {
 		wait := min(retryWait(interval, failures), max(a.Deadline.Sub(c.now()), 0))
 		if err := c.sleep(ctx, wait); err != nil {
@@ -325,9 +353,9 @@ func (c *Client) Wait(ctx context.Context, a Approval) (Issued, error) {
 		}
 		if !c.now().Before(a.Deadline) {
 			if lastFailure != nil {
-				return Issued{}, fmt.Errorf("%w; the last poll failed: %w", ErrCodeExpired, lastFailure)
+				return Issued{}, expired(fmt.Errorf("%w; the last poll failed: %w", ErrCodeExpired, lastFailure))
 			}
-			return Issued{}, ErrCodeExpired
+			return Issued{}, expired(ErrCodeExpired)
 		}
 		var ans tokenAnswer
 		err := c.post(ctx, tokenPath, "", tokenBody{DeviceCode: a.deviceCode}, &ans)
@@ -335,6 +363,7 @@ func (c *Client) Wait(ctx context.Context, a Approval) (Issued, error) {
 			return Issued{}, fmt.Errorf("sitelogin: stopped while a poll was in flight: %w; %s", ctx.Err(), TokenHint)
 		}
 		if transient(err) {
+			lost = lostPoll
 			failures++
 			lastFailure = err
 			continue
@@ -354,7 +383,7 @@ func (c *Client) Wait(ctx context.Context, a Approval) (Issued, error) {
 			case "access_denied":
 				return Issued{}, withMessage(ErrDenied, refusal)
 			case "expired_token":
-				return Issued{}, withMessage(ErrCodeExpired, refusal)
+				return Issued{}, expired(withMessage(ErrCodeExpired, refusal))
 			}
 		}
 		if err != nil {
@@ -368,6 +397,14 @@ func (c *Client) Wait(ctx context.Context, a Approval) (Issued, error) {
 		return got, err
 	}
 }
+
+// pollLoss is whether a poll of a wait went unanswered.
+type pollLoss int
+
+const (
+	noLostPoll pollLoss = iota
+	lostPoll
+)
 
 // transient reports a poll failure worth retrying: no answer, or a 5xx.
 func transient(err error) bool {
