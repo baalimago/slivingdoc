@@ -3,6 +3,7 @@
 package integrationtest
 
 import (
+	"errors"
 	"testing"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -14,3 +15,7 @@ import (
 func exerciseOptionalPathSecurity(t *testing.T, h *helperProc, cs *sdk.ClientSession) {
 	t.Helper()
 }
+
+// mkfifo is never reached: the credentials file scenarios skip where there
+// are no FIFOs.
+func mkfifo(string) error { return errors.New("this platform has no FIFOs") }

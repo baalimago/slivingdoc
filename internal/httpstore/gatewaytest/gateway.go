@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
@@ -171,12 +172,12 @@ func (g *Gateway) Requests() int {
 	return g.requests
 }
 
-// Used counts the requests that presented token as their bearer
-// credential, whether or not the gateway knows it.
-func (g *Gateway) Used(token string) int {
+// Used counts, per bearer token, the space requests that presented it,
+// whether or not the gateway knows the token.
+func (g *Gateway) Used() map[string]int {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	return g.used[token]
+	return maps.Clone(g.used)
 }
 
 func (g *Gateway) serve(w http.ResponseWriter, r *http.Request) {
