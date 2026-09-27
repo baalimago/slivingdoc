@@ -116,9 +116,10 @@ type TokenSource interface {
 // RenewsTokens. A streamed upload whose token such a source gave was
 // refused with 401 fails with storage.ErrCredentialRenewed instead of the
 // access refusal a fixed token's 401 is: the token may have expired or
-// been renewed while the upload ran, which a retry with a new token
-// resolves, or it may have been revoked, which the retry's own refusal
-// then reports.
+// been renewed while the upload ran, or revoked alone; the retry asks
+// the source again and gets a new token either way. Only a refusal the
+// source's renewal meets too (a revoked login key, a suspended account)
+// fails the retry.
 type RenewingSource interface {
 	TokenSource
 	RenewsTokens()

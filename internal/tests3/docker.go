@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,22 +26,26 @@ import (
 // hundreds of times per run, so that scan was a large share of the suite's
 // CPU (architecture/testing.md).
 type dockerClient struct {
-	// host is where published ports are reached: loopback for a socket,
-	// the daemon's host for tcp.
-	host string
 	dial func(ctx context.Context) (net.Conn, error)
 	http *http.Client
 }
 
-// dockerDaemon locates the daemon: DOCKER_HOST (unix:// or plain tcp://),
-// else the first existing socket among the system one, the rootless one
-// under XDG_RUNTIME_DIR, and Docker Desktop's under the home directory.
+// publishHost is the only address a container port is published on and
+// reached at. The daemon must run on this host, so the S3 endpoint is a
+// loopback URL that attached test binaries accept (loopbackEndpoint).
+const publishHost = "127.0.0.1"
+
+// dockerDaemon locates the daemon: DOCKER_HOST (unix://, or plain tcp:// to
+// a loopback address), else the first existing socket among the system
+// one, the rootless one under XDG_RUNTIME_DIR, and Docker Desktop's under
+// the home directory. A daemon on another host is refused: its published
+// port would not be a loopback endpoint.
 func dockerDaemon(env func(string) string) (*dockerClient, error) {
 	hostEnv := env("DOCKER_HOST")
 	if hostEnv == "" {
 		for _, sock := range dockerSockets(env) {
 			if info, err := os.Stat(sock); err == nil && info.Mode()&os.ModeSocket != 0 {
-				return newDockerClient("unix", sock, "127.0.0.1"), nil
+				return newDockerClient("unix", sock), nil
 			}
 		}
 		return nil, errors.New("no Docker socket found; set DOCKER_HOST")
@@ -50,12 +56,15 @@ func dockerDaemon(env func(string) string) (*dockerClient, error) {
 	}
 	switch u.Scheme {
 	case "unix":
-		return newDockerClient("unix", u.Path, "127.0.0.1"), nil
+		return newDockerClient("unix", u.Path), nil
 	case "tcp":
 		if env("DOCKER_TLS_VERIFY") != "" {
 			return nil, errors.New("DOCKER_HOST: a TLS daemon is not supported by the test suite")
 		}
-		return newDockerClient("tcp", u.Host, u.Hostname()), nil
+		if !isLoopbackHost(u.Hostname()) {
+			return nil, fmt.Errorf("DOCKER_HOST: host %q is not loopback; the test suite needs a daemon on this host", u.Hostname())
+		}
+		return newDockerClient("tcp", u.Host), nil
 	default:
 		return nil, fmt.Errorf("DOCKER_HOST: scheme %q is not supported by the test suite", u.Scheme)
 	}
@@ -72,11 +81,10 @@ func dockerSockets(env func(string) string) []string {
 	return socks
 }
 
-func newDockerClient(network, address, host string) *dockerClient {
+func newDockerClient(network, address string) *dockerClient {
 	var d net.Dialer
 	dial := func(ctx context.Context) (net.Conn, error) { return d.DialContext(ctx, network, address) }
 	return &dockerClient{
-		host: host,
 		dial: dial,
 		http: &http.Client{Transport: &http.Transport{
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) { return dial(ctx) },
@@ -153,7 +161,7 @@ func (d *dockerClient) ensureImage(ctx context.Context, image string) error {
 	if !errors.As(err, &missing) || missing.Status != http.StatusNotFound {
 		return err
 	}
-	name, tag, _ := strings.Cut(image, ":")
+	name, tag := splitImage(image)
 	query := url.Values{"fromImage": {name}, "tag": {tag}}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://docker/images/create?"+query.Encode(), nil)
 	if err != nil {
@@ -183,6 +191,18 @@ func (d *dockerClient) ensureImage(ctx context.Context, image string) error {
 	}
 }
 
+// splitImage splits a reference into its repository and tag. The tag
+// follows the last ':' after the final '/', so a registry's port
+// ("registry:5000/seaweedfs") is not taken for a tag; a reference without
+// a tag is "latest".
+func splitImage(image string) (name, tag string) {
+	colon := strings.LastIndex(image, ":")
+	if colon <= strings.LastIndex(image, "/") {
+		return image, "latest"
+	}
+	return image[:colon], image[colon+1:]
+}
+
 // containerSpec is the part of the create request the suite uses.
 type containerSpec struct {
 	Image      string
@@ -196,15 +216,22 @@ type containerSpec struct {
 // its command ends at end of input, and the daemon removes it once it
 // exits. Holding the attach connection holds the container; closing it,
 // or the owning process dying, ends it, so no reaper process is needed.
+// AutoRemove acts only on a container that started, so run removes one
+// it could not bring up itself (discard).
 type container struct {
 	d     *dockerClient
-	id    string
+	id    string // the daemon's ID, or the unique name when create failed
 	stdin net.Conn
 }
 
 // run creates, attaches to and starts a container, then returns it with
-// the host port that publishes spec.Port.
+// the host port that publishes spec.Port. The container gets a unique
+// name, so a create whose answer was lost can still be removed.
 func (d *dockerClient) run(ctx context.Context, spec containerSpec) (*container, string, error) {
+	name, err := containerName()
+	if err != nil {
+		return nil, "", err
+	}
 	var created struct {
 		ID string `json:"Id"`
 	}
@@ -219,21 +246,23 @@ func (d *dockerClient) run(ctx context.Context, spec containerSpec) (*container,
 		"ExposedPorts": map[string]any{spec.Port: map[string]any{}},
 		"HostConfig": map[string]any{
 			"AutoRemove":   true,
-			"PortBindings": map[string]any{spec.Port: []map[string]string{{"HostIp": d.bindIP(), "HostPort": ""}}},
+			"PortBindings": map[string]any{spec.Port: []map[string]string{{"HostIp": publishHost, "HostPort": ""}}},
 		},
 	}
-	if err := d.call(ctx, http.MethodPost, "/containers/create", create, &created); err != nil {
+	if err := d.call(ctx, http.MethodPost, "/containers/create?name="+name, create, &created); err != nil {
+		// The daemon may have created it before the answer was lost.
+		(&container{d: d, id: name}).discard()
 		return nil, "", fmt.Errorf("create container: %w", err)
 	}
 	c := &container{d: d, id: created.ID}
 	stdin, err := d.attachStdin(ctx, created.ID)
 	if err != nil {
-		c.remove()
+		c.discard()
 		return nil, "", fmt.Errorf("attach container: %w", err)
 	}
 	c.stdin = stdin
 	if err := d.call(ctx, http.MethodPost, "/containers/"+created.ID+"/start", nil, nil); err != nil {
-		c.stop()
+		c.discard()
 		return nil, "", fmt.Errorf("start container: %w", err)
 	}
 	var inspected struct {
@@ -244,22 +273,23 @@ func (d *dockerClient) run(ctx context.Context, spec containerSpec) (*container,
 		} `json:"NetworkSettings"`
 	}
 	if err := d.call(ctx, http.MethodGet, "/containers/"+created.ID+"/json", nil, &inspected); err != nil {
-		c.stop()
+		c.discard()
 		return nil, "", fmt.Errorf("inspect container: %w", err)
 	}
 	bindings := inspected.NetworkSettings.Ports[spec.Port]
 	if len(bindings) == 0 || bindings[0].HostPort == "" {
-		c.stop()
+		c.discard()
 		return nil, "", fmt.Errorf("container publishes no host port for %s", spec.Port)
 	}
 	return c, bindings[0].HostPort, nil
 }
 
-func (d *dockerClient) bindIP() string {
-	if d.host == "127.0.0.1" {
-		return "127.0.0.1"
+func containerName() (string, error) {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", fmt.Errorf("docker: container name: %w", err)
 	}
-	return ""
+	return "slivingdoc-tests3-" + hex.EncodeToString(b[:]), nil
 }
 
 // attachStdin opens the hijacked attach stream of the container's stdin and
@@ -292,14 +322,20 @@ func (d *dockerClient) attachStdin(ctx context.Context, id string) (net.Conn, er
 	return conn, nil
 }
 
-// stop ends the container by closing its stdin; the daemon then removes
-// it. A container that never got an attached stdin is removed directly.
+// stop ends a running container by closing its stdin; the daemon then
+// removes it.
 func (c *container) stop() {
-	if c.stdin == nil {
-		c.remove()
-		return
-	}
 	_ = c.stdin.Close()
+}
+
+// discard ends a container run could not bring up: it closes the stdin
+// stream when one is attached and removes the container, which AutoRemove
+// leaves in place when it never started.
+func (c *container) discard() {
+	if c.stdin != nil {
+		_ = c.stdin.Close()
+	}
+	c.remove()
 }
 
 func (c *container) remove() {

@@ -23,15 +23,17 @@ import (
 type fakeDaemon struct {
 	sock string
 
-	mu        sync.Mutex
-	calls     []string
-	created   map[string]any
-	stdin     chan net.Conn
-	hasImage  bool
-	pullError string
-	noPort    bool
-	failStart bool
-	attach    int // status of the attach answer
+	mu         sync.Mutex
+	calls      []string
+	created    map[string]any
+	name       string // the name query of the create request
+	loseCreate bool
+	stdin      chan net.Conn
+	hasImage   bool
+	pullError  string
+	noPort     bool
+	failStart  bool
+	attach     int // status of the attach answer
 }
 
 func startFakeDaemon(t *testing.T) *fakeDaemon {
@@ -85,7 +87,15 @@ func (f *fakeDaemon) serve(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		f.mu.Lock()
 		f.created = body
+		f.name = r.URL.Query().Get("name")
 		f.mu.Unlock()
+		if f.loseCreate {
+			// The daemon created it, but the answer never arrives.
+			if conn, _, err := w.(http.Hijacker).Hijack(); err == nil {
+				conn.Close()
+			}
+			return
+		}
 		w.WriteHeader(http.StatusCreated)
 		_, _ = io.WriteString(w, `{"Id":"c1"}`)
 	case r.URL.Path == "/containers/c1/attach":
@@ -114,7 +124,7 @@ func (f *fakeDaemon) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		_, _ = io.WriteString(w, `{"NetworkSettings":{"Ports":{"8333/tcp":[{"HostIp":"127.0.0.1","HostPort":"40123"}]}}}`)
-	case r.Method == http.MethodDelete && r.URL.Path == "/containers/c1":
+	case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/containers/") && r.URL.Query().Get("force") == "1":
 		w.WriteHeader(http.StatusNoContent)
 	default:
 		w.WriteHeader(http.StatusNotFound)
@@ -176,6 +186,9 @@ func TestContainerLivesWhileItsStdinIsHeld(t *testing.T) {
 	if binding["HostIp"] != "127.0.0.1" {
 		t.Fatalf("port binding = %v, want loopback only", binding)
 	}
+	if !strings.HasPrefix(f.name, "slivingdoc-tests3-") {
+		t.Fatalf("create name = %q, want a unique slivingdoc-tests3- name", f.name)
+	}
 	calls := f.called()
 	want := []string{"GET /_ping", "GET /images/chrislusf/seaweedfs:4.42/json", "POST /containers/create", "POST /containers/c1/attach", "POST /containers/c1/start", "GET /containers/c1/json"}
 	if strings.Join(calls, "\n") != strings.Join(want, "\n") {
@@ -204,15 +217,20 @@ func TestEnsureImagePullsAMissingImage(t *testing.T) {
 	}
 }
 
+// TestRunFailures proves that a container run cannot bring up is removed:
+// AutoRemove acts only on a container that started, so one left "Created"
+// by a failed start or a lost create answer would leak.
 func TestRunFailures(t *testing.T) {
 	for _, tt := range []struct {
-		name  string
-		setup func(*fakeDaemon)
-		want  string
+		name    string
+		setup   func(*fakeDaemon)
+		want    string
+		removed func(*fakeDaemon) string
 	}{
-		{"attach refused", func(f *fakeDaemon) { f.attach = http.StatusConflict }, "attach container: docker: HTTP 409: cannot attach"},
-		{"start refused", func(f *fakeDaemon) { f.failStart = true }, "start container: docker: HTTP 500: port is already allocated"},
-		{"no port", func(f *fakeDaemon) { f.noPort = true }, "publishes no host port"},
+		{"create answer lost", func(f *fakeDaemon) { f.loseCreate = true }, "create container:", func(f *fakeDaemon) string { return f.name }},
+		{"attach refused", func(f *fakeDaemon) { f.attach = http.StatusConflict }, "attach container: docker: HTTP 409: cannot attach", nil},
+		{"start refused", func(f *fakeDaemon) { f.failStart = true }, "start container: docker: HTTP 500: port is already allocated", nil},
+		{"no port", func(f *fakeDaemon) { f.noPort = true }, "publishes no host port", nil},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			f := startFakeDaemon(t)
@@ -220,10 +238,27 @@ func TestRunFailures(t *testing.T) {
 			if _, _, err := f.client(t).run(context.Background(), testSpec); err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("run() = %v, want %q", err, tt.want)
 			}
-			if calls := f.called(); calls[len(calls)-1] != "DELETE /containers/c1" && tt.name == "attach refused" {
-				t.Fatalf("calls = %q, want the unattached container removed", calls)
+			id := "c1"
+			if tt.removed != nil {
+				id = tt.removed(f)
+			}
+			if calls := f.called(); calls[len(calls)-1] != "DELETE /containers/"+id {
+				t.Fatalf("calls = %q, want the container %s removed", calls, id)
 			}
 		})
+	}
+}
+
+func TestSplitImage(t *testing.T) {
+	for _, tt := range []struct{ image, name, tag string }{
+		{"chrislusf/seaweedfs:4.42", "chrislusf/seaweedfs", "4.42"},
+		{"registry.local:5000/seaweedfs:4.42", "registry.local:5000/seaweedfs", "4.42"},
+		{"registry.local:5000/seaweedfs", "registry.local:5000/seaweedfs", "latest"},
+		{"seaweedfs", "seaweedfs", "latest"},
+	} {
+		if name, tag := splitImage(tt.image); name != tt.name || tag != tt.tag {
+			t.Fatalf("splitImage(%q) = %q, %q; want %q, %q", tt.image, name, tag, tt.name, tt.tag)
+		}
 	}
 }
 
@@ -234,7 +269,7 @@ func TestCallReportsTheDaemonsAnswer(t *testing.T) {
 	if !errors.As(err, &answer) || answer.Status != http.StatusNotFound || answer.Message != "page not found" {
 		t.Fatalf("call() = %v, want the plain-text 404", err)
 	}
-	unreachable := newDockerClient("unix", filepath.Join(t.TempDir(), "none.sock"), "127.0.0.1")
+	unreachable := newDockerClient("unix", filepath.Join(t.TempDir(), "none.sock"))
 	if err := unreachable.ping(context.Background()); err == nil {
 		t.Fatal("ping() of a missing socket = nil")
 	}
@@ -252,18 +287,21 @@ func TestDockerDaemonLocation(t *testing.T) {
 	}
 	t.Cleanup(func() { ln.Close() })
 
-	if d, err := dockerDaemon(envOf(map[string]string{"XDG_RUNTIME_DIR": sockDir, "HOME": t.TempDir()})); err != nil || d.host != "127.0.0.1" {
-		// The system socket may exist on the host; either way a socket is found.
-		t.Fatalf("dockerDaemon() with a rootless socket = %v, %v", d, err)
+	// The system socket may exist on the host; either way a socket is found.
+	if _, err := dockerDaemon(envOf(map[string]string{"XDG_RUNTIME_DIR": sockDir, "HOME": t.TempDir()})); err != nil {
+		t.Fatalf("dockerDaemon() with a rootless socket = %v", err)
 	}
-	if d, err := dockerDaemon(envOf(map[string]string{"DOCKER_HOST": "tcp://docker.example:2375"})); err != nil || d.host != "docker.example" || d.bindIP() != "" {
-		t.Fatalf("dockerDaemon(tcp) = %+v, %v; want the daemon's host", d, err)
+	for _, host := range []string{"tcp://127.0.0.1:2375", "tcp://localhost:2375", "tcp://[::1]:2375"} {
+		if _, err := dockerDaemon(envOf(map[string]string{"DOCKER_HOST": host})); err != nil {
+			t.Fatalf("dockerDaemon(%s) = %v, want a loopback daemon accepted", host, err)
+		}
 	}
 	for _, tt := range []struct {
 		env  map[string]string
 		want string
 	}{
-		{map[string]string{"DOCKER_HOST": "tcp://docker.example:2376", "DOCKER_TLS_VERIFY": "1"}, "TLS"},
+		{map[string]string{"DOCKER_HOST": "tcp://docker.example:2375"}, `host "docker.example" is not loopback`},
+		{map[string]string{"DOCKER_HOST": "tcp://127.0.0.1:2376", "DOCKER_TLS_VERIFY": "1"}, "TLS"},
 		{map[string]string{"DOCKER_HOST": "ssh://user@host"}, `scheme "ssh"`},
 		{map[string]string{"DOCKER_HOST": "::"}, "DOCKER_HOST"},
 	} {

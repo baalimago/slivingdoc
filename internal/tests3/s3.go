@@ -214,15 +214,18 @@ func loopbackEndpoint(endpoint string) (string, error) {
 	if u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
 		return "", fmt.Errorf("must not contain a path, query, or fragment")
 	}
-	host := u.Hostname()
-	if ip := net.ParseIP(host); ip != nil {
-		if !ip.IsLoopback() {
-			return "", fmt.Errorf("host %q is not loopback", host)
-		}
-	} else if !strings.EqualFold(host, "localhost") {
+	if host := u.Hostname(); !isLoopbackHost(host) {
 		return "", fmt.Errorf("host %q is not loopback", host)
 	}
 	return u.String(), nil
+}
+
+// isLoopbackHost reports whether host is a loopback IP or "localhost".
+func isLoopbackHost(host string) bool {
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return strings.EqualFold(host, "localhost")
 }
 
 // StoreConfig returns the plain connection values of the local S3 endpoint:
@@ -295,7 +298,7 @@ func start(d *dockerClient) (*Suite, error) {
 	if err != nil {
 		return nil, fmt.Errorf("start s3 container: %w", err)
 	}
-	endpoint := "http://" + net.JoinHostPort(d.host, port)
+	endpoint := "http://" + net.JoinHostPort(publishHost, port)
 	raw := newRawClient(endpoint)
 	if err := createBucket(ctx, raw, readyTimeout); err != nil {
 		c.stop()
@@ -304,15 +307,12 @@ func start(d *dockerClient) (*Suite, error) {
 	return &Suite{Endpoint: endpoint, Raw: raw, ctr: c}, nil
 }
 
-// createBucket creates the suite bucket once the gateway answers. A bucket
-// that already exists is ours: an earlier attempt landed but its answer
-// was lost.
+// createBucket creates the suite bucket once the gateway answers.
 func createBucket(ctx context.Context, raw *s3.Client, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for {
 		_, err := raw.CreateBucket(ctx, &s3.CreateBucketInput{Bucket: aws.String(Bucket)})
-		var owned *types.BucketAlreadyOwnedByYou
-		if err == nil || errors.As(err, &owned) {
+		if bucketCreated(err) {
 			return nil
 		}
 		if time.Now().After(deadline) || ctx.Err() != nil {
@@ -320,6 +320,16 @@ func createBucket(ctx context.Context, raw *s3.Client, timeout time.Duration) er
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+}
+
+// bucketCreated reports whether a CreateBucket answer leaves the suite
+// bucket in place. An existing bucket is ours, under either error a server
+// may choose: the container is new, private to this process, and has one
+// identity, so only an earlier attempt whose answer was lost made it.
+func bucketCreated(err error) bool {
+	var owned *types.BucketAlreadyOwnedByYou
+	var exists *types.BucketAlreadyExists
+	return err == nil || errors.As(err, &owned) || errors.As(err, &exists)
 }
 
 func newRawClient(endpoint string) *s3.Client {

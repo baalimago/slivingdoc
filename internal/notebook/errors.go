@@ -291,8 +291,9 @@ func storageFailure(reason Reason, cause error, format string, args ...any) erro
 
 // credentialRenewedHint explains a streamed upload whose short-lived token
 // the storage refused: the token may have expired or been renewed while
-// the upload ran, which a retry with a new token resolves; a revoked login
-// or suspended account refuses the retry too, with its own reason.
+// the upload ran, or been revoked alone, which a retry with a new token
+// resolves; only a refusal the new token's mint also meets (a revoked
+// login key, a suspended account) fails the retry.
 const credentialRenewedHint = ": the storage refused the stored login's token during the upload; it may have expired or been renewed, " +
 	"and nothing was published, so retry"
 
