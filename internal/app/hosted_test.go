@@ -79,7 +79,6 @@ func TestLoadConfigHostedRefusals(t *testing.T) {
 		env  []string
 		want string
 	}{
-		{"missing space", []string{token}, "bucket is required"},
 		{"invalid space", []string{token, "SLIVINGDOC_BUCKET=Team_Notes"}, "invalid space name"},
 		{"plain http remote", []string{token, "SLIVINGDOC_BUCKET=notes", "SLIVINGDOC_ENDPOINT=http://api.example.test"}, "must use https"},
 		{"token with white space", []string{"SLIVINGDOC_TOKEN=sld bad token", "SLIVINGDOC_BUCKET=notes"}, "SLIVINGDOC_TOKEN must be printable"},
@@ -97,6 +96,57 @@ func TestLoadConfigHostedRefusals(t *testing.T) {
 				t.Fatalf("loadConfig() = %q leaks the token", err)
 			}
 		})
+	}
+}
+
+func TestLoadConfigHostedSpaceIsOptional(t *testing.T) {
+	cfg, err := loadConfig(testProcess([]string{"SLIVINGDOC_TOKEN=" + hostedTestToken}))
+	if err != nil {
+		t.Fatalf("loadConfig() without a space = %v, want the token's space resolved later", err)
+	}
+	if cfg.bucket != "" {
+		t.Fatalf("bucket = %q, want empty until the startup lookup", cfg.bucket)
+	}
+	if _, err := loadConfig(testProcess(nil)); err == nil || !strings.Contains(err.Error(), "bucket is required") {
+		t.Fatalf("loadConfig() without a token or bucket = %v, want bucket is required", err)
+	}
+}
+
+func TestResolveHostedSpace(t *testing.T) {
+	g := gatewaytest.Start(t)
+	g.AddSpace("notes", 1<<20)
+	g.AddSpace("other", 1<<20)
+	g.Grant(hostedTestToken, "notes", false)
+	resolve := func(bucket, token string) (config, error) {
+		return resolveHostedSpace(context.Background(), config{endpoint: g.URL(), token: token, bucket: bucket})
+	}
+	for _, bucket := range []string{"", "notes"} {
+		cfg, err := resolve(bucket, hostedTestToken)
+		if err != nil || cfg.bucket != "notes" {
+			t.Fatalf("resolve(bucket %q) = %q, %v; want the token's space notes", bucket, cfg.bucket, err)
+		}
+	}
+	for _, row := range []struct {
+		name, bucket, token, want string
+	}{
+		{"another space", "other", hostedTestToken, `the token reaches hosted space "notes", not "other"`},
+		{"unknown token", "", "sld_unknown", "refused the token"},
+	} {
+		_, err := resolve(row.bucket, row.token)
+		if err == nil || !strings.Contains(err.Error(), row.want) {
+			t.Fatalf("resolve(%s) = %v, want it to contain %q", row.name, err, row.want)
+		}
+		if strings.Contains(err.Error(), row.token) {
+			t.Fatalf("resolve(%s) = %q leaks the token", row.name, err)
+		}
+	}
+
+	g.DisableTokenLookup()
+	if cfg, err := resolve("notes", hostedTestToken); err != nil || cfg.bucket != "notes" {
+		t.Fatalf("resolve against an older server with --bucket = %q, %v; want --bucket kept", cfg.bucket, err)
+	}
+	if _, err := resolve("", hostedTestToken); err == nil || !strings.Contains(err.Error(), "pass the space name as --bucket") {
+		t.Fatalf("resolve against an older server without --bucket = %v, want a refusal asking for --bucket", err)
 	}
 }
 

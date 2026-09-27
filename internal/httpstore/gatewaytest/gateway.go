@@ -1,7 +1,7 @@
 // Package gatewaytest runs an in-process reference server of the hosted
 // storage API, version 1, for tests. It follows the contract document of
 // the hosted gateway: routing, key grammar and list prefix before authentication,
-// bearer tokens granted per space, read-only grants, pack quota,
+// bearer tokens granted per space and described by GET /v1/token, read-only grants, pack quota,
 // conditional small-object writes, cursor listing, and batched deletes.
 // Every 404 is not_found with the gateway's reason: no_endpoint for an
 // unknown route, one byte-identical no_space body for any space out of
@@ -53,6 +53,9 @@ type Gateway struct {
 	hooks    []hook
 	pageSize int
 	requests int
+	// noTokenLookup makes GET /v1/token unknown, like a server that
+	// predates it.
+	noTokenLookup bool
 }
 
 type space struct {
@@ -111,6 +114,14 @@ func (g *Gateway) DeleteSpace(name string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	delete(g.spaces, name)
+}
+
+// DisableTokenLookup makes GET /v1/token answer 404 no_endpoint, as a
+// server that predates it does.
+func (g *Gateway) DisableTokenLookup() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.noTokenLookup = true
 }
 
 // SetQuota changes a space's quota in bytes.
@@ -183,6 +194,10 @@ func (g *Gateway) serve(w http.ResponseWriter, r *http.Request) {
 			"api": "slivingdoc-storage", "version": 1,
 			"maxPackBytes": MaxPackBytes, "maxSmallBytes": MaxSmallBytes, "conditionalWrites": true,
 		})
+		return
+	}
+	if r.URL.Path == "/v1/token" {
+		g.describeToken(w, r)
 		return
 	}
 	m := routeRE.FindStringSubmatch(r.URL.Path)
@@ -317,6 +332,41 @@ func (g *Gateway) authorize(w http.ResponseWriter, r *http.Request, name string)
 		return nil, grant{}, false
 	}
 	return sp, gr, true
+}
+
+// describeToken answers GET /v1/token: the space the bearer token was
+// granted, its access, and no expiry. A token whose space is gone is
+// 404 no_space, as on the space routes.
+func (g *Gateway) describeToken(w http.ResponseWriter, r *http.Request) {
+	g.mu.Lock()
+	disabled := g.noTokenLookup
+	g.mu.Unlock()
+	if disabled {
+		notFound(w, reasonNoEndpoint)
+		return
+	}
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+		return
+	}
+	token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	g.mu.Lock()
+	gr, known := g.grants[token]
+	_, exists := g.spaces[gr.space]
+	g.mu.Unlock()
+	if !ok || !known {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	if !exists {
+		notFound(w, reasonNoSpace)
+		return
+	}
+	access := "write"
+	if gr.readOnly {
+		access = "read"
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"space": gr.space, "access": access, "expiresAt": nil})
 }
 
 // validListPrefix accepts [<notebook prefix>/]packs/..., the only

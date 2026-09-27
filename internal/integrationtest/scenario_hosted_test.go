@@ -74,6 +74,66 @@ func TestScenarioHostedRoundTrip(t *testing.T) {
 	}
 }
 
+// withoutBucket empties SLIVINGDOC_BUCKET, which the helper otherwise
+// inherits, leaving the token as the whole hosted configuration.
+func withoutBucket(env []string) []string {
+	var out []string
+	for _, kv := range env {
+		if !strings.HasPrefix(kv, "SLIVINGDOC_BUCKET=") {
+			out = append(out, kv)
+		}
+	}
+	return append(out, "SLIVINGDOC_BUCKET=")
+}
+
+// TestScenarioHostedSpaceFromToken proves the token alone is the hosted
+// configuration: with no --bucket the process uses the one space the token
+// reaches, and naming that same space explicitly addresses the same
+// notebook and the same private state, so adding or dropping --bucket
+// never forks a workspace.
+func TestScenarioHostedSpaceFromToken(t *testing.T) {
+	t.Parallel()
+	g, named, root := hostedEnv(t, 1<<20)
+	tokenOnly := withoutBucket(named)
+	notes := filepath.Join(root, "notes")
+
+	runCLIOK(t, "real", tokenOnly, nil, "pull", notes)
+	writeCLIFile(t, filepath.Join(notes, "a.md"), "from the token alone\n")
+	runCLIOK(t, "real", tokenOnly, nil, "commit", notes, "-m", "token only")
+	if g.Stored(hostedSpace) == 0 {
+		t.Fatal("the token's space holds no pack bytes after a commit without --bucket")
+	}
+
+	writeCLIFile(t, filepath.Join(notes, "a.md"), "then with --bucket\n")
+	runCLIOK(t, "real", tokenOnly, nil, "commit", notes, "-m", "named", "--bucket", hostedSpace)
+
+	other := filepath.Join(root, "other")
+	runCLIOK(t, "real", tokenOnly, nil, "pull", other)
+	got, err := os.ReadFile(filepath.Join(other, "a.md"))
+	if err != nil || string(got) != "then with --bucket\n" {
+		t.Fatalf("second workspace a.md = %q, %v; want the file published under the explicit name", got, err)
+	}
+}
+
+// TestScenarioHostedServerWithoutTokenLookup proves a server that predates
+// GET /v1/token still works with --bucket, and that without one the
+// process refuses to start rather than guess a space.
+func TestScenarioHostedServerWithoutTokenLookup(t *testing.T) {
+	t.Parallel()
+	g, named, root := hostedEnv(t, 1<<20)
+	g.DisableTokenLookup()
+	runCLIOK(t, "real", named, nil, "pull", filepath.Join(root, "notes"))
+
+	tokenOnly := withoutBucket(named)
+	code, stdout, stderr := runCLI(t, "real", tokenOnly, "pull", filepath.Join(root, "other"))
+	if code == 0 || strings.TrimSpace(stdout) != "" {
+		t.Fatalf("pull without --bucket against an older server = exit %d, stdout %q; want a startup refusal", code, stdout)
+	}
+	if !strings.Contains(stderr, "pass the space name as --bucket") {
+		t.Fatalf("startup refusal stderr = %q, want it to ask for --bucket", stderr)
+	}
+}
+
 // TestScenarioHostedStorageFull proves the over-quota contract: a commit
 // that would take the space past its quota fails with STORAGE_FULL, says
 // how to fix it, is not retryable, keeps the visible edit, and publishes
@@ -197,8 +257,13 @@ func TestScenarioHostedStartupRefusals(t *testing.T) {
 			want: "refused the token",
 		},
 		{
-			name: "space not granted",
+			name: "bucket names another space than the token's",
 			env:  []string{"SLIVINGDOC_TOKEN=" + hostedToken, "SLIVINGDOC_BUCKET=elsewhere"},
+			want: `the token reaches hosted space "team-notes", not "elsewhere"`,
+		},
+		{
+			name: "unknown token without a bucket",
+			env:  []string{"SLIVINGDOC_TOKEN=sld_unknown_token", "SLIVINGDOC_BUCKET="},
 			want: "refused the token",
 		},
 		{

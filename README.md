@@ -55,22 +55,23 @@ Pi OS armhf.
 ### Hosted storage
 
 Rather not run a bucket? Create a space at [slivingdoc.dev](https://slivingdoc.dev),
-then give slivingdoc an API token and the space name:
+then give slivingdoc an API token. Each token reaches exactly one space, so
+the token is all it needs:
 
 ```json
 {
   "mcpServers": {
     "slivingdoc": {
       "command": "npx",
-      "args": ["-y", "slivingdoc", "serve", "--bucket", "my-space"],
+      "args": ["-y", "slivingdoc", "serve"],
       "env": { "SLIVINGDOC_TOKEN": "<your-api-token>" }
     }
   }
 }
 ```
 
-The token replaces the AWS settings; `--region` and `--path-style` are
-ignored. Everything else works the same way.
+The token replaces the AWS settings and names the space; `--region` and
+`--path-style` are ignored. Everything else works the same way.
 
 ## How it works
 
@@ -144,11 +145,12 @@ conflict markers. Secondly, the system only works for text (clean UTF-8).
 ## Configuration
 
 `serve`, `pull`, and `commit` read the same flags and environment
-variables. `--bucket` is required. The most common flags:
+variables. `--bucket` is required, except with a hosted token, which names
+its own space. The most common flags:
 
 | Flag               | Environment                 | Default             |
 | ------------------ | --------------------------- | ------------------- |
-| `--bucket`         | `SLIVINGDOC_BUCKET`         | — (required)        |
+| `--bucket`         | `SLIVINGDOC_BUCKET`         | — (required)[^3]    |
 | `--workspace-root` | `SLIVINGDOC_WORKSPACE_ROOT` | temporary dir[^1]   |
 | `--endpoint`       | `AWS_ENDPOINT_URL_S3`[^2]   | AWS resolution      |
 | `--region`         | `AWS_REGION`                | `us-east-1`         |
@@ -160,6 +162,8 @@ variables. `--bucket` is required. The most common flags:
 
 [^2]: With `SLIVINGDOC_TOKEN` set, `--endpoint` names the hosted API instead:
     `SLIVINGDOC_ENDPOINT`, default `https://api.slivingdoc.dev`.
+[^3]: With `SLIVINGDOC_TOKEN` set, `--bucket` is optional and defaults to the
+    one space the token reaches; a `--bucket` naming another space is refused.
 
 `slivingdoc serve -h` prints the full reference, and
 [`architecture/running.md`](architecture/running.md) covers everything an operator

@@ -133,6 +133,16 @@ func New(cfg Config) (*Store, error) {
 	if err := ValidateToken(cfg.Token); err != nil {
 		return nil, err
 	}
+	s := newClient(cfg)
+	s.space = s.root + "/spaces/" + cfg.Space
+	s.name = cfg.Space
+	s.prefix = cfg.Prefix
+	return s, nil
+}
+
+// newClient binds the transport settings of cfg: client, server root,
+// token, retries. It validates nothing and addresses no space.
+func newClient(cfg Config) *Store {
 	client := cfg.Client
 	if client == nil {
 		// Never follow a redirect: Go would turn a PUT into a body-less
@@ -150,18 +160,108 @@ func New(cfg Config) (*Store, error) {
 	if backoff == nil {
 		backoff = defaultBackoff
 	}
-	root := strings.TrimSuffix(cfg.Endpoint, "/") + "/v1"
 	return &Store{
 		client:    client,
-		root:      root,
-		space:     root + "/spaces/" + cfg.Space,
-		name:      cfg.Space,
-		prefix:    cfg.Prefix,
+		root:      strings.TrimSuffix(cfg.Endpoint, "/") + "/v1",
 		token:     cfg.Token,
 		userAgent: cfg.UserAgent,
 		retries:   retries,
 		backoff:   backoff,
-	}, nil
+	}
+}
+
+// Access is what a token may do in its space.
+type Access string
+
+const (
+	AccessRead  Access = "read"
+	AccessWrite Access = "write"
+)
+
+// TokenInfo is the server's description of a token: the one space it
+// reaches, under the token owner's own name for it.
+type TokenInfo struct {
+	Space  string
+	Access Access
+	// ExpiresAt is when the token stops working; zero for a token that
+	// never expires.
+	ExpiresAt time.Time
+}
+
+// ErrTokenLookupUnsupported reports a server without GET /v1/token, which
+// cannot name the space a token reaches; the space must then be given.
+var ErrTokenLookupUnsupported = errors.New("httpstore: the server cannot name the space a token reaches")
+
+// tokenBody is the GET /v1/token answer.
+type tokenBody struct {
+	Space     string  `json:"space"`
+	Access    string  `json:"access"`
+	ExpiresAt *string `json:"expiresAt"`
+}
+
+// DescribeToken asks the server which space the token reaches
+// (GET /v1/token). cfg.Space and cfg.Prefix are ignored. A token that
+// reaches no space, or that the server refuses, is ErrAccessDenied; a
+// server without the endpoint is ErrTokenLookupUnsupported; an answer
+// outside the API grammar is ErrIncompatible.
+func DescribeToken(ctx context.Context, cfg Config) (TokenInfo, error) {
+	if err := ValidateEndpoint(cfg.Endpoint); err != nil {
+		return TokenInfo{}, err
+	}
+	if err := ValidateToken(cfg.Token); err != nil {
+		return TokenInfo{}, err
+	}
+	s := newClient(cfg)
+	resp, err := s.do(ctx, func() (*http.Request, error) {
+		return s.request(ctx, http.MethodGet, s.root+"/token", nil, true)
+	})
+	if err != nil {
+		return TokenInfo{}, fmt.Errorf("httpstore: describe token: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		defer drain(resp)
+		return TokenInfo{}, fmt.Errorf("httpstore: describe token: %w", tokenLookupError(s, resp))
+	}
+	var body tokenBody
+	if err := decodeJSON(resp, &body); err != nil {
+		return TokenInfo{}, fmt.Errorf("httpstore: describe token: %w: %w", err, storage.ErrIncompatible)
+	}
+	return body.info()
+}
+
+// tokenLookupError maps a refused GET /v1/token. Only no_space means the
+// token reaches nothing; any other 404, or a 405, is a server that predates
+// the endpoint.
+func tokenLookupError(s *Store, resp *http.Response) error {
+	if resp.StatusCode != http.StatusNotFound && resp.StatusCode != http.StatusMethodNotAllowed {
+		return s.statusError(resp)
+	}
+	body := readAPIError(resp)
+	refusal := newRefusal(resp.StatusCode, body)
+	if resp.StatusCode == http.StatusNotFound && body.Reason == "no_space" {
+		refusal.Err = storage.ErrAccessDenied
+		return fmt.Errorf("the token reaches no space: it was made without one, or its space is gone: %w", refusal)
+	}
+	return fmt.Errorf("%s: %w", refusal.Detail, ErrTokenLookupUnsupported)
+}
+
+func (b tokenBody) info() (TokenInfo, error) {
+	if err := ValidateSpace(b.Space); err != nil {
+		return TokenInfo{}, fmt.Errorf("httpstore: describe token: the server named no valid space: %w", storage.ErrIncompatible)
+	}
+	access := Access(b.Access)
+	if access != AccessRead && access != AccessWrite {
+		return TokenInfo{}, fmt.Errorf("httpstore: describe token: access %q is neither read nor write: %w", sanitize(b.Access, 16), storage.ErrIncompatible)
+	}
+	info := TokenInfo{Space: b.Space, Access: access}
+	if b.ExpiresAt != nil {
+		at, err := time.Parse(time.RFC3339Nano, *b.ExpiresAt)
+		if err != nil {
+			return TokenInfo{}, fmt.Errorf("httpstore: describe token: expiresAt is not a time: %w", storage.ErrIncompatible)
+		}
+		info.ExpiresAt = at
+	}
+	return info, nil
 }
 
 // ValidateEndpoint accepts an absolute https URL, or http to this machine

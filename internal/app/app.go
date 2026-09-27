@@ -281,7 +281,7 @@ func setup(p process) (*Runtime, error) {
 		return nil, fmt.Errorf("app: open native engine: %w", err)
 	}
 	logger.Debug("native engine open", "pinned", true)
-	svc, err := buildService(p, cfg)
+	svc, cfg, err := buildService(p, cfg)
 	if err != nil {
 		p.engine.Close()
 		removeSessionDir(cfg.sessionDir)
@@ -301,24 +301,64 @@ func run(p process) error {
 	return rt.Serve(context.Background())
 }
 
-// buildService constructs the S3 or hosted store, runs the startup check,
-// and wires the notebook service. Any failure is a startup refusal: no
-// transport runs and no operation is accepted.
-func buildService(p process, cfg config) (*Service, error) {
+// buildService resolves the hosted space, constructs the S3 or hosted
+// store, runs the startup check, and wires the notebook service. It returns
+// the configuration with the resolved space. Any failure is a startup
+// refusal: no transport runs and no operation is accepted.
+func buildService(p process, cfg config) (*Service, config, error) {
 	storeFactory := p.storeFactory
 	if storeFactory == nil {
 		storeFactory = realStoreFactory
 	}
-	store, err := storeFactory(context.Background(), cfg)
-	if err != nil {
-		return nil, err
-	}
 	probeCtx, cancel := context.WithTimeout(context.Background(), probeTimeout)
 	defer cancel()
-	if err := checkStore(probeCtx, store); err != nil {
-		return nil, err
+	if cfg.hosted() {
+		var err error
+		if cfg, err = resolveHostedSpace(probeCtx, cfg); err != nil {
+			return nil, config{}, err
+		}
 	}
-	return NewService(p.engine, store, cfg.serviceConfig(), p.hooks)
+	store, err := storeFactory(context.Background(), cfg)
+	if err != nil {
+		return nil, config{}, err
+	}
+	if err := checkStore(probeCtx, store); err != nil {
+		return nil, config{}, err
+	}
+	svc, err := NewService(p.engine, store, cfg.serviceConfig(), p.hooks)
+	if err != nil {
+		return nil, config{}, err
+	}
+	return svc, cfg, nil
+}
+
+// resolveHostedSpace asks the hosted API which space the token reaches
+// (architecture/hosted-mode.md). With no --bucket that space is used; a
+// --bucket naming another space is refused rather than either one
+// preferred. A server that cannot answer keeps a given --bucket, whose
+// access check then proves the token, and refuses a missing one.
+func resolveHostedSpace(ctx context.Context, cfg config) (config, error) {
+	info, err := httpstore.DescribeToken(ctx, httpstore.Config{
+		Endpoint:  cfg.endpoint,
+		Token:     cfg.token,
+		UserAgent: "slivingdoc/" + Version,
+	})
+	switch {
+	case errors.Is(err, httpstore.ErrTokenLookupUnsupported) && cfg.bucket != "":
+		return cfg, nil
+	case errors.Is(err, httpstore.ErrTokenLookupUnsupported):
+		return config{}, errors.New("app: hosted storage cannot name the token's space; pass the space name as --bucket or SLIVINGDOC_BUCKET")
+	case err != nil:
+		return config{}, hostedCheckError(err)
+	case cfg.bucket == "":
+		cfg.bucket = info.Space
+		return cfg, nil
+	case cfg.bucket != info.Space:
+		return config{}, fmt.Errorf("app: the token reaches hosted space %q, not %q from --bucket or SLIVINGDOC_BUCKET; drop --bucket to use the token's space, or use a token made for %q",
+			info.Space, cfg.bucket, cfg.bucket)
+	default:
+		return cfg, nil
+	}
 }
 
 // accessChecker is a store that proves itself without the write probe: a
@@ -340,10 +380,15 @@ func checkStore(ctx context.Context, store storage.ObjectStore) error {
 		}
 		return nil
 	}
-	err := checker.CheckAccess(ctx)
+	if err := checker.CheckAccess(ctx); err != nil {
+		return hostedCheckError(err)
+	}
+	return nil
+}
+
+// hostedCheckError is the startup refusal for a failed hosted check.
+func hostedCheckError(err error) error {
 	switch {
-	case err == nil:
-		return nil
 	case errors.Is(err, storage.ErrAccessDenied):
 		return fmt.Errorf("app: hosted storage refused the token: %s; check SLIVINGDOC_TOKEN and --bucket", mcp.Redact(err.Error()))
 	case errors.Is(err, storage.ErrIncompatible):

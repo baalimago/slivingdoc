@@ -849,3 +849,101 @@ func TestGatewayDescriptionAndListPrefix(t *testing.T) {
 		}
 	}
 }
+
+func describeConfig(endpoint, token string) Config {
+	return Config{Endpoint: endpoint, Token: token, Backoff: noBackoff}
+}
+
+func TestDescribeTokenNamesTheTokensSpace(t *testing.T) {
+	g := gatewaytest.Start(t)
+	g.AddSpace(testSpace, 1<<20)
+	g.Grant(testToken, testSpace, false)
+	g.Grant("sld_reader", testSpace, true)
+	for _, row := range []struct {
+		token string
+		want  Access
+	}{{testToken, AccessWrite}, {"sld_reader", AccessRead}} {
+		info, err := DescribeToken(context.Background(), describeConfig(g.URL(), row.token))
+		if err != nil {
+			t.Fatalf("DescribeToken(%s) = %v", row.token, err)
+		}
+		if info != (TokenInfo{Space: testSpace, Access: row.want}) {
+			t.Fatalf("DescribeToken(%s) = %+v, want space %q with %s access and no expiry", row.token, info, testSpace, row.want)
+		}
+	}
+}
+
+func TestDescribeTokenRefusals(t *testing.T) {
+	g := gatewaytest.Start(t)
+	g.AddSpace(testSpace, 1<<20)
+	g.Grant(testToken, testSpace, false)
+	g.Grant("sld_orphan", "gone", false)
+
+	if _, err := DescribeToken(context.Background(), describeConfig(g.URL(), "sld_unknown")); !errors.Is(err, storage.ErrAccessDenied) {
+		t.Fatalf("DescribeToken(unknown token) = %v, want ErrAccessDenied", err)
+	}
+	_, err := DescribeToken(context.Background(), describeConfig(g.URL(), "sld_orphan"))
+	if !errors.Is(err, storage.ErrAccessDenied) || !strings.Contains(err.Error(), "reaches no space") {
+		t.Fatalf("DescribeToken(token without a space) = %v, want ErrAccessDenied naming the missing space", err)
+	}
+	g.DisableTokenLookup()
+	if _, err := DescribeToken(context.Background(), describeConfig(g.URL(), testToken)); !errors.Is(err, ErrTokenLookupUnsupported) {
+		t.Fatalf("DescribeToken(older server) = %v, want ErrTokenLookupUnsupported", err)
+	}
+}
+
+func TestDescribeTokenRefusesInvalidConfig(t *testing.T) {
+	if _, err := DescribeToken(context.Background(), describeConfig("http://api.example.test", testToken)); err == nil {
+		t.Fatal("DescribeToken over plain http to a remote host = nil, want a refusal")
+	}
+	if _, err := DescribeToken(context.Background(), describeConfig("https://api.example.test", "bad token")); !errors.Is(err, ErrInvalidToken) {
+		t.Fatalf("DescribeToken(token with white space) = %v, want ErrInvalidToken", err)
+	}
+}
+
+func TestDescribeTokenAnswers(t *testing.T) {
+	for _, row := range []struct {
+		name   string
+		status int
+		body   string
+		want   error
+		info   TokenInfo
+	}{
+		{
+			name: "expiry", status: 200, body: `{"space":"notes","access":"read","expiresAt":"2026-12-26T12:00:00.000Z"}`,
+			info: TokenInfo{Space: "notes", Access: AccessRead, ExpiresAt: time.Date(2026, 12, 26, 12, 0, 0, 0, time.UTC)},
+		},
+		{name: "invalid space", status: 200, body: `{"space":"../x","access":"read","expiresAt":null}`, want: storage.ErrIncompatible},
+		{name: "unknown access", status: 200, body: `{"space":"notes","access":"admin","expiresAt":null}`, want: storage.ErrIncompatible},
+		{name: "bad expiry", status: 200, body: `{"space":"notes","access":"read","expiresAt":"soon"}`, want: storage.ErrIncompatible},
+		{name: "not json", status: 200, body: `<html>`, want: storage.ErrIncompatible},
+		{name: "bare 404", status: 404, body: ``, want: ErrTokenLookupUnsupported},
+		{name: "405", status: 405, body: `{"error":"method_not_allowed"}`, want: ErrTokenLookupUnsupported},
+		{name: "suspended owner", status: 403, body: `{"error":"forbidden","message":"ask the space's owner"}`, want: storage.ErrAccessDenied},
+		{name: "server down", status: 503, body: ``, want: storage.ErrTransport},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/v1/token" || r.Header.Get("Authorization") != "Bearer "+testToken {
+					t.Errorf("request %s %s without the token", r.Method, r.URL.Path)
+				}
+				w.WriteHeader(row.status)
+				_, _ = io.WriteString(w, row.body)
+			}))
+			t.Cleanup(srv.Close)
+			info, err := DescribeToken(context.Background(), describeConfig(srv.URL, testToken))
+			if row.want != nil {
+				if !errors.Is(err, row.want) {
+					t.Fatalf("DescribeToken = %+v, %v; want %v", info, err, row.want)
+				}
+				if strings.Contains(err.Error(), testToken) {
+					t.Fatalf("DescribeToken error %q leaks the token", err)
+				}
+				return
+			}
+			if err != nil || info != row.info {
+				t.Fatalf("DescribeToken = %+v, %v; want %+v", info, err, row.info)
+			}
+		})
+	}
+}
