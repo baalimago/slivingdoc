@@ -312,9 +312,10 @@ lives in [`architecture/running.md`](architecture/running.md) and in `HelpText` 
 `FlagReference` of
 `internal/app/config.go`, which `slivingdoc serve -h` prints — that code
 copy is the authoritative one. Behavior worth remembering: `--bucket` is
-required (it names the hosted space in hosted mode, and defaults to the
-default login's space outside `--storage s3`; the token is read from the
-environment or the credentials file only), in `--storage auto` a stored
+required for S3; in hosted mode it is optional, since the token supplies its
+own space (`httpstore.DescribeToken`), and a bucket that is given, or
+defaulted from the default login, must equal the token's space or startup is
+refused; the token is read from the environment or the credentials file only, in `--storage auto` a stored
 login wins only when the bucket was defaulted from it (an explicit bucket
 plus any S3 setting is refused as ambiguous), an environment token beside
 `--endpoint`, `AWS_ENDPOINT_URL` or `AWS_ENDPOINT_URL_S3` is refused too (architecture/login.md has the
