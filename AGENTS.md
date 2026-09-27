@@ -311,20 +311,30 @@ Flags beat environment variables, which beat defaults. The full table
 lives in [`architecture/running.md`](architecture/running.md) and in `HelpText` and
 `FlagReference` of
 `internal/app/config.go`, which `slivingdoc serve -h` prints — that code
-copy is the authoritative one. Behavior worth remembering: `--bucket` is
-required for S3; in hosted mode it is optional, since the token supplies its
-own space (`httpstore.DescribeToken`), and a bucket that is given, or
-defaulted from the default login, must equal the token's space or startup is
-refused; the token is read from the environment or the credentials file only, in `--storage auto` a stored
-login wins only when the bucket was defaulted from it (an explicit bucket
-plus any S3 setting is refused as ambiguous), an environment token beside
-`--endpoint`, `AWS_ENDPOINT_URL` or `AWS_ENDPOINT_URL_S3` is refused too (architecture/login.md has the
-exact table), a stored token is only sent to the
-endpoint it was issued for, `--private-root` must not be at or
-below the workspace root, `--commit-retries` exhaustion is `REMOTE_BUSY`, and an invalid
-`--read-only-paths` or `--writable-paths` entry refuses startup before any
-native or S3 dependency loads — as does a path named by both settings,
-which is a configuration error rather than a precedence rule.
+copy is the authoritative one. Behavior worth remembering:
+
+- `--bucket` is required for S3. In hosted mode it is optional: every token
+  reaches one space, which `httpstore.DescribeToken` reads from
+  `GET /v1/token` (`app.resolveHostedSpace`). A bucket that is given must
+  equal that space or startup is refused. On a server without
+  `GET /v1/token`, a given bucket is kept, and with none the default
+  login's space is used when that login is for the same endpoint.
+- The token comes from `SLIVINGDOC_TOKEN` or the credentials file only,
+  never a flag. An environment token uses its own space and never reads
+  `credentials.json`.
+- In `--storage auto`, an environment token beside `--endpoint`,
+  `AWS_ENDPOINT_URL` or `AWS_ENDPOINT_URL_S3` is refused. A stored login
+  wins over S3 when the bucket was defaulted from it, or when an explicit
+  bucket comes with no S3 setting at all; an explicit bucket plus any S3
+  setting is refused as ambiguous. architecture/login.md has the exact
+  table.
+- A stored token is only sent to the endpoint it was issued for.
+- `--private-root` must not be at or below the workspace root.
+- `--commit-retries` exhaustion is `REMOTE_BUSY`.
+- An invalid `--read-only-paths` or `--writable-paths` entry refuses
+  startup before any native or S3 dependency loads, as does a path named
+  by both settings, which is a configuration error rather than a
+  precedence rule.
 
 The `serve`, `pull`, and `commit` commands share every flag. The
 subcommand comes first. `slivingdoc version` and `-h` on any command exit
