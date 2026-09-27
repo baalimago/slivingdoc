@@ -316,8 +316,8 @@ required (it names the hosted space in hosted mode, and defaults to the
 default login's space outside `--storage s3`; the token is read from the
 environment or the credentials file only), in `--storage auto` a stored
 login wins only when the bucket was defaulted from it (an explicit bucket
-plus any S3 setting is refused as ambiguous), an environment token plus
-`--endpoint` or an S3 setting is refused too (architecture/login.md has the
+plus any S3 setting is refused as ambiguous), an environment token beside
+`--endpoint`, `AWS_ENDPOINT_URL` or `AWS_ENDPOINT_URL_S3` is refused too (architecture/login.md has the
 exact table), a stored token is only sent to the
 endpoint it was issued for, `--private-root` must not be at or
 below the workspace root, `--commit-retries` exhaustion is `REMOTE_BUSY`, and an invalid
