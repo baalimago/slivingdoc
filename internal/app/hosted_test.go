@@ -367,6 +367,7 @@ func TestResolveHostedSpaceFallsBackToTheDefaultLogin(t *testing.T) {
 	}{
 		{"same endpoint", g.URL(), ""},
 		{"another endpoint", devEndpoint, "the default login is for " + devEndpoint + ", not " + g.URL() + "; pass the space name as --bucket"},
+		{"another endpoint with user information", "https://user:secret@host.example.test", "the default login is for https://[redacted]@host.example.test, not "},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			dir := strings.TrimPrefix(writeLogins(t, &storedKey{row.endpoint, "notes"}, entry(row.endpoint, "notes", loginToken)), credentials.DirEnv+"=")
@@ -380,8 +381,8 @@ func TestResolveHostedSpaceFallsBackToTheDefaultLogin(t *testing.T) {
 				}
 				return
 			}
-			if err == nil || !strings.Contains(err.Error(), row.want) {
-				t.Fatalf("resolve = %v, want it to contain %q", err, row.want)
+			if err == nil || !strings.Contains(err.Error(), row.want) || strings.Contains(err.Error(), "secret") {
+				t.Fatalf("resolve = %v, want it to contain %q and no user information", err, row.want)
 			}
 		})
 	}
@@ -417,9 +418,27 @@ func TestHostedCheckErrorFollowsTheSpaceSource(t *testing.T) {
 		{config{tokenOrigin: originEnv, bucket: "team", bucketFrom: bucketFromLogin}, `check SLIVINGDOC_TOKEN, or pass --bucket: the space "team" came from the default login`},
 		{config{tokenOrigin: originEnv, bucket: "team", bucketFrom: bucketFromEnv}, "check SLIVINGDOC_TOKEN and SLIVINGDOC_BUCKET"},
 		{config{tokenOrigin: originEnv, bucket: "team", bucketFrom: bucketFromFlag}, "check SLIVINGDOC_TOKEN and --bucket"},
+		{config{tokenOrigin: originEnv, bucket: "team", bucketFrom: bucketFromToken}, `check SLIVINGDOC_TOKEN: it named space "team" but was then refused`},
 	} {
 		if err := hostedCheckError(denied, row.cfg); !strings.Contains(err.Error(), row.want) {
 			t.Fatalf("hostedCheckError(%v) = %v, want it to contain %q", row.cfg.bucketFrom, err, row.want)
 		}
+	}
+}
+
+// TestRedactCauseKeepsTheSentinel proves a redacted cause still matches the
+// credentials sentinel it wrapped, and never carries the token it quoted.
+func TestRedactCauseKeepsTheSentinel(t *testing.T) {
+	for _, kind := range []error{credentials.ErrExposed, credentials.ErrMalformed} {
+		err := redactCause(fmt.Errorf("%w: %s", kind, loginToken), credentials.ErrMalformed, credentials.ErrExposed)
+		if !errors.Is(err, kind) || strings.Contains(err.Error(), loginToken) || !strings.Contains(err.Error(), "[redacted]") {
+			t.Fatalf("redactCause(%v) = %q, want it to match the sentinel with the token redacted", kind, err)
+		}
+		if errors.Unwrap(err) != kind {
+			t.Fatalf("redactCause(%v) unwraps to %v, want only the sentinel", kind, errors.Unwrap(err))
+		}
+	}
+	if err := redactCause(errors.New("other "+loginToken), credentials.ErrMalformed); errors.Unwrap(err) != nil || strings.Contains(err.Error(), loginToken) {
+		t.Fatalf("redactCause of an unmatched cause = %q unwrapping to %v, want redacted text and no chain", err, errors.Unwrap(err))
 	}
 }

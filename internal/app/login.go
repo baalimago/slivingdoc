@@ -315,11 +315,11 @@ func (l *Login) store(ctx context.Context, stored credentials.Login, agreed cons
 	if old, err := set.Lookup(stored.Key); err == nil {
 		if old.Site != stored.Site {
 			return storeOutcome{}, fmt.Errorf("login: the stored login for space %q at %s was issued by %s, not %s; log out of that login first (slivingdoc logout --bucket %s --site %s); nothing was stored",
-				old.Space, old.Endpoint, old.Site, stored.Site, old.Space, old.Site)
+				old.Space, mcp.Redact(old.Endpoint), mcp.Redact(old.Site), stored.Site, old.Space, mcp.Redact(old.Site))
 		}
 		if old.Account != stored.Account && agreed != confirmed {
 			return storeOutcome{}, fmt.Errorf("login: the stored login for space %q at %s was approved by %s, this one by %s; run login in a terminal to confirm, or pass --force; nothing was stored",
-				old.Space, old.Endpoint, account(old), account(stored))
+				old.Space, mcp.Redact(old.Endpoint), account(old), account(stored))
 		}
 	}
 	isDefault := defaultKept
@@ -331,7 +331,7 @@ func (l *Login) store(ctx context.Context, stored credentials.Login, agreed cons
 		out.priorDefault = &def
 		if l.setDefault && def.Key != stored.Key && def.Account != stored.Account && agreed != confirmed {
 			return storeOutcome{}, fmt.Errorf("login: the default login (space %q at %s) was approved by %s, this one by %s; run login in a terminal to confirm, or pass --force; nothing was stored",
-				def.Space, def.Endpoint, account(def), account(stored))
+				def.Space, mcp.Redact(def.Endpoint), account(def), account(stored))
 		}
 	}
 	if replaced, err := set.Put(stored); err == nil {
@@ -388,7 +388,7 @@ func account(l credentials.Login) string {
 }
 
 func describeKey(k credentials.Key) string {
-	return fmt.Sprintf("space %q at %s", k.Space, k.Endpoint)
+	return fmt.Sprintf("space %q at %s", k.Space, mcp.Redact(k.Endpoint))
 }
 
 // revocationTimeout bounds a revocation that runs after the login's own
@@ -490,7 +490,7 @@ func (l *Logout) Run(ctx context.Context) error {
 	var revoked []credentials.Login
 	for _, login := range l.logins {
 		if err := revoke(ctx, login, l.opts); err != nil {
-			failed = append(failed, fmt.Errorf("space %q at %s: %s", login.Space, login.Endpoint, mcp.Redact(err.Error())))
+			failed = append(failed, fmt.Errorf("space %q at %s: %s", login.Space, mcp.Redact(login.Endpoint), mcp.Redact(err.Error())))
 			continue
 		}
 		revoked = append(revoked, login)
@@ -502,10 +502,10 @@ func (l *Logout) Run(ctx context.Context) error {
 		}
 		for _, login := range revoked {
 			if slices.Contains(kept, login.Key) {
-				fmt.Fprintf(l.opts.Out(), "Revoked the token for space %q at %s; a newer login for it was kept\n", login.Space, login.Endpoint)
+				fmt.Fprintf(l.opts.Out(), "Revoked the token for space %q at %s; a newer login for it was kept\n", login.Space, mcp.Redact(login.Endpoint))
 				continue
 			}
-			fmt.Fprintf(l.opts.Out(), "Logged out of space %q at %s; the token was revoked\n", login.Space, login.Endpoint)
+			fmt.Fprintf(l.opts.Out(), "Logged out of space %q at %s; the token was revoked\n", login.Space, mcp.Redact(login.Endpoint))
 		}
 	}
 	if len(failed) > 0 {

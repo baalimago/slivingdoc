@@ -425,7 +425,9 @@ func defaultLoginSpace(cfg config, logins func() (credentials.Set, error)) (conf
 	case err != nil:
 		return config{}, fmt.Errorf("%s, and no default login names one; %s", refusal, fix)
 	case def.Endpoint != cfg.endpoint:
-		return config{}, fmt.Errorf("%s, and the default login is for %s, not %s; %s", refusal, def.Endpoint, cfg.endpoint, fix)
+		// A hand-edited credentials file can hold user information in an
+		// endpoint; the refusal never echoes it.
+		return config{}, fmt.Errorf("%s, and the default login is for %s, not %s; %s", refusal, mcp.Redact(def.Endpoint), cfg.endpoint, fix)
 	}
 	cfg.bucket, cfg.bucketFrom = def.Space, bucketFromLogin
 	return cfg, nil
@@ -506,6 +508,8 @@ func hostedCheckError(err error, cfg config) error {
 		return fmt.Errorf("app: hosted storage refused the stored login: %s; run 'slivingdoc login' again, or check --bucket", mcp.Redact(err.Error()))
 	case denied && cfg.bucketFrom == bucketFromLogin:
 		return fmt.Errorf("app: hosted storage refused the token: %s; check SLIVINGDOC_TOKEN, or pass --bucket: the space %q came from the default login", mcp.Redact(err.Error()), cfg.bucket)
+	case denied && cfg.bucketFrom == bucketFromToken:
+		return fmt.Errorf("app: hosted storage refused the token: %s; check SLIVINGDOC_TOKEN: it named space %q but was then refused", mcp.Redact(err.Error()), cfg.bucket)
 	case denied && cfg.bucketFrom == bucketFromEnv:
 		return fmt.Errorf("app: hosted storage refused the token: %s; check SLIVINGDOC_TOKEN and SLIVINGDOC_BUCKET", mcp.Redact(err.Error()))
 	case denied:
