@@ -6,8 +6,8 @@ Test coverage: 85.9% 😍👌
   <p><strong>Shared notes for your agents.</strong></p>
   <p>
     Plain text files that many agents and people pull and commit at the
-    same time, with Git-style merges instead of overwrites. Keep them in
-    your own S3-compatible bucket, or let
+    same time, with Git-style merges instead of overwrites. Store them
+    durably in your own S3-compatible bucket, or let
     <a href="https://slivingdoc.dev">slivingdoc.dev</a> host them, free to
     start.
   </p>
@@ -20,7 +20,7 @@ Test coverage: 85.9% 😍👌
 </div>
 
 <p align="center">
-  <img src="img/demo.gif" width="800" alt="Two agents pull the same notes, edit different sections of plan.md and commit at the same moment. Both commits succeed and a pull shows both edits. Then both add a different line in the same place, and the second commit returns CONTENT_CONFLICT with conflict markers in the file.">
+  <img src="img/demo.gif" width="800" alt="Two agents pull the same notes and edit different sections of plan.md. The second commits without pulling the first one's change, and both commits succeed; a pull shows both edits. Then both add a different line in the same place, and the second commit returns CONTENT_CONFLICT with conflict markers in the file.">
 </p>
 
 ## Why
@@ -28,7 +28,8 @@ Test coverage: 85.9% 😍👌
 You run several coding agents at once, such as a few Claude Code sessions
 next to Codex, and you want them to share what they learn. A `NOTES.md`
 committed next to the code ends in merge conflicts or lost edits, and a
-memory service keeps the notes where you can't read them. slivingdoc keeps
+memory service often keeps the notes in a store you can't open in an
+editor. slivingdoc keeps
 the notes as ordinary files that agents edit with the tools they already
 have, and makes writing to them at the same time safe.
 
@@ -43,10 +44,10 @@ have, and makes writing to them at the same time safe.
 - **Your bucket or ours:** any S3-compatible bucket that supports
   conditional writes, or a hosted space at
   [slivingdoc.dev](https://slivingdoc.dev)
-- **Read-only and writable paths:** let a fleet of agents read instructions
-  it can never change, or confine each agent to its own directory
+- **Read-only and writable paths:** keep shared instructions out of reach
+  of an agent's commits, or confine each agent to its own directory
 - **One binary:** Git merge semantics through a statically linked libgit2;
-  no Git executable, no server to run
+  no Git executable, no daemon or database to run
 
 [`architecture/`](architecture/README.md) documents the contract behind
 these guarantees, one concern per file.
@@ -55,9 +56,10 @@ these guarantees, one concern per file.
 
 ### Hosted (quickest)
 
-Sign in at [slivingdoc.dev](https://slivingdoc.dev) with GitHub or Google,
-create a token on the Tokens page, and copy the snippet for your client
-(Claude Code, Codex, Claude Desktop, Cursor, or the CLI). For Claude Code:
+Sign in at [slivingdoc.dev](https://slivingdoc.dev) with GitHub or Google.
+The welcome steps name your space, create a token and show the snippet for
+your client (Claude Code, Claude Desktop, Cursor, Codex, or the CLI); later
+tokens come from the Tokens page. For Claude Code:
 
 ```sh
 claude mcp add slivingdoc \
@@ -65,8 +67,10 @@ claude mcp add slivingdoc \
   -- npx -y slivingdoc serve
 ```
 
-The free tier holds 10 MB of notes and 250,000 requests a month; more costs
-$1 a month per step ([pricing](https://slivingdoc.dev/pricing/)).
+The free tier holds one space, 10 MB of notes and 250,000 requests a
+month; each extra 100 MB, 250,000 requests or space costs $1 a month
+([pricing](https://slivingdoc.dev/pricing/)). The endpoint defaults to the
+hosted service, so the site's `--endpoint` flag is optional.
 [Hosted storage](#hosted-storage) below has the details.
 
 ### Self-hosted, on your own bucket
