@@ -921,17 +921,34 @@ func TestDescribeTokenAnswers(t *testing.T) {
 		{name: "405", status: 405, body: `{"error":"method_not_allowed"}`, want: ErrTokenLookupUnsupported},
 		{name: "suspended owner", status: 403, body: `{"error":"forbidden","message":"ask the space's owner"}`, want: storage.ErrAccessDenied},
 		{name: "server down", status: 503, body: ``, want: storage.ErrTransport},
+		{name: "no space", status: 404, body: `{"error":"not_found","reason":"no_space"}`, want: storage.ErrAccessDenied},
+		{name: "other 404 reason", status: 404, body: `{"error":"not_found","reason":"no_object"}`, want: ErrTokenLookupUnsupported},
+		{name: "throttled", status: 429, body: `{"error":"rate_limited","reason":"slow_reads"}`, want: storage.ErrRateLimited},
+		{name: "redirect", status: 302, body: ``, want: nil, info: TokenInfo{}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/v1" {
+					_, _ = io.WriteString(w, `{"api":"slivingdoc-storage","version":1,"conditionalWrites":true}`)
+					return
+				}
 				if r.URL.Path != "/v1/token" || r.Header.Get("Authorization") != "Bearer "+testToken {
 					t.Errorf("request %s %s without the token", r.Method, r.URL.Path)
+				}
+				if row.status == http.StatusFound {
+					w.Header().Set("Location", "https://elsewhere.example.test/v1/token")
 				}
 				w.WriteHeader(row.status)
 				_, _ = io.WriteString(w, row.body)
 			}))
 			t.Cleanup(srv.Close)
 			info, err := DescribeToken(context.Background(), describeConfig(srv.URL, testToken))
+			if row.status == http.StatusFound {
+				if err == nil || errors.Is(err, ErrTokenLookupUnsupported) || strings.Contains(err.Error(), testToken) {
+					t.Fatalf("DescribeToken(redirect) = %+v, %v; want a refusal that is not followed", info, err)
+				}
+				return
+			}
 			if row.want != nil {
 				if !errors.Is(err, row.want) {
 					t.Fatalf("DescribeToken = %+v, %v; want %v", info, err, row.want)
@@ -943,6 +960,42 @@ func TestDescribeTokenAnswers(t *testing.T) {
 			}
 			if err != nil || info != row.info {
 				t.Fatalf("DescribeToken = %+v, %v; want %+v", info, err, row.info)
+			}
+		})
+	}
+}
+
+// TestDescribeTokenChecksTheServerFirst proves the token only travels to an
+// endpoint that first answered, without the token, as this storage API.
+func TestDescribeTokenChecksTheServerFirst(t *testing.T) {
+	for _, row := range []struct {
+		name string
+		v1   func(w http.ResponseWriter)
+	}{
+		{"not found", func(w http.ResponseWriter) { w.WriteHeader(http.StatusNotFound) }},
+		{"another API", func(w http.ResponseWriter) {
+			_, _ = io.WriteString(w, `{"api":"other","version":1,"conditionalWrites":true}`)
+		}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			var sawToken atomic.Bool
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Header.Get("Authorization") != "" {
+					sawToken.Store(true)
+				}
+				if r.URL.Path == "/v1" {
+					row.v1(w)
+					return
+				}
+				w.WriteHeader(http.StatusNotFound)
+			}))
+			t.Cleanup(srv.Close)
+			_, err := DescribeToken(context.Background(), describeConfig(srv.URL, testToken))
+			if !errors.Is(err, storage.ErrIncompatible) {
+				t.Fatalf("DescribeToken against %s = %v, want ErrIncompatible", row.name, err)
+			}
+			if sawToken.Load() {
+				t.Fatal("DescribeToken sent the token to a server that did not identify as the storage API")
 			}
 		})
 	}

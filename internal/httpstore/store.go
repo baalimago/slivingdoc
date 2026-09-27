@@ -200,7 +200,8 @@ type tokenBody struct {
 }
 
 // DescribeToken asks the server which space the token reaches
-// (GET /v1/token). cfg.Space and cfg.Prefix are ignored. A token that
+// (GET /v1/token), after the same tokenless server check as CheckAccess,
+// so the token only goes to an endpoint that answered as this API. cfg.Space and cfg.Prefix are ignored. A token that
 // reaches no space, or that the server refuses, is ErrAccessDenied; a
 // server without the endpoint is ErrTokenLookupUnsupported; an answer
 // outside the API grammar is ErrIncompatible.
@@ -212,6 +213,9 @@ func DescribeToken(ctx context.Context, cfg Config) (TokenInfo, error) {
 		return TokenInfo{}, err
 	}
 	s := newClient(cfg)
+	if err := s.checkServer(ctx); err != nil {
+		return TokenInfo{}, err
+	}
 	resp, err := s.do(ctx, func() (*http.Request, error) {
 		return s.request(ctx, http.MethodGet, s.root+"/token", nil, true)
 	})
@@ -293,13 +297,11 @@ type serverInfo struct {
 	ConditionalWrites bool   `json:"conditionalWrites"`
 }
 
-// CheckAccess proves the server speaks this API version with the
-// conditional-write semantics the protocol needs, and that the token
-// reaches the space. It replaces the write probe for hosted stores: the
-// server promises the semantics, and a read-only token could not run the
-// probe. ErrIncompatible reports a server this client does not understand;
-// ErrAccessDenied reports a token that does not reach the space.
-func (s *Store) CheckAccess(ctx context.Context) error {
+// checkServer proves, without the token, that the endpoint speaks this API
+// version with the conditional-write semantics the protocol needs, so the
+// token is never sent to a server that has not identified itself.
+// ErrIncompatible reports a server this client does not understand.
+func (s *Store) checkServer(ctx context.Context) error {
 	resp, err := s.do(ctx, func() (*http.Request, error) {
 		return s.request(ctx, http.MethodGet, s.root, nil, false)
 	})
@@ -331,7 +333,20 @@ func (s *Store) CheckAccess(ctx context.Context) error {
 	if !info.ConditionalWrites {
 		return fmt.Errorf("httpstore: server does not promise conditional writes: %w", storage.ErrIncompatible)
 	}
-	resp, err = s.do(ctx, func() (*http.Request, error) {
+	return nil
+}
+
+// CheckAccess proves the server speaks this API version with the
+// conditional-write semantics the protocol needs, and that the token
+// reaches the space. It replaces the write probe for hosted stores: the
+// server promises the semantics, and a read-only token could not run the
+// probe. ErrIncompatible reports a server this client does not understand;
+// ErrAccessDenied reports a token that does not reach the space.
+func (s *Store) CheckAccess(ctx context.Context) error {
+	if err := s.checkServer(ctx); err != nil {
+		return err
+	}
+	resp, err := s.do(ctx, func() (*http.Request, error) {
 		return s.request(ctx, http.MethodGet, s.space+"/usage", nil, true)
 	})
 	if err != nil {

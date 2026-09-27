@@ -3,6 +3,8 @@ package app
 import (
 	"context"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -147,6 +149,59 @@ func TestResolveHostedSpace(t *testing.T) {
 	}
 	if _, err := resolve("", hostedTestToken); err == nil || !strings.Contains(err.Error(), "pass the space name as --bucket") {
 		t.Fatalf("resolve against an older server without --bucket = %v, want a refusal asking for --bucket", err)
+	}
+}
+
+// TestSetupHostedRefusalRemovesSessionDir proves a hosted startup refusal
+// after the session directory exists removes it, like a configuration
+// refusal does.
+func TestSetupHostedRefusalRemovesSessionDir(t *testing.T) {
+	g := gatewaytest.Start(t)
+	g.AddSpace("notes", 1<<20)
+	g.AddSpace("other", 1<<20)
+	g.Grant(hostedTestToken, "notes", false)
+	for _, row := range []struct {
+		name string
+		env  []string
+	}{
+		{"unknown token", []string{"SLIVINGDOC_TOKEN=sld_unknown"}},
+		{"another space", []string{"SLIVINGDOC_TOKEN=" + hostedTestToken, "SLIVINGDOC_BUCKET=other"}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			session := filepath.Join(t.TempDir(), "session")
+			if err := os.MkdirAll(session, 0o700); err != nil {
+				t.Fatalf("MkdirAll() = %v", err)
+			}
+			env := append([]string{"SLIVINGDOC_ENDPOINT=" + g.URL()}, row.env...)
+			if _, err := setup(ephemeralProcess(session, env)); err == nil {
+				t.Fatal("setup() = nil, want a hosted startup refusal")
+			}
+			if _, err := os.Stat(session); !os.IsNotExist(err) {
+				t.Fatalf("Stat(session) = %v, want the session directory removed", err)
+			}
+		})
+	}
+}
+
+// TestSetupHostedUsesTheTokensSpace proves the resolved space reaches the
+// store factory and the runtime configuration.
+func TestSetupHostedUsesTheTokensSpace(t *testing.T) {
+	g := gatewaytest.Start(t)
+	g.AddSpace("notes", 1<<20)
+	g.Grant(hostedTestToken, "notes", false)
+	p := testProcess([]string{"SLIVINGDOC_TOKEN=" + hostedTestToken, "SLIVINGDOC_ENDPOINT=" + g.URL()})
+	var built string
+	p.storeFactory = func(ctx context.Context, cfg config) (storage.ObjectStore, error) {
+		built = cfg.bucket
+		return realStoreFactory(ctx, cfg)
+	}
+	rt, err := setup(p)
+	if err != nil {
+		t.Fatalf("setup() = %v", err)
+	}
+	t.Cleanup(func() { _ = rt.Close() })
+	if built != "notes" || rt.cfg.bucket != "notes" || rt.cfg.serviceConfig().Bucket != "notes" {
+		t.Fatalf("store built for %q, runtime bucket %q; want the token's space notes", built, rt.cfg.bucket)
 	}
 }
 

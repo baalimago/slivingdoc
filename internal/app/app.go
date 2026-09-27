@@ -281,13 +281,13 @@ func setup(p process) (*Runtime, error) {
 		return nil, fmt.Errorf("app: open native engine: %w", err)
 	}
 	logger.Debug("native engine open", "pinned", true)
-	svc, cfg, err := buildService(p, cfg)
+	svc, resolved, err := buildService(p, cfg)
 	if err != nil {
 		p.engine.Close()
 		removeSessionDir(cfg.sessionDir)
 		return nil, err
 	}
-	return &Runtime{p: p, svc: svc, cfg: cfg, base: base, logger: logger}, nil
+	return &Runtime{p: p, svc: svc, cfg: resolved, base: base, logger: logger}, nil
 }
 
 // run is the whole process body in one call, used where the caller does not

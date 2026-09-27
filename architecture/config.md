@@ -35,7 +35,7 @@ app.Setup(engine, flags, opts) → setup(process)
         sharedPackCache → <cacheDir>/slivingdoc/pack-cache
         --log-level set → slogcolor.ParseLevels (fail fast)
       → config.finish(cwd)
-          bucket required, ValidatePrefix, normalizeEndpoint,
+          bucket required (optional with a token), ValidatePrefix, normalizeEndpoint,
           hosted ? validateHosted (space, token, https unless loopback) : region required,
           absolute(roots), RootsOverlap checks, numeric bounds, resolvePolicy
   → config.serviceConfig() → NewService / StoreFactory
