@@ -53,7 +53,7 @@ shape every operation. **L** is the caller-controlled visible directory.
 +----------------------------------------------+
 |  main.go -> internal/cli                     |
 |  command router: serve | pull | commit |     |
-|  login | logout | version                    |
+|  login | logout | space | version            |
 +----------------------+-----------------------+
                        |
                        v
@@ -135,8 +135,8 @@ slivingdoc/
 |   |-- serve/               serve|s: the MCP stdio server over internal/app
 |   |-- pull/                pull|p: one-shot notes_pull for humans
 |   |-- commit/              commit|c: one-shot notes_commit for humans
-|   |-- login/               login and logout: browser device login, stored
-|   |                        hosted token, revocation
+|   |-- login/               login, logout and space: browser device login,
+|   |                        stored account key, default space, revocation
 |   `-- version/             version|v: the exact "slivingdoc <semver>" line
 |-- release_test.go          release layer: dependency baselines, checksum
 |                            grammar, release reference, built binary
@@ -186,7 +186,7 @@ slivingdoc/
     |-- credentials/         the stored logins: strict versioned
     |                        credentials.json (0600, temp file + rename)
     |-- sitelogin/           client of the site's CLI login routes (start,
-    |   |                    token polling, revoke)
+    |   |                    key polling, spaces, space-token minting, revoke)
     |   `-- sitetest/        test-only reference site with scripted approvals
     |-- httpstore/           hosted storage API adapter (SLIVINGDOC_TOKEN or a
     |                        stored login):
@@ -262,7 +262,7 @@ Checkpoint and cleanup (synchronous inside the triggering commit, best-effort)
 
 `main.go` is one call: `os.Exit(cli.Run(ctx, os.Args, git2.New(), opts))`.
 `internal/cli` holds the command map (`serve|s`, `pull|p`, `commit|c`,
-`login`, `logout`, `version|v`) and routes through `go_away_boilerplate/pkg/cmd`. Each `cmd/`
+`login`, `logout`, `space`, `version|v`) and routes through `go_away_boilerplate/pkg/cmd`. Each `cmd/`
 package implements `cmd.Command`. The router parses the selected command's
 flag set, then calls `Setup` and `Run`.
 
@@ -313,23 +313,30 @@ lives in [`architecture/running.md`](architecture/running.md) and in `HelpText` 
 `internal/app/config.go`, which `slivingdoc serve -h` prints — that code
 copy is the authoritative one. Behavior worth remembering:
 
-- `--bucket` is required for S3. In hosted mode it is optional: every token
-  reaches one space, which `httpstore.DescribeToken` reads from
-  `GET /v1/token` (`app.resolveHostedSpace`). A bucket that is given must
-  equal that space or startup is refused. On a server without
-  `GET /v1/token`, a given bucket is kept, and with none the default
-  login's space is used when that login is for the same endpoint.
-- The token comes from `SLIVINGDOC_TOKEN` or the credentials file only,
-  never a flag. An environment token uses its own space and reads
-  `credentials.json` only for the fallback above: a server without
-  `GET /v1/token` and no bucket given.
+- `--space` and `SLIVINGDOC_SPACE` are the hosted names of `--bucket` and
+  `SLIVINGDOC_BUCKET`: one setting, and both spellings with different
+  values are refused.
+- `--bucket` is required for S3. In hosted mode it is optional. A
+  `SLIVINGDOC_TOKEN` reaches one space, which `httpstore.DescribeToken`
+  reads from `GET /v1/token` (`app.resolveHostedSpace`); a space that is
+  given must equal it or startup is refused. On a server without
+  `GET /v1/token`, a given space is kept, and with none the default space
+  stored for that endpoint is used.
+- A stored login is an account key, sent only to the site that issued
+  it. `serve`, `pull` and `commit` mint one-hour tokens for one space at
+  that site and keep them in memory only; `serve` renews them. The space
+  is `--space`, then `SLIVINGDOC_SPACE`, then the default stored by
+  `slivingdoc space <name>`; with none, startup is refused. A minted token
+  is only sent to the login's endpoint.
+- The token comes from `SLIVINGDOC_TOKEN` or a stored login only, never a
+  flag. An environment token reads `credentials.json` only for the
+  old-server fallback above.
 - In `--storage auto`, an environment token beside `--endpoint`,
   `AWS_ENDPOINT_URL` or `AWS_ENDPOINT_URL_S3` is refused. A stored login
-  wins over S3 when the bucket was defaulted from it, or when an explicit
-  bucket comes with no S3 setting at all; an explicit bucket plus any S3
+  wins over S3 when the space is the stored default, or when an explicit
+  space comes with no S3 setting at all; an explicit space plus any S3
   setting is refused as ambiguous. architecture/login.md has the exact
   table.
-- A stored token is only sent to the endpoint it was issued for.
 - `--private-root` must not be at or below the workspace root.
 - `--commit-retries` exhaustion is `REMOTE_BUSY`.
 - An invalid `--read-only-paths` or `--writable-paths` entry refuses
