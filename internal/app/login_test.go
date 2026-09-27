@@ -284,11 +284,11 @@ func TestLoginRefusals(t *testing.T) {
 		if err := r.login(t, "--bucket", "team-notes"); !errors.Is(err, credentials.ErrExposed) {
 			t.Fatalf("login = %v, want ErrExposed", err)
 		}
-		if err := r.logout(t, "--bucket", "team-notes"); !errors.Is(err, credentials.ErrExposed) {
-			t.Fatalf("logout = %v, want ErrExposed", err)
+		if len(r.site.Starts()) != 0 || r.site.Polls() != 0 || len(r.opened) != 0 {
+			t.Fatal("a refused login contacted the site or opened the browser")
 		}
-		if len(r.site.Starts()) != 0 {
-			t.Fatal("a refused login contacted the site")
+		if _, err := os.Stat(filepath.Join(r.dir, credentials.FileName)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("a refused login wrote the credentials file: %v", err)
 		}
 	})
 	t.Run("no configuration directory", func(t *testing.T) {

@@ -502,8 +502,8 @@ Logging in again for the same space at the same storage endpoint replaces
 the stored token and revokes the old one. The file, and its directory, must
 not be accessible to other users: like ssh, slivingdoc refuses a file that
 group or other can read or write, or a directory they can write, and says
-which `chmod` fixes it. `login` and `logout` check the directory even before
-the file exists; `serve`, `pull` and `commit` check only an existing file. `--site` (or `SLIVINGDOC_SITE`) names another site, such as
+which `chmod` fixes it. `login` checks the directory even before the file exists;
+every other command checks only an existing file. `--site` (or `SLIVINGDOC_SITE`) names another site, such as
 a development deployment, whose logins then talk to that site's own
 storage API.
 

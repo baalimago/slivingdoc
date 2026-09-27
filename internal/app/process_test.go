@@ -366,8 +366,8 @@ func assertProtocolOnlyStdout(t *testing.T, data []byte) {
 }
 
 // helperEnv drops the variables that choose the store, the token or the
-// site, and every name overrides sets, then appends overrides. Appending
-// alone is not enough: the child keeps the first entry of a duplicate name.
+// site, and every name overrides sets, then appends overrides, so the
+// child sees each name once and which duplicate wins never matters.
 func helperEnv(env []string, overrides ...string) []string {
 	drop := map[string]bool{"SLIVINGDOC_STORAGE": true, SiteEnv: true, "SLIVINGDOC_TOKEN": true, "SLIVINGDOC_ENDPOINT": true}
 	for _, kv := range overrides {

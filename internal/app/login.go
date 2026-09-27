@@ -224,9 +224,6 @@ func PrepareLogout(f *LogoutFlags, opts ProcessOptions) (*Logout, error) {
 	if err != nil {
 		return nil, fmt.Errorf("logout: %w", err)
 	}
-	if err := file.CheckDir(); err != nil {
-		return nil, fmt.Errorf("logout: %w", err)
-	}
 	space := f.bucket.value
 	if space == "" {
 		def, err := set.Default()

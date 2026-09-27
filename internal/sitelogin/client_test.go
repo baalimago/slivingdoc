@@ -220,32 +220,44 @@ func TestIssuedTokenIsValidated(t *testing.T) {
 	}
 }
 
+// broken is a body that breaks off after a few bytes.
+func broken(prefix string) io.ReadCloser {
+	return io.NopCloser(io.MultiReader(strings.NewReader(prefix), iotest.ErrReader(errors.New("unexpected EOF"))))
+}
+
 // flakyDoer fails the first token polls: the first with no answer, the
-// second with a body that breaks while it is read, the others with a 502,
-// then forwards to the real client.
+// second with a 502 whose body breaks while it is read, the others with a
+// 502, then forwards to the real client. With breakIssue it breaks the
+// body of the success answer that carries the token instead.
 type flakyDoer struct {
-	failures int
-	seen     int
+	failures   int
+	seen       int
+	breakIssue bool
 }
 
 func (d *flakyDoer) Do(req *http.Request) (*http.Response, error) {
-	if strings.HasSuffix(req.URL.Path, tokenPath) && d.seen < d.failures {
+	if !strings.HasSuffix(req.URL.Path, tokenPath) {
+		return http.DefaultClient.Do(req)
+	}
+	if d.breakIssue {
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil || resp.StatusCode != http.StatusOK {
+			return resp, err
+		}
+		resp.Body.Close()
+		resp.Body = broken(`{"tok`)
+		return resp, nil
+	}
+	if d.seen < d.failures {
 		d.seen++
 		if d.seen == 1 {
 			return nil, errors.New("connection reset")
 		}
+		body := io.NopCloser(strings.NewReader(`{"error":"internal"}`))
 		if d.seen == 2 {
-			return &http.Response{
-				StatusCode: http.StatusOK,
-				Body:       io.NopCloser(io.MultiReader(strings.NewReader(`{"tok`), iotest.ErrReader(errors.New("unexpected EOF")))),
-				Header:     http.Header{},
-			}, nil
+			body = broken(`{"err`)
 		}
-		return &http.Response{
-			StatusCode: http.StatusBadGateway,
-			Body:       io.NopCloser(strings.NewReader(`{"error":"internal"}`)),
-			Header:     http.Header{},
-		}, nil
+		return &http.Response{StatusCode: http.StatusBadGateway, Body: body, Header: http.Header{}}, nil
 	}
 	return http.DefaultClient.Do(req)
 }
@@ -278,6 +290,28 @@ func TestWaitRetriesTransientFailures(t *testing.T) {
 	}
 	if retryWait(time.Second, 20) != maxRetryWait {
 		t.Fatal("the backoff is not capped")
+	}
+}
+
+func TestWaitEndsWhenTheIssuedAnswerBreaks(t *testing.T) {
+	site := sitetest.Start(t)
+	site.Next(sitetest.Script{Issue: issue()})
+	clk := &clock{now: time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)}
+	client, err := New(Config{Site: site.URL(), Sleep: clk.Sleep, Now: clk.Now, Client: &flakyDoer{breakIssue: true}})
+	if err != nil {
+		t.Fatalf("New() = %v", err)
+	}
+	a, err := client.Start(context.Background(), StartRequest{Access: credentials.AccessWrite})
+	if err != nil {
+		t.Fatalf("Start() = %v", err)
+	}
+	_, err = client.Wait(context.Background(), a)
+	if !errors.Is(err, ErrBrokenAnswer) || errors.Is(err, ErrCodeExpired) || transient(err) ||
+		!strings.Contains(err.Error(), "Tokens page") || strings.Contains(err.Error(), testToken) {
+		t.Fatalf("Wait() = %v, want ErrBrokenAnswer pointing at the Tokens page", err)
+	}
+	if site.Polls() != 1 {
+		t.Fatalf("polls = %d, want 1: a claimed code is never polled again", site.Polls())
 	}
 }
 

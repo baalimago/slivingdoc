@@ -54,8 +54,13 @@ var (
 	ErrProtocol = errors.New("sitelogin: unexpected answer from the site")
 	// ErrRefused reports an error answer of the site.
 	ErrRefused = errors.New("sitelogin: the site refused the request")
-	// ErrUnreachable reports a request that got no answer.
+	// ErrUnreachable reports a request that got no answer, or a 5xx
+	// answer that broke off while it was read.
 	ErrUnreachable = errors.New("sitelogin: the site is unreachable")
+	// ErrBrokenAnswer reports a success answer that broke off while it was
+	// read: the site did what was asked, but the client cannot tell the
+	// result.
+	ErrBrokenAnswer = errors.New("sitelogin: the site's answer broke off")
 )
 
 // RejectedTokenError reports a token the site issued in an answer outside
@@ -286,9 +291,11 @@ type tokenAnswer struct {
 
 // Wait polls the approval until the site issues the token, the person
 // denies it, the code expires, or ctx ends. It pauses Interval before
-// every poll and adds five seconds after each slow_down answer. A poll that
-// gets no answer or a 5xx is retried with a doubling pause, never past the
-// code's expiry, until the code expires; any other error answer ends the wait. A token issued in an
+// every poll and adds five seconds after each slow_down answer. A poll
+// that gets no answer or a 5xx is retried with a doubling pause, never
+// past the code's expiry, until the code expires; any other error answer
+// ends the wait. A success answer that breaks off ends it too, because the
+// site may have issued a token the client never saw. A token issued in an
 // answer outside the contract is returned inside a *RejectedTokenError.
 func (c *Client) Wait(ctx context.Context, a Approval) (Issued, error) {
 	interval := a.Interval
@@ -313,6 +320,9 @@ func (c *Client) Wait(ctx context.Context, a Approval) (Issued, error) {
 			continue
 		}
 		failures, lastFailure = 0, nil
+		if errors.Is(err, ErrBrokenAnswer) {
+			return Issued{}, fmt.Errorf("%w; the site may have issued a token: if the Tokens page lists one you did not get, revoke it there", err)
+		}
 		var refusal *Refusal
 		if errors.As(err, &refusal) {
 			switch refusal.Code {
@@ -479,7 +489,12 @@ func (c *Client) post(ctx context.Context, path, token string, in, out any) erro
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		return fmt.Errorf("%w (%s): read the answer: %w", ErrUnreachable, c.site, err)
+		switch {
+		case resp.StatusCode >= http.StatusInternalServerError:
+			return fmt.Errorf("%w (%s): an HTTP %d answer broke off: %w", ErrUnreachable, c.site, resp.StatusCode, err)
+		case resp.StatusCode >= 200 && resp.StatusCode < 300:
+			return fmt.Errorf("%w (%s): HTTP %d: %w", ErrBrokenAnswer, c.site, resp.StatusCode, err)
+		}
 	}
 	switch {
 	case resp.StatusCode >= 200 && resp.StatusCode < 300 && out == nil:
