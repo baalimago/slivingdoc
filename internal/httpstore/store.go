@@ -112,19 +112,16 @@ type TokenSource interface {
 	Rejected(token string)
 }
 
-// RenewingSource is a TokenSource of short-lived tokens. A streamed upload
-// such a source's token was refused for fails with
-// storage.ErrCredentialRenewed, which a retry resolves, instead of the
-// access refusal a fixed token's 401 is.
+// RenewingSource is a TokenSource of short-lived tokens, marked by
+// RenewsTokens. A streamed upload whose token such a source gave was
+// refused with 401 fails with storage.ErrCredentialRenewed instead of the
+// access refusal a fixed token's 401 is: the token may have expired or
+// been renewed while the upload ran, which a retry with a new token
+// resolves, or it may have been revoked, which the retry's own refusal
+// then reports.
 type RenewingSource interface {
 	TokenSource
-	Renews() bool
-}
-
-// renews reports whether tokens are short-lived and renewable.
-func renews(tokens TokenSource) bool {
-	r, ok := tokens.(RenewingSource)
-	return ok && r.Renews()
+	RenewsTokens()
 }
 
 // staticToken is the TokenSource of a fixed Config.Token.
@@ -633,8 +630,9 @@ func (s *Store) request(ctx context.Context, method, target string, body io.Read
 // for a write: the request may have landed. A 401 reports the token to the
 // source; a replayable request goes once more when the source then has
 // another token. A streamed one returns the 401, or, for a RenewingSource,
-// storage.ErrCredentialRenewed, so the caller retries instead of reporting
-// a refused credential.
+// a storage.Refusal of storage.ErrCredentialRenewed that keeps the
+// server's sanitized message, so the caller retries instead of reporting a
+// refused credential.
 func (s *Store) send(req *http.Request) (*http.Response, error) {
 	resp, err := s.sendOnce(req)
 	if err != nil || resp.StatusCode != http.StatusUnauthorized {
@@ -646,11 +644,13 @@ func (s *Store) send(req *http.Request) (*http.Response, error) {
 	}
 	s.tokens.Rejected(used)
 	if req.Body != nil && req.Body != http.NoBody && req.GetBody == nil {
-		if !renews(s.tokens) {
+		if _, renewing := s.tokens.(RenewingSource); !renewing {
 			return resp, nil
 		}
+		refusal := newRefusal(resp.StatusCode, readAPIError(resp))
+		refusal.Err = storage.ErrCredentialRenewed
 		drain(resp)
-		return nil, fmt.Errorf("the server refused the token of an upload that cannot be sent again: %w", storage.ErrCredentialRenewed)
+		return nil, fmt.Errorf("the server refused the token of an upload that cannot be sent again: %w", refusal)
 	}
 	next, err := s.tokens.Token(req.Context())
 	if err != nil {

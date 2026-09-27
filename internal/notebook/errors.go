@@ -280,7 +280,7 @@ func storageFailure(reason Reason, cause error, format string, args ...any) erro
 		reason, message = r, m
 	}
 	if errors.Is(cause, storage.ErrCredentialRenewed) {
-		message += credentialRenewedHint
+		message += credentialRenewedHint + storageSays(cause)
 	}
 	action, _ := actionFor(CodeStorageFailure, reason, nil)
 	return &Error{
@@ -289,11 +289,12 @@ func storageFailure(reason Reason, cause error, format string, args ...any) erro
 	}
 }
 
-// credentialRenewedHint explains a streamed upload refused because the
-// stored login's short-lived token expired or was replaced while it ran:
-// nothing was published, and a retry uses the new token.
-const credentialRenewedHint = ": the storage refused the stored login's token because it expired or was renewed during the upload; " +
-	"nothing was published, so retry"
+// credentialRenewedHint explains a streamed upload whose short-lived token
+// the storage refused: the token may have expired or been renewed while
+// the upload ran, which a retry with a new token resolves; a revoked login
+// or suspended account refuses the retry too, with its own reason.
+const credentialRenewedHint = ": the storage refused the stored login's token during the upload; it may have expired or been renewed, " +
+	"and nothing was published, so retry"
 
 // refusalMessage is storeRefusal with the store's own sanitized line
 // appended to the message when the refusal carries one.

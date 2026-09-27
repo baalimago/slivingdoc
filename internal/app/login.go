@@ -84,6 +84,9 @@ type Login struct {
 	// unlock releases the credentials lock; nil is Lock.Unlock. Tests
 	// make it fail.
 	unlock func(*credentials.Lock) error
+	// save writes the credentials file; nil is File.Save. Tests make it
+	// fail.
+	save func(credentials.Set) error
 }
 
 // PrepareLogin validates the login flags against the environment and
@@ -219,10 +222,11 @@ func (l *Login) Run(ctx context.Context) error {
 	l.report(ctx, stored, spaces, outcome)
 	fmt.Fprintln(l.opts.Out(), loggedIn(stored, outcome.defaultSpace))
 	if outcome.unlockErr != nil {
-		// The key is stored and usable; only the lock beside it could not
-		// be released, which the next login, logout or space waits on.
-		return fmt.Errorf("login: the login was stored, but %w; remove %s if no other login, logout or space command runs",
-			outcome.unlockErr, credentials.LockName)
+		// The key is stored and usable. The lock is an flock, which the
+		// kernel releases when this process exits, so the next login,
+		// logout or space does not wait on it, and the lock file stays.
+		return fmt.Errorf("login: the login was stored, but releasing the credentials lock failed: %w; it is released when this command exits",
+			outcome.unlockErr)
 	}
 	return nil
 }
@@ -323,15 +327,17 @@ func (l *Login) confirm(ctx context.Context, errOut io.Writer) (consent, error) 
 
 // storeOutcome is what storing a login changed: the login it replaced,
 // nil when there was none; the default space before and after, empty for
-// none; whether an earlier build's file was replaced; and why the lock
-// could not be released after the login was saved, if so.
+// none; whether an earlier build's file was replaced, and the tokens it
+// held; and why the lock could not be released after the login was saved,
+// if so.
 type storeOutcome struct {
 	replaced     *credentials.Login
 	priorDefault string
 	defaultSpace string
 	file         fileOutcome
-	// earlier is what revoking the replaced earlier file's tokens did.
-	earlier   earlierRevocation
+	// earlier holds the tokens of the replaced earlier file, read under
+	// the lock; report revokes them once the new file is saved.
+	earlier   []credentials.OutdatedToken
 	unlockErr error
 }
 
@@ -383,8 +389,7 @@ func (l *Login) store(ctx context.Context, stored credentials.Login, spaces []si
 	set, err := l.file.Load()
 	var outdated *credentials.OutdatedFileError
 	if errors.As(err, &outdated) {
-		set, out.file = credentials.Set{}, fileReplaced
-		out.earlier = l.revokeEarlier(ctx, outdated.Tokens)
+		set, out.file, out.earlier = credentials.Set{}, fileReplaced, outdated.Tokens
 	} else if err != nil {
 		return storeOutcome{}, fmt.Errorf("login: %w; nothing was stored", err)
 	}
@@ -409,7 +414,11 @@ func (l *Login) store(ctx context.Context, stored credentials.Login, spaces []si
 	} else if err := set.SetDefaultSpace(stored.Endpoint, out.defaultSpace); err != nil {
 		return storeOutcome{}, fmt.Errorf("login: %w; nothing was stored", err)
 	}
-	if err := l.file.Save(set); err != nil {
+	save := l.save
+	if save == nil {
+		save = l.file.Save
+	}
+	if err := save(set); err != nil {
 		return storeOutcome{}, fmt.Errorf("login: store the login: %w", err)
 	}
 	saved = true
@@ -417,8 +426,9 @@ func (l *Login) store(ctx context.Context, stored credentials.Login, spaces []si
 }
 
 // revokeEarlier revokes, best effort, each token of an earlier build's
-// file at the site that issued it, before the file is replaced: the new
-// login does not own them, and nothing would list them afterwards.
+// file at the site that issued it, once the new file replaced it: the new
+// login does not own them, and nothing lists them afterwards. It runs only
+// after the save, so a login that could not be stored leaves them valid.
 func (l *Login) revokeEarlier(ctx context.Context, tokens []credentials.OutdatedToken) earlierRevocation {
 	rctx, cancel := revocationContext(ctx)
 	defer cancel()
@@ -471,11 +481,7 @@ func (l *Login) report(ctx context.Context, stored credentials.Login, spaces []s
 		fmt.Fprintln(errOut, "Run 'slivingdoc space <name>' to choose the default space, or pass --space to serve, pull and commit.")
 	}
 	if out.file == fileReplaced {
-		fmt.Fprintf(errOut, "The credentials file of an earlier slivingdoc was replaced; %d of its tokens were revoked.\n", out.earlier.revoked)
-		if len(out.earlier.failed) > 0 {
-			fmt.Fprintf(errOut, "%d could not be revoked (%s); revoke them on the Tokens page.\n",
-				len(out.earlier.failed), errors.Join(out.earlier.failed...))
-		}
+		fmt.Fprintln(errOut, describeEarlier(l.revokeEarlier(ctx, out.earlier)))
 	}
 	replaced := out.replaced
 	if replaced == nil || replaced.Key == stored.Key {
@@ -491,6 +497,24 @@ func (l *Login) report(ctx context.Context, stored credentials.Login, spaces []s
 	if err := revoke(rctx, *replaced, l.opts); err != nil {
 		fmt.Fprintf(errOut, "The earlier login key for %s could not be revoked (%s); revoke it on the Tokens page.\n",
 			mcp.Redact(replaced.Endpoint), mcp.Redact(err.Error()))
+	}
+}
+
+// describeEarlier is the report line of a replaced earlier file.
+func describeEarlier(r earlierRevocation) string {
+	const replaced = "The credentials file of an earlier slivingdoc was replaced"
+	switch {
+	case r.revoked == 0 && len(r.failed) == 0:
+		return replaced + "; it held no token to revoke."
+	case len(r.failed) == 0:
+		return fmt.Sprintf("%s and its tokens were revoked (%d).", replaced, r.revoked)
+	default:
+		reasons := make([]string, len(r.failed))
+		for i, err := range r.failed {
+			reasons[i] = err.Error()
+		}
+		return fmt.Sprintf("%s; %d of its tokens were revoked, and %d could not be (%s); revoke those on the Tokens page.",
+			replaced, r.revoked, len(r.failed), strings.Join(reasons, "; "))
 	}
 }
 

@@ -5,13 +5,17 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/baalimago/slivingdoc/internal/credentials"
+	"github.com/baalimago/slivingdoc/internal/git2"
+	"github.com/baalimago/slivingdoc/internal/httpstore"
 	"github.com/baalimago/slivingdoc/internal/httpstore/gatewaytest"
+	"github.com/baalimago/slivingdoc/internal/notebook"
 	"github.com/baalimago/slivingdoc/internal/sitelogin"
 	"github.com/baalimago/slivingdoc/internal/sitelogin/sitetest"
 	"github.com/baalimago/slivingdoc/internal/storage"
@@ -345,5 +349,62 @@ func TestMintedTokensWaitWithinTheCallersContext(t *testing.T) {
 	close(release)
 	if err := <-first; err != nil {
 		t.Fatalf("the mint in flight = %v", err)
+	}
+}
+
+// TestStreamedUploadRefusedUnderAStoredLogin proves, over a real minted
+// token source, a real hosted store and the real engine, that a pack
+// upload the gateway refuses with 401 is a retryable PACK_UPLOAD failure
+// that says the token may have expired or been renewed, never the access
+// refusal naming SLIVINGDOC_TOKEN, and that the retry mints a new token
+// and publishes.
+func TestStreamedUploadRefusedUnderAStoredLogin(t *testing.T) {
+	g := gatewaytest.Start(t)
+	g.AddSpace("notes", 1<<20)
+	site := sitetest.Start(t)
+	site.Issued(loginToken, g.URL())
+	site.SetSpaces(loginToken, notesSpace)
+	site.OnMint(func(m sitetest.Minted) { g.Grant(m.Token, m.Space, m.Access == "read") })
+	login := credentials.Login{ID: credentials.ID{Site: site.URL(), Endpoint: g.URL()}, Key: loginToken, Access: credentials.AccessWrite, Account: "ada@example.test"}
+	tokens, err := newMintedTokens(login, "notes", nil, nil)
+	if err != nil {
+		t.Fatalf("newMintedTokens() = %v", err)
+	}
+	store, err := httpstore.New(httpstore.Config{Endpoint: g.URL(), Space: "notes", Tokens: tokens})
+	if err != nil {
+		t.Fatalf("httpstore.New() = %v", err)
+	}
+	eng := git2.New()
+	if err := eng.Open(); err != nil {
+		t.Fatalf("git2.Open() = %v", err)
+	}
+	t.Cleanup(func() { _ = eng.Close() })
+	cfg := testServiceConfig(t)
+	svc, err := NewService(eng, store, cfg.serviceConfig(), nil)
+	if err != nil {
+		t.Fatalf("NewService() = %v", err)
+	}
+	t.Cleanup(func() { _ = svc.Close() })
+	path := filepath.Join(cfg.workspaceRoot, "notes")
+	if _, err := svc.Pull(context.Background(), path); err != nil {
+		t.Fatalf("Pull() = %v", err)
+	}
+	writeNote(t, path, "a.md", "hello")
+
+	g.RefuseNext(http.MethodPut, http.StatusUnauthorized, "invalid_token")
+	_, err = svc.Commit(context.Background(), path, "first")
+	var refused *notebook.Error
+	if !errors.As(err, &refused) || refused.Code != notebook.CodeStorageFailure || refused.Reason != notebook.ReasonPackUpload ||
+		refused.Action != notebook.ActionRetry || !errors.Is(err, storage.ErrCredentialRenewed) {
+		t.Fatalf("Commit() with the upload refused = %v, want a retryable PACK_UPLOAD of a renewed credential", err)
+	}
+	if !strings.Contains(refused.Message, "may have expired or been renewed") || strings.Contains(refused.Message, "SLIVINGDOC_TOKEN") {
+		t.Fatalf("message = %q, want the renewal hint without token advice", refused.Message)
+	}
+	if _, err := svc.Commit(context.Background(), path, "first"); err != nil {
+		t.Fatalf("Commit() retried = %v, want it published with a new token", err)
+	}
+	if mints := site.Mints(); len(mints) != 2 {
+		t.Fatalf("mints = %d, want the refused token replaced by a second one", len(mints))
 	}
 }

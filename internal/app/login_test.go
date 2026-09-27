@@ -44,6 +44,23 @@ func newLoginRig(t *testing.T) *loginRig {
 	return &loginRig{site: sitetest.Start(t), dir: filepath.Join(t.TempDir(), "cfg")}
 }
 
+// prepared is a login prepared with --no-browser, for a test that sets
+// one of its seams before running it.
+func (r *loginRig) prepared(t *testing.T) *Login {
+	t.Helper()
+	f := NewLoginFlags()
+	fs := flag.NewFlagSet("test", flag.ContinueOnError)
+	f.Bind(fs)
+	if err := fs.Parse([]string{"--no-browser"}); err != nil {
+		t.Fatal(err)
+	}
+	l, err := PrepareLogin(f, r.opts())
+	if err != nil {
+		t.Fatalf("PrepareLogin() = %v", err)
+	}
+	return l
+}
+
 func (r *loginRig) opts() ProcessOptions {
 	return ProcessOptions{
 		Env:    []string{credentials.DirEnv + "=" + r.dir, SiteEnv + "=" + r.site.URL()},
@@ -522,8 +539,8 @@ func TestLoginReplacesAnEarlierFile(t *testing.T) {
 		t.Fatalf("login over an earlier file = %v", err)
 	}
 	for _, want := range []string{
-		"The credentials file of an earlier slivingdoc was replaced; 1 of its tokens were revoked.",
-		"1 could not be revoked (at http://127.0.0.1:1:", "revoke them on the Tokens page",
+		"The credentials file of an earlier slivingdoc was replaced; 1 of its tokens were revoked, and 1 could not be (at http://127.0.0.1:1:",
+		"revoke those on the Tokens page.",
 	} {
 		if !strings.Contains(r.errOut.String(), want) {
 			t.Fatalf("stderr = %q, want it to contain %q", r.errOut.String(), want)
@@ -537,6 +554,51 @@ func TestLoginReplacesAnEarlierFile(t *testing.T) {
 	}
 	if got := r.site.Revoked(); len(got) != 1 || got[0] != otherToken {
 		t.Fatalf("revoked = %v, want the earlier file's token of this site", got)
+	}
+}
+
+// TestLoginKeepsEarlierTokensWhenTheSaveFails proves an earlier file's
+// tokens are revoked only once the new login is saved: a save that fails
+// leaves them valid and the earlier file in place, and revokes only the
+// new key the login could not store.
+func TestLoginKeepsEarlierTokensWhenTheSaveFails(t *testing.T) {
+	r := newLoginRig(t)
+	r.writeFile(t, earlierFile(r.site.URL()))
+	r.site.Issued(otherToken, DefaultHostedEndpoint)
+	r.site.SetSpaces(loginToken, notesSpace)
+	r.site.Next(approved(loginToken, "write", DefaultHostedEndpoint))
+	l := r.prepared(t)
+	l.save = func(credentials.Set) error { return errors.New("disk full") }
+	if err := l.Run(context.Background()); err == nil || !strings.Contains(err.Error(), "store the login: disk full") {
+		t.Fatalf("login with a failing save = %v, want the save error", err)
+	}
+	if got := r.site.Revoked(); len(got) != 1 || got[0] != loginToken {
+		t.Fatalf("revoked = %v, want only the new key, never the earlier file's tokens", got)
+	}
+	if strings.Contains(r.errOut.String(), "earlier slivingdoc was replaced") {
+		t.Fatalf("stderr = %q, want no report of a replaced file", r.errOut.String())
+	}
+	if err := r.logout(t); !errors.Is(err, credentials.ErrOutdated) {
+		t.Fatalf("logout after the failed login = %v, want the earlier file still in place", err)
+	}
+}
+
+// TestLoginReplacesAnEarlierFileWithoutTokens proves the report of an
+// earlier file that held no token it could send says so, rather than
+// counting zero revocations.
+func TestLoginReplacesAnEarlierFileWithoutTokens(t *testing.T) {
+	r := newLoginRig(t)
+	r.writeFile(t, `{"version":1,"logins":[]}`)
+	r.site.SetSpaces(loginToken, notesSpace)
+	r.site.Next(approved(loginToken, "write", DefaultHostedEndpoint))
+	if err := r.login(t); err != nil {
+		t.Fatalf("login over an empty earlier file = %v", err)
+	}
+	if want := "The credentials file of an earlier slivingdoc was replaced; it held no token to revoke.\n"; !strings.Contains(r.errOut.String(), want) {
+		t.Fatalf("stderr = %q, want %q", r.errOut.String(), want)
+	}
+	if got := r.site.Revoked(); len(got) != 0 {
+		t.Fatalf("revoked = %v, want nothing", got)
 	}
 }
 
@@ -1180,24 +1242,16 @@ func TestLoginKeepsAStoredKeyWhenTheLockFails(t *testing.T) {
 	r.loginOnce(t, loginToken, []sitetest.Space{notesSpace})
 	r.site.SetSpaces(otherToken, notesSpace)
 	r.site.Next(approved(otherToken, "write", DefaultHostedEndpoint))
-	f := NewLoginFlags()
-	fs := flag.NewFlagSet("test", flag.ContinueOnError)
-	f.Bind(fs)
-	if err := fs.Parse([]string{"--no-browser"}); err != nil {
-		t.Fatal(err)
-	}
-	l, err := PrepareLogin(f, r.opts())
-	if err != nil {
-		t.Fatalf("PrepareLogin() = %v", err)
-	}
+	l := r.prepared(t)
 	l.unlock = func(lock *credentials.Lock) error {
 		if err := lock.Unlock(); err != nil {
 			return err
 		}
 		return errors.New("unlock failed")
 	}
-	err = l.Run(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "the login was stored, but unlock failed") {
+	err := l.Run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "the login was stored, but releasing the credentials lock failed: unlock failed; it is released when this command exits") ||
+		strings.Contains(err.Error(), "remove") {
 		t.Fatalf("login with a failing unlock = %v, want the stored login and the unlock error", err)
 	}
 	if got := r.stored(t); got.Key != otherToken {

@@ -532,8 +532,9 @@ replaced key is revoked only when the same account approved it;
 otherwise it stays valid and the login says to revoke it on the site's
 Tokens page if it is no longer needed.
 
-The key is an account CLI key (90 days, label `CLI login on <client>`, the client being this host's name),
-visible and revocable on the site's Tokens page. It never reaches the
+The key is an account CLI key (90 days, label `CLI login on <client>`,
+the client being this host's name, or plain `CLI login` when the host
+name is unknown), visible and revocable on the site's Tokens page. It never reaches the
 storage service: each `serve`, `pull` or `commit` trades it at the site
 for a token of one space that lasts an hour, keeps that token in memory
 only, and `serve` gets a new one before it expires. It is stored in

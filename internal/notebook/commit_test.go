@@ -1515,24 +1515,25 @@ func TestNewFoldedPairFiles(t *testing.T) {
 }
 
 // TestCommitUploadRefusedForARenewedToken proves a pack upload the store
-// refused because a stored login's short-lived token expired or was renewed
-// meanwhile is a retryable pack-upload failure that says to retry, never
-// the access refusal that names SLIVINGDOC_TOKEN, and that the retry
-// publishes.
+// refused with a stored login's short-lived token, which may have expired
+// or been renewed meanwhile, is a retryable pack-upload failure that says
+// to retry and carries the storage's own line, never the access refusal
+// that names SLIVINGDOC_TOKEN, and that the retry publishes.
 func TestCommitUploadRefusedForARenewedToken(t *testing.T) {
 	store := fake.New("")
 	nb, w, _ := newNotebook(t, nbConfig{store: store, ids: &testIDSource{}})
 	pullOK(t, nb)
 	writeLocal(t, w, map[string]string{"a.md": "A"})
 
-	store.FailNext(fake.OpPut, fmt.Errorf("httpstore: put: %w", storage.ErrCredentialRenewed))
+	store.FailNext(fake.OpPut, fmt.Errorf("httpstore: put: %w",
+		&storage.Refusal{Err: storage.ErrCredentialRenewed, Detail: "HTTP 401 invalid_token", Message: "the token was revoked"}))
 	e := assertErrorCode(t, errOnly(nb.Commit(context.Background(), "A")), CodeStorageFailure)
 	if e.Reason != ReasonPackUpload || e.Action != ActionRetry {
 		t.Fatalf("reason, action = %s, %s; want %s, %s", e.Reason, e.Action, ReasonPackUpload, ActionRetry)
 	}
-	if !strings.Contains(e.Message, "expired or was renewed during the upload") || !strings.Contains(e.Message, "retry") ||
-		strings.Contains(e.Message, "SLIVINGDOC_TOKEN") {
-		t.Fatalf("message = %q, want the renewal hint and no token advice", e.Message)
+	if !strings.Contains(e.Message, "it may have expired or been renewed") || !strings.Contains(e.Message, "retry") ||
+		!strings.HasSuffix(e.Message, ". The storage says: the token was revoked") || strings.Contains(e.Message, "SLIVINGDOC_TOKEN") {
+		t.Fatalf("message = %q, want the renewal hint, the storage's own line, and no token advice", e.Message)
 	}
 	commitOK(t, nb, "A")
 }

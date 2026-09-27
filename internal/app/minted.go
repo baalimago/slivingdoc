@@ -47,7 +47,13 @@ type mintedTokens struct {
 	renewAt time.Time
 }
 
-var _ httpstore.TokenSource = (*mintedTokens)(nil)
+var _ httpstore.RenewingSource = (*mintedTokens)(nil)
+
+// heldToken is the token current returns: empty when there is none to use.
+type heldToken string
+
+// none reports that no token is held or it is due for renewal.
+func (h heldToken) none() bool { return h == "" }
 
 // newMintedTokens binds a token source to login and space. A nil doer is
 // the default site client; a nil now is time.Now.
@@ -76,40 +82,41 @@ func newMintedTokens(login credentials.Login, space string, doer sitelogin.Doer,
 // on waking, which a monotonic comparison would not.
 func (m *mintedTokens) wallNow() time.Time { return m.now().Round(0) }
 
-// current returns the held token while its renewal time is still ahead.
-func (m *mintedTokens) current() (string, bool) {
+// current returns the held token while its renewal time is still ahead,
+// and none once it is due.
+func (m *mintedTokens) current() heldToken {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.token != "" && m.wallNow().Before(m.renewAt) {
-		return m.token, true
+		return heldToken(m.token)
 	}
-	return "", false
+	return ""
 }
 
 // Token returns the current minted token, minting one when there is none
 // or its renewal time has come. Concurrent callers wait for one mint, each
 // only as long as its own context allows.
 func (m *mintedTokens) Token(ctx context.Context) (string, error) {
-	if token, ok := m.current(); ok {
-		return token, nil
+	if held := m.current(); !held.none() {
+		return string(held), nil
 	}
 	select {
 	case m.minting <- struct{}{}:
 	case <-ctx.Done():
-		return "", fmt.Errorf("wait for a token: %w: %w", ctx.Err(), storage.ErrTransport)
+		return "", fmt.Errorf("app: wait for a token: %w: %w", ctx.Err(), storage.ErrTransport)
 	}
 	defer func() { <-m.minting }()
 	// Another caller may have minted while this one waited.
-	if token, ok := m.current(); ok {
-		return token, nil
+	if held := m.current(); !held.none() {
+		return string(held), nil
 	}
 	return m.mint(ctx)
 }
 
-// Renews reports that the tokens are short-lived and renewable, so the
-// store can tell a refusal of an expired or replaced token from a refused
-// credential (httpstore.RenewingSource).
-func (m *mintedTokens) Renews() bool { return true }
+// RenewsTokens marks the tokens as short-lived and renewable, so the
+// store reports a streamed upload they failed as one to retry
+// (httpstore.RenewingSource).
+func (m *mintedTokens) RenewsTokens() {}
 
 // Rejected forgets token when it is still the current one, so the next
 // Token call mints another; a refusal of an older token changes nothing.
@@ -137,12 +144,12 @@ func (m *mintedTokens) mint(ctx context.Context) (string, error) {
 	endpoint, err := normalizeEndpoint(minted.Endpoint)
 	if err != nil || endpoint != m.endpoint {
 		m.discard(ctx, minted.Token)
-		return "", fmt.Errorf("the site minted a token for another storage endpoint than the login's %s: %w", m.endpoint, storage.ErrIncompatible)
+		return "", fmt.Errorf("app: the site minted a token for another storage endpoint than the login's %s: %w", m.endpoint, storage.ErrIncompatible)
 	}
 	lifetime := minted.Expires.Time().Sub(asked)
 	if lifetime <= 0 {
 		m.discard(ctx, minted.Token)
-		return "", fmt.Errorf("the minted token expires %s, which is not after this machine's clock (%s); check the system clock: %w",
+		return "", fmt.Errorf("app: the minted token expires %s, which is not after this machine's clock (%s); check the system clock: %w",
 			minted.Expires.Describe(), asked.UTC().Format(time.RFC3339), storage.ErrIncompatible)
 	}
 	m.mu.Lock()
@@ -170,21 +177,21 @@ func mintError(err error, space string) error {
 	text := mcp.Redact(err.Error())
 	switch {
 	case errors.As(err, &refusal) && refusal.Status == http.StatusUnauthorized:
-		return fmt.Errorf("the site no longer accepts the stored login (revoked or expired): %s: %w", text, storage.ErrAccessDenied)
+		return fmt.Errorf("app: the site no longer accepts the stored login (revoked or expired): %s: %w", text, storage.ErrAccessDenied)
 	case errors.As(err, &refusal) && refusal.Code == "no_space":
-		return fmt.Errorf("the login reaches no space %q: %s: %w", space, text, storage.ErrAccessDenied)
+		return fmt.Errorf("app: the login reaches no space %q: %s: %w", space, text, storage.ErrAccessDenied)
 	case errors.As(err, &refusal) && refusal.Code == "space_suspended":
-		return fmt.Errorf("space %q is suspended: %s: %w", space, text, storage.ErrAccessDenied)
+		return fmt.Errorf("app: space %q is suspended: %s: %w", space, text, storage.ErrAccessDenied)
 	case errors.As(err, &refusal) && refusal.Status == http.StatusForbidden:
-		return fmt.Errorf("the login may not use space %q: %s: %w", space, text, storage.ErrAccessDenied)
+		return fmt.Errorf("app: the login may not use space %q: %s: %w", space, text, storage.ErrAccessDenied)
 	case errors.As(err, &refusal) && refusal.Status == http.StatusTooManyRequests:
-		return fmt.Errorf("the site is busy minting tokens: %s: %w", text, storage.ErrRateLimited)
+		return fmt.Errorf("app: the site is busy minting tokens: %s: %w", text, storage.ErrRateLimited)
 	case errors.As(err, &refusal) && refusal.Status < http.StatusInternalServerError:
-		return fmt.Errorf("the site refused to mint a token: %s: %w", text, storage.ErrIncompatible)
+		return fmt.Errorf("app: the site refused to mint a token: %s: %w", text, storage.ErrIncompatible)
 	case errors.Is(err, sitelogin.ErrProtocol):
-		return fmt.Errorf("%s: %w", text, storage.ErrIncompatible)
+		return fmt.Errorf("app: %s: %w", text, storage.ErrIncompatible)
 	default:
-		return fmt.Errorf("mint a token: %s: %w", text, storage.ErrTransport)
+		return fmt.Errorf("app: mint a token: %s: %w", text, storage.ErrTransport)
 	}
 }
 

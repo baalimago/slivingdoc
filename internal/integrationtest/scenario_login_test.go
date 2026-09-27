@@ -778,7 +778,7 @@ func TestScenarioEarlierCredentialsFile(t *testing.T) {
 	approve(site, g, loginKey, "write", loginExpiry)
 	code, stdout, stderr = runCLI(t, "real", env, "login", "--no-browser")
 	if code != 0 || stdout != loggedIn(g, "read and write", withDefault)+"\n" ||
-		!strings.Contains(stderr, "The credentials file of an earlier slivingdoc was replaced; 1 of its tokens were revoked.") ||
+		!strings.Contains(stderr, "The credentials file of an earlier slivingdoc was replaced and its tokens were revoked (1).") ||
 		strings.Contains(stderr, hostedToken) {
 		t.Fatalf("login over an earlier file = exit %d, stdout %q, stderr %s", code, stdout, stderr)
 	}
