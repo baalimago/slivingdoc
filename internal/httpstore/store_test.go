@@ -357,8 +357,6 @@ func TestGateway404Reasons(t *testing.T) {
 	}
 }
 
-// The API answers If-Match on an absent object with 412, so a 404 on a
-// replace means the space is gone or the grant was revoked.
 // TestGatewayBeforeNextObject proves the gateway's hook runs once, only
 // for the matching object request and before serving it, so a space deleted
 // in it answers that very request with 404 no_space.
@@ -382,6 +380,8 @@ func TestGatewayBeforeNextObject(t *testing.T) {
 	}
 }
 
+// The API answers If-Match on an absent object with 412, so a 404 on a
+// replace means the space is gone or the grant was revoked.
 func TestReplaceAnswered404IsAccessDenied(t *testing.T) {
 	s, g := newGatewayStore(t)
 	g.RefuseNext(http.MethodPut, http.StatusNotFound, "not_found")

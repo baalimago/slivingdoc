@@ -21,7 +21,7 @@ Read this when: changing hosted-mode selection or its settings, the HTTP request
 | `internal/notebook/hosted_test.go` | Notebook over `httpstore` and `gatewaytest`: a space that becomes unreachable (grant moved, space deleted) is `ACCESS_DENIED` on pull, first pull and entry recovery, and L is untouched |
 | `internal/mcp/errors.go` | `retryable` (per code and reason), `Redact` (`apiTokenRE`) |
 | `internal/app/hosted_test.go` | Hosted configuration, refusals, factory, and `checkStore` tests |
-| `internal/integrationtest/scenario_hosted_test.go` | CLI and `serve` end to end against the reference gateway, including a space that becomes unreachable mid-session (`hostedCuts`) |
+| `internal/integrationtest/scenario_hosted_test.go` | CLI and `serve` end to end against the reference gateway, including a space that becomes unreachable mid-session (`hostedCuts`), plus entry recovery through the in-process harness over the real hosted adapter |
 
 ## Flow
 

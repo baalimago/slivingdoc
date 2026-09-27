@@ -245,10 +245,12 @@ var hostedCuts = []struct {
 	cut  func(g *gatewaytest.Gateway)
 }{
 	{"space deleted", func(g *gatewaytest.Gateway) { g.DeleteSpace(hostedSpace) }},
-	{"grant moved", func(g *gatewaytest.Gateway) {
-		g.AddSpace("elsewhere", 1<<20)
-		g.Grant(hostedToken, "elsewhere", false)
-	}},
+	{"grant moved", moveHostedGrant},
+}
+
+func moveHostedGrant(g *gatewaytest.Gateway) {
+	g.AddSpace("elsewhere", 1<<20)
+	g.Grant(hostedToken, "elsewhere", false)
 }
 
 // hostedLocalEdit edits a published note and adds an unpublished one, so a
@@ -341,7 +343,6 @@ func TestScenarioHostedSpaceGoneDuringOneShotPull(t *testing.T) {
 				writeCLIFile(t, filepath.Join(notes, "a.md"), "first note\n")
 				writeCLIFile(t, filepath.Join(notes, "sub", "b.md"), "second note\n")
 				runCLIOK(t, "real", env, nil, "commit", notes, "-m", "two notes")
-				runCLIOK(t, "real", env, nil, "pull", notes)
 				if edit {
 					hostedLocalEdit(t, notes)
 				}
@@ -416,7 +417,7 @@ func TestScenarioHostedSpaceGoneEntryRecovery(t *testing.T) {
 		if !fired.CompareAndSwap(false, true) {
 			return nil
 		}
-		hostedCuts[1].cut(g)
+		moveHostedGrant(g)
 		return errors.New("injected replacement failure")
 	}
 	denied := func(stage, accepted string) CallExpectation {
