@@ -113,14 +113,15 @@ or network dependency is touched.
 `serve`, `pull`, and `commit` read the same flags and environment
 variables. Flags override environment variables, and the environment
 overrides defaults.
-`--bucket` is required. `-h` on any of the three prints the same
+`--bucket` is required, except with a hosted token, where it defaults to
+the token's own space. `-h` on any of the three prints the same
 reference. A non-empty `SLIVINGDOC_TOKEN` switches to [hosted
 storage](#hosted-storage), which changes the meaning of `--bucket` and
 `--endpoint` as noted.
 
 | Function                          | Flag                     | Environment variable              | Default                      |
 | --------------------------------- | ------------------------ | --------------------------------- | ---------------------------- |
-| Bucket or hosted space (required) | `--bucket`               | `SLIVINGDOC_BUCKET`               | none                         |
+| Bucket or hosted space            | `--bucket`               | `SLIVINGDOC_BUCKET`               | S3: none (required); hosted: the token's space |
 | Object prefix                     | `--prefix`               | `SLIVINGDOC_PREFIX`               | `slivingdoc`                 |
 | S3 region                         | `--region`               | `AWS_REGION`                      | `us-east-1`                  |
 | S3 endpoint                       | `--endpoint`             | `AWS_ENDPOINT_URL_S3`             | empty (AWS resolution)       |
@@ -427,8 +428,13 @@ Instead of a bucket, the notebook can live in a space of the slivingdoc
 hosted storage service ([slivingdoc.dev](https://slivingdoc.dev)). A
 non-empty `SLIVINGDOC_TOKEN` selects it:
 
-- `--bucket` names the space: 1 to 63 lowercase letters, digits, and
-  inner hyphens. `--prefix` still separates notebooks inside it.
+- Each token reaches exactly one space, so `--bucket` is optional: at
+  startup the process asks the server which space the token reaches
+  (`GET /v1/token`) and uses it. A `--bucket` that names a different
+  space refuses startup, naming both; one that names the same space
+  changes nothing. When given, it is 1 to 63 lowercase letters, digits,
+  and inner hyphens. `--prefix` still separates notebooks inside the
+  space.
 - The endpoint is `--endpoint`, else `SLIVINGDOC_ENDPOINT`, else
   `https://api.slivingdoc.dev`. It must be `https`, except to a loopback
   address. `AWS_ENDPOINT_URL_S3`, `AWS_REGION`, and the AWS credential
@@ -444,7 +450,8 @@ Startup does not run the S3 probe. It asks the server to describe itself
 writes, else `INCOMPATIBLE_STORE`) and reads the space's usage with the
 token, so a read-only token starts and can pull. A token the server does
 not accept, or a space it was not granted, refuses startup with a
-diagnostic that names `SLIVINGDOC_TOKEN` and `--bucket`.
+diagnostic that names `SLIVINGDOC_TOKEN` and `--bucket`. A server too old
+to name a token's space still works when `--bucket` is given.
 
 Account limits and refusals surface as `STORAGE_FAILURE` with their own reason:
 `STORAGE_FULL` (nothing was published, the edits stay, pulls keep
@@ -488,8 +495,8 @@ child process, and the AWS SDK chain picks them up. Omit it when the
 host already runs in a credentialed environment; replace it with
 `AWS_ENDPOINT_URL_S3` and static keys only for a local S3-compatible
 store such as SeaweedFS. For [hosted storage](#hosted-storage), the
-`env` block carries `SLIVINGDOC_TOKEN` instead and `--bucket` names the
-space.
+`env` block carries `SLIVINGDOC_TOKEN` instead, and `--bucket` can be
+left out: the token names its space.
 
 Stdout carries only protocol messages; logs go to stderr. The host and
 the server share the visible directory: agents and humans edit files
