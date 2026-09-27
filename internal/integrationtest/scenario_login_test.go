@@ -376,6 +376,57 @@ func TestScenarioTokenServesBesideAWSSettings(t *testing.T) {
 	}
 }
 
+// TestScenarioLoginAndTokenAgreeOnTheSpace proves the space rule when a
+// stored login, SLIVINGDOC_TOKEN and the API's own answer meet: every
+// hosted process asks the API which space its token reaches, uses it when
+// nothing else names a space, and refuses a disagreement instead of
+// picking one.
+func TestScenarioLoginAndTokenAgreeOnTheSpace(t *testing.T) {
+	t.Parallel()
+	g, site, env, root := loginEnv(t)
+	approve(site, g, hostedToken, "write", loginExpiry)
+	runLogin(t, env, site, loggedIn(g, "read and write", "until 2026-12-26 09:00 UTC"), "--no-browser")
+	with := func(extra ...string) []string { return append(append([]string(nil), env...), extra...) }
+
+	// A stored login and no bucket: the default login's space, which the
+	// API confirms for its token.
+	runCLIOK(t, "real", env, nil, "pull", filepath.Join(root, "login"))
+
+	// SLIVINGDOC_TOKEN beside the login, for the same space, no bucket:
+	// the variable's token wins and the space agrees.
+	const sameSpace = "sld_3333333333333333_c2FtZS1zcGFjZS10b2tlbi1iZXNpZGUtdGhlLWxvZ2luLXh4"
+	g.Grant(sameSpace, hostedSpace, true)
+	runCLIOK(t, "real", with("SLIVINGDOC_TOKEN="+sameSpace, "SLIVINGDOC_ENDPOINT="+g.URL()), nil, "pull", filepath.Join(root, "same"))
+	if used := g.Used(); used[sameSpace] == 0 {
+		t.Fatalf("space requests per token = %v, want the variable's token used", used)
+	}
+
+	// SLIVINGDOC_TOKEN for another space and no bucket: the default
+	// login's space and the token's disagree, so startup is refused.
+	const otherSpace, otherToken = "other-notes", "sld_4444444444444444_b3RoZXItc3BhY2UtdG9rZW4tYmVzaWRlLXRoZS1sb2dpbi14eA"
+	g.AddSpace(otherSpace, 1<<20)
+	g.Grant(otherToken, otherSpace, false)
+	tokenEnv := with("SLIVINGDOC_TOKEN="+otherToken, "SLIVINGDOC_ENDPOINT="+g.URL())
+	code, stdout, stderr := runCLI(t, "real", tokenEnv, "pull", filepath.Join(root, "other"))
+	if code != 1 || strings.TrimSpace(stdout) != "" ||
+		!strings.Contains(stderr, `SLIVINGDOC_TOKEN reaches hosted space "other-notes", not "team-notes", the default login's space`) ||
+		!strings.Contains(stderr, "pass --bucket other-notes") {
+		t.Fatalf("pull with a token for another space than the default login's = exit %d, stdout %q, stderr %s", code, stdout, stderr)
+	}
+	// Naming the token's space resolves it.
+	runCLIOK(t, "real", tokenEnv, nil, "pull", "--bucket", otherSpace, filepath.Join(root, "other"))
+
+	// A stored login whose token now reaches another space (moved on the
+	// site) is refused with the fix, not silently redirected.
+	g.Grant(hostedToken, otherSpace, false)
+	code, stdout, stderr = runCLI(t, "real", env, "pull", filepath.Join(root, "moved"))
+	if code != 1 || strings.TrimSpace(stdout) != "" ||
+		!strings.Contains(stderr, `the stored login for space "team-notes" holds a token that reaches hosted space "other-notes"`) ||
+		!strings.Contains(stderr, "run 'slivingdoc login --bucket team-notes' again") {
+		t.Fatalf("pull with a login whose token moved = exit %d, stdout %q, stderr %s", code, stdout, stderr)
+	}
+}
+
 // TestScenarioExpiredLoginIsRefused proves a stored login past its expiry
 // refuses startup with the fix, before any request reaches the storage
 // API.

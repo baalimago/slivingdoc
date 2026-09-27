@@ -3,6 +3,8 @@ package app
 import (
 	"context"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -79,7 +81,6 @@ func TestLoadConfigHostedRefusals(t *testing.T) {
 		env  []string
 		want string
 	}{
-		{"missing space", []string{token}, "bucket is required"},
 		{"invalid space", []string{token, "SLIVINGDOC_BUCKET=Team_Notes"}, "invalid space name"},
 		{"plain http remote", []string{token, "SLIVINGDOC_BUCKET=notes", "SLIVINGDOC_ENDPOINT=http://api.example.test"}, "must use https"},
 		{"token with white space", []string{"SLIVINGDOC_TOKEN=sld bad token", "SLIVINGDOC_BUCKET=notes"}, "SLIVINGDOC_TOKEN must be printable"},
@@ -97,6 +98,110 @@ func TestLoadConfigHostedRefusals(t *testing.T) {
 				t.Fatalf("loadConfig() = %q leaks the token", err)
 			}
 		})
+	}
+}
+
+func TestLoadConfigHostedSpaceIsOptional(t *testing.T) {
+	cfg, err := loadConfig(testProcess([]string{"SLIVINGDOC_TOKEN=" + hostedTestToken}))
+	if err != nil {
+		t.Fatalf("loadConfig() without a space = %v, want the token's space resolved later", err)
+	}
+	if cfg.bucket != "" {
+		t.Fatalf("bucket = %q, want empty until the startup lookup", cfg.bucket)
+	}
+	if _, err := loadConfig(testProcess(nil)); err == nil || !strings.Contains(err.Error(), "bucket is required") {
+		t.Fatalf("loadConfig() without a token or bucket = %v, want bucket is required", err)
+	}
+}
+
+func TestResolveHostedSpace(t *testing.T) {
+	g := gatewaytest.Start(t)
+	g.AddSpace("notes", 1<<20)
+	g.AddSpace("other", 1<<20)
+	g.Grant(hostedTestToken, "notes", false)
+	resolve := func(bucket, token string) (config, error) {
+		return resolveHostedSpace(context.Background(), config{endpoint: g.URL(), token: token, bucket: bucket})
+	}
+	for _, bucket := range []string{"", "notes"} {
+		cfg, err := resolve(bucket, hostedTestToken)
+		if err != nil || cfg.bucket != "notes" {
+			t.Fatalf("resolve(bucket %q) = %q, %v; want the token's space notes", bucket, cfg.bucket, err)
+		}
+	}
+	for _, row := range []struct {
+		name, bucket, token, want string
+	}{
+		{"another space", "other", hostedTestToken, `the token reaches hosted space "notes", not "other"`},
+		{"unknown token", "", "sld_unknown", "refused the token"},
+	} {
+		_, err := resolve(row.bucket, row.token)
+		if err == nil || !strings.Contains(err.Error(), row.want) {
+			t.Fatalf("resolve(%s) = %v, want it to contain %q", row.name, err, row.want)
+		}
+		if strings.Contains(err.Error(), row.token) {
+			t.Fatalf("resolve(%s) = %q leaks the token", row.name, err)
+		}
+	}
+
+	g.DisableTokenLookup()
+	if cfg, err := resolve("notes", hostedTestToken); err != nil || cfg.bucket != "notes" {
+		t.Fatalf("resolve against an older server with --bucket = %q, %v; want --bucket kept", cfg.bucket, err)
+	}
+	if _, err := resolve("", hostedTestToken); err == nil || !strings.Contains(err.Error(), "pass the space name as --bucket") {
+		t.Fatalf("resolve against an older server without --bucket = %v, want a refusal asking for --bucket", err)
+	}
+}
+
+// TestSetupHostedRefusalRemovesSessionDir proves a hosted startup refusal
+// after the session directory exists removes it, like a configuration
+// refusal does.
+func TestSetupHostedRefusalRemovesSessionDir(t *testing.T) {
+	g := gatewaytest.Start(t)
+	g.AddSpace("notes", 1<<20)
+	g.AddSpace("other", 1<<20)
+	g.Grant(hostedTestToken, "notes", false)
+	for _, row := range []struct {
+		name string
+		env  []string
+	}{
+		{"unknown token", []string{"SLIVINGDOC_TOKEN=sld_unknown"}},
+		{"another space", []string{"SLIVINGDOC_TOKEN=" + hostedTestToken, "SLIVINGDOC_BUCKET=other"}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			session := filepath.Join(t.TempDir(), "session")
+			if err := os.MkdirAll(session, 0o700); err != nil {
+				t.Fatalf("MkdirAll() = %v", err)
+			}
+			env := append([]string{"SLIVINGDOC_ENDPOINT=" + g.URL()}, row.env...)
+			if _, err := setup(ephemeralProcess(session, env)); err == nil {
+				t.Fatal("setup() = nil, want a hosted startup refusal")
+			}
+			if _, err := os.Stat(session); !os.IsNotExist(err) {
+				t.Fatalf("Stat(session) = %v, want the session directory removed", err)
+			}
+		})
+	}
+}
+
+// TestSetupHostedUsesTheTokensSpace proves the resolved space reaches the
+// store factory and the runtime configuration.
+func TestSetupHostedUsesTheTokensSpace(t *testing.T) {
+	g := gatewaytest.Start(t)
+	g.AddSpace("notes", 1<<20)
+	g.Grant(hostedTestToken, "notes", false)
+	p := testProcess([]string{"SLIVINGDOC_TOKEN=" + hostedTestToken, "SLIVINGDOC_ENDPOINT=" + g.URL()})
+	var built string
+	p.storeFactory = func(ctx context.Context, cfg config) (storage.ObjectStore, error) {
+		built = cfg.bucket
+		return realStoreFactory(ctx, cfg)
+	}
+	rt, err := setup(p)
+	if err != nil {
+		t.Fatalf("setup() = %v", err)
+	}
+	t.Cleanup(func() { _ = rt.Close() })
+	if built != "notes" || rt.cfg.bucket != "notes" || rt.cfg.serviceConfig().Bucket != "notes" {
+		t.Fatalf("store built for %q, runtime bucket %q; want the token's space notes", built, rt.cfg.bucket)
 	}
 }
 
@@ -186,3 +291,46 @@ func (s *refusingStore) CreateObject(context.Context, string, []byte) (storage.E
 }
 
 func (s *refusingStore) DeleteObjects(context.Context, []string) error { return nil }
+
+// TestResolveHostedSpaceNamesWhereTheSpaceCameFrom proves a space from the
+// default login, or a stored login's own space, that the token does not
+// reach is refused with the fix that applies, never silently replaced.
+func TestResolveHostedSpaceNamesWhereTheSpaceCameFrom(t *testing.T) {
+	g := gatewaytest.Start(t)
+	g.AddSpace("notes", 1<<20)
+	g.Grant(hostedTestToken, "notes", false)
+	for _, row := range []struct {
+		name string
+		cfg  config
+		want string
+	}{
+		{
+			"the variable's token against the default login's space",
+			config{bucket: "team", bucketFrom: bucketFromLogin, tokenOrigin: originEnv},
+			`SLIVINGDOC_TOKEN reaches hosted space "notes", not "team", the default login's space; pass --bucket notes`,
+		},
+		{
+			"a stored login whose token reaches another space",
+			config{bucket: "team", bucketFrom: bucketFromLogin, tokenOrigin: originLogin},
+			`the stored login for space "team" holds a token that reaches hosted space "notes"; run 'slivingdoc login --bucket team' again`,
+		},
+		{
+			"a named bucket",
+			config{bucket: "team", tokenOrigin: originEnv},
+			`not "team" from --bucket or SLIVINGDOC_BUCKET`,
+		},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			cfg := row.cfg
+			cfg.endpoint, cfg.token = g.URL(), hostedTestToken
+			_, err := resolveHostedSpace(context.Background(), cfg)
+			if err == nil || !strings.Contains(err.Error(), row.want) {
+				t.Fatalf("resolveHostedSpace() = %v, want it to contain %q", err, row.want)
+			}
+		})
+	}
+	cfg, err := resolveHostedSpace(context.Background(), config{endpoint: g.URL(), token: hostedTestToken, bucket: "notes", bucketFrom: bucketFromLogin, tokenOrigin: originLogin})
+	if err != nil || cfg.bucket != "notes" {
+		t.Fatalf("resolveHostedSpace() of an agreeing login = %q, %v", cfg.bucket, err)
+	}
+}

@@ -369,6 +369,7 @@ func TestLogStorageNamesTheStoreAndItsSource(t *testing.T) {
 		{"s3 at an AWS_ENDPOINT_URL without a scheme", config{bucket: "b"}, map[string]string{"AWS_ENDPOINT_URL": "user:secret@minio.local"}, []string{`endpoint="an unparsable URL (AWS_ENDPOINT_URL)"`}},
 		{"s3 at its own endpoint", config{bucket: "b", endpoint: "https://s3.local"}, map[string]string{"AWS_ENDPOINT_URL": "https://minio.local"}, []string{"endpoint=https://s3.local"}},
 		{"hosted through the environment", config{bucket: "b", token: "t", endpoint: DefaultHostedEndpoint, tokenOrigin: originEnv}, nil, []string{"backend=hosted", "token=env"}},
+		{"hosted with the token's own space", config{token: "t", endpoint: DefaultHostedEndpoint, tokenOrigin: originEnv}, nil, []string{`space="the token's own"`}},
 		{"hosted through a login", config{bucket: "b", token: "t", endpoint: DefaultHostedEndpoint, tokenOrigin: originLogin}, nil, []string{"backend=hosted", "token=login"}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

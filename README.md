@@ -92,23 +92,26 @@ the same space at the same storage endpoint replaces the stored token and
 revokes the old one when you approved both. `slivingdoc logout` revokes
 the stored token. Restart the MCP host after logging in again.
 
-For CI, or instead of logging in, give slivingdoc an API token and the
-space name:
+For CI, or instead of logging in, give slivingdoc an API token. Each token
+reaches exactly one space, so the token is all it needs:
 
 ```json
 {
   "mcpServers": {
     "slivingdoc": {
       "command": "npx",
-      "args": ["-y", "slivingdoc", "serve", "--bucket", "my-space"],
+      "args": ["-y", "slivingdoc", "serve"],
       "env": { "SLIVINGDOC_TOKEN": "<your-api-token>" }
     }
   }
 }
 ```
 
-The token replaces the AWS settings. Everything else works the same way.
-`SLIVINGDOC_TOKEN` wins over a stored login. slivingdoc refuses to guess
+The token replaces the AWS settings and names the space; `--region` and
+`--path-style` are ignored. Everything else works the same way.
+`SLIVINGDOC_TOKEN` wins over a stored login; when you are also logged in
+and name no bucket, the token's space must be the default login's space,
+or startup is refused rather than one of them picked. slivingdoc refuses to guess
 between S3 and hosted storage: a token next to a setting that names an S3
 host (an `--endpoint` flag, `AWS_ENDPOINT_URL` or `AWS_ENDPOINT_URL_S3`;
 a region, AWS credentials and `~/.aws` files are fine), and a login for a
@@ -203,12 +206,13 @@ conflict markers. Secondly, the system only works for text (clean UTF-8).
 ## Configuration
 
 `serve`, `pull`, and `commit` read the same flags and environment
-variables. `--bucket` is required, unless you are logged in: then it
-defaults to your login's space. The most common flags:
+variables. `--bucket` is required, unless you are logged in (it then
+defaults to your login's space) or give a hosted token (which names its
+own space). The most common flags:
 
 | Flag               | Environment                 | Default             |
 | ------------------ | --------------------------- | ------------------- |
-| `--bucket`         | `SLIVINGDOC_BUCKET`         | — (required)        |
+| `--bucket`         | `SLIVINGDOC_BUCKET`         | — (required)[^3]    |
 | `--workspace-root` | `SLIVINGDOC_WORKSPACE_ROOT` | temporary dir[^1]   |
 | `--endpoint`       | `AWS_ENDPOINT_URL_S3`[^2]   | AWS resolution      |
 | `--region`         | `AWS_REGION`                | `us-east-1`         |
@@ -228,7 +232,10 @@ defaults to your login's space. The most common flags:
 [^3]: `auto` uses `SLIVINGDOC_TOKEN`, else a `slivingdoc login` for the
     space, else S3, and refuses when S3 settings make that a guess (see
     [`architecture/login.md`](architecture/login.md)); `hosted` and `s3`
-    force the choice.
+    force the choice. With a hosted token `--bucket` is optional and
+    defaults to the one space the token reaches (or the default login's
+    space, which must match it); a `--bucket` naming another space is
+    refused.
 
 `slivingdoc serve -h` prints the full reference, and
 [`architecture/running.md`](architecture/running.md) covers everything an operator

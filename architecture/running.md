@@ -118,7 +118,8 @@ or network dependency is touched.
 variables. Flags override environment variables, and the environment
 overrides defaults.
 `--bucket` is required, except that it defaults to the space of the
-default login when `--storage` is not `s3`. `-h` on any of the three
+default login when `--storage` is not `s3`, and, with a hosted token, to
+the token's own space (the two must agree). `-h` on any of the three
 prints the same reference. A non-empty `SLIVINGDOC_TOKEN`, or a stored
 login for the space, switches to [hosted storage](#hosted-storage), which
 changes the meaning of `--bucket` and `--endpoint` as noted; `--storage`
@@ -127,7 +128,7 @@ makes the choice explicit ([Choosing the storage](#choosing-the-storage)).
 | Function                          | Flag                     | Environment variable              | Default                      |
 | --------------------------------- | ------------------------ | --------------------------------- | ---------------------------- |
 | Storage backend                   | `--storage`              | `SLIVINGDOC_STORAGE`              | `auto`                       |
-| Bucket or hosted space (required) | `--bucket`               | `SLIVINGDOC_BUCKET`               | none (hosted: default login) |
+| Bucket or hosted space            | `--bucket`               | `SLIVINGDOC_BUCKET`               | S3: none (required); hosted: the default login's space, else the token's |
 | Object prefix                     | `--prefix`               | `SLIVINGDOC_PREFIX`               | `slivingdoc`                 |
 | S3 region                         | `--region`               | `AWS_REGION`                      | `us-east-1`                  |
 | S3 endpoint                       | `--endpoint`             | `AWS_ENDPOINT_URL_S3`             | empty (AWS resolution)       |
@@ -436,8 +437,13 @@ hosted storage service ([slivingdoc.dev](https://slivingdoc.dev)). A
 non-empty `SLIVINGDOC_TOKEN`, or a stored login for the space
 ([Logging in](#logging-in)), selects it:
 
-- `--bucket` names the space: 1 to 63 lowercase letters, digits, and
-  inner hyphens. `--prefix` still separates notebooks inside it.
+- Each token reaches exactly one space, so `--bucket` is optional: at
+  startup the process asks the server which space the token reaches
+  (`GET /v1/token`) and uses it. A `--bucket` that names a different
+  space refuses startup, naming both; one that names the same space
+  changes nothing. When given, it is 1 to 63 lowercase letters, digits,
+  and inner hyphens. `--prefix` still separates notebooks inside the
+  space.
 - The endpoint is `--endpoint`, else `SLIVINGDOC_ENDPOINT`, else
   `https://api.slivingdoc.dev` (with a stored login: the endpoint it was
   issued for). It must be `https`, except to a loopback
@@ -459,7 +465,8 @@ writes, else `INCOMPATIBLE_STORE`) and reads the space's usage with the
 token, so a read-only token starts and can pull. A token the server does
 not accept, or a space it was not granted, refuses startup with a
 diagnostic that names `SLIVINGDOC_TOKEN` and `--bucket`, or, for a stored
-login, says to run `slivingdoc login` again.
+login, says to run `slivingdoc login` again. A server too old to name a
+token's space still works when `--bucket` is given.
 
 Account limits and refusals surface as `STORAGE_FAILURE` with their own reason:
 `STORAGE_FULL` (nothing was published, the edits stay, pulls keep
@@ -639,10 +646,10 @@ child process, and the AWS SDK chain picks them up. Omit it when the
 host already runs in a credentialed environment; replace it with
 `AWS_ENDPOINT_URL_S3` and static keys only for a local S3-compatible
 store such as SeaweedFS. For [hosted storage](#hosted-storage), the
-`env` block carries `SLIVINGDOC_TOKEN` instead and `--bucket` names the
-space; after [`slivingdoc login`](#logging-in) neither is needed, and
-`"args": ["-y", "slivingdoc", "serve", "--bucket", "notes"]` with no `env`
-block uses the stored login.
+`env` block carries `SLIVINGDOC_TOKEN` instead, and `--bucket` can be
+left out: the token names its space. After [`slivingdoc login`](#logging-in)
+neither is needed, and `"args": ["-y", "slivingdoc", "serve", "--bucket",
+"notes"]` with no `env` block uses the stored login.
 
 Stdout carries only protocol messages; logs go to stderr. The host and
 the server share the visible directory: agents and humans edit files

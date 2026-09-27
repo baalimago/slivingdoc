@@ -318,13 +318,13 @@ func setup(p process) (*Runtime, error) {
 		return nil, fmt.Errorf("app: open native engine: %w", err)
 	}
 	logger.Debug("native engine open", "pinned", true)
-	svc, err := buildService(p, cfg)
+	svc, resolved, err := buildService(p, cfg)
 	if err != nil {
 		p.engine.Close()
 		removeSessionDir(cfg.sessionDir)
 		return nil, err
 	}
-	return &Runtime{p: p, svc: svc, cfg: cfg, base: base, logger: logger}, nil
+	return &Runtime{p: p, svc: svc, cfg: resolved, base: base, logger: logger}, nil
 }
 
 // run is the whole process body in one call, used where the caller does not
@@ -338,24 +338,81 @@ func run(p process) error {
 	return rt.Serve(context.Background())
 }
 
-// buildService constructs the S3 or hosted store, runs the startup check,
-// and wires the notebook service. Any failure is a startup refusal: no
-// transport runs and no operation is accepted.
-func buildService(p process, cfg config) (*Service, error) {
+// buildService resolves the hosted space, constructs the S3 or hosted
+// store, runs the startup check, and wires the notebook service. It returns
+// the configuration with the resolved space. Any failure is a startup
+// refusal: no transport runs and no operation is accepted.
+func buildService(p process, cfg config) (*Service, config, error) {
 	storeFactory := p.storeFactory
 	if storeFactory == nil {
 		storeFactory = realStoreFactory
 	}
-	store, err := storeFactory(context.Background(), cfg)
-	if err != nil {
-		return nil, err
-	}
 	probeCtx, cancel := context.WithTimeout(context.Background(), probeTimeout)
 	defer cancel()
-	if err := checkStore(probeCtx, store, cfg.tokenOrigin); err != nil {
-		return nil, err
+	if cfg.hosted() {
+		var err error
+		if cfg, err = resolveHostedSpace(probeCtx, cfg); err != nil {
+			return nil, config{}, err
+		}
 	}
-	return NewService(p.engine, store, cfg.serviceConfig(), p.hooks)
+	store, err := storeFactory(context.Background(), cfg)
+	if err != nil {
+		return nil, config{}, err
+	}
+	if err := checkStore(probeCtx, store, cfg.tokenOrigin); err != nil {
+		return nil, config{}, err
+	}
+	svc, err := NewService(p.engine, store, cfg.serviceConfig(), p.hooks)
+	if err != nil {
+		return nil, config{}, err
+	}
+	return svc, cfg, nil
+}
+
+// resolveHostedSpace asks the hosted API which space the token reaches
+// (architecture/hosted-mode.md, architecture/login.md). With no bucket
+// that space is used. A bucket that names another space is refused rather
+// than either one preferred, whether it came from --bucket or
+// SLIVINGDOC_BUCKET, from the default login, or from the stored login the
+// token belongs to. A server that cannot answer keeps a given bucket,
+// whose access check then proves the token, and refuses a missing one.
+func resolveHostedSpace(ctx context.Context, cfg config) (config, error) {
+	info, err := httpstore.DescribeToken(ctx, httpstore.Config{
+		Endpoint:  cfg.endpoint,
+		Token:     cfg.token,
+		UserAgent: "slivingdoc/" + Version,
+	})
+	switch {
+	case errors.Is(err, httpstore.ErrTokenLookupUnsupported) && cfg.bucket != "":
+		return cfg, nil
+	case errors.Is(err, httpstore.ErrTokenLookupUnsupported):
+		return config{}, errors.New("app: hosted storage cannot name the token's space; pass the space name as --bucket or SLIVINGDOC_BUCKET")
+	case err != nil:
+		return config{}, hostedCheckError(err, cfg.tokenOrigin)
+	case cfg.bucket == "":
+		cfg.bucket = info.Space
+		return cfg, nil
+	case cfg.bucket != info.Space:
+		return config{}, spaceMismatch(cfg, info.Space)
+	default:
+		return cfg, nil
+	}
+}
+
+// spaceMismatch is the refusal for a token that reaches another space than
+// the bucket the configuration named, worded for where each came from.
+func spaceMismatch(cfg config, tokenSpace string) error {
+	switch {
+	case cfg.tokenOrigin == originLogin:
+		return fmt.Errorf("app: the stored login for space %q holds a token that reaches hosted space %q; run 'slivingdoc login --bucket %s' again",
+			cfg.bucket, tokenSpace, cfg.bucket)
+	case cfg.bucketFrom == bucketFromLogin:
+		return fmt.Errorf("app: SLIVINGDOC_TOKEN reaches hosted space %q, not %q, the default login's space; pass --bucket %s to use the token, or unset SLIVINGDOC_TOKEN to use the login",
+			tokenSpace, cfg.bucket, tokenSpace)
+	default:
+		return fmt.Errorf("app: the token reaches hosted space %q, not %q from --bucket or SLIVINGDOC_BUCKET; drop --bucket to use the token's space, or use a token made for %q",
+			tokenSpace, cfg.bucket, cfg.bucket)
+	}
 }
 
 // accessChecker is a store that proves itself without the write probe: a
@@ -379,10 +436,17 @@ func checkStore(ctx context.Context, store storage.ObjectStore, origin tokenOrig
 		}
 		return nil
 	}
-	err := checker.CheckAccess(ctx)
+	if err := checker.CheckAccess(ctx); err != nil {
+		return hostedCheckError(err, origin)
+	}
+	return nil
+}
+
+// hostedCheckError is the startup refusal for a failed hosted check;
+// origin names where the token came from, so a refused token points at the
+// fix that applies: the variable, or logging in again.
+func hostedCheckError(err error, origin tokenOrigin) error {
 	switch {
-	case err == nil:
-		return nil
 	case errors.Is(err, storage.ErrAccessDenied) && origin == originLogin:
 		return fmt.Errorf("app: hosted storage refused the stored login: %s; run 'slivingdoc login' again, or check --bucket", mcp.Redact(err.Error()))
 	case errors.Is(err, storage.ErrAccessDenied):
@@ -552,5 +616,10 @@ func logStorage(logger *slog.Logger, cfg config, env map[string]string) {
 			}
 		}
 	}
-	logger.Info("storage selected", "backend", backend, "endpoint", endpoint, "space", cfg.bucket, "token", source)
+	space := cfg.bucket
+	if space == "" && cfg.hosted() {
+		// resolveHostedSpace asks the API after this record.
+		space = "the token's own"
+	}
+	logger.Info("storage selected", "backend", backend, "endpoint", endpoint, "space", space, "token", source)
 }

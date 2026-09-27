@@ -81,11 +81,22 @@ func awsFiles() []string {
 // space or bucket, and, when hosted, the token, its origin and the hosted
 // endpoint.
 type storageSelection struct {
-	bucket   string
-	token    string
-	origin   tokenOrigin
-	endpoint string
+	bucket     string
+	bucketFrom bucketSource
+	token      string
+	origin     tokenOrigin
+	endpoint   string
 }
+
+// bucketSource is where the bucket or space came from.
+type bucketSource int
+
+const (
+	// bucketNamed is --bucket or SLIVINGDOC_BUCKET, or no bucket at all.
+	bucketNamed bucketSource = iota
+	// bucketFromLogin is the default login's space.
+	bucketFromLogin
+)
 
 func (s storageSelection) hosted() bool { return s.token != "" }
 
@@ -145,7 +156,7 @@ func resolveStorage(f *Flags, env map[string]string, in storageInputs) (storageS
 	defaulted := false
 	if sel.bucket == "" {
 		if def, err := logins.Default(); err == nil {
-			sel.bucket, defaulted = def.Space, true
+			sel.bucket, defaulted, sel.bucketFrom = def.Space, true, bucketFromLogin
 		}
 	}
 
@@ -177,7 +188,7 @@ func resolveStorage(f *Flags, env map[string]string, in storageInputs) (storageS
 	case errors.Is(err, credentials.ErrNoLogin) && mode == storageAuto:
 		if defaulted {
 			// The default login's space names no S3 bucket.
-			sel.bucket = ""
+			sel.bucket, sel.bucketFrom = "", bucketNamed
 		}
 		return sel, nil
 	case errors.Is(err, credentials.ErrNoLogin):
