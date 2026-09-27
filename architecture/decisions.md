@@ -51,7 +51,7 @@ Where the code has since diverged, the code wins and the note says so.
 19. S3 versioning and backups are deployment policies.
 20. V1 targets high agent concurrency and avoids a full-history upload per commit.
 21. External resources have mockable semantic boundaries.
-22. SeaweedFS testcontainers prove the real S3 integration contract.
+22. A pinned SeaweedFS container proves the real S3 integration contract.
 23. The npm launcher downloads and verifies native GitHub release artifacts.
 24. L is caller-controlled visible files, P is private local state, and R is accepted remote state.
 25. Synchronization occurs at MCP operation boundaries, without a file watcher.
@@ -105,7 +105,7 @@ A change preserves all of these:
 - Cleanup never determines commit success.
 - The executable has no runtime Git or libgit2 installation requirement.
 - Unit tests can replace every network service with a deterministic fake.
-- Required integration tests run against a real S3-compatible store (SeaweedFS) through testcontainers; the hosted adapter runs the same contract suite against the in-process reference gateway.
+- Required integration tests run against a real S3-compatible store (SeaweedFS) in a Docker container that `internal/tests3` starts through the Docker Engine API; the hosted adapter runs the same contract suite against the in-process reference gateway.
 
 ## Gotchas
 

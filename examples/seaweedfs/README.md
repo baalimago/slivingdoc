@@ -3,7 +3,7 @@
 This example runs one pinned SeaweedFS container so you can evaluate
 slivingdoc without an S3 account. The container is for manual evaluation
 only: the automated test suites create their own S3-compatible containers
-through testcontainers (`internal/tests3`) and never depend on this
+through `internal/tests3` and never depend on this
 environment.
 
 ## 1. Start SeaweedFS

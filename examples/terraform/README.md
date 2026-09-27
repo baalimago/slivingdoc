@@ -8,7 +8,7 @@ MCP host's configuration and runs the server through the npm launcher
 matching release binary.
 
 The example is for manual debugging only. The automated test suites use
-their own S3-compatible test containers through testcontainers and never
+their own S3-compatible test containers (`internal/tests3`) and never
 touch AWS.
 
 ## 1. Bucket spec

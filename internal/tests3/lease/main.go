@@ -1,4 +1,4 @@
-// Command lease owns the one SeaweedFS testcontainer shared by make test.
+// Command lease owns the one SeaweedFS test container shared by make test.
 // It is test infrastructure only: production packages never invoke it.
 package main
 
