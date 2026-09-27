@@ -517,7 +517,7 @@ func normalizeEndpoint(raw string) (string, error) {
 	if u.Host == "" || u.User != nil {
 		return "", errors.New("endpoint must be an absolute http or https URL without user information")
 	}
-	if u.RawQuery != "" || u.Fragment != "" {
+	if u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || strings.HasSuffix(raw, "#") {
 		return "", errors.New("endpoint must not contain a query or fragment")
 	}
 	u.Scheme = strings.ToLower(u.Scheme)
