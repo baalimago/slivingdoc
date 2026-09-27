@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -578,6 +579,25 @@ func decode(data []byte) (Set, error) {
 	return set, nil
 }
 
+// plainURL refuses a stored endpoint or site with user information, a
+// query or a fragment. Login never stores one (the endpoints are
+// normalized first), so such a file was edited by hand; the refusal never
+// echoes the value, which may hold a secret.
+func plainURL(raw string) error {
+	u, err := url.Parse(raw)
+	switch {
+	case err != nil:
+		return errors.New("is not a valid URL")
+	case u.User != nil:
+		return errors.New("has user information")
+	case u.RawQuery != "" || u.ForceQuery:
+		return errors.New("has a query")
+	case u.Fragment != "" || strings.HasSuffix(raw, "#"):
+		return errors.New("has a fragment")
+	}
+	return nil
+}
+
 func decodeKey(v strictjson.Value) (Key, error) {
 	if v.Kind != strictjson.Object {
 		return Key{}, errors.New("not an object")
@@ -595,6 +615,9 @@ func keyFields(v strictjson.Value) (Key, error) {
 	}
 	if err := httpstore.ValidateEndpoint(endpoint); err != nil {
 		return Key{}, fmt.Errorf("endpoint: %w", err)
+	}
+	if err := plainURL(endpoint); err != nil {
+		return Key{}, fmt.Errorf("the endpoint %w", err)
 	}
 	space, err := stringField(v, fieldSpace)
 	if err != nil {
@@ -623,6 +646,9 @@ func decodeLogin(v strictjson.Value) (Login, error) {
 	}
 	if err := httpstore.ValidateEndpoint(site); err != nil {
 		return Login{}, fmt.Errorf("site: %w", err)
+	}
+	if err := plainURL(site); err != nil {
+		return Login{}, fmt.Errorf("the site %w", err)
 	}
 	token, err := stringField(v, fieldToken)
 	if err != nil {

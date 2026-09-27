@@ -275,6 +275,13 @@ func TestLoadRefusesMalformedFiles(t *testing.T) {
 		{"default without login", `{"version":1,"logins":[],"default":{"endpoint":"https://api.slivingdoc.dev","space":"notes"}}`},
 		{"default with extra field", `{"version":1,"logins":[` + entry + `],"default":{"endpoint":"https://api.slivingdoc.dev","space":"notes","x":1}}`},
 		{"default not object", `{"version":1,"logins":[],"default":"notes"}`},
+		{"endpoint with user information", `{"version":1,"logins":[` + strings.Replace(entry, "https://api", "https://user:secret@api", 1) + `]}`},
+		{"endpoint with a query", `{"version":1,"logins":[` + strings.Replace(entry, "api.slivingdoc.dev", "api.slivingdoc.dev/?k=secret", 1) + `]}`},
+		{"endpoint with a fragment", `{"version":1,"logins":[` + strings.Replace(entry, "api.slivingdoc.dev", "api.slivingdoc.dev/#secret", 1) + `]}`},
+		{"site with user information", `{"version":1,"logins":[` + strings.Replace(entry, "https://www", "https://user:secret@www", 1) + `]}`},
+		{"site with a query", `{"version":1,"logins":[` + strings.Replace(entry, "www.slivingdoc.dev", "www.slivingdoc.dev?secret", 1) + `]}`},
+		{"default endpoint with user information", `{"version":1,"logins":[` + entry + `],"default":{"endpoint":"https://user:secret@api.slivingdoc.dev","space":"notes"}}`},
+		{"duplicate login with user information", `{"version":1,"logins":[` + strings.Replace(entry, "https://api", "https://user:secret@api", 1) + `,` + strings.Replace(entry, "https://api", "https://user:secret@api", 1) + `]}`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -289,7 +296,7 @@ func TestLoadRefusesMalformedFiles(t *testing.T) {
 			if !errors.Is(err, ErrMalformed) {
 				t.Fatalf("Load() = %v, want ErrMalformed", err)
 			}
-			if strings.Contains(err.Error(), testToken) || strings.Contains(err.Error(), "sld bad") {
+			if strings.Contains(err.Error(), testToken) || strings.Contains(err.Error(), "sld bad") || strings.Contains(err.Error(), "secret") {
 				t.Fatalf("Load() = %q echoes the token", err)
 			}
 		})

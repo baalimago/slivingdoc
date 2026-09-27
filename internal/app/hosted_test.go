@@ -367,7 +367,7 @@ func TestResolveHostedSpaceFallsBackToTheDefaultLogin(t *testing.T) {
 	}{
 		{"same endpoint", g.URL(), ""},
 		{"another endpoint", devEndpoint, "the default login is for " + devEndpoint + ", not " + g.URL() + "; pass the space name as --bucket"},
-		{"another endpoint with user information", "https://user:secret@host.example.test", "the default login is for https://[redacted]@host.example.test, not "},
+		{"another endpoint with user information", "https://user:secret@host.example.test", "logins[0]: the endpoint has user information; fix or remove the credentials file"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			dir := strings.TrimPrefix(writeLogins(t, &storedKey{row.endpoint, "notes"}, entry(row.endpoint, "notes", loginToken)), credentials.DirEnv+"=")

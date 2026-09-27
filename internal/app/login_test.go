@@ -850,3 +850,46 @@ func TestLogoutKeepsANewerLogin(t *testing.T) {
 		t.Fatalf("stored = %+v, %v; want the newer login kept", got, err)
 	}
 }
+
+// TestLoginAndLogoutNeverPrintStoredUserInformation proves a hand-edited
+// credentials file whose endpoint carries user information is refused at
+// load, and that neither login nor logout prints the secret on the way.
+func TestLoginAndLogoutNeverPrintStoredUserInformation(t *testing.T) {
+	const secretEndpoint = "https://user:secret@api.example.test"
+	stored := `{"endpoint":"` + secretEndpoint + `","space":"notes","site":"https://www.slivingdoc.dev","token":"` + loginToken + `","access":"write"}`
+	for _, row := range []struct {
+		name string
+		data string
+	}{
+		{"one login", `{"version":1,"logins":[` + stored + `]}`},
+		{"a second login", `{"version":1,"logins":[` + stored + `,` + stored + `]}`},
+		{"a default without its login", `{"version":1,"logins":[],"default":{"endpoint":"` + secretEndpoint + `","space":"notes"}}`},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			for _, op := range []string{"login", "logout"} {
+				r := newLoginRig(t)
+				if err := os.MkdirAll(r.dir, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(r.dir, credentials.FileName), []byte(row.data), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				var err error
+				if op == "login" {
+					r.site.Next(approved("notes", hostedTestToken, "write", DefaultHostedEndpoint))
+					err = r.login(t)
+				} else {
+					err = r.logout(t, "--bucket", "notes")
+				}
+				if !errors.Is(err, credentials.ErrMalformed) {
+					t.Fatalf("%s = %v, want ErrMalformed", op, err)
+				}
+				for _, text := range []string{err.Error(), r.out.String(), r.errOut.String()} {
+					if strings.Contains(text, "secret") || strings.Contains(text, loginToken) {
+						t.Fatalf("%s printed %q, want no user information or token", op, text)
+					}
+				}
+			}
+		})
+	}
+}
