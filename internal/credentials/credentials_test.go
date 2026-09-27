@@ -75,8 +75,8 @@ func testFile(t *testing.T) File {
 	return f
 }
 
-func login(endpoint, space, token string, access Access) Login {
-	return Login{Key: Key{Endpoint: endpoint, Space: space}, Site: site, Token: token, Access: access}
+func login(endpoint, key string, access Access) Login {
+	return Login{ID: ID{Site: site, Endpoint: endpoint}, Key: key, Access: access, Account: "ada@example.test"}
 }
 
 func TestMissingFileIsEmpty(t *testing.T) {
@@ -87,32 +87,38 @@ func TestMissingFileIsEmpty(t *testing.T) {
 	if len(set.Logins()) != 0 {
 		t.Fatalf("Logins() = %v, want none", set.Logins())
 	}
-	if _, err := set.Default(); !errors.Is(err, ErrNoDefault) {
-		t.Fatalf("Default() = %v, want ErrNoDefault", err)
+	if _, err := set.DefaultSpace(apiA); !errors.Is(err, ErrNoDefault) {
+		t.Fatalf("DefaultSpace() = %v, want ErrNoDefault", err)
 	}
-	if _, err := set.Lookup(Key{Endpoint: apiA, Space: "notes"}); !errors.Is(err, ErrNoLogin) {
+	if _, err := set.Lookup(ID{Site: site, Endpoint: apiA}); !errors.Is(err, ErrNoLogin) {
 		t.Fatalf("Lookup() = %v, want ErrNoLogin", err)
 	}
-	if _, err := set.ForSpace("notes"); !errors.Is(err, ErrNoLogin) {
-		t.Fatalf("ForSpace() = %v, want ErrNoLogin", err)
+	if _, err := set.ForEndpoint(apiA); !errors.Is(err, ErrNoLogin) {
+		t.Fatalf("ForEndpoint() = %v, want ErrNoLogin", err)
+	}
+	if _, err := set.Only(); !errors.Is(err, ErrNoLogin) {
+		t.Fatalf("Only() = %v, want ErrNoLogin", err)
 	}
 }
 
 func TestSaveLoadRoundTrip(t *testing.T) {
 	f := testFile(t)
 	var set Set
-	expiring := login(apiA, "notes", testToken, AccessWrite)
+	expiring := login(apiA, testToken, AccessWrite)
 	expiring.Expires = ExpiresAt(time.Date(2026, 12, 26, 10, 30, 0, 0, time.FixedZone("x", 3600)))
 	if _, err := set.Put(expiring); !errors.Is(err, ErrNoLogin) {
 		t.Fatalf("Put(new) = %v, want ErrNoLogin (nothing replaced)", err)
 	}
-	team := login(apiB, "team", testToken2, AccessRead)
-	team.Account, team.Owner = "ada@example.test", "bob@example.test"
+	team := login(apiB, testToken2, AccessRead)
+	team.Account = "bob@example.test"
 	if _, err := set.Put(team); !errors.Is(err, ErrNoLogin) {
 		t.Fatalf("Put(new) = %v, want ErrNoLogin", err)
 	}
-	if err := set.SetDefault(team.Key); err != nil {
-		t.Fatalf("SetDefault(team) = %v", err)
+	if err := set.SetDefaultSpace(apiB, "team"); err != nil {
+		t.Fatalf("SetDefaultSpace(team) = %v", err)
+	}
+	if err := set.SetDefaultSpace(apiA, "notes"); err != nil {
+		t.Fatalf("SetDefaultSpace(notes) = %v", err)
 	}
 	if err := f.Save(set); err != nil {
 		t.Fatalf("Save() = %v", err)
@@ -136,86 +142,103 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load() = %v", err)
 	}
-	def, err := got.Default()
-	if err != nil || def.Space != "team" || def.Endpoint != apiB || def.Access != AccessRead || !def.Expires.Never() ||
-		def.Account != "ada@example.test" || def.Owner != "bob@example.test" {
-		t.Fatalf("Default() = %+v, %v; want the read-only team login without expiry", def, err)
+	if space, err := got.DefaultSpace(apiB); err != nil || space != "team" {
+		t.Fatalf("DefaultSpace(apiB) = %q, %v; want team", space, err)
 	}
-	notes, err := got.Lookup(Key{Endpoint: apiA, Space: "notes"})
-	if err != nil || notes.Token != testToken || notes.Site != site || !notes.Expires.Time().Equal(expiring.Expires.Time()) ||
-		notes.Account != "" || notes.Owner != "" {
-		t.Fatalf("Lookup(notes) = %+v, %v; want the stored login", notes, err)
+	if space, err := got.DefaultSpace(apiA); err != nil || space != "notes" {
+		t.Fatalf("DefaultSpace(apiA) = %q, %v; want notes", space, err)
 	}
-	if notes.Expires.Describe() != "until 2026-12-26 09:30 UTC" {
-		t.Fatalf("Describe() = %q", notes.Expires.Describe())
+	b, err := got.ForEndpoint(apiB)
+	if err != nil || b.Key != testToken2 || b.Access != AccessRead || !b.Expires.Never() || b.Account != "bob@example.test" {
+		t.Fatalf("ForEndpoint(apiB) = %+v, %v; want the read-only login without expiry", b, err)
+	}
+	a, err := got.Lookup(ID{Site: site, Endpoint: apiA})
+	if err != nil || a.Key != testToken || !a.Expires.Time().Equal(expiring.Expires.Time()) || a.Account != "ada@example.test" {
+		t.Fatalf("Lookup(apiA) = %+v, %v; want the stored login", a, err)
+	}
+	if a.Expires.Describe() != "until 2026-12-26 09:30 UTC" {
+		t.Fatalf("Describe() = %q", a.Expires.Describe())
 	}
 }
 
 func TestPutReplacesAndRemoveClearsDefault(t *testing.T) {
 	var set Set
-	set.Put(login(apiA, "notes", testToken, AccessWrite))
-	if _, err := set.Default(); !errors.Is(err, ErrNoDefault) {
-		t.Fatalf("Default() after Put = %v, want ErrNoDefault: Put never chooses the default", err)
+	if err := set.SetDefaultSpace(apiA, "notes"); !errors.Is(err, ErrNoLogin) {
+		t.Fatalf("SetDefaultSpace() without a login = %v, want ErrNoLogin", err)
 	}
-	if err := set.SetDefault(Key{Endpoint: apiA, Space: "notes"}); err != nil {
-		t.Fatalf("SetDefault(notes) = %v", err)
+	set.Put(login(apiA, testToken, AccessWrite))
+	if _, err := set.DefaultSpace(apiA); !errors.Is(err, ErrNoDefault) {
+		t.Fatalf("DefaultSpace() after Put = %v, want ErrNoDefault: Put never chooses the default", err)
 	}
-	if err := set.SetDefault(Key{Endpoint: apiB, Space: "notes"}); !errors.Is(err, ErrNoLogin) {
-		t.Fatalf("SetDefault(missing) = %v, want ErrNoLogin", err)
+	if err := set.SetDefaultSpace(apiA, "No_Space"); err == nil {
+		t.Fatal("SetDefaultSpace(invalid name) = nil, want an error")
 	}
-	set.Put(login(apiA, "team", testToken, AccessWrite))
-	old, err := set.Put(login(apiA, "notes", testToken2, AccessRead))
-	if err != nil || old.Token != testToken {
+	if err := set.SetDefaultSpace(apiA, "notes"); err != nil {
+		t.Fatalf("SetDefaultSpace(notes) = %v", err)
+	}
+	other := login(apiA, testToken, AccessWrite)
+	other.Site = "https://other.example.test"
+	set.Put(other)
+	old, err := set.Put(login(apiA, testToken2, AccessRead))
+	if err != nil || old.Key != testToken {
 		t.Fatalf("Put(replacement) = %+v, %v; want the replaced login", old, err)
 	}
 	if n := len(set.Logins()); n != 2 {
 		t.Fatalf("Logins() = %d entries, want 2", n)
 	}
-	if def, _ := set.Default(); def.Space != "notes" || def.Token != testToken2 {
-		t.Fatalf("Default() = %+v, want the replacement", def)
+	if space, _ := set.DefaultSpace(apiA); space != "notes" {
+		t.Fatalf("DefaultSpace() = %q, want notes kept across a replacement", space)
 	}
-	if err := set.Remove(Key{Endpoint: apiA, Space: "team"}); err != nil {
-		t.Fatalf("Remove(team) = %v", err)
+	if err := set.Remove(other.ID); err != nil {
+		t.Fatalf("Remove(other) = %v", err)
 	}
-	if _, err := set.Default(); err != nil {
-		t.Fatal("removing another login cleared the default")
+	if _, err := set.DefaultSpace(apiA); err != nil {
+		t.Fatal("removing one of two logins for the endpoint cleared its default")
 	}
-	if err := set.Remove(Key{Endpoint: apiA, Space: "notes"}); err != nil {
-		t.Fatalf("Remove(notes) = %v", err)
+	if err := set.Remove(ID{Site: site, Endpoint: apiA}); err != nil {
+		t.Fatalf("Remove() = %v", err)
 	}
-	if _, err := set.Default(); !errors.Is(err, ErrNoDefault) {
-		t.Fatalf("Default() after removing it = %v, want ErrNoDefault", err)
+	if _, err := set.DefaultSpace(apiA); !errors.Is(err, ErrNoDefault) {
+		t.Fatalf("DefaultSpace() after removing the last login = %v, want ErrNoDefault", err)
 	}
-	if err := set.Remove(Key{Endpoint: apiA, Space: "notes"}); !errors.Is(err, ErrNoLogin) {
+	if err := set.Remove(ID{Site: site, Endpoint: apiA}); !errors.Is(err, ErrNoLogin) {
 		t.Fatalf("Remove(missing) = %v, want ErrNoLogin", err)
+	}
+	set.Put(login(apiA, testToken, AccessWrite))
+	if err := set.SetDefaultSpace(apiA, "notes"); err != nil {
+		t.Fatal(err)
+	}
+	set.ClearDefaultSpace(apiA)
+	if _, err := set.DefaultSpace(apiA); !errors.Is(err, ErrNoDefault) {
+		t.Fatalf("DefaultSpace() after ClearDefaultSpace = %v, want ErrNoDefault", err)
 	}
 }
 
-func TestForSpace(t *testing.T) {
+func TestChoosingALogin(t *testing.T) {
 	var set Set
-	set.Put(login(apiA, "notes", testToken, AccessWrite))
-	set.Put(login(apiB, "notes", testToken2, AccessWrite))
-	set.Put(login(apiA, "team", testToken, AccessWrite))
-	if l, err := set.ForSpace("team"); err != nil || l.Endpoint != apiA {
-		t.Fatalf("ForSpace(team) = %+v, %v; want the only team login", l, err)
+	set.Put(login(apiA, testToken, AccessWrite))
+	if l, err := set.Only(); err != nil || l.Endpoint != apiA {
+		t.Fatalf("Only() = %+v, %v; want the only login", l, err)
 	}
-	if _, err := set.ForSpace("notes"); !errors.Is(err, ErrAmbiguous) {
-		t.Fatalf("ForSpace(notes) = %v, want ErrAmbiguous", err)
+	set.Put(login(apiB, testToken2, AccessWrite))
+	if _, err := set.Only(); !errors.Is(err, ErrAmbiguous) || !strings.Contains(err.Error(), apiB) {
+		t.Fatalf("Only() with two logins = %v, want ErrAmbiguous naming the endpoints", err)
 	}
-	if err := set.SetDefault(Key{Endpoint: apiB, Space: "notes"}); err != nil {
-		t.Fatal(err)
+	if l, err := set.ForEndpoint(apiB); err != nil || l.Key != testToken2 {
+		t.Fatalf("ForEndpoint(apiB) = %+v, %v", l, err)
 	}
-	if _, err := set.ForSpace("notes"); !errors.Is(err, ErrAmbiguous) {
-		t.Fatalf("ForSpace(notes) with a default among them = %v, want ErrAmbiguous: only an endpoint chooses", err)
-	}
-	if n := len(set.Space("notes")); n != 2 {
-		t.Fatalf("Space(notes) = %d logins, want 2", n)
+	other := login(apiA, testToken2, AccessWrite)
+	other.Site = "https://other.example.test"
+	set.Put(other)
+	_, err := set.ForEndpoint(apiA)
+	if !errors.Is(err, ErrAmbiguous) || !strings.Contains(err.Error(), other.Site) || strings.Contains(err.Error(), testToken) {
+		t.Fatalf("ForEndpoint(apiA) with two sites = %v, want ErrAmbiguous naming the sites and not a key", err)
 	}
 }
 
 func TestUsable(t *testing.T) {
 	now := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
-	l := login(apiA, "notes", testToken, AccessWrite)
+	l := login(apiA, testToken, AccessWrite)
 	if err := l.Usable(now); err != nil {
 		t.Fatalf("Usable(no expiry) = %v", err)
 	}
@@ -226,7 +249,7 @@ func TestUsable(t *testing.T) {
 	l.Expires = ExpiresAt(now)
 	err := l.Usable(now)
 	if !errors.Is(err, ErrExpired) || strings.Contains(err.Error(), testToken) || !strings.Contains(err.Error(), "2026-09-27 12:00 UTC") {
-		t.Fatalf("Usable(expired) = %v, want ErrExpired naming the date and not the token", err)
+		t.Fatalf("Usable(expired) = %v, want ErrExpired naming the date and not the key", err)
 	}
 }
 
@@ -245,85 +268,103 @@ func TestAccess(t *testing.T) {
 	}
 }
 
+func writeRaw(t *testing.T, f File, data string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(f.Path()), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(f.Path(), []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestLoadRefusesMalformedFiles(t *testing.T) {
-	entry := `{"endpoint":"https://api.slivingdoc.dev","space":"notes","site":"https://www.slivingdoc.dev","token":"` + testToken + `","access":"write"}`
+	entry := `{"site":"https://www.slivingdoc.dev","endpoint":"https://api.slivingdoc.dev","key":"` + testToken + `","access":"write","account":"ada@example.test"}`
+	with := func(old, new string) string {
+		return `{"version":2,"logins":[` + strings.Replace(entry, old, new, 1) + `]}`
+	}
+	def := func(d string) string { return `{"version":2,"logins":[` + entry + `],"defaultSpaces":[` + d + `]}` }
 	tests := []struct {
 		name string
 		data string
 	}{
 		{"not json", `{`},
 		{"array", `[]`},
-		{"unknown top field", `{"version":1,"logins":[],"extra":1}`},
+		{"unknown top field", `{"version":2,"logins":[],"extra":1}`},
 		{"missing version", `{"logins":[]}`},
-		{"newer version", `{"version":2,"logins":[]}`},
-		{"missing logins", `{"version":1}`},
-		{"null default", `{"version":1,"logins":[],"default":null}`},
-		{"duplicate key", `{"version":1,"version":1,"logins":[]}`},
-		{"login not object", `{"version":1,"logins":[1]}`},
-		{"unknown login field", `{"version":1,"logins":[` + strings.Replace(entry, `"access"`, `"x":1,"access"`, 1) + `]}`},
-		{"missing token", `{"version":1,"logins":[` + strings.Replace(entry, `"token":"`+testToken+`",`, "", 1) + `]}`},
-		{"token with space", `{"version":1,"logins":[` + strings.Replace(entry, testToken, "sld bad", 1) + `]}`},
-		{"bad access", `{"version":1,"logins":[` + strings.Replace(entry, `"write"`, `"admin"`, 1) + `]}`},
-		{"bad space", `{"version":1,"logins":[` + strings.Replace(entry, `"notes"`, `"No_Space"`, 1) + `]}`},
-		{"http remote endpoint", `{"version":1,"logins":[` + strings.Replace(entry, "https://api", "http://api", 1) + `]}`},
-		{"http remote site", `{"version":1,"logins":[` + strings.Replace(entry, "https://www", "http://www", 1) + `]}`},
-		{"numeric token", `{"version":1,"logins":[` + strings.Replace(entry, `"`+testToken+`"`, "5", 1) + `]}`},
-		{"bad expiry", `{"version":1,"logins":[` + strings.Replace(entry, `"write"`, `"write","expiresAt":"tomorrow"`, 1) + `]}`},
-		{"empty account", `{"version":1,"logins":[` + strings.Replace(entry, `"write"`, `"write","account":""`, 1) + `]}`},
-		{"numeric owner", `{"version":1,"logins":[` + strings.Replace(entry, `"write"`, `"write","owner":1`, 1) + `]}`},
-		{"duplicate login", `{"version":1,"logins":[` + entry + `,` + entry + `]}`},
-		{"default without login", `{"version":1,"logins":[],"default":{"endpoint":"https://api.slivingdoc.dev","space":"notes"}}`},
-		{"default with extra field", `{"version":1,"logins":[` + entry + `],"default":{"endpoint":"https://api.slivingdoc.dev","space":"notes","x":1}}`},
-		{"default not object", `{"version":1,"logins":[],"default":"notes"}`},
-		{"endpoint with user information", `{"version":1,"logins":[` + strings.Replace(entry, "https://api", "https://user:secret@api", 1) + `]}`},
-		{"endpoint with a query", `{"version":1,"logins":[` + strings.Replace(entry, "api.slivingdoc.dev", "api.slivingdoc.dev/?k=secret", 1) + `]}`},
-		{"endpoint with a fragment", `{"version":1,"logins":[` + strings.Replace(entry, "api.slivingdoc.dev", "api.slivingdoc.dev/#secret", 1) + `]}`},
-		{"site with user information", `{"version":1,"logins":[` + strings.Replace(entry, "https://www", "https://user:secret@www", 1) + `]}`},
-		{"endpoint with an empty query", `{"version":1,"logins":[` + strings.Replace(entry, "api.slivingdoc.dev", "api.slivingdoc.dev?", 1) + `]}`},
-		{"endpoint with an empty fragment", `{"version":1,"logins":[` + strings.Replace(entry, "api.slivingdoc.dev", "api.slivingdoc.dev#", 1) + `]}`},
-		{"site with a fragment", `{"version":1,"logins":[` + strings.Replace(entry, "www.slivingdoc.dev", "www.slivingdoc.dev#secret", 1) + `]}`},
-		{"site with a query", `{"version":1,"logins":[` + strings.Replace(entry, "www.slivingdoc.dev", "www.slivingdoc.dev?secret", 1) + `]}`},
-		{"default endpoint with user information", `{"version":1,"logins":[` + entry + `],"default":{"endpoint":"https://user:secret@api.slivingdoc.dev","space":"notes"}}`},
-		{"duplicate login with user information", `{"version":1,"logins":[` + strings.Replace(entry, "https://api", "https://user:secret@api", 1) + `,` + strings.Replace(entry, "https://api", "https://user:secret@api", 1) + `]}`},
+		{"newer version", `{"version":3,"logins":[]}`},
+		{"missing logins", `{"version":2}`},
+		{"duplicate key", `{"version":2,"version":2,"logins":[]}`},
+		{"login not object", `{"version":2,"logins":[1]}`},
+		{"unknown login field", with(`"access"`, `"space":"notes","access"`)},
+		{"missing key", with(`"key":"`+testToken+`",`, "")},
+		{"key with space", with(testToken, "sld bad")},
+		{"numeric key", with(`"`+testToken+`"`, "5")},
+		{"bad access", with(`"write"`, `"admin"`)},
+		{"missing account", with(`,"account":"ada@example.test"`, "")},
+		{"empty account", with(`"ada@example.test"`, `""`)},
+		{"bad expiry", with(`"write"`, `"write","expiresAt":"tomorrow"`)},
+		{"http remote endpoint", with("https://api", "http://api")},
+		{"http remote site", with("https://www", "http://www")},
+		{"endpoint with user information", with("https://api", "https://user:secret@api")},
+		{"endpoint with a query", with("api.slivingdoc.dev", "api.slivingdoc.dev/?k=secret")},
+		{"endpoint with a fragment", with("api.slivingdoc.dev", "api.slivingdoc.dev/#secret")},
+		{"endpoint with an empty query", with("api.slivingdoc.dev", "api.slivingdoc.dev?")},
+		{"endpoint with an empty fragment", with("api.slivingdoc.dev", "api.slivingdoc.dev#")},
+		{"site with user information", with("https://www", "https://user:secret@www")},
+		{"site with a query", with("www.slivingdoc.dev", "www.slivingdoc.dev?secret")},
+		{"site with a fragment", with("www.slivingdoc.dev", "www.slivingdoc.dev#secret")},
+		{"duplicate login", `{"version":2,"logins":[` + entry + `,` + entry + `]}`},
+		{"defaults not array", `{"version":2,"logins":[` + entry + `],"defaultSpaces":{}}`},
+		{"default not object", def(`"notes"`)},
+		{"default with extra field", def(`{"endpoint":"https://api.slivingdoc.dev","space":"notes","x":1}`)},
+		{"default without space", def(`{"endpoint":"https://api.slivingdoc.dev"}`)},
+		{"default with a bad space", def(`{"endpoint":"https://api.slivingdoc.dev","space":"No_Space"}`)},
+		{"default without login", def(`{"endpoint":"https://api.dev.slivingdoc.dev","space":"notes"}`)},
+		{"duplicate default", def(`{"endpoint":"https://api.slivingdoc.dev","space":"notes"},{"endpoint":"https://api.slivingdoc.dev","space":"team"}`)},
+		{"default endpoint with user information", def(`{"endpoint":"https://user:secret@api.slivingdoc.dev","space":"notes"}`)},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			f := testFile(t)
-			if err := os.MkdirAll(filepath.Dir(f.Path()), 0o700); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(f.Path(), []byte(tt.data), 0o600); err != nil {
-				t.Fatal(err)
-			}
+			writeRaw(t, f, tt.data)
 			_, err := f.Load()
 			if !errors.Is(err, ErrMalformed) {
 				t.Fatalf("Load() = %v, want ErrMalformed", err)
 			}
 			if strings.Contains(err.Error(), testToken) || strings.Contains(err.Error(), "sld bad") || strings.Contains(err.Error(), "secret") {
-				t.Fatalf("Load() = %q echoes the token", err)
+				t.Fatalf("Load() = %q echoes the key", err)
 			}
 		})
 	}
 }
 
+func TestLoadRefusesAnEarlierFile(t *testing.T) {
+	f := testFile(t)
+	writeRaw(t, f, `{"version":1,"logins":[{"endpoint":"https://api.slivingdoc.dev","space":"notes",`+
+		`"site":"https://www.slivingdoc.dev","token":"`+testToken+`","access":"write"}],"default":{"x":1}}`)
+	_, err := f.Load()
+	if !errors.Is(err, ErrOutdated) || errors.Is(err, ErrMalformed) || !strings.Contains(err.Error(), "slivingdoc login") ||
+		!strings.Contains(err.Error(), f.Path()) || strings.Contains(err.Error(), testToken) {
+		t.Fatalf("Load() of a version 1 file = %v, want ErrOutdated naming login and the file, not the token", err)
+	}
+}
+
 func TestLoadAcceptsLoopbackHTTP(t *testing.T) {
 	f := testFile(t)
-	if err := os.MkdirAll(filepath.Dir(f.Path()), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	data := `{"version":1,"default":{"endpoint":"http://127.0.0.1:8787","space":"notes"},"logins":[` +
-		`{"endpoint":"http://127.0.0.1:8787","space":"notes","site":"http://localhost:8788","token":"` + testToken +
-		`","access":"read","expiresAt":"2030-01-02T03:04:05Z"}]}`
-	if err := os.WriteFile(f.Path(), []byte(data), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	writeRaw(t, f, `{"version":2,"defaultSpaces":[{"endpoint":"http://127.0.0.1:8787","space":"notes"}],"logins":[`+
+		`{"endpoint":"http://127.0.0.1:8787","site":"http://localhost:8788","key":"`+testToken+
+		`","access":"read","account":"ada@example.test","expiresAt":"2030-01-02T03:04:05Z"}]}`)
 	set, err := f.Load()
 	if err != nil {
 		t.Fatalf("Load() = %v", err)
 	}
-	def, err := set.Default()
-	if err != nil || def.Site != "http://localhost:8788" || def.Access != AccessRead || def.Expires.Never() {
-		t.Fatalf("Default() = %+v, %v", def, err)
+	l, err := set.Only()
+	if err != nil || l.Site != "http://localhost:8788" || l.Access != AccessRead || l.Expires.Never() {
+		t.Fatalf("Only() = %+v, %v", l, err)
+	}
+	if space, err := set.DefaultSpace("http://127.0.0.1:8787"); err != nil || space != "notes" {
+		t.Fatalf("DefaultSpace() = %q, %v", space, err)
 	}
 }
 
@@ -420,7 +461,7 @@ func savedFile(t *testing.T) File {
 	t.Helper()
 	f := testFile(t)
 	var set Set
-	set.Put(login(apiA, "notes", testToken, AccessWrite))
+	set.Put(login(apiA, testToken, AccessWrite))
 	if err := f.Save(set); err != nil {
 		t.Fatalf("Save() = %v", err)
 	}

@@ -29,13 +29,12 @@ const SiteEnv = "SLIVINGDOC_SITE"
 
 // LoginFlags are the login command's flags.
 type LoginFlags struct {
-	bucket     stringFlag
-	space      stringFlag
-	readOnly   boolFlag
-	site       stringFlag
-	noBrowser  boolFlag
-	setDefault boolFlag
-	force      boolFlag
+	bucket    stringFlag
+	space     stringFlag
+	readOnly  boolFlag
+	site      stringFlag
+	noBrowser boolFlag
+	force     boolFlag
 }
 
 // NewLoginFlags returns an unbound login flag holder.
@@ -43,20 +42,17 @@ func NewLoginFlags() *LoginFlags { return &LoginFlags{} }
 
 // Bind registers the login flags on fs.
 func (f *LoginFlags) Bind(fs *flag.FlagSet) {
-	fs.Var(&f.space, "space", "space to preselect on the approval page; the token must be for it")
+	fs.Var(&f.space, "space", "space to make the default; the login must reach it")
 	fs.Var(&f.bucket, "bucket", "the same as --space")
-	fs.Var(&f.readOnly, "read-only", "ask for a read-only token")
+	fs.Var(&f.readOnly, "read-only", "ask for a read-only login")
 	fs.Var(&f.site, "site", "site that approves the login")
 	fs.Var(&f.noBrowser, "no-browser", "print the approval page without opening a browser")
-	fs.Var(&f.setDefault, "default", "make this login the default even when another one is")
-	fs.Var(&f.force, "force", "without a terminal, replace a login or default another account approved")
+	fs.Var(&f.force, "force", "without a terminal, replace a login another account approved")
 }
 
 // LogoutFlags are the logout command's flags.
 type LogoutFlags struct {
-	bucket stringFlag
-	space  stringFlag
-	site   stringFlag
+	site stringFlag
 }
 
 // NewLogoutFlags returns an unbound logout flag holder.
@@ -64,14 +60,13 @@ func NewLogoutFlags() *LogoutFlags { return &LogoutFlags{} }
 
 // Bind registers the logout flags on fs.
 func (f *LogoutFlags) Bind(fs *flag.FlagSet) {
-	fs.Var(&f.space, "space", "space to log out of (default: the default login's space)")
-	fs.Var(&f.bucket, "bucket", "the same as --space")
 	fs.Var(&f.site, "site", "only log out of logins this site issued")
 }
 
 // Login is a prepared login: the flags are valid and the credentials file
-// is readable, so the approval a person gives in the browser can be
-// stored. Nothing has been sent yet.
+// is readable (or is an earlier build's, which the login replaces), so
+// the approval a person gives in the browser can be stored. Nothing has
+// been sent yet.
 type Login struct {
 	opts   ProcessOptions
 	file   credentials.File
@@ -82,23 +77,23 @@ type Login struct {
 	space      string
 	access     credentials.Access
 	browser    bool
-	setDefault bool
 	force      bool
 	hostname   string
-	// hostErr is why the host name could not label the token, if so.
+	// hostErr is why the host name could not label the key, if so.
 	hostErr error
 }
 
 // PrepareLogin validates the login flags against the environment and
 // reads the credentials file, so a login that could not be stored is
-// refused before the site is asked for anything.
+// refused before the site is asked for anything. A file an earlier build
+// wrote (credentials.ErrOutdated) is no refusal: the login replaces it.
 func PrepareLogin(f *LoginFlags, opts ProcessOptions) (*Login, error) {
 	env := environ(opts.Env)
 	file, err := credentialsFile(env)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := file.Load(); err != nil {
+	if _, err := file.Load(); err != nil && !errors.Is(err, credentials.ErrOutdated) {
 		return nil, fmt.Errorf("login: %w", err)
 	}
 	if err := file.CheckDir(); err != nil {
@@ -132,13 +127,12 @@ func PrepareLogin(f *LoginFlags, opts ProcessOptions) (*Login, error) {
 	host, hostErr := hostname()
 	if hostErr != nil {
 		// The label is optional in the contract: the site then labels the
-		// token "CLI login". Run tells the person why.
+		// key "CLI login". Run tells the person why.
 		host = ""
 	}
 	return &Login{
 		opts: opts, file: file, client: client, siteSource: siteSource, space: space, access: access,
-		browser: !f.noBrowser.value, setDefault: f.setDefault.value, force: f.force.value,
-		hostname: host, hostErr: hostErr,
+		browser: !f.noBrowser.value, force: f.force.value, hostname: host, hostErr: hostErr,
 	}, nil
 }
 
@@ -152,12 +146,13 @@ const (
 )
 
 // Run asks the site for an approval, shows the page and the code, opens a
-// browser when allowed, waits for the person to approve or deny it, shows
-// who approved it, asks for confirmation on a terminal, and stores the
-// issued token (architecture/login.md, Threat model). Every issued token
-// it does not store is revoked. A login that replaced an earlier token of
-// the same account for the same endpoint and space revokes that token,
-// best effort, after the new one is stored.
+// browser when allowed, waits for the person to approve or deny it, lists
+// the spaces the issued key reaches, shows who approved it and those
+// spaces with their owners, asks for confirmation on a terminal, and
+// stores the key with the default space (architecture/login.md, Threat
+// model). Every issued key it does not store is revoked. A login that
+// replaced an earlier key of the same account for the same site and
+// endpoint revokes that key, best effort, after the new one is stored.
 func (l *Login) Run(ctx context.Context) error {
 	ctx, stop := l.opts.interruptible(ctx)
 	defer stop()
@@ -165,12 +160,12 @@ func (l *Login) Run(ctx context.Context) error {
 	if l.client.Site() != sitelogin.DefaultSite {
 		fmt.Fprintf(errOut, "Logging in through %s (from %s).\n", l.client.Site(), l.siteSource)
 	}
-	approval, err := l.client.Start(ctx, sitelogin.StartRequest{Space: l.space, Access: l.access, Client: l.hostname})
+	approval, err := l.client.Start(ctx, sitelogin.StartRequest{Access: l.access, Client: l.hostname})
 	if err != nil {
 		return fmt.Errorf("login: %s", mcp.Redact(err.Error()))
 	}
 	if l.hostErr != nil {
-		fmt.Fprintf(errOut, "The host name is unknown (%s); the token is labelled \"CLI login\" without it.\n", mcp.Redact(l.hostErr.Error()))
+		fmt.Fprintf(errOut, "The host name is unknown (%s); the login is labelled \"CLI login\" without it.\n", mcp.Redact(l.hostErr.Error()))
 	}
 	fmt.Fprintf(errOut, "To log in, open this page and approve the code %s:\n  %s\n", approval.UserCode, approval.CompleteURI)
 	fmt.Fprintf(errOut, "(or open %s and enter the code)\n", approval.URI)
@@ -182,72 +177,101 @@ func (l *Login) Run(ctx context.Context) error {
 	}
 	fmt.Fprintf(errOut, "Waiting for approval (the code expires at %s)...\n", approval.Deadline.UTC().Format("15:04:05 UTC"))
 	issued, err := l.client.Wait(ctx, approval)
-	var rejected *sitelogin.RejectedTokenError
+	var rejected *sitelogin.RejectedError
 	if errors.As(err, &rejected) {
-		return l.discard(ctx, rejected.Token, fmt.Errorf("login: %s; nothing was stored", mcp.Redact(err.Error())))
+		return l.discard(ctx, rejected.Credential, fmt.Errorf("login: %s; nothing was stored", mcp.Redact(err.Error())))
 	}
 	if err != nil {
 		return fmt.Errorf("login: %s", mcp.Redact(err.Error()))
 	}
-	fmt.Fprint(errOut, approvedBy(issued, l.client.Site()))
 	stored, err := l.accept(issued)
 	if err != nil {
-		return l.discard(ctx, issued.Token, err)
+		return l.discard(ctx, issued.Key, err)
 	}
+	spaces, err := l.client.Spaces(ctx, stored.Key)
+	if err != nil {
+		return l.discard(ctx, stored.Key, fmt.Errorf("login: list the spaces the login reaches: %s; nothing was stored", mcp.Redact(err.Error())))
+	}
+	if l.space != "" && !slices.ContainsFunc(spaces, func(s sitelogin.Space) bool { return s.Name == l.space }) {
+		return l.discard(ctx, stored.Key, fmt.Errorf("login: %s approved a login that does not reach space %q (it reaches %s); nothing was stored",
+			stored.Account, l.space, spaceNames(spaces)))
+	}
+	fmt.Fprint(errOut, approvedBy(stored, spaces))
 	agreed := notConfirmed
 	if l.force {
 		agreed = confirmed
 	}
 	if l.opts.terminal() == OnTerminal {
 		if agreed, err = l.confirm(ctx, errOut); err != nil {
-			return l.discard(ctx, stored.Token, err)
+			return l.discard(ctx, stored.Key, err)
 		}
 		if agreed != confirmed {
-			return l.discard(ctx, stored.Token, errors.New("login: not confirmed; nothing was stored and the new token was revoked"))
+			return l.discard(ctx, stored.Key, errors.New("login: not confirmed; nothing was stored and the new login key was revoked"))
 		}
 	}
-	outcome, err := l.store(ctx, stored, agreed)
+	outcome, err := l.store(ctx, stored, spaces, agreed)
 	if err != nil {
-		return l.discard(ctx, stored.Token, err)
+		return l.discard(ctx, stored.Key, err)
 	}
-	l.report(ctx, stored, outcome)
-	fmt.Fprintln(l.opts.Out(), loggedIn(stored))
+	l.report(ctx, stored, spaces, outcome)
+	fmt.Fprintln(l.opts.Out(), loggedIn(stored, outcome.defaultSpace))
 	return nil
 }
 
-// accept checks an issued token against what this login asked for and
+// accept checks an issued key against what this login asked for and
 // where it came from, and returns the login to store.
 func (l *Login) accept(issued sitelogin.Issued) (credentials.Login, error) {
 	if l.access == credentials.AccessRead && issued.Access != credentials.AccessRead {
-		return credentials.Login{}, errors.New("login: the site issued a read and write token for a read-only login; nothing was stored")
-	}
-	if l.space != "" && issued.Space != l.space {
-		return credentials.Login{}, fmt.Errorf("login: the site issued a token for space %q, not the requested %q; nothing was stored", issued.Space, l.space)
+		return credentials.Login{}, errors.New("login: the site issued a read and write login for a read-only login; nothing was stored")
 	}
 	endpoint, err := normalizeEndpoint(issued.Endpoint)
 	if err != nil {
 		return credentials.Login{}, fmt.Errorf("login: the site's storage endpoint: %w; nothing was stored", err)
 	}
 	if l.client.Site() == sitelogin.DefaultSite && endpoint != DefaultHostedEndpoint {
-		return credentials.Login{}, fmt.Errorf("login: %s issued a token for %s, not %s; nothing was stored", sitelogin.DefaultSite, endpoint, DefaultHostedEndpoint)
+		return credentials.Login{}, fmt.Errorf("login: %s issued a login for %s, not %s; nothing was stored", sitelogin.DefaultSite, endpoint, DefaultHostedEndpoint)
 	}
 	return credentials.Login{
-		Key:     credentials.Key{Endpoint: endpoint, Space: issued.Space},
-		Site:    l.client.Site(),
-		Token:   issued.Token,
+		ID:      credentials.ID{Site: l.client.Site(), Endpoint: endpoint},
+		Key:     issued.Key,
 		Access:  issued.Access,
 		Expires: issued.Expires,
 		Account: issued.Account,
-		Owner:   issued.Owner,
 	}, nil
 }
 
 // approvedBy is what the person checks before a login is stored: whoever
 // submits a code first decides it, so this is how someone else's approval
-// shows.
-func approvedBy(issued sitelogin.Issued, site string) string {
-	return fmt.Sprintf("Approved by %s for space %q (%s), owned by %s.\n  Storage endpoint: %s\n  Site: %s\n",
-		issued.Account, issued.Space, issued.Access.Describe(), issued.Owner, issued.Endpoint, site)
+// shows, together with the spaces, and their owners, that it reaches.
+func approvedBy(l credentials.Login, spaces []sitelogin.Space) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Approved by %s (%s) %s.\n  Storage endpoint: %s\n  Site: %s\n", l.Account, l.Access.Describe(), l.Expires.Describe(), l.Endpoint, l.Site)
+	if len(spaces) == 0 {
+		b.WriteString("  Spaces: none yet\n")
+		return b.String()
+	}
+	b.WriteString("  Spaces:\n")
+	for _, s := range spaces {
+		fmt.Fprintf(&b, "    %s\n", describeSpace(s))
+	}
+	return b.String()
+}
+
+// describeSpace is one listed space: its name, access and owner.
+func describeSpace(s sitelogin.Space) string {
+	return fmt.Sprintf("%s (%s), owned by %s", s.Name, s.Access.Describe(), s.Owner)
+}
+
+// spaceNames lists the space names for a refusal; "no space" for none.
+func spaceNames(spaces []sitelogin.Space) string {
+	if len(spaces) == 0 {
+		return "no space"
+	}
+	names := make([]string, 0, len(spaces))
+	for _, s := range spaces {
+		names = append(names, s.Name)
+	}
+	return strings.Join(names, ", ")
 }
 
 // confirm asks the person at the terminal whether to store the login; only
@@ -283,27 +307,31 @@ func (l *Login) confirm(ctx context.Context, errOut io.Writer) (consent, error) 
 	}
 }
 
-// storeOutcome is what storing a login changed: the login it replaced and
-// the default before it, each nil when there was none, and whether the new
-// login became the default.
+// storeOutcome is what storing a login changed: the login it replaced,
+// nil when there was none; the default space before and after, empty for
+// none; and whether an earlier build's file was replaced.
 type storeOutcome struct {
 	replaced     *credentials.Login
-	priorDefault *credentials.Login
-	isDefault    defaultChoice
+	priorDefault string
+	defaultSpace string
+	file         fileOutcome
 }
 
-// defaultChoice is whether a stored login is now the default.
-type defaultChoice int
+// fileOutcome is whether storing a login replaced an earlier build's
+// credentials file.
+type fileOutcome int
 
 const (
-	defaultKept defaultChoice = iota
-	defaultTaken
+	fileKept fileOutcome = iota
+	fileReplaced
 )
 
-// store writes the login under the credentials lock. It refuses to replace
-// a login another site issued, and, unless the person agreed, to replace a
-// login or a default another account approved.
-func (l *Login) store(ctx context.Context, stored credentials.Login, agreed consent) (out storeOutcome, errOut error) {
+// store writes the login under the credentials lock. It refuses a login
+// for an endpoint another site's login holds, and, unless the person
+// agreed, one that would replace a login another account approved. The
+// default space becomes --space, else the only space listed, else the
+// stored default when the login still reaches it; otherwise there is none.
+func (l *Login) store(ctx context.Context, stored credentials.Login, spaces []sitelogin.Space, agreed consent) (out storeOutcome, errOut error) {
 	lock, err := l.file.Lock(ctx)
 	if err != nil {
 		return storeOutcome{}, fmt.Errorf("login: %w; nothing was stored", err)
@@ -316,86 +344,89 @@ func (l *Login) store(ctx context.Context, stored credentials.Login, agreed cons
 	// Read under the lock, so a login that finished in another terminal
 	// meanwhile keeps its entry.
 	set, err := l.file.Load()
-	if err != nil {
+	if errors.Is(err, credentials.ErrOutdated) {
+		set, out.file = credentials.Set{}, fileReplaced
+	} else if err != nil {
 		return storeOutcome{}, fmt.Errorf("login: %w; nothing was stored", err)
 	}
-	if old, err := set.Lookup(stored.Key); err == nil {
-		if old.Site != stored.Site {
-			return storeOutcome{}, fmt.Errorf("login: the stored login for space %q at %s was issued by %s, not %s; log out of that login first (slivingdoc logout --space %s --site %s); nothing was stored",
-				old.Space, mcp.Redact(old.Endpoint), mcp.Redact(old.Site), stored.Site, old.Space, mcp.Redact(old.Site))
+	for _, other := range set.Logins() {
+		if other.Endpoint == stored.Endpoint && other.Site != stored.Site {
+			return storeOutcome{}, fmt.Errorf("login: the stored login for %s was issued by %s, not %s; log out of that login first (slivingdoc logout --site %s); nothing was stored",
+				mcp.Redact(other.Endpoint), mcp.Redact(other.Site), stored.Site, mcp.Redact(other.Site))
 		}
+	}
+	if old, err := set.Lookup(stored.ID); err == nil {
 		if old.Account != stored.Account && agreed != confirmed {
-			return storeOutcome{}, fmt.Errorf("login: the stored login for space %q at %s was approved by %s, this one by %s; run login in a terminal to confirm, or pass --force; nothing was stored",
-				old.Space, mcp.Redact(old.Endpoint), account(old), account(stored))
+			return storeOutcome{}, fmt.Errorf("login: the stored login for %s was approved by %s, this one by %s; run login in a terminal to confirm, or pass --force; nothing was stored",
+				mcp.Redact(old.Endpoint), old.Account, stored.Account)
 		}
+		out.replaced = &old
 	}
-	isDefault := defaultKept
-	def, err := set.Default()
-	if err != nil || l.setDefault || def.Key == stored.Key {
-		isDefault = defaultTaken
+	out.priorDefault, _ = set.DefaultSpace(stored.Endpoint)
+	set.Put(stored)
+	out.defaultSpace = chooseDefault(l.space, spaces, out.priorDefault)
+	if out.defaultSpace == "" {
+		set.ClearDefaultSpace(stored.Endpoint)
+	} else if err := set.SetDefaultSpace(stored.Endpoint, out.defaultSpace); err != nil {
+		return storeOutcome{}, fmt.Errorf("login: %w; nothing was stored", err)
 	}
-	if err == nil {
-		out.priorDefault = &def
-		if l.setDefault && def.Key != stored.Key && def.Account != stored.Account && agreed != confirmed {
-			return storeOutcome{}, fmt.Errorf("login: the default login (space %q at %s) was approved by %s, this one by %s; run login in a terminal to confirm, or pass --force; nothing was stored",
-				def.Space, mcp.Redact(def.Endpoint), account(def), account(stored))
-		}
-	}
-	if replaced, err := set.Put(stored); err == nil {
-		out.replaced = &replaced
-	}
-	if isDefault == defaultTaken {
-		if err := set.SetDefault(stored.Key); err != nil {
-			return storeOutcome{}, fmt.Errorf("login: %w; nothing was stored", err)
-		}
-	}
-	out.isDefault = isDefault
 	if err := l.file.Save(set); err != nil {
-		return storeOutcome{}, fmt.Errorf("login: store the token: %w", err)
+		return storeOutcome{}, fmt.Errorf("login: store the login: %w", err)
 	}
 	return out, nil
 }
 
+// chooseDefault is the default space after a login: the one asked for,
+// else the only one listed, else the prior default when still listed.
+func chooseDefault(asked string, spaces []sitelogin.Space, prior string) string {
+	switch {
+	case asked != "":
+		return asked
+	case len(spaces) == 1:
+		return spaces[0].Name
+	case prior != "" && slices.ContainsFunc(spaces, func(s sitelogin.Space) bool { return s.Name == prior }):
+		return prior
+	default:
+		return ""
+	}
+}
+
 // report tells the person what the stored login changed besides itself:
-// the default, and the token it replaced, which is revoked only when the
-// same account approved it.
-func (l *Login) report(ctx context.Context, stored credentials.Login, out storeOutcome) {
+// the default space, an earlier build's file it replaced, and the key it
+// replaced, which is revoked only when the same account approved it.
+func (l *Login) report(ctx context.Context, stored credentials.Login, spaces []sitelogin.Space, out storeOutcome) {
 	errOut := l.opts.errOut()
-	if prior := out.priorDefault; prior != nil && prior.Key != stored.Key {
-		if out.isDefault == defaultTaken {
-			fmt.Fprintf(errOut, "The default login changed from %s to %s.\n", describeKey(prior.Key), describeKey(stored.Key))
-		} else {
-			fmt.Fprintf(errOut, "The default login stays %s; use --default to switch.\n", describeKey(prior.Key))
+	switch {
+	case out.defaultSpace != "" && out.priorDefault != "" && out.priorDefault != out.defaultSpace:
+		fmt.Fprintf(errOut, "The default space changed from %q to %q.\n", out.priorDefault, out.defaultSpace)
+	case out.defaultSpace != "":
+		fmt.Fprintf(errOut, "The default space is %q; 'slivingdoc space <name>' changes it.\n", out.defaultSpace)
+	case len(spaces) == 0:
+		fmt.Fprintln(errOut, "The login reaches no space yet; create one on the site, then run 'slivingdoc space <name>' to make it the default.")
+	default:
+		if out.priorDefault != "" {
+			fmt.Fprintf(errOut, "The default space %q is not among the login's spaces, so it was cleared.\n", out.priorDefault)
 		}
+		fmt.Fprintln(errOut, "Run 'slivingdoc space <name>' to choose the default space, or pass --space to serve, pull and commit.")
+	}
+	if out.file == fileReplaced {
+		fmt.Fprintln(errOut, "The credentials file of an earlier slivingdoc was replaced; its tokens were not revoked, so revoke them on the Tokens page if they are no longer needed.")
 	}
 	replaced := out.replaced
-	if replaced == nil || replaced.Token == stored.Token {
+	if replaced == nil || replaced.Key == stored.Key {
 		return
 	}
-	if replaced.Account == "" || replaced.Account != stored.Account {
-		fmt.Fprintf(errOut, "The earlier token for space %q was approved by %s, not %s, so it was not revoked; revoke it on the Tokens page if it is no longer needed.\n",
-			replaced.Space, account(*replaced), account(stored))
+	if replaced.Account != stored.Account {
+		fmt.Fprintf(errOut, "The earlier login key for %s was approved by %s, not %s, so it was not revoked; revoke it on the Tokens page if it is no longer needed.\n",
+			mcp.Redact(replaced.Endpoint), replaced.Account, stored.Account)
 		return
 	}
 	rctx, cancel := revocationContext(ctx)
 	defer cancel()
 	if err := revoke(rctx, *replaced, l.opts); err != nil {
-		fmt.Fprintf(errOut, "The earlier token for space %q could not be revoked (%s); revoke it on the Tokens page.\n",
-			replaced.Space, mcp.Redact(err.Error()))
+		fmt.Fprintf(errOut, "The earlier login key for %s could not be revoked (%s); revoke it on the Tokens page.\n",
+			mcp.Redact(replaced.Endpoint), mcp.Redact(err.Error()))
 	}
-}
-
-// account names who approved a login; a file written before the site
-// reported it has none.
-func account(l credentials.Login) string {
-	if l.Account == "" {
-		return "an unknown account"
-	}
-	return l.Account
-}
-
-func describeKey(k credentials.Key) string {
-	return fmt.Sprintf("space %q at %s", k.Space, mcp.Redact(k.Endpoint))
 }
 
 // revocationTimeout bounds a revocation that runs after the login's own
@@ -403,35 +434,35 @@ func describeKey(k credentials.Key) string {
 const revocationTimeout = 10 * time.Second
 
 // revocationContext keeps ctx's values but not its cancellation, so an
-// interrupt that refused a login still revokes the token it was given,
+// interrupt that refused a login still revokes the key it was given,
 // within revocationTimeout.
 func revocationContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.WithoutCancel(ctx), revocationTimeout)
 }
 
-// discard revokes an issued token the login refuses to store, so it does
-// not stay valid unseen, and returns cause; a failed revocation is added to
+// discard revokes an issued key the login refuses to store, so it does not
+// stay valid unseen, and returns cause; a failed revocation is added to
 // it.
-func (l *Login) discard(ctx context.Context, token string, cause error) error {
+func (l *Login) discard(ctx context.Context, key string, cause error) error {
 	rctx, cancel := revocationContext(ctx)
 	defer cancel()
-	if err := l.client.Revoke(rctx, token); err != nil {
-		return fmt.Errorf("%w; revoking the issued token failed too (%s), revoke it on the Tokens page", cause, mcp.Redact(err.Error()))
+	if err := l.client.Revoke(rctx, key); err != nil {
+		return fmt.Errorf("%w; revoking the issued login key failed too (%s), revoke it on the Tokens page", cause, mcp.Redact(err.Error()))
 	}
 	return cause
 }
 
 // loggedIn is the login's result line. It names the approving account, the
-// endpoint when it is not the default, and the space's owner when that is
-// someone else.
-func loggedIn(l credentials.Login) string {
-	line := fmt.Sprintf("Logged in as %s to space %q", l.Account, l.Space)
+// endpoint when it is not the default, and the default space when there
+// is one.
+func loggedIn(l credentials.Login, defaultSpace string) string {
+	line := "Logged in as " + l.Account
 	if l.Endpoint != DefaultHostedEndpoint {
 		line += " at " + l.Endpoint
 	}
 	line += fmt.Sprintf(" (%s) %s", l.Access.Describe(), l.Expires.Describe())
-	if l.Owner != l.Account {
-		line += ", owned by " + l.Owner
+	if defaultSpace != "" {
+		line += fmt.Sprintf("; default space %q", defaultSpace)
 	}
 	return line
 }
@@ -444,9 +475,9 @@ type Logout struct {
 	logins []credentials.Login
 }
 
-// PrepareLogout chooses the stored logins to withdraw: every login for
-// --space (or --bucket), or for the default login's space, narrowed to those the
-// configured site issued when --site or SLIVINGDOC_SITE names one.
+// PrepareLogout chooses the stored logins to withdraw: every one, or
+// those the configured site issued when --site or SLIVINGDOC_SITE names
+// one.
 func PrepareLogout(f *LogoutFlags, opts ProcessOptions) (*Logout, error) {
 	env := environ(opts.Env)
 	file, err := credentialsFile(env)
@@ -457,20 +488,9 @@ func PrepareLogout(f *LogoutFlags, opts ProcessOptions) (*Logout, error) {
 	if err != nil {
 		return nil, fmt.Errorf("logout: %w", err)
 	}
-	space, _, err := flagSpace(&f.bucket, &f.space)
-	if err != nil {
-		return nil, fmt.Errorf("logout: %w", err)
-	}
-	if space == "" {
-		def, err := set.Default()
-		if err != nil {
-			return nil, fmt.Errorf("logout: not logged in: %w; pass --space to name a space", err)
-		}
-		space = def.Space
-	}
-	logins := set.Space(space)
+	logins := set.Logins()
 	if len(logins) == 0 {
-		return nil, fmt.Errorf("logout: %w for space %q", credentials.ErrNoLogin, space)
+		return nil, fmt.Errorf("logout: not logged in: %w", credentials.ErrNoLogin)
 	}
 	if site := resolveString(&f.site, env[SiteEnv], ""); site != "" {
 		client, err := siteClient(site, opts)
@@ -484,23 +504,24 @@ func PrepareLogout(f *LogoutFlags, opts ProcessOptions) (*Logout, error) {
 			}
 		}
 		if len(kept) == 0 {
-			return nil, fmt.Errorf("logout: %w for space %q issued by %s (from --site or %s)", credentials.ErrNoLogin, space, client.Site(), SiteEnv)
+			return nil, fmt.Errorf("logout: %w issued by %s (from --site or %s)", credentials.ErrNoLogin, client.Site(), SiteEnv)
 		}
 		logins = kept
 	}
 	return &Logout{opts: opts, file: file, logins: logins}, nil
 }
 
-// Run revokes each chosen token at the site that issued it and removes it
-// from the credentials file; a token the site no longer knows counts as
-// revoked. A login whose revocation fails stays stored, so the logout can
-// be repeated.
+// Run revokes each chosen key, and so every token minted from it, at the
+// site that issued it, and removes the login with its endpoint's default
+// space from the credentials file; a key the site no longer knows counts
+// as revoked. A login whose revocation fails stays stored, so the logout
+// can be repeated.
 func (l *Logout) Run(ctx context.Context) error {
 	var failed []error
 	var revoked []credentials.Login
 	for _, login := range l.logins {
 		if err := revoke(ctx, login, l.opts); err != nil {
-			failed = append(failed, fmt.Errorf("space %q at %s: %s", login.Space, mcp.Redact(login.Endpoint), mcp.Redact(err.Error())))
+			failed = append(failed, fmt.Errorf("%s at %s: %s", login.Account, mcp.Redact(login.Endpoint), mcp.Redact(err.Error())))
 			continue
 		}
 		revoked = append(revoked, login)
@@ -511,24 +532,24 @@ func (l *Logout) Run(ctx context.Context) error {
 			return err
 		}
 		for _, login := range revoked {
-			if slices.Contains(kept, login.Key) {
-				fmt.Fprintf(l.opts.Out(), "Revoked the token for space %q at %s; a newer login for it was kept\n", login.Space, mcp.Redact(login.Endpoint))
+			if slices.Contains(kept, login.ID) {
+				fmt.Fprintf(l.opts.Out(), "Revoked the login key of %s at %s; a newer login for it was kept\n", login.Account, mcp.Redact(login.Endpoint))
 				continue
 			}
-			fmt.Fprintf(l.opts.Out(), "Logged out of space %q at %s; the token was revoked\n", login.Space, mcp.Redact(login.Endpoint))
+			fmt.Fprintf(l.opts.Out(), "Logged out of %s at %s; the login key and its tokens were revoked\n", login.Account, mcp.Redact(login.Endpoint))
 		}
 	}
 	if len(failed) > 0 {
-		return fmt.Errorf("logout: the token could not be revoked and stays stored; retry, or revoke it on the Tokens page: %w", errors.Join(failed...))
+		return fmt.Errorf("logout: the login key could not be revoked and stays stored; retry, or revoke it on the Tokens page: %w", errors.Join(failed...))
 	}
 	return nil
 }
 
 // remove deletes the revoked logins from the file under the credentials
 // lock. A login another process removed meanwhile is already gone; one
-// another process replaced with a newer token since it was read is kept,
-// and its key returned, because deleting it would orphan a live token.
-func (l *Logout) remove(ctx context.Context, revoked []credentials.Login) (kept []credentials.Key, errOut error) {
+// another process replaced with a newer key since it was read is kept,
+// and its ID returned, because deleting it would orphan a live key.
+func (l *Logout) remove(ctx context.Context, revoked []credentials.Login) (kept []credentials.ID, errOut error) {
 	lock, err := l.file.Lock(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("logout: %w", err)
@@ -543,18 +564,18 @@ func (l *Logout) remove(ctx context.Context, revoked []credentials.Login) (kept 
 		return nil, fmt.Errorf("logout: %w", err)
 	}
 	for _, login := range revoked {
-		current, err := set.Lookup(login.Key)
+		current, err := set.Lookup(login.ID)
 		if errors.Is(err, credentials.ErrNoLogin) {
 			continue
 		}
 		if err != nil {
 			return nil, fmt.Errorf("logout: %w", err)
 		}
-		if current.Token != login.Token {
-			kept = append(kept, login.Key)
+		if current.Key != login.Key {
+			kept = append(kept, login.ID)
 			continue
 		}
-		if err := set.Remove(login.Key); err != nil {
+		if err := set.Remove(login.ID); err != nil {
 			return nil, fmt.Errorf("logout: %w", err)
 		}
 	}
@@ -569,7 +590,7 @@ func revoke(ctx context.Context, login credentials.Login, opts ProcessOptions) e
 	if err != nil {
 		return err
 	}
-	return client.Revoke(ctx, login.Token)
+	return client.Revoke(ctx, login.Key)
 }
 
 func credentialsFile(env map[string]string) (credentials.File, error) {

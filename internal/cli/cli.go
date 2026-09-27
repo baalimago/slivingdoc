@@ -37,9 +37,11 @@ Run 'slivingdoc serve -h' for the full flag and environment reference.
 Humans sync the shared directory directly with 'slivingdoc pull <path>'
 and 'slivingdoc commit <path> -m <message>'.
 
-For hosted storage, 'slivingdoc login' stores a token through the browser,
-so serve, pull and commit need no SLIVINGDOC_TOKEN; --storage auto|hosted|s3
-chooses between a login and S3 explicitly. 'slivingdoc logout' revokes it.
+For hosted storage, 'slivingdoc login' logs in to your account through the
+browser, so serve, pull and commit need no SLIVINGDOC_TOKEN; 'slivingdoc
+space' lists the login's spaces and 'slivingdoc space <name>' sets the
+default one; --storage auto|hosted|s3 chooses between a login and S3
+explicitly. 'slivingdoc logout' revokes the login.
 
 Logging is configured by the environment; serve, pull, and commit also
 take --log-level and --log-timestamp, which override it:
@@ -61,6 +63,7 @@ func Commands(engine git.Engine, opts app.ProcessOptions) map[string]cmd.Command
 		"commit|c":  commit.Command(engine, opts),
 		"login":     login.Command(opts),
 		"logout":    login.LogoutCommand(opts),
+		"space":     login.SpaceCommand(opts),
 		"version|v": version.Command(opts.Stdout),
 	}
 }

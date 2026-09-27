@@ -84,9 +84,9 @@ type ProcessOptions struct {
 	// so no browser ever starts (architecture/login.md).
 	OpenBrowser func(url string) error
 
-	// SiteClient sends the site's login, token and revoke requests. Nil
-	// uses a client that never follows a redirect; the integration helper
-	// routes the default site to a reference site through it.
+	// SiteClient sends the site's login, space, mint and revoke requests.
+	// Nil uses a client that never follows a redirect; the integration
+	// helper routes the default site to a reference site through it.
 	SiteClient sitelogin.Doer
 
 	// Sleep waits between two login polls. Nil waits on a timer.
@@ -140,6 +140,12 @@ type process struct {
 
 	ephemeral     bool
 	newSessionDir func() (string, error)
+
+	// siteClient sends a stored login's mint requests to its site; nil
+	// uses the default client. now is the clock that schedules a minted
+	// token's renewal; nil is time.Now.
+	siteClient sitelogin.Doer
+	now        func() time.Time
 }
 
 // Setup resolves the configuration, opens the pinned native engine, builds
@@ -219,6 +225,7 @@ func Setup(engine git.Engine, flags *Flags, opts ProcessOptions) (*Runtime, erro
 		shutdownDeadline: deadline,
 		ephemeral:        opts.Ephemeral,
 		newSessionDir:    opts.NewSessionDir,
+		siteClient:       opts.SiteClient,
 	})
 }
 
@@ -355,7 +362,19 @@ func buildService(p process, cfg config) (*Service, config, error) {
 	}
 	probeCtx, cancel := context.WithTimeout(context.Background(), probeTimeout)
 	defer cancel()
-	if cfg.hosted() {
+	switch {
+	case cfg.login != nil:
+		// The site checks the space when it mints, and the answer must
+		// name it (mintedTokens), so no GET /v1/token is needed.
+		tokens, err := newMintedTokens(*cfg.login, cfg.bucket, p.siteClient, p.now)
+		if err != nil {
+			return nil, config{}, fmt.Errorf("app: %s", mcp.Redact(err.Error()))
+		}
+		if _, err := tokens.Token(probeCtx); err != nil {
+			return nil, config{}, mintRefusal(err, cfg)
+		}
+		cfg.tokens = tokens
+	case cfg.hosted():
 		var err error
 		logins := func() (credentials.Set, error) { return loadLogins(environ(p.env), runtime.GOOS) }
 		if cfg, err = resolveHostedSpace(probeCtx, cfg, logins); err != nil {
@@ -409,27 +428,22 @@ func resolveHostedSpace(ctx context.Context, cfg config, logins func() (credenti
 }
 
 // defaultLoginSpace is the fallback for a server that cannot name the
-// token's space: the default login's space, when that login was issued for
-// the endpoint the token goes to. The refusals name what is missing: a
-// readable credentials file, a default login, or one for this endpoint.
+// token's space: the default space stored for the endpoint the token goes
+// to. The refusals name what is missing: a readable credentials file, or a
+// default space for this endpoint.
 func defaultLoginSpace(cfg config, logins func() (credentials.Set, error)) (config, error) {
 	const refusal = "app: hosted storage cannot name the token's space"
 	const fix = "pass the space name as --space or SLIVINGDOC_SPACE"
 	set, err := logins()
 	if err != nil {
 		return config{}, fmt.Errorf("%s, and the stored logins cannot supply it: %w; fix or remove the credentials file, or %s",
-			refusal, redactCause(err, credentials.ErrMalformed, credentials.ErrExposed), fix)
+			refusal, redactCause(err, credentials.ErrMalformed, credentials.ErrExposed, credentials.ErrOutdated), fix)
 	}
-	def, err := set.Default()
-	switch {
-	case err != nil:
-		return config{}, fmt.Errorf("%s, and no default login names one; %s", refusal, fix)
-	case def.Endpoint != cfg.endpoint:
-		// A hand-edited credentials file can hold user information in an
-		// endpoint; the refusal never echoes it.
-		return config{}, fmt.Errorf("%s, and the default login is for %s, not %s; %s", refusal, mcp.Redact(def.Endpoint), cfg.endpoint, fix)
+	space, err := set.DefaultSpace(cfg.endpoint)
+	if err != nil {
+		return config{}, fmt.Errorf("%s, and no default space is stored for %s; %s", refusal, cfg.endpoint, fix)
 	}
-	cfg.bucket, cfg.bucketFrom = def.Space, bucketFromLogin
+	cfg.bucket, cfg.bucketFrom = space, bucketFromLogin
 	return cfg, nil
 }
 
@@ -459,9 +473,6 @@ func redactCause(err error, kinds ...error) error {
 // the bucket the configuration named, worded for the setting that named it.
 func spaceMismatch(cfg config, tokenSpace string) error {
 	switch {
-	case cfg.tokenOrigin == originLogin:
-		return fmt.Errorf("app: the stored login for space %q holds a token that reaches hosted space %q; run 'slivingdoc login --space %s' again",
-			cfg.bucket, tokenSpace, cfg.bucket)
 	case cfg.bucketFrom.kind() == kindEnv:
 		return fmt.Errorf("app: the token reaches hosted space %q, not %q from %s; unset %s to use the token's space, or use a token made for %q",
 			tokenSpace, cfg.bucket, cfg.bucketFrom, cfg.bucketFrom, cfg.bucket)
@@ -509,9 +520,10 @@ func hostedCheckError(err error, cfg config) error {
 	denied := errors.Is(err, storage.ErrAccessDenied)
 	switch {
 	case denied && cfg.tokenOrigin == originLogin:
-		return fmt.Errorf("app: hosted storage refused the stored login: %s; run 'slivingdoc login' again, or check --space", mcp.Redact(err.Error()))
+		return fmt.Errorf("app: hosted storage refused the token minted for space %q: %s; run 'slivingdoc space' to list the login's spaces, or 'slivingdoc login' again",
+			cfg.bucket, mcp.Redact(err.Error()))
 	case denied && cfg.bucketFrom == bucketFromLogin:
-		return fmt.Errorf("app: hosted storage refused the token: %s; check SLIVINGDOC_TOKEN, or pass --space: the space %q came from the default login", mcp.Redact(err.Error()), cfg.bucket)
+		return fmt.Errorf("app: hosted storage refused the token: %s; check SLIVINGDOC_TOKEN, or pass --space: the space %q is the stored default space", mcp.Redact(err.Error()), cfg.bucket)
 	case denied && cfg.bucketFrom == bucketFromToken:
 		return fmt.Errorf("app: hosted storage refused the token: %s; check SLIVINGDOC_TOKEN: it named space %q but was then refused", mcp.Redact(err.Error()), cfg.bucket)
 	case denied && cfg.bucketFrom.kind() != kindOther:
@@ -624,6 +636,7 @@ func realStoreFactory(ctx context.Context, cfg config) (storage.ObjectStore, err
 			Space:     cfg.bucket,
 			Prefix:    cfg.prefix,
 			Token:     cfg.token,
+			Tokens:    cfg.tokens,
 			UserAgent: "slivingdoc/" + Version,
 		})
 		if err != nil {

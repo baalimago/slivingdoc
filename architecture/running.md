@@ -10,7 +10,7 @@ Read this when: operating or deploying slivingdoc, writing an MCP host configura
 |------|---------|
 | `internal/cli/cli.go` | Command map and router `Usage` ([cli.md](./cli.md)) |
 | `cmd/serve/serve.go`, `cmd/pull/pull.go`, `cmd/commit/commit.go`, `cmd/login/login.go`, `cmd/version/version.go` | The commands and their help text |
-| `internal/app/login.go`, `internal/app/storage.go`, `internal/credentials/credentials.go` | `login`/`logout`, `--storage` selection, the credentials file ([login.md](./login.md)) |
+| `internal/app/login.go`, `internal/app/space.go`, `internal/app/minted.go`, `internal/app/storage.go`, `internal/credentials/credentials.go` | `login`/`logout`/`space`, minted tokens, `--storage` selection, the credentials file ([login.md](./login.md)) |
 | `internal/app/config.go` | `FlagReference`, `HelpText`, precedence and validation ([config.md](./config.md)) |
 | `internal/app/command.go` | `Report`: the CLI result report |
 | `internal/app/logging.go`, `internal/app/perf.go` | Logging and `DEBUG_PERF` ([logging.md](./logging.md)) |
@@ -27,7 +27,7 @@ MCP host → npx -y slivingdoc serve --bucket B    # launcher → native binary 
   startup: config → pinned libgit2 → S3 probe (hosted: access check) → serve two tools over stdio
   agent: notes_pull → edit UTF-8 files in the notebook directory → notes_commit
 human: slivingdoc pull [path] → edit → slivingdoc commit [path] -m "msg"
-hosted: slivingdoc login → approve in the browser → serve, pull and commit use the stored token
+hosted: slivingdoc login → approve in the browser → [slivingdoc space <name>] → serve, pull and commit mint space tokens
 ```
 
 ## Commands
@@ -40,8 +40,9 @@ flag.
 | `serve` (`s`)   | Serve the notebook over MCP stdio. This is the server.        |
 | `pull` (`p`)    | Write the current notebook into a directory and exit.         |
 | `commit` (`c`)  | Publish the changes at a directory (`-m <message>`) and exit. |
-| `login`         | Store a hosted API token approved in the browser.             |
-| `logout`        | Revoke a stored token and remove it.                          |
+| `login`         | Log in to a hosted account through the browser.               |
+| `space`         | List the login's spaces, or set the default one (`space <n>`).|
+| `logout`        | Revoke the stored login key and its tokens, and remove it.    |
 | `version` (`v`) | Print `slivingdoc <semver>` and exit, touching nothing else.  |
 
 ## Direct use: pull and commit
@@ -120,18 +121,18 @@ overrides defaults.
 `--bucket` is required for S3. `--space` (and `SLIVINGDOC_SPACE`) is the
 same setting under its hosted name; passing both spellings with different
 values refuses startup. In hosted mode the space defaults, with
-`SLIVINGDOC_TOKEN`, to the token's own space, and otherwise to the space
-of the default login when `--storage` is not `s3`; a space that is given
-must be the token's space. `-h` on any of the three
+`SLIVINGDOC_TOKEN`, to the token's own space, and otherwise to the stored
+login's default space when `--storage` is not `s3`; a space that is given
+must be the token's space, or one the login reaches. `-h` on any of the three
 prints the same reference. A non-empty `SLIVINGDOC_TOKEN`, or a stored
-login for the space, switches to [hosted storage](#hosted-storage), which
+login, switches to [hosted storage](#hosted-storage), which
 changes the meaning of `--bucket`/`--space` and `--endpoint` as noted; `--storage`
 makes the choice explicit ([Choosing the storage](#choosing-the-storage)).
 
 | Function                          | Flag                     | Environment variable              | Default                      |
 | --------------------------------- | ------------------------ | --------------------------------- | ---------------------------- |
 | Storage backend                   | `--storage`              | `SLIVINGDOC_STORAGE`              | `auto`                       |
-| Bucket or hosted space            | `--bucket` or `--space`  | `SLIVINGDOC_BUCKET` or `SLIVINGDOC_SPACE` | S3: none (required); hosted: the token's (`SLIVINGDOC_TOKEN`), else the default login's |
+| Bucket or hosted space            | `--bucket` or `--space`  | `SLIVINGDOC_BUCKET` or `SLIVINGDOC_SPACE` | S3: none (required); hosted: the token's (`SLIVINGDOC_TOKEN`), else the login's default space |
 | Object prefix                     | `--prefix`               | `SLIVINGDOC_PREFIX`               | `slivingdoc`                 |
 | S3 region                         | `--region`               | `AWS_REGION`                      | `us-east-1`                  |
 | S3 endpoint                       | `--endpoint`             | `AWS_ENDPOINT_URL_S3`             | empty (AWS resolution)       |
@@ -437,14 +438,16 @@ redacted. Bucket versioning is not required.
 
 Instead of a bucket, the notebook can live in a space of the slivingdoc
 hosted storage service ([slivingdoc.dev](https://slivingdoc.dev)). A
-non-empty `SLIVINGDOC_TOKEN`, or a stored login for the space
+non-empty `SLIVINGDOC_TOKEN`, or a stored login
 ([Logging in](#logging-in)), selects it:
 
-- Each token reaches exactly one space, so `--space` is optional: at
+- Each token reaches exactly one space, so with `SLIVINGDOC_TOKEN`
+  `--space` is optional: at
   startup the process asks the server which space the token reaches
   (`GET /v1/token`) and uses it. A `--space` that names a different
   space refuses startup, naming both; one that names the same space
-  changes nothing. When given, it is 1 to 63 lowercase letters, digits,
+  changes nothing. With a stored login, the space is `--space`, else
+  `SLIVINGDOC_SPACE`, else the default space. When given, it is 1 to 63 lowercase letters, digits,
   and inner hyphens. `--prefix` still separates notebooks inside the
   space.
 - The endpoint is `--endpoint`, else `SLIVINGDOC_ENDPOINT`, else
@@ -453,11 +456,12 @@ non-empty `SLIVINGDOC_TOKEN`, or a stored login for the space
   address. `AWS_ENDPOINT_URL_S3`, `AWS_REGION`, and the AWS credential
   chain are not used, and `--path-style` is validated, then unused. Beside
   `SLIVINGDOC_TOKEN` a region, AWS credentials and the `~/.aws` files are
-  simply ignored; `--region` counts only against a stored login for a
-  `--space` you named (see [Choosing the storage](#choosing-the-storage)),
+  simply ignored; `--region` counts only against a stored login used
+  with a `--space` you named (see [Choosing the storage](#choosing-the-storage)),
   and the `--endpoint` flag, `AWS_ENDPOINT_URL` or `AWS_ENDPOINT_URL_S3`
   beside the token refuse startup under `--storage auto`.
-- The token is read from the environment or the credentials file only, never from a flag, and
+- The token is read from the environment, or minted from the stored
+  login, never from a flag; `SLIVINGDOC_TOKEN`
   must be printable ASCII (0x21 to 0x7E) without white space. It travels only in
   the `Authorization` header and never appears in a diagnostic, a log
   line, or a tool result.
@@ -469,7 +473,7 @@ token, so a read-only token starts and can pull. A token the server does
 not accept, or a space it was not granted, refuses startup with a
 diagnostic that names `SLIVINGDOC_TOKEN` and the space setting you used
 (`--space` when none), or, for a stored
-login, says to run `slivingdoc login` again. A server too old to name a
+login, says to run `slivingdoc space` or `slivingdoc login` again. A server too old to name a
 token's space still works when `--space` is given.
 
 Account limits and refusals surface as `STORAGE_FAILURE` with their own reason:
@@ -485,21 +489,24 @@ The server's own explanation follows `The storage says:` in the message.
 
 ### Logging in
 
-A person does not need to copy a token: `slivingdoc login` gets one
-through the browser and stores it.
+A person does not need to copy a token: `slivingdoc login` logs in to
+the hosted account through the browser and stores an account key.
 
 ```text
-$ slivingdoc login --space notes
+$ slivingdoc login
 To log in, open this page and approve the code BCDF-GHJK:
   https://www.slivingdoc.dev/cli/login#BCDF-GHJK
 (or open https://www.slivingdoc.dev/cli/login and enter the code)
 Only approve it if you started this login in your own terminal.
 Waiting for approval (the code expires at 12:10:00 UTC)...
-Approved by ada@example.com for space "notes" (read and write), owned by ada@example.com.
+Approved by ada@example.com (read and write) until 2026-12-26 12:00 UTC.
   Storage endpoint: https://api.slivingdoc.dev
   Site: https://www.slivingdoc.dev
+  Spaces:
+    notes (read and write), owned by ada@example.com
 Store this login? [y/N] y
-Logged in as ada@example.com to space "notes" (read and write) until 2026-12-26 12:00 UTC
+The default space is "notes"; 'slivingdoc space <name>' changes it.
+Logged in as ada@example.com (read and write) until 2026-12-26 12:00 UTC; default space "notes"
 ```
 
 The prompt goes to stderr and the result line to stdout. The page opens in
@@ -507,72 +514,101 @@ a browser unless `--no-browser` is given or no browser starts (SSH,
 headless machines); then open it yourself, on any device. slivingdoc
 builds the page address itself from the site; the code travels after the
 `#`, so it never reaches a server log. On the page you sign in, pick the
-space (preselected by `--space`; a token for another space is refused)
-and the access (`--read-only` asks for read only), compare the code with
-the terminal, and approve. The code lives ten minutes at most.
+access (`--read-only` asks for read only), compare the code with the
+terminal, and approve. The login is to the account, not to one space. The
+code lives ten minutes at most.
 
 Whoever enters a code first decides it, so before anything is stored the
-login shows who approved it, the space and its owner, the access, the
-storage endpoint and the site. On a terminal it then asks `Store this
-login? [y/N]`; any answer but `y`, or Ctrl-C, revokes the new token and
-stores nothing (a second Ctrl-C while that revocation runs, up to 10
-seconds, is ignored). Without a terminal (a script) nothing is asked, so nobody
-confirms who approved a first login; check the `Approved by` line. A login that
-would replace a stored login, or with `--default` a default login, that
-another account approved is refused and its token revoked, unless
-`--force` is given. A replaced token is revoked only when the same account
-approved it; otherwise it stays valid and the login says to revoke it on
-the site's Tokens page if it is no longer needed.
+login shows who approved it, the access, the storage endpoint, the site,
+and every space the login reaches with its owner. On a terminal it then
+asks `Store this login? [y/N]`; any answer but `y`, or Ctrl-C, revokes the
+new key and stores nothing (a second Ctrl-C while that revocation runs, up
+to 10 seconds, is ignored). Without a terminal (a script) nothing is
+asked, so nobody confirms who approved a first login; check the `Approved
+by` line. A login that would replace a stored login another account
+approved is refused and its key revoked, unless `--force` is given. A
+replaced key is revoked only when the same account approved it;
+otherwise it stays valid and the login says to revoke it on the site's
+Tokens page if it is no longer needed.
 
-The token is an ordinary one-space token (90 days, label
-`CLI login (<hostname>)`), visible and revocable on the site's Tokens page.
-It is stored in `<user-config-dir>/slivingdoc/credentials.json`
+The key is an account CLI key (90 days, label `CLI login (<hostname>)`),
+visible and revocable on the site's Tokens page. It never reaches the
+storage service: each `serve`, `pull` or `commit` trades it at the site
+for a token of one space that lasts an hour, keeps that token in memory
+only, and `serve` gets a new one before it expires. It is stored in
+`<user-config-dir>/slivingdoc/credentials.json`
 (`~/.config/slivingdoc/` on Linux, `~/Library/Application Support/slivingdoc/`
 on macOS, `%AppData%\slivingdoc\` on Windows; `SLIVINGDOC_CONFIG_DIR`
-names another directory), mode 0600. A login made while no default is
-stored (the first one, or the first after logging out of the default)
-becomes the default login, whose space `serve`, `pull` and `commit` use when no bucket is
-given; a later login keeps the existing default and says so, and
-`--default` switches it, with a line naming the old and the new default.
-Logging in again for the same space at the same storage endpoint replaces
-the stored token. The file, and its directory, must belong to you and must
-not be accessible to other users: like ssh, slivingdoc refuses a symbolic
-link or anything but a regular file, a file or directory another user
-owns, a file group or other can read or write, and a directory they can
-write, and says which `chmod` fixes the mode. `login` checks the directory
-even before the file exists; every other command checks only an existing
-file. On Windows only the link and regular-file checks apply, and the file
-relies on the permissions of your user profile. `login` and `logout`
+names another directory), mode 0600, with one login per storage endpoint
+and that endpoint's default space. Logging in again replaces the stored
+key. A credentials file from an earlier slivingdoc (one token per space)
+is refused by every command with `run 'slivingdoc login' again`; `login`
+replaces it and says its tokens were not revoked. The file, and its
+directory, must belong to you and must not be accessible to other users:
+like ssh, slivingdoc refuses a symbolic link or anything but a regular
+file, a file or directory another user owns, a file group or other can
+read or write, and a directory they can write, and says which `chmod`
+fixes the mode. `login` checks the directory even before the file exists;
+every other command checks only an existing file. On Windows only the
+link and regular-file checks apply, and the file relies on the
+permissions of your user profile. `login`, `logout` and `space <name>`
 change the file under a lock (`credentials.lock` beside it), so two of
-them never lose each other's entry.
+them never lose each other's change.
+
+**The default space.** When the login reaches exactly one space, it
+becomes the default space. Otherwise the login lists them and says to run
+`slivingdoc space <name>`; a default from an earlier login is kept while
+the login still reaches it. `--space` (or `--bucket`) on `login` sets the
+default directly, and the login must reach it: otherwise the key is
+revoked and nothing is stored.
+
+```text
+$ slivingdoc space
+* notes (read and write), owned by ada@example.com
+  team (read only), owned by bob@example.com
+$ slivingdoc space team
+The default space is now team (read only), owned by bob@example.com
+```
+
+`slivingdoc space` lists the spaces the login reaches and marks the
+default with `*`. `slivingdoc space <name>` makes a listed space the
+default; a name the login does not reach changes nothing. With logins for
+several endpoints, `--endpoint` (or `SLIVINGDOC_ENDPOINT`) picks one.
 
 `--site` (or `SLIVINGDOC_SITE`) names another site, such as a development
 deployment, whose logins then talk to that site's own storage API; the
 login says `Logging in through <site> (from --site)` before it sends
 anything, and the result line then names the storage endpoint. The default
-site's tokens are only accepted for `https://api.slivingdoc.dev`. A login
+site's keys are only accepted for `https://api.slivingdoc.dev`. A login
 through one site never replaces or revokes a login another site issued for
-the same space and endpoint: log out of that one first.
+the same endpoint: log out of that one first (`slivingdoc logout --site
+<site>`).
 
-`slivingdoc logout` revokes the default login's token (`--space` names
-another space) at the site that issued it and removes it; a token the site
-reports as unknown (`401 invalid_token`) counts as revoked, and any other
-failure keeps the login so you can retry. If another `login` stored a newer
-token for the same space meanwhile, logout keeps it and says so. A stored
-token is sent only to its storage endpoint and, when `login` or `logout`
-revokes it, to `/cli/v1/revoke` of the site that issued it.
+`slivingdoc logout` revokes every stored key at the site that issued it
+(`--site` narrows it to one site's logins), which also revokes every token
+minted from it, and removes the login and its default space. A key the
+site reports as unknown (`401 invalid_token`) counts as revoked, and any
+other failure keeps the login so you can retry. If another `login` stored a
+newer key meanwhile, logout keeps it and says so. A key is sent only to
+the site that issued it; a minted token only to the login's storage
+endpoint.
 
 Once logged in, `slivingdoc pull ~/notes`, `slivingdoc commit ~/notes -m
-msg` and `slivingdoc serve` need neither `SLIVINGDOC_TOKEN` nor `--space`.
-A stored login that has expired refuses startup with `run 'slivingdoc
-login --space <space>'` (or pass `--storage s3`), and a token the storage refuses at startup says to
-log in again. The token is read once when a process starts, so restart
-`serve` (your MCP host) after logging in again. Every process logs, at
-Info on stderr, which store it chose: `storage selected backend=hosted
-endpoint=... space=... token=login` (or `env`, or `backend=s3 ...
-token=none`; an S3 endpoint that comes from `AWS_ENDPOINT_URL_S3` or
-`AWS_ENDPOINT_URL` is logged as scheme and host with the variable's name,
-and none at all as `aws-default (SDK: env or profile)`).
+msg` and `slivingdoc serve` need neither `SLIVINGDOC_TOKEN` nor `--space`
+when a default space is set; `--space` (or `SLIVINGDOC_SPACE`) picks
+another space the login reaches. With no space and no default, startup is
+refused and names `slivingdoc space <name>`. A stored login that has
+expired refuses startup with `run 'slivingdoc login' again` (or pass
+`--storage s3`); a space the site will not mint a token for (not granted,
+suspended) refuses startup and suggests `slivingdoc space`. The key and
+the default space are read once when a process starts, so restart `serve`
+(your MCP host) after logging in again or changing the default. Every
+process logs, at Info on stderr, which store it chose: `storage selected
+backend=hosted endpoint=... space=... token=login` (or `env`, or
+`backend=s3 ... token=none`; an S3 endpoint that comes from
+`AWS_ENDPOINT_URL_S3` or `AWS_ENDPOINT_URL` is logged as scheme and host
+with the variable's name, and none at all as `aws-default (SDK: env or
+profile)`).
 
 ### Choosing the storage
 
@@ -597,13 +633,14 @@ stored login: any of
    region, AWS credentials and `~/.aws` files are not read in hosted mode. It
    wins over a stored login, so a read-only token in one MCP entry and a
    login in another can sit side by side.
-2. No bucket is given and a default login exists: hosted storage with the
-   default login, whatever S3 settings exist (S3 would have no bucket).
-3. The space is given (`--space`, `--bucket`, `SLIVINGDOC_SPACE` or
-   `SLIVINGDOC_BUCKET`) and a stored
-   login for that space exists: with S3 settings, startup is refused,
-   naming them; pass `--storage hosted` or `--storage s3`. Otherwise
-   hosted storage with the login.
+2. A login is stored and no space is given: hosted storage with the
+   login's default space, whatever S3 settings exist (S3 would have no
+   bucket); with no default space, startup is refused, naming
+   `slivingdoc space <name>`.
+3. A login is stored and the space is given (`--space`, `--bucket`,
+   `SLIVINGDOC_SPACE` or `SLIVINGDOC_BUCKET`): with S3 settings, startup
+   is refused, naming them; pass `--storage hosted` or `--storage s3`.
+   Otherwise hosted storage with the login.
 4. Otherwise: S3.
 
 `--storage s3` uses the AWS credential chain only; `SLIVINGDOC_TOKEN` and
@@ -611,12 +648,11 @@ stored logins are ignored, so a token can never reach an S3 endpoint.
 `--storage hosted` uses `SLIVINGDOC_TOKEN`, else the stored login, and
 refuses to start without either; it never looks at S3 settings.
 
-A stored token is only sent to the storage endpoint it was issued for. An
+A stored login is only used for the storage endpoint it was issued for. An
 explicit `--endpoint` or `SLIVINGDOC_ENDPOINT` that differs means the login
-does not apply: S3 under `auto` (and then the default login's space is not
-used as the bucket), a refusal under `--storage hosted`. When one space
-has logins at several endpoints, pass `--endpoint` to choose, even when
-one of them is the default. A credentials file that cannot be read
+does not apply: S3 under `auto` (and then its default space is not used as
+the bucket), a refusal under `--storage hosted`. With logins for several
+endpoints, pass `--endpoint` to choose. A credentials file that cannot be read
 refuses startup; fix or remove it, or pass `--storage s3`.
 [login.md](./login.md) has the details and its threat model.
 
@@ -653,8 +689,9 @@ host already runs in a credentialed environment; replace it with
 store such as SeaweedFS. For [hosted storage](#hosted-storage), the
 `env` block carries `SLIVINGDOC_TOKEN` instead, and `--space` can be
 left out: the token names its space. After [`slivingdoc login`](#logging-in)
-neither is needed, and `"args": ["-y", "slivingdoc", "serve", "--space",
-"notes"]` with no `env` block uses the stored login.
+neither is needed: `"args": ["-y", "slivingdoc", "serve"]` with no `env`
+block uses the stored login and its default space, and `"--space",
+"notes"` picks another space the login reaches.
 
 Stdout carries only protocol messages; logs go to stderr. The host and
 the server share the visible directory: agents and humans edit files

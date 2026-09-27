@@ -1,9 +1,12 @@
 // Package sitelogin is the client of the site's CLI login routes
 // (architecture/login.md): POST /cli/v1/start opens a device approval,
 // POST /cli/v1/token polls it until a person approves or denies it in the
-// browser, and POST /cli/v1/revoke withdraws an issued token. The client
-// validates everything the site answers before a caller prints it, opens
-// it in a browser, or stores it, and never follows a redirect.
+// browser and then returns the account CLI key, GET /cli/v1/spaces lists
+// the spaces that key reaches, POST /cli/v1/space-token trades the key
+// for a short-lived token of one space, and POST /cli/v1/revoke withdraws
+// a key with every token minted from it. The client validates everything
+// the site answers before a caller prints it, opens it in a browser,
+// stores it, or sends it on, and never follows a redirect.
 package sitelogin
 
 import (
@@ -31,6 +34,8 @@ const DefaultSite = "https://www.slivingdoc.dev"
 const (
 	startPath  = "/cli/v1/start"
 	tokenPath  = "/cli/v1/token"
+	spacesPath = "/cli/v1/spaces"
+	mintPath   = "/cli/v1/space-token"
 	revokePath = "/cli/v1/revoke"
 )
 
@@ -57,14 +62,16 @@ const loginPagePath = "/cli/login"
 // groups of four consonants.
 var userCodePattern = regexp.MustCompile(`^[BCDFGHJKLMNPQRSTVWXZ]{4}-[BCDFGHJKLMNPQRSTVWXZ]{4}$`)
 
-// TokenHint is added to every error after which a token may exist that the
-// client never received.
-const TokenHint = "a token may have been issued; revoke it on the Tokens page"
+// TokenHint is added to every error after which a login key may exist
+// that the client never received.
+const TokenHint = "a login key may have been issued; revoke it on the Tokens page"
 
-// bodyLimit bounds how much of any answer is read, and requestLimit is
-// the size every request body stays below, as the site requires.
+// bodyLimit bounds how much of an answer is read, spacesLimit the larger
+// space list, and requestLimit is the size every request body stays
+// below, as the site requires.
 const (
 	bodyLimit    = 16 << 10
+	spacesLimit  = 256 << 10
 	requestLimit = 4 << 10
 )
 
@@ -90,18 +97,18 @@ var (
 	ErrBrokenAnswer = errors.New("sitelogin: the site's answer broke off")
 )
 
-// RejectedTokenError reports a token the site issued in an answer outside
-// the wire contract. The token itself is sendable, so the caller can
-// revoke it rather than leave it valid and unseen; Error never contains
-// it.
-type RejectedTokenError struct {
-	Token string
-	Err   error
+// RejectedError reports a key or token the site issued in an answer
+// outside the wire contract. The credential itself is sendable, so the
+// caller can revoke it rather than leave it valid and unseen; Error never
+// contains it.
+type RejectedError struct {
+	Credential string
+	Err        error
 }
 
-func (e *RejectedTokenError) Error() string { return e.Err.Error() }
+func (e *RejectedError) Error() string { return e.Err.Error() }
 
-func (e *RejectedTokenError) Unwrap() error { return e.Err }
+func (e *RejectedError) Unwrap() error { return e.Err }
 
 // The backoff of a poll that got no usable answer: the pause doubles from
 // the interval per failure in a row, up to maxRetryWait.
@@ -211,13 +218,10 @@ func timerSleep(ctx context.Context, d time.Duration) error {
 	}
 }
 
-// StartRequest asks the site for a device approval.
+// StartRequest asks the site for a device approval of an account login.
 type StartRequest struct {
-	// Space preselects a space on the approval page; empty lets the person
-	// choose.
-	Space  string
 	Access credentials.Access
-	// Client labels the token, usually the host name; it is cut to the
+	// Client labels the key, usually the host name; it is cut to the
 	// printable ASCII the route accepts.
 	Client string
 }
@@ -239,7 +243,6 @@ type Approval struct {
 }
 
 type startBody struct {
-	Space  string `json:"space,omitempty"`
 	Access string `json:"access"`
 	Client string `json:"client,omitempty"`
 }
@@ -256,8 +259,7 @@ type startAnswer struct {
 // Start opens a device approval.
 func (c *Client) Start(ctx context.Context, req StartRequest) (Approval, error) {
 	var ans startAnswer
-	if err := c.post(ctx, startPath, "", startBody{
-		Space:  req.Space,
+	if err := c.call(ctx, http.MethodPost, startPath, "", startBody{
 		Access: string(req.Access),
 		Client: label(req.Client),
 	}, &ans); err != nil {
@@ -294,19 +296,19 @@ func (c *Client) Start(ctx context.Context, req StartRequest) (Approval, error) 
 	}, nil
 }
 
-// Issued is the token an approved login returns.
+// Issued is the account CLI key an approved login returns.
 type Issued struct {
-	Token    string
-	Space    string
-	Access   credentials.Access
-	Expires  credentials.Expiry
+	// Key is sent only to the site: it lists spaces and mints space
+	// tokens, and never reaches a storage endpoint.
+	Key     string
+	Access  credentials.Access
+	Expires credentials.Expiry
+	// Endpoint is the hosted API the key mints tokens for.
 	Endpoint string
-	// Account is the email of the person who approved the code, and Owner
-	// the email of the space's owner. Whoever submits a code first decides
-	// it, so a caller shows both: that is how a person notices that
-	// someone else approved their login.
+	// Account is the email of the person who approved the code. Whoever
+	// submits a code first decides it, so a caller shows it: that is how a
+	// person notices that someone else approved their login.
 	Account string
-	Owner   string
 }
 
 type tokenBody struct {
@@ -314,23 +316,21 @@ type tokenBody struct {
 }
 
 type tokenAnswer struct {
-	Token     string  `json:"token"`
-	Space     string  `json:"space"`
+	Key       string  `json:"key"`
 	Access    string  `json:"access"`
 	ExpiresAt *string `json:"expiresAt"`
 	Endpoint  string  `json:"endpoint"`
 	Account   string  `json:"account"`
-	Owner     string  `json:"owner"`
 }
 
-// Wait polls the approval until the site issues the token, the person
+// Wait polls the approval until the site issues the key, the person
 // denies it, the code expires, or ctx ends. It pauses Interval before
 // every poll and adds five seconds after each slow_down answer. A poll
 // that gets no answer or a 5xx is retried with a doubling pause, never
 // past the code's expiry, until the code expires; any other error answer
-// ends the wait. A token issued in an answer outside the contract is
-// returned inside a *RejectedTokenError. Every other failure after which
-// the site may have issued a token (a success answer that breaks off, is
+// ends the wait. A key issued in an answer outside the contract is
+// returned inside a *RejectedError. Every other failure after which
+// the site may have issued a key (a success answer that breaks off, is
 // too large or cannot be decoded, or a cancellation while a poll is in
 // flight) carries TokenHint.
 func (c *Client) Wait(ctx context.Context, a Approval) (Issued, error) {
@@ -338,7 +338,7 @@ func (c *Client) Wait(ctx context.Context, a Approval) (Issued, error) {
 	var failures int
 	var lastFailure error
 	// lost is set once a poll went unanswered: that poll may have been the
-	// one the site issued the token to, so a later expiry or a stop during
+	// one the site issued the key to, so a later expiry or a stop during
 	// a later sleep carries the hint.
 	lost := noLostPoll
 	afterLoss := func(err error) error {
@@ -359,7 +359,7 @@ func (c *Client) Wait(ctx context.Context, a Approval) (Issued, error) {
 			return Issued{}, afterLoss(ErrCodeExpired)
 		}
 		var ans tokenAnswer
-		err := c.post(ctx, tokenPath, "", tokenBody{DeviceCode: a.deviceCode}, &ans)
+		err := c.call(ctx, http.MethodPost, tokenPath, "", tokenBody{DeviceCode: a.deviceCode}, &ans)
 		if err != nil && ctx.Err() != nil {
 			return Issued{}, fmt.Errorf("sitelogin: stopped while a poll was in flight: %w; %s", ctx.Err(), TokenHint)
 		}
@@ -391,7 +391,7 @@ func (c *Client) Wait(ctx context.Context, a Approval) (Issued, error) {
 			return Issued{}, err
 		}
 		got, err := issued(ans)
-		var rejected *RejectedTokenError
+		var rejected *RejectedError
 		if err != nil && !errors.As(err, &rejected) {
 			return Issued{}, fmt.Errorf("%w; %s", err, TokenHint)
 		}
@@ -435,53 +435,185 @@ func withMessage(outcome error, r *Refusal) error {
 	return fmt.Errorf("%w (the site says: %s)", outcome, r.Message)
 }
 
-// emailLimit bounds the account and owner the client prints.
+// emailLimit bounds the account and owners the client prints.
 const emailLimit = 254
 
 func issued(ans tokenAnswer) (Issued, error) {
-	if err := httpstore.ValidateToken(ans.Token); err != nil {
-		return Issued{}, fmt.Errorf("%w: the token cannot be used", ErrProtocol)
+	if err := httpstore.ValidateToken(ans.Key); err != nil {
+		return Issued{}, fmt.Errorf("%w: the key cannot be used", ErrProtocol)
 	}
-	reject := func(format string, args ...any) (Issued, error) {
-		return Issued{}, &RejectedTokenError{Token: ans.Token, Err: fmt.Errorf("%w: "+format, append([]any{ErrProtocol}, args...)...)}
-	}
-	if err := httpstore.ValidateSpace(ans.Space); err != nil {
-		return reject("%w", err)
-	}
+	reject := rejecter(ans.Key)
 	access, err := credentials.ParseAccess(ans.Access)
 	if err != nil {
-		return reject("%w", err)
+		return Issued{}, reject("%w", err)
 	}
 	if err := httpstore.ValidateEndpoint(ans.Endpoint); err != nil {
-		return reject("%w", err)
+		return Issued{}, reject("%w", err)
 	}
 	if !usableEmail(ans.Account) {
-		return reject("no usable account")
+		return Issued{}, reject("no usable account")
 	}
-	if !usableEmail(ans.Owner) {
-		return reject("no usable owner")
-	}
-	if ans.ExpiresAt == nil {
-		return reject("no expiresAt")
-	}
-	at, err := time.Parse(time.RFC3339, *ans.ExpiresAt)
+	expires, err := expiry(ans.ExpiresAt)
 	if err != nil {
-		return reject("expiresAt is not RFC 3339")
+		return Issued{}, reject("%w", err)
 	}
-	return Issued{
-		Token: ans.Token, Space: ans.Space, Access: access, Endpoint: ans.Endpoint,
-		Expires: credentials.ExpiresAt(at), Account: ans.Account, Owner: ans.Owner,
-	}, nil
+	return Issued{Key: ans.Key, Access: access, Endpoint: ans.Endpoint, Expires: expires, Account: ans.Account}, nil
 }
 
-// Revoke withdraws token at the site. A token the site no longer knows
-// (401 invalid_token) is already withdrawn, so it counts as done; any other
-// 401 is a failure.
-func (c *Client) Revoke(ctx context.Context, token string) error {
-	if err := httpstore.ValidateToken(token); err != nil {
-		return errors.New("sitelogin: the stored token cannot be sent")
+// rejecter builds the *RejectedError of an answer that carried the
+// sendable credential secret.
+func rejecter(secret string) func(format string, args ...any) error {
+	return func(format string, args ...any) error {
+		return &RejectedError{Credential: secret, Err: fmt.Errorf("%w: "+format, append([]any{ErrProtocol}, args...)...)}
 	}
-	err := c.post(ctx, revokePath, token, nil, nil)
+}
+
+// expiry reads the required expiresAt of a key or a minted token.
+func expiry(raw *string) (credentials.Expiry, error) {
+	if raw == nil {
+		return credentials.Expiry{}, errors.New("no expiresAt")
+	}
+	at, err := time.Parse(time.RFC3339, *raw)
+	if err != nil {
+		return credentials.Expiry{}, errors.New("expiresAt is not RFC 3339")
+	}
+	return credentials.ExpiresAt(at), nil
+}
+
+// Space is one space an account CLI key reaches.
+type Space struct {
+	Name string
+	// Owner is the email of the space's owner.
+	Owner string
+	// Access is what the key may do in the space: the grant, capped by the
+	// key.
+	Access credentials.Access
+}
+
+type spacesAnswer struct {
+	Spaces *[]spaceAnswer `json:"spaces"`
+}
+
+type spaceAnswer struct {
+	Name   string `json:"name"`
+	Owner  string `json:"owner"`
+	Access string `json:"access"`
+}
+
+// Spaces lists the spaces key reaches, in the site's order. A key the
+// site no longer knows is a *Refusal with Status 401.
+func (c *Client) Spaces(ctx context.Context, key string) ([]Space, error) {
+	if err := httpstore.ValidateToken(key); err != nil {
+		return nil, errors.New("sitelogin: the stored key cannot be sent")
+	}
+	var ans spacesAnswer
+	if err := c.call(ctx, http.MethodGet, spacesPath, key, nil, &ans); err != nil {
+		return nil, err
+	}
+	if ans.Spaces == nil {
+		return nil, fmt.Errorf("%w: no spaces list", ErrProtocol)
+	}
+	spaces := make([]Space, 0, len(*ans.Spaces))
+	seen := map[string]bool{}
+	for i, sp := range *ans.Spaces {
+		if err := httpstore.ValidateSpace(sp.Name); err != nil {
+			return nil, fmt.Errorf("%w: spaces[%d]: %w", ErrProtocol, i, err)
+		}
+		if seen[sp.Name] {
+			return nil, fmt.Errorf("%w: spaces[%d]: %s is listed twice", ErrProtocol, i, sp.Name)
+		}
+		seen[sp.Name] = true
+		if !usableEmail(sp.Owner) {
+			return nil, fmt.Errorf("%w: spaces[%d]: no usable owner", ErrProtocol, i)
+		}
+		access, err := credentials.ParseAccess(sp.Access)
+		if err != nil {
+			return nil, fmt.Errorf("%w: spaces[%d]: %w", ErrProtocol, i, err)
+		}
+		spaces = append(spaces, Space{Name: sp.Name, Owner: sp.Owner, Access: access})
+	}
+	return spaces, nil
+}
+
+// Minted is a short-lived token of one space, traded for an account CLI
+// key. It is sent only to Endpoint and never stored.
+type Minted struct {
+	Token    string
+	Space    string
+	Access   credentials.Access
+	Expires  credentials.Expiry
+	Endpoint string
+	// Owner is the email of the space's owner.
+	Owner string
+}
+
+type mintBody struct {
+	Space  string `json:"space"`
+	Access string `json:"access,omitempty"`
+}
+
+type mintAnswer struct {
+	Token     string  `json:"token"`
+	Space     string  `json:"space"`
+	Access    string  `json:"access"`
+	ExpiresAt *string `json:"expiresAt"`
+	Endpoint  string  `json:"endpoint"`
+	Owner     string  `json:"owner"`
+}
+
+// Mint trades key for a token of space. An empty access asks for the most
+// the key and the grant allow; AccessRead caps the token at read. A token
+// in an answer outside the contract (another space, more access than
+// asked, no expiry) is returned inside a *RejectedError. The site's
+// refusals are a *Refusal: 401 invalid_token, 404 no_space, 403
+// access_denied or space_suspended, and 429 busy.
+func (c *Client) Mint(ctx context.Context, key, space string, access credentials.Access) (Minted, error) {
+	if err := httpstore.ValidateToken(key); err != nil {
+		return Minted{}, errors.New("sitelogin: the stored key cannot be sent")
+	}
+	if err := httpstore.ValidateSpace(space); err != nil {
+		return Minted{}, fmt.Errorf("sitelogin: %w", err)
+	}
+	var ans mintAnswer
+	if err := c.call(ctx, http.MethodPost, mintPath, key, mintBody{Space: space, Access: string(access)}, &ans); err != nil {
+		return Minted{}, err
+	}
+	if err := httpstore.ValidateToken(ans.Token); err != nil {
+		return Minted{}, fmt.Errorf("%w: the minted token cannot be used", ErrProtocol)
+	}
+	reject := rejecter(ans.Token)
+	if ans.Space != space {
+		return Minted{}, reject("the token is for another space")
+	}
+	got, err := credentials.ParseAccess(ans.Access)
+	if err != nil {
+		return Minted{}, reject("%w", err)
+	}
+	if access == credentials.AccessRead && got != credentials.AccessRead {
+		return Minted{}, reject("a read token was asked for and a write token issued")
+	}
+	if err := httpstore.ValidateEndpoint(ans.Endpoint); err != nil {
+		return Minted{}, reject("%w", err)
+	}
+	if !usableEmail(ans.Owner) {
+		return Minted{}, reject("no usable owner")
+	}
+	expires, err := expiry(ans.ExpiresAt)
+	if err != nil {
+		return Minted{}, reject("%w", err)
+	}
+	return Minted{Token: ans.Token, Space: ans.Space, Access: got, Expires: expires, Endpoint: ans.Endpoint, Owner: ans.Owner}, nil
+}
+
+// Revoke withdraws a credential at the site: a key together with every
+// token minted from it, or one minted token alone. A credential the site
+// no longer knows (401 invalid_token) is already withdrawn, so it counts
+// as done; any other 401 is a failure.
+func (c *Client) Revoke(ctx context.Context, credential string) error {
+	if err := httpstore.ValidateToken(credential); err != nil {
+		return errors.New("sitelogin: the stored key cannot be sent")
+	}
+	err := c.call(ctx, http.MethodPost, revokePath, credential, nil, nil)
 	var refusal *Refusal
 	if errors.As(err, &refusal) && refusal.Status == http.StatusUnauthorized && refusal.Code == "invalid_token" {
 		return nil
@@ -515,9 +647,9 @@ type errorAnswer struct {
 	Message string `json:"message"`
 }
 
-// post sends one JSON request. A non-empty token authenticates it; a nil
-// out expects 204 and no body.
-func (c *Client) post(ctx context.Context, path, token string, in, out any) error {
+// call sends one request with an optional JSON body. A non-empty bearer
+// authenticates it; a nil out expects 204 and no body.
+func (c *Client) call(ctx context.Context, method, path, bearer string, in, out any) error {
 	var body io.Reader
 	if in != nil {
 		data, err := json.Marshal(in)
@@ -529,7 +661,7 @@ func (c *Client) post(ctx context.Context, path, token string, in, out any) erro
 		}
 		body = bytes.NewReader(data)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.site.String()+path, body)
+	req, err := http.NewRequestWithContext(ctx, method, c.site.String()+path, body)
 	if err != nil {
 		return fmt.Errorf("sitelogin: build request: %w", err)
 	}
@@ -540,8 +672,8 @@ func (c *Client) post(ctx context.Context, path, token string, in, out any) erro
 	if c.userAgent != "" {
 		req.Header.Set("User-Agent", c.userAgent)
 	}
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
+	if bearer != "" {
+		req.Header.Set("Authorization", "Bearer "+bearer)
 	}
 	resp, err := c.client.Do(req)
 	if err != nil {
@@ -551,7 +683,11 @@ func (c *Client) post(ctx context.Context, path, token string, in, out any) erro
 		return fmt.Errorf("%w (%s): %w", ErrUnreachable, c.site, err)
 	}
 	defer resp.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, bodyLimit+1))
+	limit := bodyLimit
+	if path == spacesPath {
+		limit = spacesLimit
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, int64(limit)+1))
 	if err != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -566,8 +702,8 @@ func (c *Client) post(ctx context.Context, path, token string, in, out any) erro
 	switch {
 	case resp.StatusCode >= 200 && resp.StatusCode < 300 && out == nil:
 		return nil
-	case resp.StatusCode == http.StatusOK && len(data) > bodyLimit:
-		return fmt.Errorf("%w: the answer is larger than %d bytes", ErrProtocol, bodyLimit)
+	case resp.StatusCode == http.StatusOK && len(data) > limit:
+		return fmt.Errorf("%w: the answer is larger than %d bytes", ErrProtocol, limit)
 	case resp.StatusCode == http.StatusOK:
 		if err := json.Unmarshal(data, out); err != nil {
 			return fmt.Errorf("%w: the body is not the expected JSON", ErrProtocol)

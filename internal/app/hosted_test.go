@@ -262,10 +262,10 @@ func TestCheckStoreHosted(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "refused the token") || strings.Contains(err.Error(), "sld_unknown") {
 		t.Fatalf("checkStore with an unknown token = %v, want a redacted token refusal", err)
 	}
-	err = checkStore(context.Background(), newStore(t, "sld_unknown"), config{tokenOrigin: originLogin})
-	if err == nil || !strings.Contains(err.Error(), "refused the stored login") ||
-		!strings.Contains(err.Error(), "run 'slivingdoc login' again") || strings.Contains(err.Error(), "sld_unknown") {
-		t.Fatalf("checkStore with an unknown stored login = %v, want a redacted refusal that says to log in again", err)
+	err = checkStore(context.Background(), newStore(t, "sld_unknown"), config{tokenOrigin: originLogin, bucket: "notes"})
+	if err == nil || !strings.Contains(err.Error(), `refused the token minted for space "notes"`) ||
+		!strings.Contains(err.Error(), "'slivingdoc login' again") || strings.Contains(err.Error(), "sld_unknown") {
+		t.Fatalf("checkStore with a refused minted token = %v, want a redacted refusal that says to log in again", err)
 	}
 
 	g.RefuseNext(http.MethodGet, http.StatusNotFound, "not_found")
@@ -301,9 +301,9 @@ func (s *refusingStore) CreateObject(context.Context, string, []byte) (storage.E
 
 func (s *refusingStore) DeleteObjects(context.Context, []string) error { return nil }
 
-// TestResolveHostedSpaceNamesWhereTheSpaceCameFrom proves a space from the
-// default login, or a stored login's own space, that the token does not
-// reach is refused with the fix that applies, never silently replaced.
+// TestResolveHostedSpaceNamesWhereTheSpaceCameFrom proves a named space
+// that SLIVINGDOC_TOKEN does not reach is refused with the fix that
+// applies to the setting that named it, never silently replaced.
 func TestResolveHostedSpaceNamesWhereTheSpaceCameFrom(t *testing.T) {
 	g := gatewaytest.Start(t)
 	g.AddSpace("notes", 1<<20)
@@ -317,11 +317,6 @@ func TestResolveHostedSpaceNamesWhereTheSpaceCameFrom(t *testing.T) {
 			"SLIVINGDOC_BUCKET",
 			config{bucket: "team", bucketFrom: bucketFromEnv, tokenOrigin: originEnv},
 			`not "team" from SLIVINGDOC_BUCKET; unset SLIVINGDOC_BUCKET to use the token's space`,
-		},
-		{
-			"a stored login whose token reaches another space",
-			config{bucket: "team", bucketFrom: bucketFromLogin, tokenOrigin: originLogin},
-			`the stored login for space "team" holds a token that reaches hosted space "notes"; run 'slivingdoc login --space team' again`,
 		},
 		{
 			"a named bucket",
@@ -348,18 +343,18 @@ func TestResolveHostedSpaceNamesWhereTheSpaceCameFrom(t *testing.T) {
 			}
 		})
 	}
-	cfg, err := resolveHostedSpace(context.Background(), config{endpoint: g.URL(), token: hostedTestToken, bucket: "notes", bucketFrom: bucketFromLogin, tokenOrigin: originLogin}, noLogins)
+	cfg, err := resolveHostedSpace(context.Background(), config{endpoint: g.URL(), token: hostedTestToken, bucket: "notes", bucketFrom: bucketFromEnv, tokenOrigin: originEnv}, noLogins)
 	if err != nil || cfg.bucket != "notes" {
-		t.Fatalf("resolveHostedSpace() of an agreeing login = %q, %v", cfg.bucket, err)
+		t.Fatalf("resolveHostedSpace() of an agreeing space = %q, %v", cfg.bucket, err)
 	}
 }
 
 func noLogins() (credentials.Set, error) { return credentials.Set{}, nil }
 
-// TestResolveHostedSpaceFallsBackToTheDefaultLogin proves a server without
-// the token lookup takes the default login's space only when that login is
-// for the token's endpoint, and that the stored logins are read only then.
-func TestResolveHostedSpaceFallsBackToTheDefaultLogin(t *testing.T) {
+// TestResolveHostedSpaceFallsBackToTheDefaultSpace proves a server without
+// the token lookup takes the default space stored for the token's
+// endpoint, and that the stored logins are read only then.
+func TestResolveHostedSpaceFallsBackToTheDefaultSpace(t *testing.T) {
 	g := gatewaytest.Start(t)
 	g.AddSpace("notes", 1<<20)
 	g.Grant(hostedTestToken, "notes", false)
@@ -376,18 +371,18 @@ func TestResolveHostedSpaceFallsBackToTheDefaultLogin(t *testing.T) {
 		want     string
 	}{
 		{"same endpoint", g.URL(), ""},
-		{"another endpoint", devEndpoint, "the default login is for " + devEndpoint + ", not " + g.URL() + "; pass the space name as --space"},
+		{"another endpoint", devEndpoint, "no default space is stored for " + g.URL() + "; pass the space name as --space"},
 		{"another endpoint with user information", "https://user:secret@host.example.test", "logins[0]: the endpoint has user information; fix or remove the credentials file"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			dir := strings.TrimPrefix(writeLogins(t, &storedKey{row.endpoint, "notes"}, entry(row.endpoint, "notes", loginToken)), credentials.DirEnv+"=")
+			dir := strings.TrimPrefix(writeLogins(t, defaults(row.endpoint, "notes"), entry(row.endpoint, loginToken)), credentials.DirEnv+"=")
 			logins := func() (credentials.Set, error) {
 				return loadLogins(map[string]string{credentials.DirEnv: dir}, runtime.GOOS)
 			}
 			got, err := resolveHostedSpace(context.Background(), cfg, logins)
 			if row.want == "" {
 				if err != nil || got.bucket != "notes" || got.bucketFrom != bucketFromLogin {
-					t.Fatalf("resolve = %q from %v, %v; want the default login's space", got.bucket, got.bucketFrom, err)
+					t.Fatalf("resolve = %q from %v, %v; want the stored default space", got.bucket, got.bucketFrom, err)
 				}
 				return
 			}
@@ -396,18 +391,25 @@ func TestResolveHostedSpaceFallsBackToTheDefaultLogin(t *testing.T) {
 			}
 		})
 	}
-	if _, err := resolveHostedSpace(context.Background(), cfg, noLogins); err == nil || !strings.Contains(err.Error(), "no default login names one") {
-		t.Fatalf("resolve without a default login = %v, want the refusal saying so", err)
+	if _, err := resolveHostedSpace(context.Background(), cfg, noLogins); err == nil || !strings.Contains(err.Error(), "no default space is stored") {
+		t.Fatalf("resolve without a default space = %v, want the refusal saying so", err)
+	}
+	outdated := strings.TrimPrefix(outdatedLogins(t), credentials.DirEnv+"=")
+	_, err := resolveHostedSpace(context.Background(), cfg, func() (credentials.Set, error) {
+		return loadLogins(map[string]string{credentials.DirEnv: outdated}, runtime.GOOS)
+	})
+	if !errors.Is(err, credentials.ErrOutdated) || strings.Contains(err.Error(), loginToken) {
+		t.Fatalf("resolve with an earlier build's file = %v, want ErrOutdated without the token", err)
 	}
 
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, credentials.FileName), []byte(`{"version":1,"logins":[{"token":"`+loginToken+`"}]}`), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, credentials.FileName), []byte(`{"version":2,"logins":[{"key":"`+loginToken+`"}]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	broken := func() (credentials.Set, error) {
 		return loadLogins(map[string]string{credentials.DirEnv: dir}, runtime.GOOS)
 	}
-	_, err := resolveHostedSpace(context.Background(), cfg, broken)
+	_, err = resolveHostedSpace(context.Background(), cfg, broken)
 	if err == nil || !errors.Is(err, credentials.ErrMalformed) ||
 		!strings.Contains(err.Error(), "the stored logins cannot supply it: credentials: malformed") ||
 		!strings.Contains(err.Error(), "fix or remove the credentials file, or pass the space name as --space") ||
@@ -424,8 +426,8 @@ func TestHostedCheckErrorFollowsTheSpaceSource(t *testing.T) {
 		cfg  config
 		want string
 	}{
-		{config{tokenOrigin: originLogin, bucket: "team", bucketFrom: bucketFromLogin}, "run 'slivingdoc login' again"},
-		{config{tokenOrigin: originEnv, bucket: "team", bucketFrom: bucketFromLogin}, `check SLIVINGDOC_TOKEN, or pass --space: the space "team" came from the default login`},
+		{config{tokenOrigin: originLogin, bucket: "team", bucketFrom: bucketFromLogin}, "run 'slivingdoc space' to list the login's spaces, or 'slivingdoc login' again"},
+		{config{tokenOrigin: originEnv, bucket: "team", bucketFrom: bucketFromLogin}, `check SLIVINGDOC_TOKEN, or pass --space: the space "team" is the stored default space`},
 		{config{tokenOrigin: originEnv, bucket: "team", bucketFrom: bucketFromEnv}, "check SLIVINGDOC_TOKEN and SLIVINGDOC_BUCKET"},
 		{config{tokenOrigin: originEnv, bucket: "team", bucketFrom: bucketFromFlag}, "check SLIVINGDOC_TOKEN and --bucket"},
 		{config{tokenOrigin: originEnv, bucket: "team", bucketFrom: bucketFromSpaceFlag}, "check SLIVINGDOC_TOKEN and --space"},

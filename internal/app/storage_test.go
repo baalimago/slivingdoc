@@ -20,29 +20,38 @@ const (
 	longAgo     = "2001-01-01T00:00:00Z"
 )
 
-// storedLogin is one entry of a test credentials file.
+// storedLogin is one login entry of a test credentials file.
 type storedLogin struct {
-	Endpoint  string `json:"endpoint"`
-	Space     string `json:"space"`
 	Site      string `json:"site"`
-	Token     string `json:"token"`
+	Endpoint  string `json:"endpoint"`
+	Key       string `json:"key"`
 	Access    string `json:"access"`
 	ExpiresAt string `json:"expiresAt,omitempty"`
+	Account   string `json:"account"`
 }
 
-type storedKey struct {
+// storedDefault is one default space of a test credentials file.
+type storedDefault struct {
 	Endpoint string `json:"endpoint"`
 	Space    string `json:"space"`
 }
 
-func entry(endpoint, space, token string) storedLogin {
-	return storedLogin{Endpoint: endpoint, Space: space, Site: "https://www.slivingdoc.dev", Token: token, Access: "write"}
+func entry(endpoint, key string) storedLogin {
+	return storedLogin{Site: "https://www.slivingdoc.dev", Endpoint: endpoint, Key: key, Access: "write", Account: "ada@example.test"}
 }
 
-// writeLogins writes a version 1 credentials file in the documented format
-// (architecture/login.md) and returns the SLIVINGDOC_CONFIG_DIR entry that
-// selects it. A nil def stores no default.
-func writeLogins(t *testing.T, def *storedKey, logins ...storedLogin) string {
+// defaults pairs endpoints with their default spaces.
+func defaults(endpointSpace ...string) []storedDefault {
+	var out []storedDefault
+	for i := 0; i+1 < len(endpointSpace); i += 2 {
+		out = append(out, storedDefault{Endpoint: endpointSpace[i], Space: endpointSpace[i+1]})
+	}
+	return out
+}
+
+// writeRawLogins writes data as the credentials file of a new private
+// directory and returns the SLIVINGDOC_CONFIG_DIR entry that selects it.
+func writeRawLogins(t *testing.T, data []byte) string {
 	t.Helper()
 	// A directory of our own, 0700 whatever the umask: Load refuses one
 	// that group or other can write.
@@ -50,18 +59,34 @@ func writeLogins(t *testing.T, def *storedKey, logins ...storedLogin) string {
 	if err := os.Mkdir(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	data, err := json.Marshal(struct {
-		Version int           `json:"version"`
-		Default *storedKey    `json:"default,omitempty"`
-		Logins  []storedLogin `json:"logins"`
-	}{1, def, logins})
-	if err != nil {
-		t.Fatal(err)
-	}
 	if err := os.WriteFile(filepath.Join(dir, credentials.FileName), data, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return credentials.DirEnv + "=" + dir
+}
+
+// writeLogins writes a version 2 credentials file in the documented format
+// (architecture/login.md) and returns the SLIVINGDOC_CONFIG_DIR entry that
+// selects it.
+func writeLogins(t *testing.T, defs []storedDefault, logins ...storedLogin) string {
+	t.Helper()
+	data, err := json.Marshal(struct {
+		Version  int             `json:"version"`
+		Logins   []storedLogin   `json:"logins"`
+		Defaults []storedDefault `json:"defaultSpaces,omitempty"`
+	}{2, logins, defs})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return writeRawLogins(t, data)
+}
+
+// outdatedLogins writes a version 1 credentials file, as an earlier build
+// did.
+func outdatedLogins(t *testing.T) string {
+	t.Helper()
+	return writeRawLogins(t, []byte(`{"version":1,"logins":[{"endpoint":"https://api.slivingdoc.dev","space":"notes",`+
+		`"site":"https://www.slivingdoc.dev","token":"`+loginToken+`","access":"write"}]}`))
 }
 
 // awsHomeDir is a home directory holding both shared AWS files.
@@ -81,8 +106,9 @@ func awsHomeDir(t *testing.T) string {
 
 func TestResolveStorage(t *testing.T) {
 	awsHome := awsHomeDir(t)
-	notes := writeLogins(t, &storedKey{DefaultHostedEndpoint, "notes"}, entry(DefaultHostedEndpoint, "notes", loginToken))
-	dev := writeLogins(t, nil, entry(devEndpoint, "notes", loginToken))
+	notes := writeLogins(t, defaults(DefaultHostedEndpoint, "notes"), entry(DefaultHostedEndpoint, loginToken))
+	dev := writeLogins(t, nil, entry(devEndpoint, loginToken))
+	two := writeLogins(t, defaults(DefaultHostedEndpoint, "notes", devEndpoint, "team"), entry(DefaultHostedEndpoint, loginToken), entry(devEndpoint, otherToken))
 	token := "SLIVINGDOC_TOKEN=" + hostedTestToken
 	// A umask of 0002 leaves a config directory group-writable; with no
 	// credentials file in it, an S3 process never reads it.
@@ -99,31 +125,37 @@ func TestResolveStorage(t *testing.T) {
 		args         []string
 		wantHosted   bool
 		wantToken    string
+		wantKey      string
 		wantOrigin   tokenOrigin
 		wantBucket   string
+		wantFrom     bucketSource
 		wantEndpoint string
 	}{
 		{
 			name: "auto: the token selects hosted", env: []string{token, "SLIVINGDOC_BUCKET=notes"},
-			wantHosted: true, wantToken: hostedTestToken, wantOrigin: originEnv, wantBucket: "notes", wantEndpoint: DefaultHostedEndpoint,
+			wantHosted: true, wantToken: hostedTestToken, wantOrigin: originEnv, wantBucket: "notes", wantFrom: bucketFromEnv, wantEndpoint: DefaultHostedEndpoint,
 		},
 		{
 			name: "auto: the token wins over a login", env: []string{token, notes, "SLIVINGDOC_BUCKET=notes"},
-			wantHosted: true, wantToken: hostedTestToken, wantOrigin: originEnv, wantBucket: "notes", wantEndpoint: DefaultHostedEndpoint,
+			wantHosted: true, wantToken: hostedTestToken, wantOrigin: originEnv, wantBucket: "notes", wantFrom: bucketFromEnv, wantEndpoint: DefaultHostedEndpoint,
 		},
 		{
 			name: "hosted: the token with an endpoint flag and AWS settings", env: []string{token, "AWS_PROFILE=p", "SLIVINGDOC_BUCKET=notes"},
 			args:       []string{"--storage", "hosted", "--endpoint", devEndpoint},
-			wantHosted: true, wantToken: hostedTestToken, wantOrigin: originEnv, wantBucket: "notes", wantEndpoint: devEndpoint,
+			wantHosted: true, wantToken: hostedTestToken, wantOrigin: originEnv, wantBucket: "notes", wantFrom: bucketFromEnv, wantEndpoint: devEndpoint,
 		},
 		{
-			name: "auto: a bucket from the default login takes it even with AWS settings", env: []string{notes, "AWS_PROFILE=p", "AWS_REGION=eu-north-1"},
-			wantHosted: true, wantToken: loginToken, wantOrigin: originLogin, wantBucket: "notes", wantEndpoint: DefaultHostedEndpoint,
+			name: "auto: the default space takes the login even with AWS settings", env: []string{notes, "AWS_PROFILE=p", "AWS_REGION=eu-north-1"},
+			wantHosted: true, wantKey: loginToken, wantOrigin: originLogin, wantBucket: "notes", wantFrom: bucketFromLogin, wantEndpoint: DefaultHostedEndpoint,
 		},
 		{
-			name: "auto: an explicit bucket takes a login when nothing configures S3", env: []string{notes, "HOME=" + t.TempDir()},
-			args:       []string{"--bucket", "notes"},
-			wantHosted: true, wantToken: loginToken, wantOrigin: originLogin, wantBucket: "notes", wantEndpoint: DefaultHostedEndpoint,
+			name: "auto: an explicit space takes the login when nothing configures S3", env: []string{notes, "HOME=" + t.TempDir()},
+			args:       []string{"--space", "team"},
+			wantHosted: true, wantKey: loginToken, wantOrigin: originLogin, wantBucket: "team", wantFrom: bucketFromSpaceFlag, wantEndpoint: DefaultHostedEndpoint,
+		},
+		{
+			name: "auto: SLIVINGDOC_SPACE beats the default space", env: []string{notes, "SLIVINGDOC_SPACE=team"},
+			wantHosted: true, wantKey: loginToken, wantOrigin: originLogin, wantBucket: "team", wantFrom: bucketFromSpaceEnv, wantEndpoint: DefaultHostedEndpoint,
 		},
 		{
 			name: "auto: the token ignores a region, AWS credentials and the shared AWS files",
@@ -132,68 +164,60 @@ func TestResolveStorage(t *testing.T) {
 				"AWS_PROFILE=p", "AWS_ACCESS_KEY_ID=k", "HOME=" + awsHome,
 			},
 			args:       []string{"--region", "eu-north-1"},
-			wantHosted: true, wantToken: hostedTestToken, wantOrigin: originEnv, wantBucket: "notes", wantEndpoint: DefaultHostedEndpoint,
+			wantHosted: true, wantToken: hostedTestToken, wantOrigin: originEnv, wantBucket: "notes", wantFrom: bucketFromEnv, wantEndpoint: DefaultHostedEndpoint,
 		},
 		{
 			name: "auto: the token with the hosted endpoint variable", env: []string{token, "SLIVINGDOC_BUCKET=notes", "SLIVINGDOC_ENDPOINT=" + devEndpoint},
-			wantHosted: true, wantToken: hostedTestToken, wantOrigin: originEnv, wantBucket: "notes", wantEndpoint: devEndpoint,
+			wantHosted: true, wantToken: hostedTestToken, wantOrigin: originEnv, wantBucket: "notes", wantFrom: bucketFromEnv, wantEndpoint: devEndpoint,
 		},
 		{
-			name: "auto: a login selects hosted", env: []string{notes, "SLIVINGDOC_BUCKET=notes"},
-			wantHosted: true, wantToken: loginToken, wantOrigin: originLogin, wantBucket: "notes", wantEndpoint: DefaultHostedEndpoint,
+			name: "auto: the login is used at its own endpoint", env: []string{dev, "SLIVINGDOC_BUCKET=notes"},
+			wantHosted: true, wantKey: loginToken, wantOrigin: originLogin, wantBucket: "notes", wantFrom: bucketFromEnv, wantEndpoint: devEndpoint,
 		},
 		{
-			name: "auto: the login is used at the endpoint it was issued for", env: []string{dev, "SLIVINGDOC_BUCKET=notes"},
-			wantHosted: true, wantToken: loginToken, wantOrigin: originLogin, wantBucket: "notes", wantEndpoint: devEndpoint,
-		},
-		{
-			name: "auto: the bucket defaults to the default login's space", env: []string{notes},
-			wantHosted: true, wantToken: loginToken, wantOrigin: originLogin, wantBucket: "notes", wantEndpoint: DefaultHostedEndpoint,
+			name: "auto: an endpoint chooses among two logins, and its default space", env: []string{two, "SLIVINGDOC_ENDPOINT=" + devEndpoint},
+			wantHosted: true, wantKey: otherToken, wantOrigin: originLogin, wantBucket: "team", wantFrom: bucketFromLogin, wantEndpoint: devEndpoint,
 		},
 		{
 			name: "auto: a token leaves the bucket to its own space", env: []string{notes, token},
 			wantHosted: true, wantToken: hostedTestToken, wantOrigin: originEnv, wantBucket: "", wantEndpoint: DefaultHostedEndpoint,
 		},
 		{
-			name: "auto: a login for another space keeps S3", env: []string{notes, "SLIVINGDOC_BUCKET=other"},
-			wantBucket: "other",
-		},
-		{
 			name: "auto: no login keeps S3", env: []string{credentials.DirEnv + "=" + t.TempDir(), "SLIVINGDOC_BUCKET=notes"},
-			wantBucket: "notes",
+			wantBucket: "notes", wantFrom: bucketFromEnv,
 		},
 		{
 			name: "auto: a group-writable directory without a file keeps S3", env: []string{credentials.DirEnv + "=" + shared, "SLIVINGDOC_BUCKET=notes"},
-			wantBucket: "notes",
+			wantBucket: "notes", wantFrom: bucketFromEnv,
 		},
 		{
 			name: "auto: no configuration directory keeps S3", env: []string{"SLIVINGDOC_BUCKET=notes"},
-			wantBucket: "notes",
+			wantBucket: "notes", wantFrom: bucketFromEnv,
 		},
 		{
-			name: "auto: an endpoint the login was not issued for keeps S3", env: []string{notes, "SLIVINGDOC_BUCKET=notes"},
+			name: "auto: an endpoint without a login keeps S3", env: []string{notes, "SLIVINGDOC_BUCKET=notes"},
 			args:       []string{"--endpoint", "https://s3.example.test"},
-			wantBucket: "notes", wantEndpoint: "https://s3.example.test",
+			wantBucket: "notes", wantFrom: bucketFromEnv, wantEndpoint: "https://s3.example.test",
 		},
 		{
 			name: "auto: the same endpoint in another spelling uses the login", env: []string{dev, "SLIVINGDOC_BUCKET=notes", "SLIVINGDOC_ENDPOINT=https://API.dev.slivingdoc.dev/"},
-			wantHosted: true, wantToken: loginToken, wantOrigin: originLogin, wantBucket: "notes", wantEndpoint: devEndpoint,
+			wantHosted: true, wantKey: loginToken, wantOrigin: originLogin, wantBucket: "notes", wantFrom: bucketFromEnv, wantEndpoint: devEndpoint,
 		},
 		{
 			name: "s3: the token and the login are ignored", env: []string{token, notes, "SLIVINGDOC_BUCKET=notes"}, args: []string{"--storage", "s3"},
-			wantBucket: "notes",
+			wantBucket: "notes", wantFrom: bucketFromEnv,
 		},
 		{
 			name: "s3 from the environment", env: []string{token, notes, "SLIVINGDOC_BUCKET=notes", "SLIVINGDOC_STORAGE=s3"},
-			wantBucket: "notes",
+			wantBucket: "notes", wantFrom: bucketFromEnv,
 		},
 		{
 			name: "hosted: the login", env: []string{notes, "SLIVINGDOC_BUCKET=notes", "AWS_ACCESS_KEY_ID=k"}, args: []string{"--storage", "hosted"},
-			wantHosted: true, wantToken: loginToken, wantOrigin: originLogin, wantBucket: "notes", wantEndpoint: DefaultHostedEndpoint,
+			wantHosted: true, wantKey: loginToken, wantOrigin: originLogin, wantBucket: "notes", wantFrom: bucketFromEnv, wantEndpoint: DefaultHostedEndpoint,
 		},
 		{
 			name: "hosted: the token without a login", env: []string{token, "SLIVINGDOC_BUCKET=notes"}, args: []string{"--storage=hosted"},
-			wantHosted: true, wantToken: hostedTestToken, wantOrigin: originEnv, wantBucket: "notes", wantEndpoint: DefaultHostedEndpoint,
+			wantHosted: true, wantToken: hostedTestToken, wantOrigin: originEnv, wantBucket: "notes", wantFrom: bucketFromEnv, wantEndpoint: DefaultHostedEndpoint,
 		},
 	}
 	for _, tt := range tests {
@@ -202,11 +226,15 @@ func TestResolveStorage(t *testing.T) {
 			if err != nil {
 				t.Fatalf("loadConfig() = %v", err)
 			}
-			if cfg.hosted() != tt.wantHosted || cfg.token != tt.wantToken || cfg.tokenOrigin != tt.wantOrigin ||
-				cfg.bucket != tt.wantBucket || cfg.endpoint != tt.wantEndpoint {
-				t.Fatalf("config = hosted %v origin %q bucket %q endpoint %q token set %v; want hosted %v origin %q bucket %q endpoint %q",
-					cfg.hosted(), cfg.tokenOrigin, cfg.bucket, cfg.endpoint, cfg.token != "",
-					tt.wantHosted, tt.wantOrigin, tt.wantBucket, tt.wantEndpoint)
+			key := ""
+			if cfg.login != nil {
+				key = cfg.login.Key
+			}
+			if cfg.hosted() != tt.wantHosted || cfg.token != tt.wantToken || key != tt.wantKey || cfg.tokenOrigin != tt.wantOrigin ||
+				cfg.bucket != tt.wantBucket || cfg.bucketFrom != tt.wantFrom || cfg.endpoint != tt.wantEndpoint {
+				t.Fatalf("config = hosted %v origin %q bucket %q from %v endpoint %q token set %v key set %v; want hosted %v origin %q bucket %q from %v endpoint %q",
+					cfg.hosted(), cfg.tokenOrigin, cfg.bucket, cfg.bucketFrom, cfg.endpoint, cfg.token != "", key != "",
+					tt.wantHosted, tt.wantOrigin, tt.wantBucket, tt.wantFrom, tt.wantEndpoint)
 			}
 			if !tt.wantHosted && cfg.region == "" {
 				t.Fatal("an S3 configuration has no region")
@@ -216,23 +244,15 @@ func TestResolveStorage(t *testing.T) {
 }
 
 func TestResolveStorageRefusals(t *testing.T) {
-	notes := writeLogins(t, &storedKey{DefaultHostedEndpoint, "notes"}, entry(DefaultHostedEndpoint, "notes", loginToken))
-	expiredEntry := entry(DefaultHostedEndpoint, "notes", loginToken)
+	notes := writeLogins(t, defaults(DefaultHostedEndpoint, "notes"), entry(DefaultHostedEndpoint, loginToken))
+	noDefault := writeLogins(t, nil, entry(DefaultHostedEndpoint, loginToken))
+	expiredEntry := entry(DefaultHostedEndpoint, loginToken)
 	expiredEntry.ExpiresAt = longAgo
 	expired := writeLogins(t, nil, expiredEntry)
-	twoEndpoints := writeLogins(t, &storedKey{DefaultHostedEndpoint, "team"},
-		entry(DefaultHostedEndpoint, "notes", loginToken), entry(devEndpoint, "notes", otherToken), entry(DefaultHostedEndpoint, "team", otherToken))
-	twoEndpointsDefault := writeLogins(t, &storedKey{devEndpoint, "notes"},
-		entry(DefaultHostedEndpoint, "notes", loginToken), entry(devEndpoint, "notes", otherToken))
+	two := writeLogins(t, defaults(DefaultHostedEndpoint, "notes"), entry(DefaultHostedEndpoint, loginToken), entry(devEndpoint, otherToken))
 	awsHome := awsHomeDir(t)
-	malformedDir := filepath.Join(t.TempDir(), "cfg")
-	if err := os.Mkdir(malformedDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(malformedDir, credentials.FileName), []byte(`{"version":1,"logins":[{"token":"`+loginToken+`"}]}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	malformed := credentials.DirEnv + "=" + malformedDir
+	malformed := writeRawLogins(t, []byte(`{"version":2,"logins":[{"key":"`+loginToken+`"}]}`))
+	outdated := outdatedLogins(t)
 	empty := credentials.DirEnv + "=" + t.TempDir()
 	tests := []struct {
 		name string
@@ -244,7 +264,7 @@ func TestResolveStorageRefusals(t *testing.T) {
 			"a login and AWS keys are ambiguous",
 			[]string{notes, "SLIVINGDOC_BUCKET=notes", "AWS_ACCESS_KEY_ID=k"},
 			nil,
-			[]string{`stored login for space "notes"`, "AWS_ACCESS_KEY_ID", "--storage hosted", "--storage s3"},
+			[]string{"a stored login and S3 settings (AWS_ACCESS_KEY_ID)", `for "notes"`, "--storage hosted", "--storage s3"},
 		},
 		{
 			"a login and an AWS profile and endpoint are ambiguous",
@@ -256,37 +276,43 @@ func TestResolveStorageRefusals(t *testing.T) {
 			"hosted without a token or a login",
 			[]string{empty, "SLIVINGDOC_BUCKET=notes"},
 			[]string{"--storage", "hosted"},
-			[]string{"needs SLIVINGDOC_TOKEN or a stored login", "slivingdoc login --space notes"},
+			[]string{"needs SLIVINGDOC_TOKEN or a stored login", "run 'slivingdoc login'"},
 		},
 		{
-			"hosted without a space",
-			[]string{empty},
-			[]string{"--storage", "hosted"},
-			[]string{"needs a space", "slivingdoc login"},
+			"a login without a default space",
+			[]string{noDefault},
+			nil,
+			[]string{"has no default space", "'slivingdoc space <name>'", "--space", "--storage s3"},
 		},
 		{
-			"hosted at an endpoint the login was not issued for",
+			"hosted at an endpoint without a login",
 			[]string{notes, "SLIVINGDOC_ENDPOINT=https://other.example.test"},
 			[]string{"--storage", "hosted"},
-			[]string{"at https://other.example.test", "issued for " + DefaultHostedEndpoint, "slivingdoc login"},
+			[]string{"for https://other.example.test; the stored login is for " + DefaultHostedEndpoint, "slivingdoc login"},
 		},
 		{
 			"an expired login",
 			[]string{expired, "SLIVINGDOC_BUCKET=notes"},
 			nil,
-			[]string{"expired 2001-01-01 00:00 UTC", "run 'slivingdoc login --space notes'", "--storage s3"},
+			[]string{"expired 2001-01-01 00:00 UTC", "run 'slivingdoc login' again", "--storage s3"},
 		},
 		{
-			"two endpoints for one space",
-			[]string{twoEndpoints, "SLIVINGDOC_BUCKET=notes"},
+			"two logins and no endpoint",
+			[]string{two},
 			nil,
-			[]string{"several stored logins", "pass --endpoint"},
+			[]string{"several stored logins", "pass --endpoint", "--storage s3"},
 		},
 		{
 			"a malformed credentials file",
 			[]string{malformed, "SLIVINGDOC_BUCKET=notes"},
 			nil,
 			[]string{"malformed credentials file", "--storage s3"},
+		},
+		{
+			"an earlier build's credentials file",
+			[]string{outdated, "SLIVINGDOC_BUCKET=notes"},
+			nil,
+			[]string{"from an earlier slivingdoc", "run 'slivingdoc login' again", "--storage s3"},
 		},
 		{
 			"an unknown storage",
@@ -352,12 +378,6 @@ func TestResolveStorageRefusals(t *testing.T) {
 			[]string{"~/.aws/credentials, ~/.aws/config"},
 		},
 		{
-			"two endpoints for one space even when the default names one",
-			[]string{twoEndpointsDefault},
-			nil,
-			[]string{"several stored logins", "pass --endpoint"},
-		},
-		{
 			"the token and an endpoint flag are ambiguous",
 			[]string{"SLIVINGDOC_TOKEN=" + hostedTestToken, "SLIVINGDOC_BUCKET=notes"},
 			[]string{"--endpoint", "https://minio.local"},
@@ -382,7 +402,7 @@ func TestResolveStorageRefusals(t *testing.T) {
 				}
 			}
 			if strings.Contains(err.Error(), loginToken) || strings.Contains(err.Error(), otherToken) {
-				t.Fatalf("loadConfig() = %q echoes a token", err)
+				t.Fatalf("loadConfig() = %q echoes a key", err)
 			}
 		})
 	}
@@ -493,7 +513,7 @@ func TestResolveBucketSpellings(t *testing.T) {
 	}
 	for from, want := range map[bucketSource]string{
 		bucketFromFlag: "--bucket", bucketFromSpaceFlag: "--space", bucketFromEnv: "SLIVINGDOC_BUCKET",
-		bucketFromSpaceEnv: "SLIVINGDOC_SPACE", bucketFromLogin: "default login", bucketFromToken: "token",
+		bucketFromSpaceEnv: "SLIVINGDOC_SPACE", bucketFromLogin: "default space", bucketFromToken: "token",
 		bucketNone: "none", bucketCleared: "none",
 	} {
 		if from.String() != want {

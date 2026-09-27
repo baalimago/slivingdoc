@@ -40,12 +40,13 @@ the code and fix the doc in the same change (see
   compaction (`planCheckpoint`, `compactManifest`), shallow history,
   retention (`--retained-checkpoints`), and generation-fenced cleanup.
 - **[cli.md](./cli.md)**: `main.go`, `cli.Run` and the `cmd/serve`,
-  `pull`, `commit`, `login`, `logout`, `version` commands, `app.Setup` to `Runtime`, the
+  `pull`, `commit`, `login`, `logout`, `space`, `version` commands, `app.Setup` to `Runtime`, the
   shutdown path, the CLI report and colour, `DEBUG_PERF`.
-- **[login.md](./login.md)**: `slivingdoc login` and `logout` (the
-  browser device flow, `internal/sitelogin`), the credentials file
-  (`internal/credentials`), and `--storage auto|hosted|s3`: which store
-  and token a process picks, the endpoint a stored token may reach, and
+- **[login.md](./login.md)**: `slivingdoc login`, `space` and `logout`
+  (the browser device flow and the account key, `internal/sitelogin`),
+  the credentials file and default spaces (`internal/credentials`),
+  minted space tokens, and `--storage auto|hosted|s3`: which store and
+  credential a process picks, the hosts a key or token may reach, and
   the login's threat model.
 - **[mcp-server.md](./mcp-server.md)**: the two MCP tools, schemas and
   descriptions, `decodePull`/`decodeCommit`, success and error shaping,

@@ -47,7 +47,7 @@ This reuses mature Git merge behavior without operating a Git server, a mounted 
 | File | Purpose |
 |------|---------|
 | `main.go` | `main()`: `cli.Run(ctx, os.Args, git2.New(), app.ProcessOptions{...})` |
-| `cmd/serve`, `cmd/pull`, `cmd/commit`, `cmd/login`, `cmd/version` | The subcommands over `internal/app` (`cmd/login` holds both `login` and `logout`) |
+| `cmd/serve`, `cmd/pull`, `cmd/commit`, `cmd/login`, `cmd/version` | The subcommands over `internal/app` (`cmd/login` holds `login`, `logout` and `space`) |
 | `internal/app/service.go` | `Service`: maps a request path to one `workspace.Workspace` + `notebook.Notebook` pair (`notebookFor`) |
 | `internal/notebook/notebook.go` | `Notebook`, `Config`, `New`, recovery helpers; `Pull` is in `pull.go`, `Commit` in `commit.go` |
 | `internal/workspace/workspace.go` | `Workspace`, `Open`: L and P, the operation lock |
@@ -61,10 +61,10 @@ One line per `internal/` package.
 
 | Package | Owns |
 |---------|------|
-| `app` | Process body: flag/env resolution (`config.go`), storage selection (`storage.go`), login and logout (`login.go`), startup order (`app.go`), `Service` path-to-notebook map (`service.go`), CLI report rendering (`command.go`), logging, `DEBUG_PERF` profiling |
-| `cli` | The command map (`serve|s`, `pull|p`, `commit|c`, `login`, `logout`, `version|v`), usage text, `Run` router |
-| `credentials` | The stored logins of `slivingdoc login`: the strict, versioned `credentials.json` under the user configuration directory, written 0600 by temp file and rename. See [login.md](./login.md) |
-| `sitelogin` | Client of the site's CLI login routes (start, token polling, revoke) that validates every answer and never follows a redirect. See [login.md](./login.md) |
+| `app` | Process body: flag/env resolution (`config.go`), storage selection (`storage.go`), login, logout and space (`login.go`, `space.go`), minted space tokens (`minted.go`), startup order (`app.go`), `Service` path-to-notebook map (`service.go`), CLI report rendering (`command.go`), logging, `DEBUG_PERF` profiling |
+| `cli` | The command map (`serve|s`, `pull|p`, `commit|c`, `login`, `logout`, `space`, `version|v`), usage text, `Run` router |
+| `credentials` | The stored account logins of `slivingdoc login` and their default spaces: the strict, versioned `credentials.json` under the user configuration directory, written 0600 by temp file and rename. See [login.md](./login.md) |
+| `sitelogin` | Client of the site's CLI login routes (start, key polling, spaces, space-token minting, revoke) that validates every answer and never follows a redirect. See [login.md](./login.md) |
 | `sitelogin/sitetest` | Test-only reference server of the site's CLI login routes with scripted approvals |
 | `git` | Go-facing engine seam (`Engine`, `Repository`) and all Git policy: trees, snapshots, merge structuring, packs, history validation, path/content rules, read-only/writable `PathPolicy`, diffstat. See [git-engine.md](./git-engine.md) |
 | `git/gittest` | Deterministic fake object hashing shared by fakes in higher packages (test-only) |
@@ -75,7 +75,7 @@ One line per `internal/` package.
 | `storage/fake` | Deterministic in-memory `ObjectStore` with fault injection (tests) |
 | `storage/contract` | One contract suite run against every `ObjectStore` (tests) |
 | `s3store` | The only production AWS SDK package (test-only `tests3/s3.go` also uses the SDK to create its bucket): S3 adapter, prefix join, multipart upload, semantic error mapping |
-| `httpstore` | The second production `ObjectStore`, selected by `SLIVINGDOC_TOKEN` or a stored login: the hosted storage API over HTTPS with a bearer token and one space, status-to-semantic error mapping, `CheckAccess` instead of the probe. See [hosted-mode.md](./hosted-mode.md) |
+| `httpstore` | The second production `ObjectStore`, selected by `SLIVINGDOC_TOKEN` or a stored login: the hosted storage API over HTTPS with a bearer token (fixed, or from a `TokenSource` of minted tokens) and one space, status-to-semantic error mapping, `CheckAccess` instead of the probe. See [hosted-mode.md](./hosted-mode.md) |
 | `httpstore/gatewaytest` | Test-only reference server of the hosted API over `storage/fake` |
 | `mcp` | stdio MCP server: two strict tool schemas, strict decoding, error/success envelopes, redaction, `mcpReqID` logging |
 | `strictjson` | Strict JSON value tree shared by the manifest and `state.json` (rejects unknown, duplicate, missing, null) |

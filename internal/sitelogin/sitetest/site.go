@@ -1,15 +1,18 @@
 // Package sitetest is a test-only reference server of the site's CLI login
-// routes (architecture/login.md): POST /cli/v1/start, /cli/v1/token and
-// /cli/v1/revoke over a local httptest server, answering each approval
-// with a scripted sequence instead of a person in a browser.
+// routes (architecture/login.md): POST /cli/v1/start, /cli/v1/token,
+// GET /cli/v1/spaces, POST /cli/v1/space-token and /cli/v1/revoke over a
+// local httptest server, answering each approval with a scripted sequence
+// instead of a person in a browser.
 package sitetest
 
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -17,17 +20,41 @@ import (
 	"time"
 )
 
-// Issue is the token an approved script returns.
+// Issue is the account CLI key an approved script returns.
 type Issue struct {
-	Token  string
-	Space  string
+	Key    string
 	Access string
-	// ExpiresAt is the token's expiry; the zero time answers null.
+	// ExpiresAt is the key's expiry; the zero time answers null.
+	ExpiresAt time.Time
+	// Endpoint is the hosted API the key mints tokens for.
+	Endpoint string
+	// Account is the approver's email.
+	Account string
+}
+
+// Space is one space a key reaches, as GET /cli/v1/spaces lists it.
+type Space struct {
+	Name   string `json:"name"`
+	Owner  string `json:"owner"`
+	Access string `json:"access"`
+}
+
+// Minted is one token the site minted from a key.
+type Minted struct {
+	Key       string
+	Token     string
+	Space     string
+	Access    string
 	ExpiresAt time.Time
 	Endpoint  string
-	// Account is the approver's email and Owner the space owner's.
-	Account string
-	Owner   string
+}
+
+// key is what the site knows of one issued account CLI key.
+type key struct {
+	endpoint string
+	access   string
+	spaces   []Space
+	children []string
 }
 
 // Script is how the site answers the polls of one approval: each code of
@@ -48,7 +75,8 @@ type Script struct {
 	Stall    bool
 }
 
-// StartBody is one recorded start request.
+// StartBody is one recorded start request. Space is what an older client
+// sends; the site ignores it.
 type StartBody struct {
 	Space  string `json:"space"`
 	Access string `json:"access"`
@@ -86,22 +114,35 @@ type Site struct {
 	userCode  string
 	complete  string
 	revokeErr *refusal
+	mintErr   *refusal
+	mintBody  string
+	lifetime  time.Duration
+	minter    func(Minted)
+	suspended map[string]bool
 	hold      *barrier
 	approvals map[string]*approval
-	issued    map[string]bool
+	keys      map[string]*key
+	minted    map[string]bool
+	mints     []Minted
 	starts    []StartBody
 	revoked   []string
 	polls     int
 }
 
 // Start runs a site until the test ends. Approvals poll every second and
-// live ten minutes unless SetTiming says otherwise.
+// live ten minutes, and minted tokens live an hour, unless SetTiming and
+// SetMintLifetime say otherwise.
 func Start(t *testing.T) *Site {
 	t.Helper()
-	s := &Site{interval: 1, expiresIn: 600, userCode: "BCDF-GHJK", approvals: map[string]*approval{}, issued: map[string]bool{}}
+	s := &Site{
+		interval: 1, expiresIn: 600, userCode: "BCDF-GHJK", lifetime: time.Hour,
+		approvals: map[string]*approval{}, keys: map[string]*key{}, minted: map[string]bool{}, suspended: map[string]bool{},
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /cli/v1/start", jsonOnly(s.start))
 	mux.HandleFunc("POST /cli/v1/token", jsonOnly(s.token))
+	mux.HandleFunc("GET /cli/v1/spaces", s.spaces)
+	mux.HandleFunc("POST /cli/v1/space-token", jsonOnly(s.mint))
 	mux.HandleFunc("POST /cli/v1/revoke", s.revoke)
 	s.srv = httptest.NewServer(mux)
 	t.Cleanup(s.srv.Close)
@@ -152,7 +193,7 @@ func (s *Site) SetCompleteURI(uri string) {
 }
 
 // RefuseRevoke makes the next revoke answer status with the error code,
-// whatever the token.
+// whatever the credential.
 func (s *Site) RefuseRevoke(status int, code string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -182,7 +223,9 @@ func (s *Site) Starts() []StartBody {
 	return append([]StartBody(nil), s.starts...)
 }
 
-// Revoked returns every token revoked so far, in order.
+// Revoked returns every key and token revoked through POST
+// /cli/v1/revoke so far, in order: a revoked key is followed by the tokens
+// minted from it. Revoke's withdrawals are not listed.
 func (s *Site) Revoked() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -196,22 +239,90 @@ func (s *Site) Polls() int {
 	return s.polls
 }
 
-// Revoke withdraws token as if its owner revoked it on the Tokens page.
-func (s *Site) Revoke(token string) {
+// Revoke withdraws a key and its minted tokens, or one minted token, as
+// if its owner revoked it on the Tokens page.
+func (s *Site) Revoke(credential string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	delete(s.issued, token)
+	n := len(s.revoked)
+	s.withdraw(credential)
+	s.revoked = s.revoked[:n]
 }
 
 // Close stops the site, so every later request fails to connect.
 func (s *Site) Close() { s.srv.Close() }
 
-// Issued marks token as issued by this site, so a revoke of it succeeds;
-// a script's issue does this itself.
-func (s *Site) Issued(token string) {
+// Issued marks key as issued by this site for endpoint, so it lists
+// spaces, mints tokens and can be revoked; a script's issue does this
+// itself. Its access is write.
+func (s *Site) Issued(k, endpoint string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.issued[token] = true
+	s.issue(k, endpoint, "write")
+}
+
+func (s *Site) issue(k, endpoint, access string) {
+	if old, ok := s.keys[k]; ok {
+		old.endpoint, old.access = endpoint, access
+		return
+	}
+	s.keys[k] = &key{endpoint: endpoint, access: access}
+}
+
+// SetSpaces sets the spaces key reaches, whether or not it is issued yet;
+// a space's access is capped by the key's when listed or minted.
+func (s *Site) SetSpaces(k string, spaces ...Space) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.keys[k]; !ok {
+		s.keys[k] = &key{}
+	}
+	s.keys[k].spaces = append([]Space(nil), spaces...)
+}
+
+// Suspend makes the space's owner suspended: it is left out of every list
+// and minting a token for it answers space_suspended.
+func (s *Site) Suspend(space string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.suspended[space] = true
+}
+
+// RefuseMint makes the next mint answer status with the error code.
+func (s *Site) RefuseMint(status int, code string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.mintErr = &refusal{status: status, code: code}
+}
+
+// BreakMint makes the next successful mint answer body instead of its
+// JSON; the token it minted is still recorded and live.
+func (s *Site) BreakMint(body string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.mintBody = body
+}
+
+// SetMintLifetime sets how long later minted tokens live.
+func (s *Site) SetMintLifetime(d time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lifetime = d
+}
+
+// OnMint calls fn with every token minted from now on, before the answer
+// is sent: a test grants it on its gateway there.
+func (s *Site) OnMint(fn func(Minted)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.minter = fn
+}
+
+// Mints returns every token minted so far, in order.
+func (s *Site) Mints() []Minted {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]Minted(nil), s.mints...)
 }
 
 func (s *Site) start(w http.ResponseWriter, r *http.Request) {
@@ -280,7 +391,7 @@ func (s *Site) token(w http.ResponseWriter, r *http.Request) {
 	}
 	a.claimed = true
 	script := a.script
-	s.issued[script.Issue.Token] = true
+	s.issue(script.Issue.Key, script.Issue.Endpoint, script.Issue.Access)
 	release := s.join()
 	s.mu.Unlock()
 	if release != nil {
@@ -300,13 +411,11 @@ func (s *Site) token(w http.ResponseWriter, r *http.Request) {
 		expires = issue.ExpiresAt.UTC().Format(time.RFC3339)
 	}
 	data, _ := json.Marshal(map[string]any{
-		"token":     issue.Token,
-		"space":     issue.Space,
+		"key":       issue.Key,
 		"access":    issue.Access,
 		"expiresAt": expires,
 		"endpoint":  issue.Endpoint,
 		"account":   issue.Account,
-		"owner":     issue.Owner,
 	})
 	if script.Body != "" {
 		data = []byte(script.Body)
@@ -334,8 +443,146 @@ func (s *Site) join() chan struct{} {
 	return b.release
 }
 
+// liveKey returns the issued key the request's bearer names; a minted
+// token, or a key the site does not know, is nil.
+func (s *Site) liveKey(r *http.Request) (string, *key) {
+	bearer, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if !ok {
+		return "", nil
+	}
+	k := s.keys[bearer]
+	if k == nil || k.endpoint == "" {
+		return "", nil
+	}
+	return bearer, k
+}
+
+// capped is a space's access capped by its key's.
+func capped(sp Space, k *key) string {
+	if k.access == "read" {
+		return "read"
+	}
+	return sp.Access
+}
+
+func (s *Site) spaces(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, k := s.liveKey(r)
+	if k == nil {
+		writeError(w, http.StatusUnauthorized, "invalid_token")
+		return
+	}
+	list := []Space{}
+	for _, sp := range k.spaces {
+		if !s.suspended[sp.Name] {
+			list = append(list, Space{Name: sp.Name, Owner: sp.Owner, Access: capped(sp, k)})
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"spaces": list})
+}
+
+func (s *Site) mint(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Space  string `json:"space"`
+		Access string `json:"access"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Space == "" {
+		writeError(w, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	s.mu.Lock()
+	bearer, k := s.liveKey(r)
+	if k == nil {
+		s.mu.Unlock()
+		writeError(w, http.StatusUnauthorized, "invalid_token")
+		return
+	}
+	if rf := s.mintErr; rf != nil {
+		s.mintErr = nil
+		s.mu.Unlock()
+		writeError(w, rf.status, rf.code)
+		return
+	}
+	i := slices.IndexFunc(k.spaces, func(sp Space) bool { return sp.Name == body.Space })
+	switch {
+	case i < 0:
+		s.mu.Unlock()
+		writeError(w, http.StatusNotFound, "no_space")
+		return
+	case s.suspended[body.Space]:
+		s.mu.Unlock()
+		writeError(w, http.StatusForbidden, "space_suspended")
+		return
+	}
+	sp := k.spaces[i]
+	access := capped(sp, k)
+	switch {
+	case body.Access == "write" && access != "write":
+		s.mu.Unlock()
+		writeError(w, http.StatusForbidden, "access_denied")
+		return
+	case body.Access == "read":
+		access = "read"
+	}
+	m := Minted{
+		Key: bearer, Token: newToken(), Space: sp.Name, Access: access,
+		ExpiresAt: time.Now().Add(s.lifetime).UTC(), Endpoint: k.endpoint,
+	}
+	k.children = append(k.children, m.Token)
+	s.minted[m.Token] = true
+	s.mints = append(s.mints, m)
+	minter, broken := s.minter, s.mintBody
+	s.mintBody = ""
+	s.mu.Unlock()
+	if minter != nil {
+		minter(m)
+	}
+	if broken != "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(broken))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"token": m.Token, "space": m.Space, "access": m.Access,
+		"expiresAt": m.ExpiresAt.Format(time.RFC3339Nano), "endpoint": m.Endpoint, "owner": sp.Owner,
+	})
+}
+
+// newToken is a fresh token in the site's format.
+func newToken() string {
+	id := make([]byte, 8)
+	secret := make([]byte, 32)
+	_, _ = rand.Read(id)
+	_, _ = rand.Read(secret)
+	return "sld_" + hex.EncodeToString(id) + "_" + base64.RawURLEncoding.EncodeToString(secret)
+}
+
+// withdraw revokes a key with its children, or one minted token, and
+// reports whether the site knew it; the caller holds s.mu.
+func (s *Site) withdraw(credential string) bool {
+	if k, ok := s.keys[credential]; ok && k.endpoint != "" {
+		delete(s.keys, credential)
+		s.revoked = append(s.revoked, credential)
+		for _, child := range k.children {
+			if s.minted[child] {
+				delete(s.minted, child)
+				s.revoked = append(s.revoked, child)
+			}
+		}
+		return true
+	}
+	if s.minted[credential] {
+		delete(s.minted, credential)
+		s.revoked = append(s.revoked, credential)
+		return true
+	}
+	return false
+}
+
 func (s *Site) revoke(w http.ResponseWriter, r *http.Request) {
-	token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	credential, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if rf := s.revokeErr; rf != nil {
@@ -343,19 +590,17 @@ func (s *Site) revoke(w http.ResponseWriter, r *http.Request) {
 		writeError(w, rf.status, rf.code)
 		return
 	}
-	if !ok || !s.issued[token] {
+	if !ok || !s.withdraw(credential) {
 		writeError(w, http.StatusUnauthorized, "invalid_token")
 		return
 	}
-	delete(s.issued, token)
-	s.revoked = append(s.revoked, token)
 	w.WriteHeader(http.StatusNoContent)
 }
 
 // requestLimit is the site's bound on a request body.
 const requestLimit = 4 << 10
 
-// jsonOnly enforces what the real site enforces on start and token: a JSON
+// jsonOnly enforces what the real site enforces on its POST routes: a JSON
 // content type and a body under requestLimit.
 func jsonOnly(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {

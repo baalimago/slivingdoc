@@ -32,8 +32,9 @@ func parseStorageMode(s string) (storageMode, error) {
 	}
 }
 
-// tokenOrigin says where a hosted process's token came from, so a refusal
-// can name the right fix.
+// tokenOrigin says where a hosted process's token comes from: the
+// variable, or tokens minted from a stored login's key. A refusal names
+// the fix that applies.
 type tokenOrigin string
 
 const (
@@ -43,7 +44,7 @@ const (
 )
 
 // awsSignals returns the environment variables that mean the operator
-// configured S3 on purpose. In auto mode they make a stored login for an
+// configured S3 on purpose. In auto mode they make a stored login beside an
 // explicit bucket a refusal rather than a guess; SLIVINGDOC_TOKEN is
 // refused only beside the ones that name an S3 host (destinationSignals).
 // Any variable starting with awsContainerPrefix counts too, and so do the
@@ -78,12 +79,14 @@ func awsFiles() []string {
 }
 
 // storageSelection is the outcome of resolveStorage: the store kind, the
-// space or bucket, and, when hosted, the token, its origin and the hosted
+// space or bucket, and, when hosted, the SLIVINGDOC_TOKEN value or the
+// stored login whose key mints the tokens, the origin, and the hosted
 // endpoint.
 type storageSelection struct {
 	bucket     string
 	bucketFrom bucketSource
 	token      string
+	login      *credentials.Login
 	origin     tokenOrigin
 	endpoint   string
 }
@@ -107,7 +110,7 @@ const (
 	bucketFromEnv
 	// bucketFromSpaceEnv is SLIVINGDOC_SPACE.
 	bucketFromSpaceEnv
-	// bucketFromLogin is the default login's space.
+	// bucketFromLogin is the stored login's default space.
 	bucketFromLogin
 	// bucketFromToken is the space the hosted API says the token reaches.
 	bucketFromToken
@@ -124,7 +127,7 @@ func (b bucketSource) String() string {
 	case bucketFromSpaceEnv:
 		return spaceEnv
 	case bucketFromLogin:
-		return "default login"
+		return "default space"
 	case bucketFromToken:
 		return "token"
 	default:
@@ -202,7 +205,7 @@ func resolveBucket(f *Flags, env map[string]string) (string, bucketSource, error
 	}
 }
 
-func (s storageSelection) hosted() bool { return s.token != "" }
+func (s storageSelection) hosted() bool { return s.token != "" || s.login != nil }
 
 // storageInputs are the injected facts resolveStorage reads besides the
 // flags and the environment: the operating system (which picks the user
@@ -215,25 +218,26 @@ type storageInputs struct {
 }
 
 // resolveStorage decides whether the process uses S3 or the hosted API,
-// with which bucket or space and which token (architecture/login.md, Which
-// storage a process uses):
+// with which bucket or space and which credential (architecture/login.md,
+// Which storage a process uses):
 //
 //   - s3: the AWS chain only; SLIVINGDOC_TOKEN and stored logins are
 //     ignored and never read.
-//   - hosted: SLIVINGDOC_TOKEN if set, else the stored login for the space;
-//     neither is a refusal.
+//   - hosted: SLIVINGDOC_TOKEN if set, else the stored login; neither is a
+//     refusal.
 //   - auto: SLIVINGDOC_TOKEN → hosted, unless the --endpoint flag,
-//     AWS_ENDPOINT_URL or AWS_ENDPOINT_URL_S3 is set too (refusal). Else a stored login for the space → hosted when
-//     the bucket came from the default login, or when no S3 signal is set;
-//     an explicit bucket with an S3 signal is a refusal. Otherwise S3.
+//     AWS_ENDPOINT_URL or AWS_ENDPOINT_URL_S3 is set too (refusal). Else a
+//     stored login → hosted when the space is the login's stored default,
+//     or when no S3 signal is set; an explicit bucket with an S3 signal is
+//     a refusal. Otherwise S3.
 //
 // With SLIVINGDOC_TOKEN the stored logins are never read here: an omitted
 // bucket stays empty and resolveHostedSpace asks the API for the token's
-// space. Otherwise, outside s3 mode, an omitted bucket is the default
-// login's space, but only when the outcome is hosted: a login that does
-// not apply never names an S3 bucket. A stored token is only used for the endpoint it was issued
-// for: an explicit endpoint that differs means the login does not apply.
-// No refusal echoes a token.
+// space. With a stored login the space is the bucket setting, else the
+// login's default space; with neither it is a refusal naming
+// 'slivingdoc space <name>'. The login is the one for the explicit
+// endpoint when one is configured, else the only one stored. No refusal
+// echoes a key or a token.
 func resolveStorage(f *Flags, env map[string]string, in storageInputs) (storageSelection, error) {
 	mode, err := parseStorageMode(resolveString(&f.storage, env["SLIVINGDOC_STORAGE"], string(storageAuto)))
 	if err != nil {
@@ -268,51 +272,43 @@ func resolveStorage(f *Flags, env map[string]string, in storageInputs) (storageS
 		}
 		return sel, nil
 	}
-	var signals []string
-	if mode == storageAuto {
-		signals = s3Signals(f, env, in)
-	}
 	logins, err := loadLogins(env, in.goos)
 	if err != nil {
 		return storageSelection{}, fmt.Errorf("%w; fix or remove it, or pass --storage s3", err)
 	}
-	defaulted := false
-	if sel.bucket == "" {
-		if def, err := logins.Default(); err == nil {
-			sel.bucket, defaulted, sel.bucketFrom = def.Space, true, bucketFromLogin
-		}
-	}
-	if sel.bucket == "" {
-		if mode == storageHosted {
-			return storageSelection{}, errors.New("--storage hosted needs a space: pass --space, or run 'slivingdoc login'")
-		}
-		return sel, nil
-	}
-
-	login, err := findLogin(logins, explicit, sel.bucket)
+	login, err := pickLogin(logins, explicit)
 	switch {
 	case errors.Is(err, credentials.ErrAmbiguous):
-		return storageSelection{}, fmt.Errorf("%w; pass --endpoint to choose one", err)
+		return storageSelection{}, fmt.Errorf("%w; pass --endpoint to choose one, or --storage s3", err)
 	case errors.Is(err, credentials.ErrNoLogin) && mode == storageAuto:
-		if defaulted {
-			// The default login's space names no S3 bucket.
-			sel.bucket, sel.bucketFrom = "", bucketNone
-		}
 		return sel, nil
 	case errors.Is(err, credentials.ErrNoLogin):
-		return storageSelection{}, noLoginRefusal(logins, explicit, sel.bucket)
+		return storageSelection{}, noLoginRefusal(logins, explicit)
 	case err != nil:
 		return storageSelection{}, err
 	}
-	if mode == storageAuto && !defaulted && len(signals) > 0 {
+	defaulted := false
+	if sel.bucket == "" {
+		if space, err := logins.DefaultSpace(login.Endpoint); err == nil {
+			sel.bucket, defaulted, sel.bucketFrom = space, true, bucketFromLogin
+		}
+	}
+	if sel.bucket == "" {
 		return storageSelection{}, fmt.Errorf(
-			"a stored login for space %q and S3 settings (%s) are both configured; pass --storage hosted or --storage s3",
-			sel.bucket, strings.Join(signals, ", "))
+			"the stored login for %s has no default space; run 'slivingdoc space' to list its spaces and 'slivingdoc space <name>' to choose one, or pass --space (for S3, pass --storage s3 and --bucket)",
+			login.Endpoint)
+	}
+	if mode == storageAuto && !defaulted {
+		if signals := s3Signals(f, env, in); len(signals) > 0 {
+			return storageSelection{}, fmt.Errorf(
+				"a stored login and S3 settings (%s) are both configured for %q; pass --storage hosted or --storage s3",
+				strings.Join(signals, ", "), sel.bucket)
+		}
 	}
 	if err := login.Usable(in.now); err != nil {
-		return storageSelection{}, fmt.Errorf("%w; run 'slivingdoc login --space %s', or pass --storage s3 to use S3", err, sel.bucket)
+		return storageSelection{}, fmt.Errorf("%w; run 'slivingdoc login' again, or pass --storage s3 to use S3", err)
 	}
-	sel.token, sel.origin, sel.endpoint = login.Token, originLogin, login.Endpoint
+	sel.login, sel.origin, sel.endpoint = &login, originLogin, login.Endpoint
 	return sel, nil
 }
 
@@ -330,24 +326,24 @@ func loadLogins(env map[string]string, goos string) (credentials.Set, error) {
 	return file.Load()
 }
 
-// findLogin picks the stored login for space: exactly the explicit
-// endpoint's when one is configured, else the one login for the space.
-func findLogin(logins credentials.Set, explicit, space string) (credentials.Login, error) {
+// pickLogin chooses the stored login: exactly the explicit endpoint's when
+// one is configured, else the only one stored.
+func pickLogin(logins credentials.Set, explicit string) (credentials.Login, error) {
 	if explicit != "" {
-		return logins.Lookup(credentials.Key{Endpoint: explicit, Space: space})
+		return logins.ForEndpoint(explicit)
 	}
-	return logins.ForSpace(space)
+	return logins.Only()
 }
 
 // noLoginRefusal is the --storage hosted refusal when nothing supplies a
-// token, naming the endpoint mismatch when that is why a login does not
-// apply.
-func noLoginRefusal(logins credentials.Set, explicit, space string) error {
-	msg := fmt.Sprintf("--storage hosted needs SLIVINGDOC_TOKEN or a stored login for space %q", space)
-	if others := logins.Space(space); explicit != "" && len(others) > 0 {
-		msg += fmt.Sprintf(" at %s; the stored login was issued for %s", explicit, others[0].Endpoint)
+// credential, naming the endpoint mismatch when that is why a login does
+// not apply.
+func noLoginRefusal(logins credentials.Set, explicit string) error {
+	msg := "--storage hosted needs SLIVINGDOC_TOKEN or a stored login"
+	if others := logins.Logins(); explicit != "" && len(others) > 0 {
+		msg += fmt.Sprintf(" for %s; the stored login is for %s", explicit, others[0].Endpoint)
 	}
-	return fmt.Errorf("%s; run 'slivingdoc login --space %s'", msg, space)
+	return fmt.Errorf("%s; run 'slivingdoc login'", msg)
 }
 
 // tokenDestinations returns the settings beside SLIVINGDOC_TOKEN that say

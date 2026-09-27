@@ -53,9 +53,9 @@ func newClient(t *testing.T, site string) (*Client, *clock) {
 
 func issue() sitetest.Issue {
 	return sitetest.Issue{
-		Token: testToken, Space: "notes", Access: "write", Endpoint: endpoint,
+		Key: testToken, Access: "write", Endpoint: endpoint,
 		ExpiresAt: time.Date(2026, 12, 26, 12, 0, 0, 0, time.UTC),
-		Account:   "ada@example.test", Owner: "bob@example.test",
+		Account:   "ada@example.test",
 	}
 }
 
@@ -92,12 +92,12 @@ func TestLoginApproved(t *testing.T) {
 	site.Next(sitetest.Script{Pending: []string{"authorization_pending", "slow_down", "authorization_pending"}, Issue: issue()})
 	client, clk := newClient(t, site.URL())
 
-	a, err := client.Start(context.Background(), StartRequest{Space: "notes", Access: credentials.AccessRead, Client: "  my\thost\x00" + strings.Repeat("x", 80)})
+	a, err := client.Start(context.Background(), StartRequest{Access: credentials.AccessRead, Client: "  my\thost\x00" + strings.Repeat("x", 80)})
 	if err != nil {
 		t.Fatalf("Start() = %v", err)
 	}
 	starts := site.Starts()
-	if len(starts) != 1 || starts[0].Space != "notes" || starts[0].Access != "read" {
+	if len(starts) != 1 || starts[0].Space != "" || starts[0].Access != "read" {
 		t.Fatalf("start requests = %+v", starts)
 	}
 	if got := starts[0].Client; len(got) != clientLimit || strings.ContainsAny(got, "\t\x00") || !strings.HasPrefix(got, "myhostx") {
@@ -114,8 +114,8 @@ func TestLoginApproved(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Wait() = %v", err)
 	}
-	if got.Token != testToken || got.Space != "notes" || got.Access != credentials.AccessWrite || got.Endpoint != endpoint ||
-		got.Expires.Describe() != "until 2026-12-26 12:00 UTC" || got.Account != "ada@example.test" || got.Owner != "bob@example.test" {
+	if got.Key != testToken || got.Access != credentials.AccessWrite || got.Endpoint != endpoint ||
+		got.Expires.Describe() != "until 2026-12-26 12:00 UTC" || got.Account != "ada@example.test" {
 		t.Fatalf("Wait() = %+v", got)
 	}
 	want := []time.Duration{time.Second, time.Second, 6 * time.Second, 6 * time.Second}
@@ -189,18 +189,17 @@ func TestWaitStopsWhenCancelled(t *testing.T) {
 	}
 }
 
-func TestIssuedTokenIsValidated(t *testing.T) {
+func TestIssuedKeyIsValidated(t *testing.T) {
 	tests := []struct {
 		name   string
 		mutate func(*sitetest.Issue)
 	}{
-		{"token with white space", func(i *sitetest.Issue) { i.Token = "sld bad" }},
-		{"bad space", func(i *sitetest.Issue) { i.Space = "No_Space" }},
+		{"key with white space", func(i *sitetest.Issue) { i.Key = "sld bad" }},
 		{"bad access", func(i *sitetest.Issue) { i.Access = "admin" }},
 		{"plain http remote endpoint", func(i *sitetest.Issue) { i.Endpoint = "http://api.example.test" }},
 		{"endpoint not a URL", func(i *sitetest.Issue) { i.Endpoint = "api" }},
 		{"no account", func(i *sitetest.Issue) { i.Account = "" }},
-		{"owner with a control character", func(i *sitetest.Issue) { i.Owner = "bob\x1b[2J@example.test" }},
+		{"account with a control character", func(i *sitetest.Issue) { i.Account = "ada\x1b[2J@example.test" }},
 		{"no expiry", func(i *sitetest.Issue) { i.ExpiresAt = time.Time{} }},
 	}
 	for _, tt := range tests {
@@ -216,12 +215,12 @@ func TestIssuedTokenIsValidated(t *testing.T) {
 			}
 			_, err = client.Wait(context.Background(), a)
 			if !errors.Is(err, ErrProtocol) || strings.Contains(err.Error(), "sld bad") || strings.Contains(err.Error(), testToken) {
-				t.Fatalf("Wait() = %v, want ErrProtocol without the token", err)
+				t.Fatalf("Wait() = %v, want ErrProtocol without the key", err)
 			}
-			// A sendable token comes back for the caller to revoke.
-			var rejected *RejectedTokenError
-			if got := errors.As(err, &rejected); got != (is.Token == testToken) || (got && rejected.Token != testToken) {
-				t.Fatalf("Wait() = %#v, want the token returned for revocation exactly when it is sendable", err)
+			// A sendable key comes back for the caller to revoke.
+			var rejected *RejectedError
+			if got := errors.As(err, &rejected); got != (is.Key == testToken) || (got && rejected.Credential != testToken) {
+				t.Fatalf("Wait() = %#v, want the key returned for revocation exactly when it is sendable", err)
 			}
 		})
 	}
@@ -288,7 +287,7 @@ func TestWaitRetriesTransientFailures(t *testing.T) {
 		t.Fatalf("Start() = %v", err)
 	}
 	got, err := client.Wait(context.Background(), a)
-	if err != nil || got.Token != testToken {
+	if err != nil || got.Key != testToken {
 		t.Fatalf("Wait() = %+v, %v; want the token after the failures", got, err)
 	}
 	want := []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second}
@@ -566,7 +565,7 @@ func TestRequestsAreSmallJSON(t *testing.T) {
 	srv := httptest.NewServer(rec)
 	t.Cleanup(srv.Close)
 	client, _ := newClient(t, srv.URL)
-	a, err := client.Start(context.Background(), StartRequest{Space: "notes", Access: credentials.AccessWrite, Client: strings.Repeat("h", 500)})
+	a, err := client.Start(context.Background(), StartRequest{Access: credentials.AccessWrite, Client: strings.Repeat("h", 500)})
 	if err != nil {
 		t.Fatalf("Start() = %v", err)
 	}
@@ -587,7 +586,7 @@ func TestRequestsAreSmallJSON(t *testing.T) {
 		}
 	}
 	huge, _ := newClient(t, srv.URL)
-	if _, err := huge.Start(context.Background(), StartRequest{Space: strings.Repeat("s", requestLimit), Access: credentials.AccessWrite}); err == nil ||
+	if _, err := huge.Start(context.Background(), StartRequest{Access: credentials.Access(strings.Repeat("s", requestLimit))}); err == nil ||
 		!strings.Contains(err.Error(), "accepts less than") {
 		t.Fatalf("Start() with an oversize body = %v, want a refusal before sending", err)
 	}
@@ -606,7 +605,7 @@ func TestRefusalText(t *testing.T) {
 
 func TestRevoke(t *testing.T) {
 	site := sitetest.Start(t)
-	site.Issued(testToken)
+	site.Issued(testToken, endpoint)
 	client, _ := newClient(t, site.URL())
 	if err := client.Revoke(context.Background(), testToken); err != nil {
 		t.Fatalf("Revoke() = %v", err)

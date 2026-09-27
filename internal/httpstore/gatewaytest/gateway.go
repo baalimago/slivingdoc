@@ -110,6 +110,14 @@ func (g *Gateway) Grant(token, space string, readOnly bool) {
 	g.grants[token] = grant{space: space, readOnly: readOnly}
 }
 
+// Revoke withdraws token's grant, so every later request with it answers
+// 401, as for a token revoked or expired on the site.
+func (g *Gateway) Revoke(token string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	delete(g.grants, token)
+}
+
 // DeleteSpace removes a space and everything it holds; its grants stay
 // and now answer 404 no_space, as for a space deleted on the gateway.
 func (g *Gateway) DeleteSpace(name string) {

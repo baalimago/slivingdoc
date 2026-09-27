@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/baalimago/slivingdoc/internal/credentials"
 	"github.com/baalimago/slivingdoc/internal/git"
 	"github.com/baalimago/slivingdoc/internal/mcp"
 	"github.com/baalimago/slivingdoc/internal/notebook"
@@ -372,7 +373,7 @@ func TestLogStorageNamesTheStoreAndItsSource(t *testing.T) {
 		{"s3 at its own endpoint", config{bucket: "b", endpoint: "https://s3.local"}, map[string]string{"AWS_ENDPOINT_URL": "https://minio.local"}, []string{"endpoint=https://s3.local"}},
 		{"hosted through the environment", config{bucket: "b", token: "t", endpoint: DefaultHostedEndpoint, tokenOrigin: originEnv}, nil, []string{"backend=hosted", "token=env"}},
 		{"hosted with the token's own space", config{token: "t", endpoint: DefaultHostedEndpoint, tokenOrigin: originEnv}, nil, []string{`space="the token's own"`}},
-		{"hosted through a login", config{bucket: "b", token: "t", endpoint: DefaultHostedEndpoint, tokenOrigin: originLogin}, nil, []string{"backend=hosted", "token=login"}},
+		{"hosted through a login", config{bucket: "b", login: &credentials.Login{}, endpoint: DefaultHostedEndpoint, tokenOrigin: originLogin}, nil, []string{"backend=hosted", "token=login", "space=b"}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			var buf strings.Builder

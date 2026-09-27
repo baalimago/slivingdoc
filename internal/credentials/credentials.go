@@ -1,8 +1,8 @@
 // Package credentials owns the stored logins of `slivingdoc login`
 // (architecture/login.md): one strict, versioned JSON file under the user
-// configuration directory, holding one hosted API token per (endpoint,
-// space) and the default login. The package reads and writes that file
-// only; it never sends a token anywhere.
+// configuration directory, holding one account CLI key per (site,
+// endpoint) and the default space per endpoint. The package reads and
+// writes that file only; it never sends a key anywhere.
 package credentials
 
 import (
@@ -32,10 +32,14 @@ const FileName = "credentials.json"
 const DirEnv = "SLIVINGDOC_CONFIG_DIR"
 
 // FormatVersion is the only credentials file version this build reads.
-const FormatVersion = 1
+const FormatVersion = 2
+
+// outdatedVersion is the per-space login file of earlier builds, which is
+// refused with ErrOutdated rather than read.
+const outdatedVersion = 1
 
 // LockName is the lock file beside FileName that serializes the
-// read-modify-write of a login or logout.
+// read-modify-write of a login, a logout or a default space.
 const LockName = "credentials.lock"
 
 // maxFileSize bounds how much of the credentials file Load reads.
@@ -44,7 +48,7 @@ const maxFileSize = 1 << 20
 // lockRetry is how often Lock tries again while another process holds it.
 const lockRetry = 20 * time.Millisecond
 
-// The file and directory modes: the token is readable by its owner only.
+// The file and directory modes: the key is readable by its owner only.
 const (
 	fileMode os.FileMode = 0o600
 	dirMode  os.FileMode = 0o700
@@ -56,21 +60,25 @@ var (
 	ErrNoConfigDir = errors.New("credentials: no configuration directory")
 	// ErrMalformed reports a credentials file this build cannot read.
 	ErrMalformed = errors.New("credentials: malformed credentials file")
+	// ErrOutdated reports a credentials file an earlier build wrote, with
+	// one token per space; a new login replaces it.
+	ErrOutdated = errors.New("credentials: the credentials file is from an earlier slivingdoc; run 'slivingdoc login' again")
 	// ErrNoLogin reports that no stored login matches the request.
 	ErrNoLogin = errors.New("credentials: no stored login")
-	// ErrNoDefault reports that no default login is stored.
-	ErrNoDefault = errors.New("credentials: no default login")
-	// ErrAmbiguous reports that one space has stored logins for several
-	// endpoints and nothing chooses between them.
+	// ErrNoDefault reports that no default space is stored for an
+	// endpoint.
+	ErrNoDefault = errors.New("credentials: no default space")
+	// ErrAmbiguous reports several stored logins and nothing that chooses
+	// between them.
 	ErrAmbiguous = errors.New("credentials: several stored logins match")
-	// ErrExpired reports a stored login whose token has expired.
+	// ErrExpired reports a stored login whose key has expired.
 	ErrExpired = errors.New("credentials: stored login expired")
 	// ErrExposed reports a credentials file, or its directory, that other
 	// users could read or change.
 	ErrExposed = errors.New("credentials: the credentials file is not private")
 )
 
-// Access is what a stored token may do in its space.
+// Access is what a stored key, and every token minted from it, may do.
 type Access string
 
 // The two access levels the site issues.
@@ -97,14 +105,14 @@ func ParseAccess(s string) (Access, error) {
 	}
 }
 
-// Key names one stored login: the normalized hosted API endpoint the token
-// was issued for and the space it is granted.
-type Key struct {
+// ID names one stored login: the normalized site origin that issued the
+// key and the normalized hosted API endpoint its tokens are for.
+type ID struct {
+	Site     string
 	Endpoint string
-	Space    string
 }
 
-// Expiry is the end of a token's life; the zero value never expires.
+// Expiry is the end of a key's life; the zero value never expires.
 type Expiry struct {
 	at time.Time
 }
@@ -112,7 +120,7 @@ type Expiry struct {
 // ExpiresAt returns the expiry at t.
 func ExpiresAt(t time.Time) Expiry { return Expiry{at: t.UTC()} }
 
-// Never reports whether the token has no expiry.
+// Never reports whether the key has no expiry.
 func (e Expiry) Never() bool { return e.at.IsZero() }
 
 // Time is the expiry instant; the zero time when Never.
@@ -130,129 +138,145 @@ func (e Expiry) Describe() string {
 	return "until " + e.at.Format("2006-01-02 15:04 UTC")
 }
 
-// Login is one stored hosted API token.
+// Login is one stored account login: the CLI key the site issued, which
+// is sent only to Site, to list spaces and mint short-lived space tokens
+// for Endpoint.
 type Login struct {
-	Key
-	// Site is the origin that issued the token; logout revokes it there.
-	Site    string
-	Token   string
+	ID
+	// Key is the account CLI key. It never reaches a storage endpoint.
+	Key     string
 	Access  Access
 	Expires Expiry
-	// Account is the email of the person who approved the login and Owner
-	// the email of the space's owner, as the site reported them; either
-	// may be empty in a file written before the site reported them.
+	// Account is the email of the person who approved the login.
 	Account string
-	Owner   string
 }
 
-// Usable returns ErrExpired when the login's token has expired at now.
+// Usable returns ErrExpired when the login's key has expired at now.
 func (l Login) Usable(now time.Time) error {
 	if l.Expires.Passed(now) {
-		return fmt.Errorf("%w: space %q at %s expired %s", ErrExpired, l.Space, l.Endpoint,
+		return fmt.Errorf("%w: the login for %s at %s expired %s", ErrExpired, l.Account, l.Endpoint,
 			strings.TrimPrefix(l.Expires.Describe(), "until "))
 	}
 	return nil
 }
 
 // Set is the content of the credentials file: every stored login and the
-// default one. The zero value is an empty file.
+// default space of each endpoint. The zero value is an empty file.
 type Set struct {
 	logins   []Login
-	def      Key
-	hasDef   bool
+	defaults map[string]string
 	location string
 }
 
 // Logins returns a copy of the stored logins in file order.
 func (s Set) Logins() []Login { return slices.Clone(s.logins) }
 
-// Default returns the default login: the first one stored, or the one a
-// login stored with --default.
-func (s Set) Default() (Login, error) {
-	if !s.hasDef {
-		return Login{}, fmt.Errorf("%w in %s", ErrNoDefault, s.where())
-	}
-	return s.Lookup(s.def)
-}
-
-// Lookup returns the login stored for exactly k.
-func (s Set) Lookup(k Key) (Login, error) {
+// Lookup returns the login stored for exactly id.
+func (s Set) Lookup(id ID) (Login, error) {
 	for _, l := range s.logins {
-		if l.Key == k {
+		if l.ID == id {
 			return l, nil
 		}
 	}
-	return Login{}, fmt.Errorf("%w for space %q at %s in %s", ErrNoLogin, k.Space, k.Endpoint, s.where())
+	return Login{}, fmt.Errorf("%w from %s for %s in %s", ErrNoLogin, id.Site, id.Endpoint, s.where())
 }
 
-// ForSpace returns the one login a process uses for space when no endpoint
-// is configured: the only login stored for space. Several logins for space
-// at different endpoints are ErrAmbiguous, even when the default names one
-// of them: only an endpoint chooses between them.
-func (s Set) ForSpace(space string) (Login, error) {
-	matches := s.Space(space)
+// ForEndpoint returns the one login stored for endpoint. None is
+// ErrNoLogin; several, from different sites, are ErrAmbiguous.
+func (s Set) ForEndpoint(endpoint string) (Login, error) {
+	var matches []Login
+	for _, l := range s.logins {
+		if l.Endpoint == endpoint {
+			matches = append(matches, l)
+		}
+	}
 	switch len(matches) {
 	case 0:
-		return Login{}, fmt.Errorf("%w for space %q in %s", ErrNoLogin, space, s.where())
+		return Login{}, fmt.Errorf("%w for %s in %s", ErrNoLogin, endpoint, s.where())
 	case 1:
 		return matches[0], nil
 	default:
-		endpoints := make([]string, 0, len(matches))
+		sites := make([]string, 0, len(matches))
 		for _, m := range matches {
-			endpoints = append(endpoints, m.Endpoint)
+			sites = append(sites, m.Site)
 		}
-		return Login{}, fmt.Errorf("%w: space %q has logins for %s", ErrAmbiguous, space, strings.Join(endpoints, ", "))
+		return Login{}, fmt.Errorf("%w: %s has logins from %s; log out of one", ErrAmbiguous, endpoint, strings.Join(sites, ", "))
 	}
 }
 
-// Space returns every login stored for space, whatever its endpoint.
-func (s Set) Space(space string) []Login {
-	var out []Login
-	for _, l := range s.logins {
-		if l.Space == space {
-			out = append(out, l)
+// Only returns the login a process uses when no endpoint is configured:
+// the only one stored. None is ErrNoLogin; several are ErrAmbiguous, so
+// only an endpoint chooses between them.
+func (s Set) Only() (Login, error) {
+	switch len(s.logins) {
+	case 0:
+		return Login{}, fmt.Errorf("%w in %s", ErrNoLogin, s.where())
+	case 1:
+		return s.logins[0], nil
+	default:
+		endpoints := make([]string, 0, len(s.logins))
+		for _, l := range s.logins {
+			endpoints = append(endpoints, l.Endpoint)
 		}
+		return Login{}, fmt.Errorf("%w: logins for %s", ErrAmbiguous, strings.Join(endpoints, ", "))
 	}
-	return out
 }
 
-// Put stores l, replacing a login for the same key; the default is left
-// alone (SetDefault). It returns the login it replaced, or ErrNoLogin when
-// the key was new.
+// Put stores l, replacing a login for the same ID; the default spaces are
+// left alone. It returns the login it replaced, or ErrNoLogin when the ID
+// was new.
 func (s *Set) Put(l Login) (Login, error) {
 	for i, old := range s.logins {
-		if old.Key == l.Key {
+		if old.ID == l.ID {
 			s.logins[i] = l
 			return old, nil
 		}
 	}
 	s.logins = append(s.logins, l)
-	return Login{}, fmt.Errorf("%w for space %q at %s", ErrNoLogin, l.Space, l.Endpoint)
+	return Login{}, fmt.Errorf("%w from %s for %s", ErrNoLogin, l.Site, l.Endpoint)
 }
 
-// SetDefault makes the login stored for k the default; a missing key is
-// ErrNoLogin.
-func (s *Set) SetDefault(k Key) error {
-	if _, err := s.Lookup(k); err != nil {
-		return err
-	}
-	s.def, s.hasDef = k, true
-	return nil
-}
-
-// Remove deletes the login stored for k and clears the default when it
-// was k. A missing key is ErrNoLogin.
-func (s *Set) Remove(k Key) error {
-	i := slices.IndexFunc(s.logins, func(l Login) bool { return l.Key == k })
+// Remove deletes the login stored for id, and the endpoint's default
+// space when no other login for it remains. A missing ID is ErrNoLogin.
+func (s *Set) Remove(id ID) error {
+	i := slices.IndexFunc(s.logins, func(l Login) bool { return l.ID == id })
 	if i < 0 {
-		return fmt.Errorf("%w for space %q at %s in %s", ErrNoLogin, k.Space, k.Endpoint, s.where())
+		return fmt.Errorf("%w from %s for %s in %s", ErrNoLogin, id.Site, id.Endpoint, s.where())
 	}
 	s.logins = slices.Delete(s.logins, i, i+1)
-	if s.hasDef && s.def == k {
-		s.def, s.hasDef = Key{}, false
+	if !slices.ContainsFunc(s.logins, func(l Login) bool { return l.Endpoint == id.Endpoint }) {
+		delete(s.defaults, id.Endpoint)
 	}
 	return nil
 }
+
+// DefaultSpace returns the default space stored for endpoint, or
+// ErrNoDefault.
+func (s Set) DefaultSpace(endpoint string) (string, error) {
+	if space, ok := s.defaults[endpoint]; ok {
+		return space, nil
+	}
+	return "", fmt.Errorf("%w for %s in %s", ErrNoDefault, endpoint, s.where())
+}
+
+// SetDefaultSpace makes space the default of endpoint, which must have a
+// stored login.
+func (s *Set) SetDefaultSpace(endpoint, space string) error {
+	if err := httpstore.ValidateSpace(space); err != nil {
+		return fmt.Errorf("credentials: default space: %w", err)
+	}
+	if !slices.ContainsFunc(s.logins, func(l Login) bool { return l.Endpoint == endpoint }) {
+		return fmt.Errorf("%w for %s in %s", ErrNoLogin, endpoint, s.where())
+	}
+	if s.defaults == nil {
+		s.defaults = map[string]string{}
+	}
+	s.defaults[endpoint] = space
+	return nil
+}
+
+// ClearDefaultSpace forgets endpoint's default space, if any.
+func (s *Set) ClearDefaultSpace(endpoint string) { delete(s.defaults, endpoint) }
 
 func (s Set) where() string {
 	if s.location == "" {
@@ -334,7 +358,7 @@ func userConfigDir(getenv func(string) string, goos string) (string, error) {
 // Like ssh, Load refuses a symbolic link, anything but a regular file, and
 // on every platform but Windows a file another user owns or that group or
 // other can read or write, or a directory another user owns or that group
-// or other can write: another user could read the tokens or plant their
+// or other can write: another user could read the keys or plant their
 // own. The file is opened without following a final symbolic link where
 // the platform can, checked through the open descriptor, and read up to
 // 1 MiB.
@@ -375,6 +399,9 @@ func (f File) Load() (Set, error) {
 		return Set{}, fmt.Errorf("%w %s: larger than %d bytes", ErrMalformed, f.Path(), maxFileSize)
 	}
 	set, err := decode(data)
+	if errors.Is(err, errOutdatedFile) {
+		return Set{}, fmt.Errorf("%w (%s)", ErrOutdated, f.Path())
+	}
 	if err != nil {
 		return Set{}, fmt.Errorf("%w %s: %w", ErrMalformed, f.Path(), err)
 	}
@@ -460,7 +487,7 @@ func (f File) Lock(ctx context.Context) (*Lock, error) {
 		return nil, fmt.Errorf("credentials: lock %s: %w", fl.Path(), err)
 	}
 	if !locked {
-		return nil, fmt.Errorf("credentials: lock %s: another login or logout holds it", fl.Path())
+		return nil, fmt.Errorf("credentials: lock %s: another login, logout or space command holds it", fl.Path())
 	}
 	return &Lock{fl: fl}, nil
 }
@@ -520,18 +547,21 @@ func writeSynced(tmp *os.File, data []byte) error {
 
 // The JSON field names of the file (architecture/login.md).
 const (
-	fieldVersion   = "version"
-	fieldDefault   = "default"
-	fieldLogins    = "logins"
-	fieldEndpoint  = "endpoint"
-	fieldSpace     = "space"
-	fieldSite      = "site"
-	fieldToken     = "token"
-	fieldAccess    = "access"
-	fieldExpiresAt = "expiresAt"
-	fieldAccount   = "account"
-	fieldOwner     = "owner"
+	fieldVersion       = "version"
+	fieldLogins        = "logins"
+	fieldDefaultSpaces = "defaultSpaces"
+	fieldSite          = "site"
+	fieldEndpoint      = "endpoint"
+	fieldKey           = "key"
+	fieldAccess        = "access"
+	fieldExpiresAt     = "expiresAt"
+	fieldAccount       = "account"
+	fieldSpace         = "space"
 )
+
+// errOutdatedFile is decode's report of an earlier build's file; Load
+// wraps it as ErrOutdated.
+var errOutdatedFile = errors.New("version 1 holds one token per space")
 
 func decode(data []byte) (Set, error) {
 	root, err := strictjson.Parse(data)
@@ -541,15 +571,18 @@ func decode(data []byte) (Set, error) {
 	if root.Kind != strictjson.Object {
 		return Set{}, errors.New("the top level is not an object")
 	}
-	if err := root.RejectUnknown(fieldVersion, fieldDefault, fieldLogins); err != nil {
-		return Set{}, err
-	}
 	ver, ok := root.Field(fieldVersion)
 	if !ok || ver.Kind != strictjson.Number {
 		return Set{}, errors.New("missing numeric version")
 	}
-	if ver.Num != FormatVersion {
+	switch {
+	case ver.Num == outdatedVersion:
+		return Set{}, errOutdatedFile
+	case ver.Num != FormatVersion:
 		return Set{}, fmt.Errorf("version %d is not %d; a newer slivingdoc wrote it", ver.Num, FormatVersion)
+	}
+	if err := root.RejectUnknown(fieldVersion, fieldLogins, fieldDefaultSpaces); err != nil {
+		return Set{}, err
 	}
 	list, ok := root.Field(fieldLogins)
 	if !ok || list.Kind != strictjson.Array {
@@ -561,20 +594,29 @@ func decode(data []byte) (Set, error) {
 		if err != nil {
 			return Set{}, fmt.Errorf("logins[%d]: %w", i, err)
 		}
-		if _, err := set.Lookup(l.Key); err == nil {
-			return Set{}, fmt.Errorf("logins[%d]: a second login for space %q at %s", i, l.Space, l.Endpoint)
+		if _, err := set.Lookup(l.ID); err == nil {
+			// The values are plain URLs (plainURL), so naming them leaks
+			// nothing; the index is enough to find the entry.
+			return Set{}, fmt.Errorf("logins[%d]: a second login from the same site for the same endpoint", i)
 		}
 		set.logins = append(set.logins, l)
 	}
-	if def, ok := root.Field(fieldDefault); ok {
-		k, err := decodeKey(def)
-		if err != nil {
-			return Set{}, fmt.Errorf("default: %w", err)
+	if defaults, ok := root.Field(fieldDefaultSpaces); ok {
+		if defaults.Kind != strictjson.Array {
+			return Set{}, errors.New("defaultSpaces is not an array")
 		}
-		if _, err := set.Lookup(k); err != nil {
-			return Set{}, fmt.Errorf("default names space %q at %s, which has no login", k.Space, k.Endpoint)
+		for i, item := range defaults.Arr {
+			endpoint, space, err := decodeDefault(item)
+			if err != nil {
+				return Set{}, fmt.Errorf("defaultSpaces[%d]: %w", i, err)
+			}
+			if _, dup := set.defaults[endpoint]; dup {
+				return Set{}, fmt.Errorf("defaultSpaces[%d]: a second default for the same endpoint", i)
+			}
+			if err := set.SetDefaultSpace(endpoint, space); err != nil {
+				return Set{}, fmt.Errorf("defaultSpaces[%d]: the endpoint has no login", i)
+			}
 		}
-		set.def, set.hasDef = k, true
 	}
 	return set, nil
 }
@@ -598,65 +640,65 @@ func plainURL(raw string) error {
 	return nil
 }
 
-func decodeKey(v strictjson.Value) (Key, error) {
-	if v.Kind != strictjson.Object {
-		return Key{}, errors.New("not an object")
+// urlField reads a stored endpoint or site: an http or https URL that may
+// travel a key or token, with nothing but scheme, host and path.
+func urlField(v strictjson.Value, name string) (string, error) {
+	raw, err := stringField(v, name)
+	if err != nil {
+		return "", err
 	}
-	if err := v.RejectUnknown(fieldEndpoint, fieldSpace); err != nil {
-		return Key{}, err
+	if err := httpstore.ValidateEndpoint(raw); err != nil {
+		return "", fmt.Errorf("%s: %w", name, err)
 	}
-	return keyFields(v)
+	if err := plainURL(raw); err != nil {
+		return "", fmt.Errorf("the %s %w", name, err)
+	}
+	return raw, nil
 }
 
-func keyFields(v strictjson.Value) (Key, error) {
-	endpoint, err := stringField(v, fieldEndpoint)
+func decodeDefault(v strictjson.Value) (string, string, error) {
+	if v.Kind != strictjson.Object {
+		return "", "", errors.New("not an object")
+	}
+	if err := v.RejectUnknown(fieldEndpoint, fieldSpace); err != nil {
+		return "", "", err
+	}
+	endpoint, err := urlField(v, fieldEndpoint)
 	if err != nil {
-		return Key{}, err
-	}
-	if err := httpstore.ValidateEndpoint(endpoint); err != nil {
-		return Key{}, fmt.Errorf("endpoint: %w", err)
-	}
-	if err := plainURL(endpoint); err != nil {
-		return Key{}, fmt.Errorf("the endpoint %w", err)
+		return "", "", err
 	}
 	space, err := stringField(v, fieldSpace)
 	if err != nil {
-		return Key{}, err
+		return "", "", err
 	}
 	if err := httpstore.ValidateSpace(space); err != nil {
-		return Key{}, err
+		return "", "", err
 	}
-	return Key{Endpoint: endpoint, Space: space}, nil
+	return endpoint, space, nil
 }
 
 func decodeLogin(v strictjson.Value) (Login, error) {
 	if v.Kind != strictjson.Object {
 		return Login{}, errors.New("not an object")
 	}
-	if err := v.RejectUnknown(fieldEndpoint, fieldSpace, fieldSite, fieldToken, fieldAccess, fieldExpiresAt, fieldAccount, fieldOwner); err != nil {
+	if err := v.RejectUnknown(fieldSite, fieldEndpoint, fieldKey, fieldAccess, fieldExpiresAt, fieldAccount); err != nil {
 		return Login{}, err
 	}
-	k, err := keyFields(v)
+	site, err := urlField(v, fieldSite)
 	if err != nil {
 		return Login{}, err
 	}
-	site, err := stringField(v, fieldSite)
+	endpoint, err := urlField(v, fieldEndpoint)
 	if err != nil {
 		return Login{}, err
 	}
-	if err := httpstore.ValidateEndpoint(site); err != nil {
-		return Login{}, fmt.Errorf("site: %w", err)
-	}
-	if err := plainURL(site); err != nil {
-		return Login{}, fmt.Errorf("the site %w", err)
-	}
-	token, err := stringField(v, fieldToken)
+	key, err := stringField(v, fieldKey)
 	if err != nil {
 		return Login{}, err
 	}
-	if err := httpstore.ValidateToken(token); err != nil {
-		// The error never echoes the token itself.
-		return Login{}, errors.New("token: not printable characters without white space")
+	if err := httpstore.ValidateToken(key); err != nil {
+		// The error never echoes the key itself.
+		return Login{}, errors.New("key: not printable characters without white space")
 	}
 	raw, err := stringField(v, fieldAccess)
 	if err != nil {
@@ -666,7 +708,14 @@ func decodeLogin(v strictjson.Value) (Login, error) {
 	if err != nil {
 		return Login{}, err
 	}
-	l := Login{Key: k, Site: site, Token: token, Access: access}
+	account, err := stringField(v, fieldAccount)
+	if err != nil {
+		return Login{}, err
+	}
+	if account == "" {
+		return Login{}, fmt.Errorf("field %q is empty", fieldAccount)
+	}
+	l := Login{ID: ID{Site: site, Endpoint: endpoint}, Key: key, Access: access, Account: account}
 	if _, ok := v.Field(fieldExpiresAt); ok {
 		stamp, err := stringField(v, fieldExpiresAt)
 		if err != nil {
@@ -678,29 +727,7 @@ func decodeLogin(v strictjson.Value) (Login, error) {
 		}
 		l.Expires = ExpiresAt(at)
 	}
-	if l.Account, err = optionalString(v, fieldAccount); err != nil {
-		return Login{}, err
-	}
-	if l.Owner, err = optionalString(v, fieldOwner); err != nil {
-		return Login{}, err
-	}
 	return l, nil
-}
-
-// optionalString reads a field that may be absent; present, it is a
-// non-empty string.
-func optionalString(v strictjson.Value, name string) (string, error) {
-	if _, ok := v.Field(name); !ok {
-		return "", nil
-	}
-	s, err := stringField(v, name)
-	if err != nil {
-		return "", err
-	}
-	if s == "" {
-		return "", fmt.Errorf("field %q is empty", name)
-	}
-	return s, nil
 }
 
 func stringField(v strictjson.Value, name string) (string, error) {
@@ -715,41 +742,41 @@ func stringField(v strictjson.Value, name string) (string, error) {
 }
 
 type fileJSON struct {
-	Version int         `json:"version"`
-	Default *keyJSON    `json:"default,omitempty"`
-	Logins  []loginJSON `json:"logins"`
+	Version       int           `json:"version"`
+	Logins        []loginJSON   `json:"logins"`
+	DefaultSpaces []defaultJSON `json:"defaultSpaces,omitempty"`
 }
 
-type keyJSON struct {
+type defaultJSON struct {
 	Endpoint string `json:"endpoint"`
 	Space    string `json:"space"`
 }
 
 type loginJSON struct {
-	Endpoint  string `json:"endpoint"`
-	Space     string `json:"space"`
 	Site      string `json:"site"`
-	Token     string `json:"token"`
+	Endpoint  string `json:"endpoint"`
+	Key       string `json:"key"`
 	Access    Access `json:"access"`
 	ExpiresAt string `json:"expiresAt,omitempty"`
-	Account   string `json:"account,omitempty"`
-	Owner     string `json:"owner,omitempty"`
+	Account   string `json:"account"`
 }
 
 func encode(s Set) ([]byte, error) {
 	out := fileJSON{Version: FormatVersion, Logins: make([]loginJSON, 0, len(s.logins))}
-	if s.hasDef {
-		out.Default = &keyJSON{Endpoint: s.def.Endpoint, Space: s.def.Space}
-	}
 	for _, l := range s.logins {
-		item := loginJSON{
-			Endpoint: l.Endpoint, Space: l.Space, Site: l.Site,
-			Token: l.Token, Access: l.Access, Account: l.Account, Owner: l.Owner,
-		}
+		item := loginJSON{Site: l.Site, Endpoint: l.Endpoint, Key: l.Key, Access: l.Access, Account: l.Account}
 		if !l.Expires.Never() {
 			item.ExpiresAt = l.Expires.Time().Format(time.RFC3339)
 		}
 		out.Logins = append(out.Logins, item)
+	}
+	endpoints := make([]string, 0, len(s.defaults))
+	for endpoint := range s.defaults {
+		endpoints = append(endpoints, endpoint)
+	}
+	slices.Sort(endpoints)
+	for _, endpoint := range endpoints {
+		out.DefaultSpaces = append(out.DefaultSpaces, defaultJSON{Endpoint: endpoint, Space: s.defaults[endpoint]})
 	}
 	data, err := json.MarshalIndent(out, "", "  ")
 	if err != nil {

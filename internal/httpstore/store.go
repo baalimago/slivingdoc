@@ -83,8 +83,12 @@ type Config struct {
 	// Prefix is the notebook prefix inside the space; validated.
 	Prefix string
 	// Token is the API bearer token. It is sent only in the Authorization
-	// header and never appears in an error.
+	// header and never appears in an error. Tokens, when set, replaces it.
 	Token string
+	// Tokens supplies the bearer token of each request instead of Token:
+	// a stored login's short-lived space tokens, re-minted before they
+	// expire and once after the server refuses one.
+	Tokens TokenSource
 	// UserAgent is sent with every request; empty sends none of our own.
 	UserAgent string
 	// Client sends the requests; nil uses a default client.
@@ -96,6 +100,35 @@ type Config struct {
 	// Backoff returns the wait before retry attempt n (1-based); nil uses
 	// the default.
 	Backoff func(n int) time.Duration
+}
+
+// TokenSource supplies the bearer token of every request. Token returns
+// the token to send now; Rejected reports one the server answered 401 to,
+// so the next Token call returns another. The store sends a replayable
+// request once more with that other token; a streamed upload fails with
+// the 401 and the next request uses the new token. Both are called
+// concurrently.
+type TokenSource interface {
+	Token(ctx context.Context) (string, error)
+	Rejected(token string)
+}
+
+// staticToken is the TokenSource of a fixed Config.Token.
+type staticToken string
+
+func (t staticToken) Token(context.Context) (string, error) { return string(t), nil }
+
+func (staticToken) Rejected(string) {}
+
+// tokenSource validates cfg's token setting and returns its source.
+func tokenSource(cfg Config) (TokenSource, error) {
+	if cfg.Tokens != nil {
+		return cfg.Tokens, nil
+	}
+	if err := ValidateToken(cfg.Token); err != nil {
+		return nil, err
+	}
+	return staticToken(cfg.Token), nil
 }
 
 const defaultRetries = 2
@@ -110,7 +143,7 @@ type Store struct {
 	space     string // <endpoint>/v1/spaces/<space>
 	name      string
 	prefix    string
-	token     string
+	tokens    TokenSource
 	userAgent string
 	retries   int
 	backoff   func(int) time.Duration
@@ -130,10 +163,11 @@ func New(cfg Config) (*Store, error) {
 	if err := storage.ValidatePrefix(cfg.Prefix); err != nil {
 		return nil, err
 	}
-	if err := ValidateToken(cfg.Token); err != nil {
+	tokens, err := tokenSource(cfg)
+	if err != nil {
 		return nil, err
 	}
-	s := newClient(cfg)
+	s := newClient(cfg, tokens)
 	s.space = s.root + "/spaces/" + cfg.Space
 	s.name = cfg.Space
 	s.prefix = cfg.Prefix
@@ -141,8 +175,8 @@ func New(cfg Config) (*Store, error) {
 }
 
 // newClient binds the transport settings of cfg: client, server root,
-// token, retries. It validates nothing and addresses no space.
-func newClient(cfg Config) *Store {
+// token source, retries. It validates nothing and addresses no space.
+func newClient(cfg Config, tokens TokenSource) *Store {
 	client := cfg.Client
 	if client == nil {
 		// Never follow a redirect: Go would turn a PUT into a body-less
@@ -163,7 +197,7 @@ func newClient(cfg Config) *Store {
 	return &Store{
 		client:    client,
 		root:      strings.TrimSuffix(cfg.Endpoint, "/") + "/v1",
-		token:     cfg.Token,
+		tokens:    tokens,
 		userAgent: cfg.UserAgent,
 		retries:   retries,
 		backoff:   backoff,
@@ -210,10 +244,11 @@ func DescribeToken(ctx context.Context, cfg Config) (TokenInfo, error) {
 	if err := ValidateEndpoint(cfg.Endpoint); err != nil {
 		return TokenInfo{}, err
 	}
-	if err := ValidateToken(cfg.Token); err != nil {
+	tokens, err := tokenSource(cfg)
+	if err != nil {
 		return TokenInfo{}, err
 	}
-	s := newClient(cfg)
+	s := newClient(cfg, tokens)
 	if err := s.checkServer(ctx); err != nil {
 		return TokenInfo{}, err
 	}
@@ -565,7 +600,11 @@ func (s *Store) request(ctx context.Context, method, target string, body io.Read
 		return nil, fmt.Errorf("build request: %w", err)
 	}
 	if auth {
-		req.Header.Set("Authorization", "Bearer "+s.token)
+		token, err := s.tokens.Token(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("token: %w", err)
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	// Ask for the stored bytes: a transparently decompressed body would
 	// lose its length and differ from the pack descriptor.
@@ -577,8 +616,44 @@ func (s *Store) request(ctx context.Context, method, target string, body io.Read
 }
 
 // send performs one request. A failure before any response is ambiguous
-// for a write: the request may have landed.
+// for a write: the request may have landed. A 401 reports the token to the
+// source; a replayable request goes once more when the source then has
+// another token, and a streamed one returns the 401.
 func (s *Store) send(req *http.Request) (*http.Response, error) {
+	resp, err := s.sendOnce(req)
+	if err != nil || resp.StatusCode != http.StatusUnauthorized {
+		return resp, err
+	}
+	used, ok := strings.CutPrefix(req.Header.Get("Authorization"), "Bearer ")
+	if !ok {
+		return resp, nil
+	}
+	s.tokens.Rejected(used)
+	if req.Body != nil && req.Body != http.NoBody && req.GetBody == nil {
+		return resp, nil
+	}
+	next, err := s.tokens.Token(req.Context())
+	if err != nil {
+		drain(resp)
+		return nil, fmt.Errorf("the server refused the token and no other could be had: %w", err)
+	}
+	if next == used {
+		return resp, nil
+	}
+	retry := req.Clone(req.Context())
+	if req.GetBody != nil {
+		body, err := req.GetBody()
+		if err != nil {
+			return resp, nil
+		}
+		retry.Body = body
+	}
+	drain(resp)
+	retry.Header.Set("Authorization", "Bearer "+next)
+	return s.sendOnce(retry)
+}
+
+func (s *Store) sendOnce(req *http.Request) (*http.Response, error) {
 	resp, err := s.client.Do(req)
 	if err != nil {
 		if ctxErr := req.Context().Err(); ctxErr != nil {

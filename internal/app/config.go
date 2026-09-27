@@ -15,6 +15,7 @@ import (
 
 	"github.com/baalimago/go_away_boilerplate/pkg/slogcolor"
 
+	"github.com/baalimago/slivingdoc/internal/credentials"
 	"github.com/baalimago/slivingdoc/internal/git"
 	"github.com/baalimago/slivingdoc/internal/httpstore"
 	"github.com/baalimago/slivingdoc/internal/notebook"
@@ -28,15 +29,20 @@ import (
 // override defaults; the endpoint is normalized and both roots are absolute
 // and disjoint before any engine or S3 work.
 type config struct {
-	bucket      string
-	prefix      string
-	region      string
-	endpoint    string
-	token       string
+	bucket   string
+	prefix   string
+	region   string
+	endpoint string
+	token    string
+	// login is the stored login whose key mints the space tokens, when
+	// that is what made the process hosted; tokens is the source minting
+	// them, set by buildService before the store is built.
+	login       *credentials.Login
+	tokens      httpstore.TokenSource
 	tokenOrigin tokenOrigin
 	// bucketFrom says which setting named the bucket, in the spelling
 	// used: --bucket, --space, SLIVINGDOC_BUCKET, SLIVINGDOC_SPACE, the
-	// default login, the token's own space, or none,
+	// login's default space, the token's own space, or none,
 	// so a space mismatch or a refused token names the right fix.
 	bucketFrom          bucketSource
 	pathStyle           bool
@@ -70,11 +76,12 @@ type config struct {
 	sessionDir string
 }
 
-// hosted reports whether the process uses the hosted storage API: a token,
-// from SLIVINGDOC_TOKEN or a stored login, selects it (resolveStorage).
-// The bucket may then name the space; when empty, the space is the token's
-// own, resolved at startup (resolveHostedSpace).
-func (cfg config) hosted() bool { return cfg.token != "" }
+// hosted reports whether the process uses the hosted storage API:
+// SLIVINGDOC_TOKEN or a stored login selects it (resolveStorage). With the
+// token the bucket may name the space, and when empty the space is the
+// token's own, resolved at startup (resolveHostedSpace); with a login the
+// space is always named.
+func (cfg config) hosted() bool { return cfg.token != "" || cfg.login != nil }
 
 // DefaultHostedEndpoint is the hosted storage API used when a token is set
 // and no endpoint is configured.
@@ -112,7 +119,7 @@ func NewFlags() *Flags { return &Flags{} }
 func (f *Flags) Bind(fs *flag.FlagSet) {
 	fs.Var(&f.storage, "storage", "storage backend: auto, hosted, or s3")
 	fs.Var(&f.bucket, "bucket", "S3 bucket; the same setting as --space")
-	fs.Var(&f.space, "space", "hosted space, the hosted name of --bucket (default: with SLIVINGDOC_TOKEN the token's own, else the default login's)")
+	fs.Var(&f.space, "space", "hosted space, the hosted name of --bucket (default: with SLIVINGDOC_TOKEN the token's own, else the login's default space)")
 	fs.Var(&f.prefix, "prefix", "S3 object prefix")
 	fs.Var(&f.region, "region", "S3 region")
 	fs.Var(&f.endpoint, "endpoint", "S3-compatible endpoint URL")
@@ -181,6 +188,7 @@ func (f *Flags) resolve(environment []string, cwd, cacheDir string, ephemeral bo
 		bucket:      sel.bucket,
 		prefix:      resolveString(&f.prefix, env["SLIVINGDOC_PREFIX"], "slivingdoc"),
 		token:       sel.token,
+		login:       sel.login,
 		tokenOrigin: sel.origin,
 		bucketFrom:  sel.bucketFrom,
 	}
@@ -344,18 +352,20 @@ func resolvePolicy(readOnly, writable []string) (git.PathPolicy, error) {
 }
 
 // validateHosted checks the hosted-mode settings: the space (--space or
-// --bucket), when given, is
-// a valid space name, the token can travel in a header, and the token only ever travels
-// over HTTPS, except to a loopback test server. No diagnostic echoes the
-// token.
+// --bucket), when given, is a valid space name, SLIVINGDOC_TOKEN can
+// travel in a header, and a token only ever travels over HTTPS, except to
+// a loopback test server. A stored login's key was checked when the file
+// was read. No diagnostic echoes the token.
 func validateHosted(cfg config) error {
 	if cfg.bucket != "" {
 		if err := httpstore.ValidateSpace(cfg.bucket); err != nil {
 			return fmt.Errorf("bucket names the hosted space: %w", err)
 		}
 	}
-	if err := httpstore.ValidateToken(cfg.token); err != nil {
-		return errors.New("SLIVINGDOC_TOKEN must be printable characters without white space")
+	if cfg.login == nil {
+		if err := httpstore.ValidateToken(cfg.token); err != nil {
+			return errors.New("SLIVINGDOC_TOKEN must be printable characters without white space")
+		}
 	}
 	u, err := url.Parse(cfg.endpoint)
 	if err != nil {
@@ -606,15 +616,16 @@ func parseUnsigned(s string) (int, error) {
 // commit embed it in their help output.
 const FlagReference = `  --storage string              storage backend: auto, hosted, or s3         SLIVINGDOC_STORAGE
                                 (default "auto": SLIVINGDOC_TOKEN, else a
-                                stored login for the space, selects hosted
-                                storage; otherwise S3; a login for a named
+                                stored login, selects hosted storage;
+                                otherwise S3; a login beside a named
                                 bucket plus S3 settings, or the token plus
                                 an S3 endpoint, is refused as ambiguous)
   --bucket string               S3 bucket (required for S3); the same        SLIVINGDOC_BUCKET
                                 setting as --space
   --space string                hosted space, the hosted name of --bucket    SLIVINGDOC_SPACE
                                 (default: with SLIVINGDOC_TOKEN the token's
-                                own space, else the default login's; a token
+                                own space, else the login's default space
+                                that 'slivingdoc space <name>' sets; a token
                                 for another space is refused; --bucket and
                                 --space, or the two variables, with
                                 different values are refused)
@@ -625,9 +636,9 @@ const FlagReference = `  --storage string              storage backend: auto, ho
   --endpoint string             S3-compatible endpoint URL (empty for AWS)   AWS_ENDPOINT_URL_S3
                                 or, in hosted mode, the hosted storage API   SLIVINGDOC_ENDPOINT
                                 URL (default "https://api.slivingdoc.dev",
-                                or the endpoint a stored login was issued
-                                for; a different one means the login does
-                                not apply)
+                                or the endpoint of the stored login; with
+                                several logins it chooses one, and a
+                                different one means no login applies)
   (environment only)            hosted storage API token; setting it         SLIVINGDOC_TOKEN
                                 stores the notebook in the one hosted
                                 space the token reaches; it wins over a
