@@ -34,7 +34,8 @@ func loginEnv(t *testing.T) (*gatewaytest.Gateway, *sitetest.Site, []string, str
 	site := sitetest.Start(t)
 	env, root := cliRoots(t)
 	env = append(env,
-		credentials.DirEnv+"="+t.TempDir(),
+		// A directory login creates, 0700 whatever the umask.
+		credentials.DirEnv+"="+filepath.Join(t.TempDir(), "cfg"),
 		"SLIVINGDOC_SITE="+site.URL(),
 		"SLIVINGDOC_BUCKET=",
 	)
@@ -215,6 +216,12 @@ func TestScenarioStorageSelection(t *testing.T) {
 			want: []string{"S3 compatibility probe failed"},
 		},
 		{
+			name: "an endpoint the login was not issued for never borrows its space as a bucket",
+			env:  with(s3...),
+			args: []string{"--endpoint", closedS3},
+			want: []string{"bucket is required"},
+		},
+		{
 			name: "hosted at an endpoint the login was not issued for",
 			args: []string{"--storage", "hosted", "--endpoint", closedS3},
 			want: []string{"needs SLIVINGDOC_TOKEN or a stored login", "issued for " + g.URL()},
@@ -286,7 +293,7 @@ func TestScenarioLogout(t *testing.T) {
 	runLogin(t, env, site, `Logged in as ada@example.test to space "team-notes" (read and write) until 2026-12-26 09:00 UTC`, "--no-browser")
 
 	code, stdout, stderr := runCLI(t, "real", env, "logout")
-	if code != 0 || stdout != "Logged out of space \"team-notes\"; the token was revoked\n" {
+	if code != 0 || stdout != "Logged out of space \"team-notes\" at "+g.URL()+"; the token was revoked\n" {
 		t.Fatalf("logout = exit %d, stdout %q, stderr %s", code, stdout, stderr)
 	}
 	if got := site.Revoked(); len(got) != 1 || got[0] != hostedToken {

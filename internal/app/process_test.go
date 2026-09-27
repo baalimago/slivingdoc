@@ -114,7 +114,7 @@ func spawnHelper(t *testing.T, mode string) *helperProc {
 	if err != nil {
 		t.Fatalf("stdout pipe: %v", err)
 	}
-	env := append(os.Environ(),
+	env := append(withoutStorageEnv(os.Environ()),
 		"SLIVINGDOC_PROCESS_HELPER="+mode,
 		"SLIVINGDOC_BUCKET=process-bucket",
 		"SLIVINGDOC_PREFIX=process-prefix",
@@ -123,7 +123,6 @@ func spawnHelper(t *testing.T, mode string) *helperProc {
 		// A developer's stored login or storage choice never reaches the
 		// helper (architecture/login.md).
 		credentials.DirEnv+"="+t.TempDir(),
-		"SLIVINGDOC_STORAGE=",
 	)
 	proc, err := os.StartProcess(os.Args[0], []string{os.Args[0]}, &os.ProcAttr{
 		Env:   env,
@@ -364,4 +363,20 @@ func assertProtocolOnlyStdout(t *testing.T, data []byte) {
 	if line == 0 {
 		t.Fatal("stdout carries no protocol messages")
 	}
+}
+
+// withoutStorageEnv drops the variables that choose the store, the token
+// or the stored logins from env. Appending an override is not enough: the
+// helper's lookup would see the inherited entry too.
+func withoutStorageEnv(env []string) []string {
+	var out []string
+	for _, kv := range env {
+		name, _, _ := strings.Cut(kv, "=")
+		switch name {
+		case credentials.DirEnv, "SLIVINGDOC_STORAGE", SiteEnv, "SLIVINGDOC_TOKEN", "SLIVINGDOC_ENDPOINT":
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
 }

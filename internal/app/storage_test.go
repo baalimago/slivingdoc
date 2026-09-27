@@ -41,7 +41,12 @@ func entry(endpoint, space, token string) storedLogin {
 // selects it. A nil def stores no default.
 func writeLogins(t *testing.T, def *storedKey, logins ...storedLogin) string {
 	t.Helper()
-	dir := t.TempDir()
+	// A directory of our own, 0700 whatever the umask: Load refuses one
+	// that group or other can write.
+	dir := filepath.Join(t.TempDir(), "cfg")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	data, err := json.Marshal(struct {
 		Version int           `json:"version"`
 		Default *storedKey    `json:"default,omitempty"`
@@ -158,7 +163,10 @@ func TestResolveStorageRefusals(t *testing.T) {
 	expired := writeLogins(t, nil, expiredEntry)
 	twoEndpoints := writeLogins(t, &storedKey{DefaultHostedEndpoint, "team"},
 		entry(DefaultHostedEndpoint, "notes", loginToken), entry(devEndpoint, "notes", otherToken), entry(DefaultHostedEndpoint, "team", otherToken))
-	malformedDir := t.TempDir()
+	malformedDir := filepath.Join(t.TempDir(), "cfg")
+	if err := os.Mkdir(malformedDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(malformedDir, credentials.FileName), []byte(`{"version":1,"logins":[{"token":"`+loginToken+`"}]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -204,7 +212,7 @@ func TestResolveStorageRefusals(t *testing.T) {
 			"an expired login",
 			[]string{expired, "SLIVINGDOC_BUCKET=notes"},
 			nil,
-			[]string{"expired 2001-01-01 00:00 UTC", "run 'slivingdoc login --bucket notes'"},
+			[]string{"expired 2001-01-01 00:00 UTC", "run 'slivingdoc login --bucket notes'", "--storage s3"},
 		},
 		{
 			"two endpoints for one space",
@@ -235,6 +243,24 @@ func TestResolveStorageRefusals(t *testing.T) {
 			[]string{notes},
 			[]string{"--storage", "s3"},
 			[]string{"bucket is required"},
+		},
+		{
+			"auto S3 never takes the default space",
+			[]string{notes},
+			[]string{"--endpoint", "https://minio.local"},
+			[]string{"bucket is required"},
+		},
+		{
+			"a login and a generic AWS endpoint are ambiguous",
+			[]string{notes, "AWS_ENDPOINT_URL=https://s3.example.test"},
+			nil,
+			[]string{"AWS_ENDPOINT_URL", "--storage s3"},
+		},
+		{
+			"a login and a web identity are ambiguous",
+			[]string{notes, "AWS_WEB_IDENTITY_TOKEN_FILE=/t", "AWS_SHARED_CREDENTIALS_FILE=/c"},
+			nil,
+			[]string{"AWS_SHARED_CREDENTIALS_FILE, AWS_WEB_IDENTITY_TOKEN_FILE"},
 		},
 	}
 	for _, tt := range tests {

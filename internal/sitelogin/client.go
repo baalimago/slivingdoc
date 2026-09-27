@@ -54,7 +54,26 @@ var (
 	ErrProtocol = errors.New("sitelogin: unexpected answer from the site")
 	// ErrRefused reports an error answer of the site.
 	ErrRefused = errors.New("sitelogin: the site refused the request")
+	// ErrUnreachable reports a request that got no answer.
+	ErrUnreachable = errors.New("sitelogin: the site is unreachable")
 )
+
+// RejectedTokenError reports a token the site issued in an answer outside
+// the wire contract. The token itself is sendable, so the caller can
+// revoke it rather than leave it valid and unseen; Error never contains
+// it.
+type RejectedTokenError struct {
+	Token string
+	Err   error
+}
+
+func (e *RejectedTokenError) Error() string { return e.Err.Error() }
+
+func (e *RejectedTokenError) Unwrap() error { return e.Err }
+
+// The backoff of a poll that got no usable answer: the pause doubles from
+// the interval per failure in a row, up to maxRetryWait.
+const maxRetryWait = time.Minute
 
 // Doer sends one HTTP request. *http.Client satisfies it.
 type Doer interface {
@@ -267,18 +286,32 @@ type tokenAnswer struct {
 
 // Wait polls the approval until the site issues the token, the person
 // denies it, the code expires, or ctx ends. It pauses Interval before
-// every poll and adds five seconds after each slow_down answer.
+// every poll and adds five seconds after each slow_down answer. A poll that
+// gets no answer or a 5xx is retried with a doubling pause until the code
+// expires; any other error answer ends the wait. A token issued in an
+// answer outside the contract is returned inside a *RejectedTokenError.
 func (c *Client) Wait(ctx context.Context, a Approval) (Issued, error) {
 	interval := a.Interval
+	var failures int
+	var lastFailure error
 	for {
-		if err := c.sleep(ctx, interval); err != nil {
+		if err := c.sleep(ctx, retryWait(interval, failures)); err != nil {
 			return Issued{}, err
 		}
 		if !c.now().Before(a.Deadline) {
+			if lastFailure != nil {
+				return Issued{}, fmt.Errorf("%w; the last poll failed: %w", ErrCodeExpired, lastFailure)
+			}
 			return Issued{}, ErrCodeExpired
 		}
 		var ans tokenAnswer
 		err := c.post(ctx, tokenPath, "", tokenBody{DeviceCode: a.deviceCode}, &ans)
+		if transient(err) {
+			failures++
+			lastFailure = err
+			continue
+		}
+		failures, lastFailure = 0, nil
 		var refusal *Refusal
 		if errors.As(err, &refusal) {
 			switch refusal.Code {
@@ -300,6 +333,25 @@ func (c *Client) Wait(ctx context.Context, a Approval) (Issued, error) {
 	}
 }
 
+// transient reports a poll failure worth retrying: no answer, or a 5xx.
+func transient(err error) bool {
+	var refusal *Refusal
+	return errors.Is(err, ErrUnreachable) || (errors.As(err, &refusal) && refusal.Status >= http.StatusInternalServerError)
+}
+
+// retryWait is the pause before a poll after failures transient failures
+// in a row.
+func retryWait(interval time.Duration, failures int) time.Duration {
+	wait := interval
+	for range failures {
+		if wait >= maxRetryWait/2 {
+			return maxRetryWait
+		}
+		wait *= 2
+	}
+	return wait
+}
+
 // withMessage adds the site's message for a person to a terminal poll
 // outcome.
 func withMessage(outcome error, r *Refusal) error {
@@ -316,31 +368,36 @@ func issued(ans tokenAnswer) (Issued, error) {
 	if err := httpstore.ValidateToken(ans.Token); err != nil {
 		return Issued{}, fmt.Errorf("%w: the token cannot be used", ErrProtocol)
 	}
+	reject := func(format string, args ...any) (Issued, error) {
+		return Issued{}, &RejectedTokenError{Token: ans.Token, Err: fmt.Errorf("%w: "+format, append([]any{ErrProtocol}, args...)...)}
+	}
 	if err := httpstore.ValidateSpace(ans.Space); err != nil {
-		return Issued{}, fmt.Errorf("%w: %w", ErrProtocol, err)
+		return reject("%w", err)
 	}
 	access, err := credentials.ParseAccess(ans.Access)
 	if err != nil {
-		return Issued{}, fmt.Errorf("%w: %w", ErrProtocol, err)
+		return reject("%w", err)
 	}
 	if err := httpstore.ValidateEndpoint(ans.Endpoint); err != nil {
-		return Issued{}, fmt.Errorf("%w: %w", ErrProtocol, err)
+		return reject("%w", err)
 	}
 	if !usableEmail(ans.Account) {
-		return Issued{}, fmt.Errorf("%w: no usable account", ErrProtocol)
+		return reject("no usable account")
 	}
 	if !usableEmail(ans.Owner) {
-		return Issued{}, fmt.Errorf("%w: no usable owner", ErrProtocol)
+		return reject("no usable owner")
 	}
-	out := Issued{Token: ans.Token, Space: ans.Space, Access: access, Endpoint: ans.Endpoint, Account: ans.Account, Owner: ans.Owner}
-	if ans.ExpiresAt != nil {
-		at, err := time.Parse(time.RFC3339, *ans.ExpiresAt)
-		if err != nil {
-			return Issued{}, fmt.Errorf("%w: expiresAt is not RFC 3339", ErrProtocol)
-		}
-		out.Expires = credentials.ExpiresAt(at)
+	if ans.ExpiresAt == nil {
+		return reject("no expiresAt")
 	}
-	return out, nil
+	at, err := time.Parse(time.RFC3339, *ans.ExpiresAt)
+	if err != nil {
+		return reject("expiresAt is not RFC 3339")
+	}
+	return Issued{
+		Token: ans.Token, Space: ans.Space, Access: access, Endpoint: ans.Endpoint,
+		Expires: credentials.ExpiresAt(at), Account: ans.Account, Owner: ans.Owner,
+	}, nil
 }
 
 // Revoke withdraws token at the site. A token the site no longer knows
@@ -413,7 +470,7 @@ func (c *Client) post(ctx context.Context, path, token string, in, out any) erro
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		return fmt.Errorf("sitelogin: %s unreachable: %w", c.site, err)
+		return fmt.Errorf("%w (%s): %w", ErrUnreachable, c.site, err)
 	}
 	defer resp.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, bodyLimit))

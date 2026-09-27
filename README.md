@@ -82,7 +82,9 @@ space, `--bucket`:
 
 The result line names the account that approved the code, and the space's
 owner when that is someone else; whoever enters a code first decides it, so
-check that it was you. `slivingdoc logout` revokes the stored token.
+check that it was you. Logging in again for the same space at the same
+storage endpoint replaces the stored token and revokes the old one.
+`slivingdoc logout` revokes the stored token.
 Restart the MCP host after logging in again.
 
 For CI, or instead of logging in, give slivingdoc an API token and the
@@ -105,6 +107,12 @@ ignored. Everything else works the same way. `SLIVINGDOC_TOKEN` wins over a
 stored login. If you have both a login and AWS settings in the environment,
 slivingdoc refuses to guess: pass `--storage hosted` or `--storage s3`
 (`--storage s3` never sends a token anywhere).
+
+**Upgrading an S3 setup:** if you log in to a space with the same name as
+an S3 bucket you already use, an existing S3 command line or MCP entry for
+that bucket now either switches to hosted storage or, with AWS settings in
+its environment, refuses to start. Add `--storage s3` (or
+`SLIVINGDOC_STORAGE=s3`) to keep it on S3.
 
 ## How it works
 

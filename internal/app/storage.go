@@ -38,10 +38,15 @@ const (
 	originLogin tokenOrigin = "login"
 )
 
-// awsSignals are the environment variables that mean the operator
+// awsSignals returns the environment variables that mean the operator
 // configured S3 on purpose. With a stored login for the same space they
 // make auto mode refuse rather than guess.
-var awsSignals = []string{"AWS_ACCESS_KEY_ID", "AWS_PROFILE", "AWS_ENDPOINT_URL_S3"}
+func awsSignals() []string {
+	return []string{
+		"AWS_ACCESS_KEY_ID", "AWS_PROFILE", "AWS_ENDPOINT_URL_S3", "AWS_ENDPOINT_URL",
+		"AWS_SHARED_CREDENTIALS_FILE", "AWS_WEB_IDENTITY_TOKEN_FILE",
+	}
+}
 
 // storageSelection is the outcome of resolveStorage: the store kind, the
 // space or bucket, and, when hosted, the token, its origin and the hosted
@@ -73,7 +78,9 @@ type storageInputs struct {
 //   - auto: SLIVINGDOC_TOKEN → hosted; a stored login plus an AWS variable
 //     → refusal; a stored login → hosted; otherwise S3.
 //
-// Outside s3 mode an omitted bucket is the default login's space. A stored
+// Outside s3 mode an omitted bucket is the default login's space, but only
+// when the outcome is hosted: a login that does not apply never names an
+// S3 bucket. A stored
 // token is only used for the endpoint it was issued for: an explicit
 // endpoint that differs means the login does not apply. No refusal echoes
 // a token.
@@ -98,9 +105,10 @@ func resolveStorage(f *Flags, env map[string]string, in storageInputs) (storageS
 			return storageSelection{}, err
 		}
 	}
+	defaulted := false
 	if sel.bucket == "" {
 		if def, err := logins.Default(); err == nil {
-			sel.bucket = def.Space
+			sel.bucket, defaulted = def.Space, true
 		}
 	}
 
@@ -123,6 +131,10 @@ func resolveStorage(f *Flags, env map[string]string, in storageInputs) (storageS
 	case errors.Is(err, credentials.ErrAmbiguous):
 		return storageSelection{}, fmt.Errorf("%w; pass --endpoint to choose one", err)
 	case errors.Is(err, credentials.ErrNoLogin) && mode == storageAuto:
+		if defaulted {
+			// The default login's space names no S3 bucket.
+			sel.bucket = ""
+		}
 		return sel, nil
 	case errors.Is(err, credentials.ErrNoLogin):
 		return storageSelection{}, noLoginRefusal(logins, explicit, sel.bucket)
@@ -137,7 +149,7 @@ func resolveStorage(f *Flags, env map[string]string, in storageInputs) (storageS
 		}
 	}
 	if err := login.Usable(in.now); err != nil {
-		return storageSelection{}, fmt.Errorf("%w; run 'slivingdoc login --bucket %s'", err, sel.bucket)
+		return storageSelection{}, fmt.Errorf("%w; run 'slivingdoc login --bucket %s', or pass --storage s3 to use S3", err, sel.bucket)
 	}
 	sel.token, sel.origin, sel.endpoint = login.Token, originLogin, login.Endpoint
 	return sel, nil
@@ -184,7 +196,7 @@ func noLoginRefusal(logins credentials.Set, explicit, space string) error {
 // awsConfigured returns the AWS signal variables set in env.
 func awsConfigured(env map[string]string) []string {
 	var set []string
-	for _, name := range awsSignals {
+	for _, name := range awsSignals() {
 		if env[name] != "" {
 			set = append(set, name)
 		}

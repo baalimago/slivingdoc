@@ -298,7 +298,7 @@ func TestLogout(t *testing.T) {
 	if err := r.logout(t); err != nil {
 		t.Fatalf("logout = %v", err)
 	}
-	if r.out.String() != "Logged out of space \"notes\"; the token was revoked\n" {
+	if r.out.String() != "Logged out of space \"notes\" at https://api.slivingdoc.dev; the token was revoked\n" {
 		t.Fatalf("stdout = %q", r.out.String())
 	}
 	set := r.logins(t)
@@ -318,7 +318,8 @@ func TestLogout(t *testing.T) {
 	if err := r.logout(t, "--bucket", "notes"); !errors.Is(err, credentials.ErrNoLogin) {
 		t.Fatalf("logout of a removed space = %v, want ErrNoLogin", err)
 	}
-	if err := r.logout(t, "--bucket", "team", "--site", "https://other.example.test"); !errors.Is(err, credentials.ErrNoLogin) {
+	if err := r.logout(t, "--bucket", "team", "--site", "https://other.example.test"); !errors.Is(err, credentials.ErrNoLogin) ||
+		!strings.Contains(err.Error(), "issued by https://other.example.test (from --site or SLIVINGDOC_SITE)") {
 		t.Fatalf("logout for another site = %v, want ErrNoLogin", err)
 	}
 	if err := r.logout(t, "--bucket", "team", "--site", "http://www.example.test"); err == nil || !strings.Contains(err.Error(), "https") {
@@ -351,6 +352,84 @@ func TestLogoutKeepsALoginItCannotRevoke(t *testing.T) {
 	}
 }
 
+func TestLoginRevokesATokenItCannotStore(t *testing.T) {
+	t.Run("an answer outside the contract", func(t *testing.T) {
+		r := newLoginRig(t)
+		script := approved("notes", loginToken, "write", DefaultHostedEndpoint)
+		script.Issue.Account = ""
+		r.site.Next(script)
+		err := r.login(t)
+		if err == nil || !strings.Contains(err.Error(), "no usable account") || strings.Contains(err.Error(), loginToken) {
+			t.Fatalf("login = %v, want the protocol refusal without the token", err)
+		}
+		if got := r.site.Revoked(); len(got) != 1 || got[0] != loginToken {
+			t.Fatalf("revoked = %v, want the rejected token", got)
+		}
+	})
+	t.Run("a credentials file that breaks while waiting", func(t *testing.T) {
+		r := newLoginRig(t)
+		r.site.Next(approved("notes", loginToken, "write", DefaultHostedEndpoint))
+		l, err := PrepareLogin(NewLoginFlags(), r.opts())
+		if err != nil {
+			t.Fatalf("PrepareLogin() = %v", err)
+		}
+		if err := os.MkdirAll(r.dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(r.dir, credentials.FileName), []byte("{"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := l.Run(context.Background()); !errors.Is(err, credentials.ErrMalformed) {
+			t.Fatalf("Run() = %v, want ErrMalformed", err)
+		}
+		if got := r.site.Revoked(); len(got) != 1 || got[0] != loginToken {
+			t.Fatalf("revoked = %v, want the unstored token", got)
+		}
+	})
+}
+
+func TestLoginExplainsAnUnknownHostName(t *testing.T) {
+	r := newLoginRig(t)
+	r.site.Next(approved("notes", loginToken, "write", DefaultHostedEndpoint))
+	opts := r.opts()
+	opts.Hostname = func() (string, error) { return "", errors.New("uname failed") }
+	l, err := PrepareLogin(NewLoginFlags(), opts)
+	if err != nil {
+		t.Fatalf("PrepareLogin() = %v", err)
+	}
+	if err := l.Run(context.Background()); err != nil {
+		t.Fatalf("Run() = %v", err)
+	}
+	if !strings.Contains(r.errOut.String(), `The host name is unknown (uname failed); the token is labelled "CLI login" without it.`) {
+		t.Fatalf("stderr = %q", r.errOut.String())
+	}
+	if starts := r.site.Starts(); len(starts) != 1 || starts[0].Client != "" {
+		t.Fatalf("start requests = %+v, want no client label", starts)
+	}
+}
+
+func TestPlatformBrowserOnWindowsNeedsAnAbsoluteSystemRoot(t *testing.T) {
+	for _, env := range []map[string]string{
+		nil,
+		{"SystemRoot": `Windows`},
+		{"SYSTEMROOT": `relative`},
+	} {
+		err := platformBrowser("windows", env, "https://www.slivingdoc.dev/cli/login")
+		if err == nil || !strings.Contains(err.Error(), "app: SystemRoot is not an absolute path") {
+			t.Fatalf("platformBrowser(%v) = %v, want the absolute-path refusal", env, err)
+		}
+	}
+	// The name is matched without regard to case, as Windows does; this
+	// root exists nowhere, so the start itself fails.
+	err := platformBrowser("windows", map[string]string{"SYSTEMROOT": filepath.Join(t.TempDir(), "win")}, "https://x")
+	if err == nil || !strings.Contains(err.Error(), "app: start the browser") {
+		t.Fatalf("platformBrowser(SYSTEMROOT) = %v, want the start to be tried", err)
+	}
+	if got := lookupFold(map[string]string{"systemroot": "a"}, "SystemRoot"); got != "a" {
+		t.Fatalf("lookupFold() = %q", got)
+	}
+}
+
 func TestFindOnPath(t *testing.T) {
 	dir := t.TempDir()
 	plain := filepath.Join(dir, "plain")
@@ -368,7 +447,7 @@ func TestFindOnPath(t *testing.T) {
 		t.Fatalf("findOnPath() = %q, %v; want %q", got, err, tool)
 	}
 	if err := platformBrowser("linux", map[string]string{"PATH": dir}, "https://www.slivingdoc.dev/cli/login"); err == nil ||
-		!strings.Contains(err.Error(), "xdg-open is not on PATH") {
+		!strings.Contains(err.Error(), "app: xdg-open is not on PATH") {
 		t.Fatalf("platformBrowser without xdg-open = %v", err)
 	}
 }

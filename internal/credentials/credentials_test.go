@@ -302,6 +302,62 @@ func TestLoadAcceptsLoopbackHTTP(t *testing.T) {
 	}
 }
 
+func TestLoadRefusesExposedFiles(t *testing.T) {
+	f := testFile(t)
+	if err := f.Save(Set{}); err != nil {
+		t.Fatalf("Save() = %v", err)
+	}
+	dir := filepath.Dir(f.Path())
+	for _, tt := range []struct {
+		name          string
+		dirMode, mode os.FileMode
+		want          string
+	}{
+		{"group-readable file", 0o700, 0o640, "chmod 600"},
+		{"world-writable file", 0o700, 0o602, "chmod 600"},
+		{"group-writable directory", 0o770, 0o600, "chmod go-w"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := os.Chmod(dir, tt.dirMode); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(f.Path(), tt.mode); err != nil {
+				t.Fatal(err)
+			}
+			_, err := f.Load()
+			if !errors.Is(err, ErrExposed) || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Load() = %v, want ErrExposed saying %q", err, tt.want)
+			}
+			windows := f
+			windows.private = false
+			if _, err := windows.Load(); err != nil {
+				t.Fatalf("Load() without permission bits = %v", err)
+			}
+		})
+	}
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(f.Path(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Load(); err != nil {
+		t.Fatalf("Load() of a private file in a readable directory = %v", err)
+	}
+	if err := os.Chmod(dir, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Save(Set{}); !errors.Is(err, ErrExposed) {
+		t.Fatalf("Save() into a world-writable directory = %v, want ErrExposed", err)
+	}
+	if err := os.Remove(f.Path()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Load(); err != nil {
+		t.Fatalf("Load() without a file = %v; an exposed directory holding no file is not read", err)
+	}
+}
+
 func TestLoadAndSaveReportFilesystemFailures(t *testing.T) {
 	f := testFile(t)
 	if err := os.MkdirAll(f.Path(), 0o700); err != nil {

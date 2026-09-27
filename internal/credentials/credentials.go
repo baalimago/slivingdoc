@@ -49,6 +49,9 @@ var (
 	ErrAmbiguous = errors.New("credentials: several stored logins match")
 	// ErrExpired reports a stored login whose token has expired.
 	ErrExpired = errors.New("credentials: stored login expired")
+	// ErrExposed reports a credentials file, or its directory, that other
+	// users could read or change.
+	ErrExposed = errors.New("credentials: the credentials file is not private")
 )
 
 // Access is what a stored token may do in its space.
@@ -238,6 +241,9 @@ func (s Set) where() string {
 // File is the credentials file of one configuration directory.
 type File struct {
 	dir string
+	// private says whether the platform has POSIX permission bits that
+	// Load checks: every one but Windows.
+	private bool
 }
 
 // Locate resolves the credentials file from the environment: DirEnv when
@@ -249,13 +255,13 @@ func Locate(getenv func(string) string, goos string) (File, error) {
 		if !filepath.IsAbs(dir) {
 			return File{}, fmt.Errorf("%w: %s must be an absolute path", ErrNoConfigDir, DirEnv)
 		}
-		return File{dir: filepath.Clean(dir)}, nil
+		return File{dir: filepath.Clean(dir), private: goos != "windows"}, nil
 	}
 	base, err := userConfigDir(getenv, goos)
 	if err != nil {
 		return File{}, err
 	}
-	return File{dir: filepath.Join(base, "slivingdoc")}, nil
+	return File{dir: filepath.Join(base, "slivingdoc"), private: goos != "windows"}, nil
 }
 
 // Path is the credentials file path.
@@ -295,10 +301,18 @@ func userConfigDir(getenv func(string) string, goos string) (string, error) {
 // Load reads the credentials file. A file that does not exist is an empty
 // Set: nobody has logged in yet. Anything else that cannot be read or
 // parsed strictly is an error naming the file.
+//
+// Like ssh, Load refuses an existing file that group or other can read or
+// write, or whose directory group or other can write, on every platform
+// but Windows: another user could read the tokens or plant their own. Save
+// refuses such a directory too.
 func (f File) Load() (Set, error) {
 	data, err := os.ReadFile(f.Path())
 	if errors.Is(err, os.ErrNotExist) {
 		return Set{location: f.Path()}, nil
+	}
+	if err := f.checkPrivate(); err != nil {
+		return Set{}, err
 	}
 	if err != nil {
 		return Set{}, fmt.Errorf("credentials: read %s: %w", f.Path(), err)
@@ -311,6 +325,21 @@ func (f File) Load() (Set, error) {
 	return set, nil
 }
 
+// checkPrivate refuses an exposed directory or file; a missing one is
+// private.
+func (f File) checkPrivate() error {
+	if !f.private {
+		return nil
+	}
+	if info, err := os.Stat(f.dir); err == nil && info.Mode().Perm()&0o022 != 0 {
+		return fmt.Errorf("%w: other users can write to %s; run 'chmod go-w %s'", ErrExposed, f.dir, f.dir)
+	}
+	if info, err := os.Stat(f.Path()); err == nil && info.Mode().Perm()&0o077 != 0 {
+		return fmt.Errorf("%w: other users can access %s; run 'chmod 600 %s'", ErrExposed, f.Path(), f.Path())
+	}
+	return nil
+}
+
 // Save writes s atomically: a temporary file in the same directory, mode
 // 0600, synced, then renamed over the file. The directory is created 0700.
 func (f File) Save(s Set) error {
@@ -320,6 +349,9 @@ func (f File) Save(s Set) error {
 	}
 	if err := os.MkdirAll(f.dir, dirMode); err != nil {
 		return fmt.Errorf("credentials: create %s: %w", f.dir, err)
+	}
+	if err := f.checkPrivate(); err != nil {
+		return err
 	}
 	tmp, err := os.CreateTemp(f.dir, ".credentials-*.json")
 	if err != nil {

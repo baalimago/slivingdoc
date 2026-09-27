@@ -171,10 +171,11 @@ var slivingdocEnv = map[string]bool{
 	"SLIVINGDOC_SITE": true, "SLIVINGDOC_CONFIG_DIR": true,
 }
 
-// releaseConfigDir is the credentials directory of every spawned binary: a
-// path nobody creates, so a developer's own 'slivingdoc login' never
-// reaches the release checks (architecture/login.md).
-var releaseConfigDir = filepath.Join(os.TempDir(), "slivingdoc-release-test-no-login")
+// releaseConfigDir is the credentials directory of every spawned binary:
+// an empty directory TestMain creates for this run and removes after it,
+// so a developer's own 'slivingdoc login' never reaches the release checks
+// (architecture/login.md).
+var releaseConfigDir string
 
 // sanitizedEnv is the ambient environment without any slivingdoc
 // configuration. Everything else is preserved, because the same spawner
@@ -533,7 +534,14 @@ func TestReleaseBinaryCommandSurface(t *testing.T) {
 }
 
 func TestMain(m *testing.M) {
+	dir, err := os.MkdirTemp("", "slivingdoc-release-config-")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "create the release credentials directory: %v\n", err)
+		os.Exit(1)
+	}
+	releaseConfigDir = dir
 	code := m.Run()
+	_ = os.RemoveAll(releaseConfigDir)
 	if releaseBinaryDir != "" {
 		_ = os.RemoveAll(releaseBinaryDir)
 	}

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	"github.com/baalimago/slivingdoc/internal/credentials"
 	"github.com/baalimago/slivingdoc/internal/httpstore"
@@ -65,6 +66,8 @@ type Login struct {
 	access   credentials.Access
 	browser  bool
 	hostname string
+	// hostErr is why the host name could not label the token, if so.
+	hostErr error
 }
 
 // PrepareLogin validates the login flags against the environment and
@@ -97,15 +100,15 @@ func PrepareLogin(f *LoginFlags, opts ProcessOptions) (*Login, error) {
 	if hostname == nil {
 		hostname = os.Hostname
 	}
-	host, err := hostname()
-	if err != nil {
-		// The label is optional in the contract; the site labels the token
-		// without it.
+	host, hostErr := hostname()
+	if hostErr != nil {
+		// The label is optional in the contract: the site then labels the
+		// token "CLI login". Run tells the person why.
 		host = ""
 	}
 	return &Login{
 		opts: opts, file: file, client: client, space: space, access: access,
-		browser: !f.noBrowser.value, hostname: host,
+		browser: !f.noBrowser.value, hostname: host, hostErr: hostErr,
 	}, nil
 }
 
@@ -120,6 +123,9 @@ func (l *Login) Run(ctx context.Context) error {
 		return fmt.Errorf("login: %s", mcp.Redact(err.Error()))
 	}
 	errOut := l.opts.errOut()
+	if l.hostErr != nil {
+		fmt.Fprintf(errOut, "The host name is unknown (%s); the token is labelled \"CLI login\" without it.\n", mcp.Redact(l.hostErr.Error()))
+	}
 	fmt.Fprintf(errOut, "To log in, open this page and approve the code %s:\n  %s\n", approval.UserCode, approval.CompleteURI)
 	fmt.Fprintln(errOut, "Only approve it if you started this login in your own terminal.")
 	if l.browser {
@@ -129,6 +135,10 @@ func (l *Login) Run(ctx context.Context) error {
 	}
 	fmt.Fprintf(errOut, "Waiting for approval (the code expires at %s)...\n", approval.Deadline.UTC().Format("15:04:05 UTC"))
 	issued, err := l.client.Wait(ctx, approval)
+	var rejected *sitelogin.RejectedTokenError
+	if errors.As(err, &rejected) {
+		return l.discard(ctx, rejected.Token, fmt.Errorf("login: %s; nothing was stored", mcp.Redact(err.Error())))
+	}
 	if err != nil {
 		return fmt.Errorf("login: %s", mcp.Redact(err.Error()))
 	}
@@ -152,11 +162,11 @@ func (l *Login) Run(ctx context.Context) error {
 	// terminal meanwhile keeps its entry.
 	set, err := l.file.Load()
 	if err != nil {
-		return fmt.Errorf("login: %w", err)
+		return l.discard(ctx, stored.Token, fmt.Errorf("login: %w; nothing was stored", err))
 	}
 	replaced, putErr := set.Put(stored)
 	if err := l.file.Save(set); err != nil {
-		return fmt.Errorf("login: store the token: %w", err)
+		return l.discard(ctx, stored.Token, fmt.Errorf("login: store the token: %w", err))
 	}
 	if putErr == nil && replaced.Token != stored.Token {
 		if err := revoke(ctx, replaced, l.opts); err != nil {
@@ -195,7 +205,6 @@ func loggedIn(l credentials.Login) string {
 type Logout struct {
 	opts   ProcessOptions
 	file   credentials.File
-	space  string
 	logins []credentials.Login
 }
 
@@ -221,6 +230,9 @@ func PrepareLogout(f *LogoutFlags, opts ProcessOptions) (*Logout, error) {
 		space = def.Space
 	}
 	logins := set.Space(space)
+	if len(logins) == 0 {
+		return nil, fmt.Errorf("logout: %w for space %q", credentials.ErrNoLogin, space)
+	}
 	if site := resolveString(&f.site, env[SiteEnv], ""); site != "" {
 		client, err := siteClient(site, opts)
 		if err != nil {
@@ -232,12 +244,12 @@ func PrepareLogout(f *LogoutFlags, opts ProcessOptions) (*Logout, error) {
 				kept = append(kept, l)
 			}
 		}
+		if len(kept) == 0 {
+			return nil, fmt.Errorf("logout: %w for space %q issued by %s (from --site or %s)", credentials.ErrNoLogin, space, client.Site(), SiteEnv)
+		}
 		logins = kept
 	}
-	if len(logins) == 0 {
-		return nil, fmt.Errorf("logout: %w for space %q", credentials.ErrNoLogin, space)
-	}
-	return &Logout{opts: opts, file: file, space: space, logins: logins}, nil
+	return &Logout{opts: opts, file: file, logins: logins}, nil
 }
 
 // Run revokes each chosen token at the site that issued it and removes it
@@ -268,7 +280,9 @@ func (l *Logout) Run(ctx context.Context) error {
 		if err := l.file.Save(set); err != nil {
 			return fmt.Errorf("logout: %w", err)
 		}
-		fmt.Fprintf(l.opts.Out(), "Logged out of space %q; the token was revoked\n", l.space)
+		for _, k := range removed {
+			fmt.Fprintf(l.opts.Out(), "Logged out of space %q at %s; the token was revoked\n", k.Space, k.Endpoint)
+		}
 	}
 	if len(failed) > 0 {
 		return fmt.Errorf("logout: the token could not be revoked and stays stored; retry, or revoke it on the Tokens page: %w", errors.Join(failed...))
@@ -332,7 +346,13 @@ func platformBrowser(goos string, env map[string]string, url string) error {
 	case "darwin":
 		path, argv = "/usr/bin/open", []string{"open", url}
 	case "windows":
-		path = filepath.Join(env["SystemRoot"], "System32", "rundll32.exe")
+		root := lookupFold(env, "SystemRoot")
+		if !filepath.IsAbs(root) {
+			// A relative or missing root would run whatever rundll32.exe
+			// the working directory holds.
+			return errors.New("app: SystemRoot is not an absolute path")
+		}
+		path = filepath.Join(root, "System32", "rundll32.exe")
 		argv = []string{"rundll32", "url.dll,FileProtocolHandler", url}
 	default:
 		found, err := findOnPath("xdg-open", env["PATH"])
@@ -343,14 +363,31 @@ func platformBrowser(goos string, env map[string]string, url string) error {
 	}
 	devNull, err := os.Open(os.DevNull)
 	if err != nil {
-		return err
+		return fmt.Errorf("app: open %s: %w", os.DevNull, err)
 	}
 	defer devNull.Close()
 	proc, err := os.StartProcess(path, argv, &os.ProcAttr{Files: []*os.File{devNull, devNull, devNull}})
 	if err != nil {
-		return err
+		return fmt.Errorf("app: start the browser: %w", err)
 	}
-	return proc.Release()
+	if err := proc.Release(); err != nil {
+		return fmt.Errorf("app: release the browser process: %w", err)
+	}
+	return nil
+}
+
+// lookupFold returns the value of name in env, ignoring case, as Windows
+// does for environment variable names.
+func lookupFold(env map[string]string, name string) string {
+	if v, ok := env[name]; ok {
+		return v
+	}
+	for k, v := range env {
+		if strings.EqualFold(k, name) {
+			return v
+		}
+	}
+	return ""
 }
 
 // findOnPath returns the first executable regular file called name in the
@@ -365,5 +402,5 @@ func findOnPath(name, pathList string) (string, error) {
 			return candidate, nil
 		}
 	}
-	return "", fmt.Errorf("%s is not on PATH", name)
+	return "", fmt.Errorf("app: %s is not on PATH", name)
 }

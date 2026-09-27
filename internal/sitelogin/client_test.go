@@ -3,6 +3,7 @@ package sitelogin
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -192,6 +193,7 @@ func TestIssuedTokenIsValidated(t *testing.T) {
 		{"endpoint not a URL", func(i *sitetest.Issue) { i.Endpoint = "api" }},
 		{"no account", func(i *sitetest.Issue) { i.Account = "" }},
 		{"owner with a control character", func(i *sitetest.Issue) { i.Owner = "bob\x1b[2J@example.test" }},
+		{"no expiry", func(i *sitetest.Issue) { i.ExpiresAt = time.Time{} }},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -205,26 +207,82 @@ func TestIssuedTokenIsValidated(t *testing.T) {
 				t.Fatalf("Start() = %v", err)
 			}
 			_, err = client.Wait(context.Background(), a)
-			if !errors.Is(err, ErrProtocol) || strings.Contains(err.Error(), "sld bad") {
+			if !errors.Is(err, ErrProtocol) || strings.Contains(err.Error(), "sld bad") || strings.Contains(err.Error(), testToken) {
 				t.Fatalf("Wait() = %v, want ErrProtocol without the token", err)
+			}
+			// A sendable token comes back for the caller to revoke.
+			var rejected *RejectedTokenError
+			if got := errors.As(err, &rejected); got != (is.Token == testToken) || (got && rejected.Token != testToken) {
+				t.Fatalf("Wait() = %#v, want the token returned for revocation exactly when it is sendable", err)
 			}
 		})
 	}
 }
 
-func TestIssuedWithoutExpiry(t *testing.T) {
+// flakyDoer fails the first token polls: the first with no answer, the
+// others with a 502, then forwards to the real client.
+type flakyDoer struct {
+	failures int
+	seen     int
+}
+
+func (d *flakyDoer) Do(req *http.Request) (*http.Response, error) {
+	if strings.HasSuffix(req.URL.Path, tokenPath) && d.seen < d.failures {
+		d.seen++
+		if d.seen == 1 {
+			return nil, errors.New("connection reset")
+		}
+		return &http.Response{
+			StatusCode: http.StatusBadGateway,
+			Body:       io.NopCloser(strings.NewReader(`{"error":"internal"}`)),
+			Header:     http.Header{},
+		}, nil
+	}
+	return http.DefaultClient.Do(req)
+}
+
+func flakyClient(t *testing.T, site string, failures int) (*Client, *clock) {
+	t.Helper()
+	c := &clock{now: time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)}
+	client, err := New(Config{Site: site, Sleep: c.Sleep, Now: c.Now, Client: &flakyDoer{failures: failures}})
+	if err != nil {
+		t.Fatalf("New() = %v", err)
+	}
+	return client, c
+}
+
+func TestWaitRetriesTransientFailures(t *testing.T) {
 	site := sitetest.Start(t)
-	is := issue()
-	is.ExpiresAt = time.Time{}
-	site.Next(sitetest.Script{Issue: is})
-	client, _ := newClient(t, site.URL())
+	site.Next(sitetest.Script{Issue: issue()})
+	client, clk := flakyClient(t, site.URL(), 3)
 	a, err := client.Start(context.Background(), StartRequest{Access: credentials.AccessWrite})
 	if err != nil {
 		t.Fatalf("Start() = %v", err)
 	}
 	got, err := client.Wait(context.Background(), a)
-	if err != nil || !got.Expires.Never() {
-		t.Fatalf("Wait() = %+v, %v; want a token without expiry", got, err)
+	if err != nil || got.Token != testToken {
+		t.Fatalf("Wait() = %+v, %v; want the token after the failures", got, err)
+	}
+	want := []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second}
+	if !reflect.DeepEqual(clk.sleeps, want) {
+		t.Fatalf("waits = %v, want %v (doubling after each failure)", clk.sleeps, want)
+	}
+	if retryWait(time.Second, 20) != maxRetryWait {
+		t.Fatal("the backoff is not capped")
+	}
+}
+
+func TestWaitReportsTheLastFailureAtExpiry(t *testing.T) {
+	site := sitetest.Start(t)
+	site.SetTiming(5, 60)
+	client, _ := flakyClient(t, site.URL(), 1000)
+	a, err := client.Start(context.Background(), StartRequest{Access: credentials.AccessWrite})
+	if err != nil {
+		t.Fatalf("Start() = %v", err)
+	}
+	_, err = client.Wait(context.Background(), a)
+	if !errors.Is(err, ErrCodeExpired) || !strings.Contains(err.Error(), "HTTP 502") {
+		t.Fatalf("Wait() = %v, want ErrCodeExpired naming the last failure", err)
 	}
 }
 
@@ -312,7 +370,7 @@ func TestUnreachableSite(t *testing.T) {
 	srv.Close()
 	client, _ := newClient(t, url)
 	_, err := client.Start(context.Background(), StartRequest{Access: credentials.AccessWrite})
-	if err == nil || !strings.Contains(err.Error(), "unreachable") {
+	if !errors.Is(err, ErrUnreachable) {
 		t.Fatalf("Start() = %v, want an unreachable site", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
