@@ -18,10 +18,10 @@ No test uses live AWS resources, the live hosted service, or the live site. Real
 | `internal/integrationtest/scenario.go` | Scenario DSL types: `ToolCall`, `CallExpectation`, `Expectations`, `FSAssertions`, `S3Assertions`, `LogExpectations`, ... |
 | `internal/integrationtest/assertions.go` | `StateRecord`, `PackCacheDir`, `SharedPackCacheDir` |
 | `internal/integrationtest/logcapture.go` | `LogCapture` handler for log assertions |
-| `internal/integrationtest/main_test.go` | `TestMain` (helper-mode dispatch, `tests3.Start`), `helperMain` (runs `cli.Run` in a re-executed test binary; its `OpenBrowser` always fails and its `Sleep` waits a hundredth of the asked time), `spawnHelper`, `spawnHelperIn` (a fresh `SLIVINGDOC_CONFIG_DIR` per helper), `sanitizedEnv` |
+| `internal/integrationtest/main_test.go` | `TestMain` (helper-mode dispatch, `tests3.Start`), `helperMain` (runs `cli.Run` in a re-executed test binary; its `OpenBrowser` always fails and its `Sleep` waits a hundredth of the asked time), `spawnHelper`, `spawnHelperIn` (a fresh `SLIVINGDOC_CONFIG_DIR` and an empty `HOME` per helper), `sanitizedEnv` (drops the AWS variables, `HOME` and the storage, token, site and credentials choices) |
 | `internal/integrationtest/scenario_*_test.go` | One file per use case: pull, commit, conflict, checkpoint, recovery, integrity, error taxonomy, readonly, writable, path security, validation, transport, config, cli, ephemeral, shared cache, logging, log flags, colour, result, hosted, login |
 | `internal/integrationtest/scenario_hosted_test.go` | CLI processes (helper mode `real`, `SLIVINGDOC_TOKEN` set) against `gatewaytest`: round trip, storage full with compaction and `REQUEST_LIMIT`, a read-only token, startup refusals |
-| `internal/integrationtest/scenario_login_test.go` | CLI processes against `sitetest` and `gatewaytest` with a shared `SLIVINGDOC_CONFIG_DIR` and no `SLIVINGDOC_TOKEN`: login then pull and commit, login again (revocation, owner line), denied/expired/refused polls, `--storage` selection (an S3 choice is proven by a probe failure against a closed loopback port with `AWS_MAX_ATTEMPTS=1` and no gateway request), an expired login, logout ([login.md](./login.md)) |
+| `internal/integrationtest/scenario_login_test.go` | CLI processes against `sitetest` and `gatewaytest` with a shared `SLIVINGDOC_CONFIG_DIR` and no `SLIVINGDOC_TOKEN`: login then pull and commit, login again (revocation, owner line), denied/expired/refused polls, `--storage` selection (an S3 choice is proven by a probe failure against a closed loopback port with `AWS_MAX_ATTEMPTS=1` and no gateway request), an expired login, logout, another account's and another site's approval, the default login, a space at two endpoints, a linked credentials file, the S3-signal ambiguity refusals and the startup record ([login.md](./login.md)) |
 | `internal/sitelogin/sitetest/site.go` | Test-only reference site of the CLI login routes with scripted approvals ([login.md](./login.md)) |
 | `internal/integrationtest/pure_test.go` | Unit tests of the recorder and fault wrapper |
 | `internal/storage/contract/suite.go` | `contract.Run(t, Factory)`: one `ObjectStore` suite for every backend |
@@ -92,7 +92,7 @@ process scenario
 |---|---|
 | S3 | `storage.ObjectStore` with `storage/fake`; `app.ProcessOptions.StoreFactory` |
 | Hosted storage API | `gatewaytest` (a local `httptest` server); `httpstore.Config.Client`, `Retries`, `Backoff` |
-| Login site, browser, poll timing, host name | `sitetest` (a local `httptest` server); `sitelogin.Config.Sleep`, `Now`; `app.ProcessOptions.OpenBrowser`, `Sleep`, `Hostname` |
+| Login site, browser, poll timing, host name, the confirmation prompt | `sitetest` (a local `httptest` server); `sitelogin.Config.Sleep`, `Now`, `Client`; `app.ProcessOptions.OpenBrowser`, `Sleep`, `Hostname`, `Terminal`, `Stdin` |
 | Stored logins | `SLIVINGDOC_CONFIG_DIR` in the injected environment (`credentials.Locate` never reads the real process environment) |
 | Git behavior | `git.Engine` / `git.Repository` interfaces with fake repositories in `notebook` and `workspace` tests |
 | libgit2 | real component tests in temporary directories |

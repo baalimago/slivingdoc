@@ -1,7 +1,9 @@
 package integrationtest
 
 import (
+	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -61,7 +63,11 @@ func runLogin(t *testing.T, env []string, site *sitetest.Site, want string, args
 	if code != 0 || stdout != want+"\n" {
 		t.Fatalf("login = exit %d, stdout %q; want 0 and %q; stderr: %s", code, stdout, want, stderr)
 	}
-	for _, line := range []string{"BCDF-GHJK", site.URL() + "/cli/login?code=BCDF-GHJK", "your own terminal"} {
+	for _, line := range []string{
+		"Logging in through " + site.URL() + " (from SLIVINGDOC_SITE).",
+		"BCDF-GHJK", site.URL() + "/cli/login#BCDF-GHJK", "(or open " + site.URL() + "/cli/login and enter the code)",
+		"your own terminal", "Approved by " + loginAccount,
+	} {
 		if !strings.Contains(stderr, line) {
 			t.Fatalf("login stderr = %q, want it to contain %q", stderr, line)
 		}
@@ -69,6 +75,15 @@ func runLogin(t *testing.T, env []string, site *sitetest.Site, want string, args
 	if strings.Contains(stdout+stderr, hostedToken) || strings.Contains(stdout+stderr, hostedReader) {
 		t.Fatal("login printed the token")
 	}
+	if strings.Contains(stderr, "Store this login?") {
+		t.Fatal("login asked a question without a terminal")
+	}
+}
+
+// loggedIn is the login result line for the hosted space at the gateway,
+// which is never the default endpoint, so the line names it.
+func loggedIn(g *gatewaytest.Gateway, access, rest string) string {
+	return `Logged in as ada@example.test to space "team-notes" at ` + g.URL() + " (" + access + ") " + rest
 }
 
 // TestScenarioLoginThenPullAndCommit proves the login workflow end to end:
@@ -81,7 +96,7 @@ func TestScenarioLoginThenPullAndCommit(t *testing.T) {
 	g, site, env, root := loginEnv(t)
 	approve(site, g, hostedToken, "write", loginExpiry, "authorization_pending", "slow_down", "authorization_pending")
 	code, stdout, stderr := runCLI(t, "real", env, "login", "--bucket", hostedSpace)
-	want := `Logged in as ada@example.test to space "team-notes" (read and write) until 2026-12-26 09:00 UTC` + "\n"
+	want := loggedIn(g, "read and write", "until 2026-12-26 09:00 UTC") + "\n"
 	if code != 0 || stdout != want {
 		t.Fatalf("login = exit %d, stdout %q; want %q; stderr: %s", code, stdout, want, stderr)
 	}
@@ -114,14 +129,14 @@ func TestScenarioLoginAgainRevokesTheOldToken(t *testing.T) {
 	t.Parallel()
 	g, site, env, root := loginEnv(t)
 	approve(site, g, hostedToken, "write", loginExpiry)
-	runLogin(t, env, site, `Logged in as ada@example.test to space "team-notes" (read and write) until 2026-12-26 09:00 UTC`)
+	runLogin(t, env, site, loggedIn(g, "read and write", "until 2026-12-26 09:00 UTC"))
 
 	site.Next(sitetest.Script{Issue: sitetest.Issue{
 		Token: hostedReader, Space: hostedSpace, Access: "read", Endpoint: g.URL(), ExpiresAt: loginExpiry,
 		Account: loginAccount, Owner: loginOwner,
 	}})
 	runLogin(t, env, site,
-		`Logged in as ada@example.test to space "team-notes" (read only) until 2026-12-26 09:00 UTC, owned by bob@example.test`,
+		loggedIn(g, "read only", "until 2026-12-26 09:00 UTC, owned by bob@example.test"),
 		"--read-only", "--no-browser")
 	if got := site.Revoked(); len(got) != 1 || got[0] != hostedToken {
 		t.Fatalf("revoked = %v, want the replaced token", got)
@@ -180,10 +195,12 @@ func TestScenarioStorageSelection(t *testing.T) {
 	t.Parallel()
 	g, site, env, root := loginEnv(t)
 	approve(site, g, hostedToken, "write", loginExpiry)
-	runLogin(t, env, site, `Logged in as ada@example.test to space "team-notes" (read and write) until 2026-12-26 09:00 UTC`, "--no-browser")
+	runLogin(t, env, site, loggedIn(g, "read and write", "until 2026-12-26 09:00 UTC"), "--no-browser")
 	notes := filepath.Join(root, "notes")
 	with := func(extra ...string) []string { return append(append([]string(nil), env...), extra...) }
 	s3 := []string{"AWS_ACCESS_KEY_ID=key", "AWS_SECRET_ACCESS_KEY=secret", "AWS_MAX_ATTEMPTS=1", "AWS_REGION=us-east-1"}
+	awsHome := t.TempDir()
+	writeCLIFile(t, filepath.Join(awsHome, ".aws", "config"), "[default]\n")
 
 	for _, row := range []struct {
 		name string
@@ -199,9 +216,26 @@ func TestScenarioStorageSelection(t *testing.T) {
 			sent: true,
 		},
 		{
-			name: "a login and AWS settings are ambiguous",
-			env:  with(s3...),
+			name: "a login and AWS settings are ambiguous for an explicit bucket",
+			env:  with(append([]string{"SLIVINGDOC_BUCKET=" + hostedSpace}, s3...)...),
 			want: []string{`stored login for space "team-notes"`, "AWS_ACCESS_KEY_ID", "--storage hosted or --storage s3"},
+		},
+		{
+			name: "a login and the shared AWS files are ambiguous for an explicit bucket",
+			env:  with("HOME=" + awsHome),
+			args: []string{"--bucket", hostedSpace},
+			want: []string{`stored login for space "team-notes"`, "~/.aws/config", "--storage hosted or --storage s3"},
+		},
+		{
+			name: "the token and an S3 endpoint flag are ambiguous",
+			env:  with("SLIVINGDOC_TOKEN="+hostedToken, "SLIVINGDOC_BUCKET="+hostedSpace),
+			args: []string{"--endpoint", closedS3},
+			want: []string{"SLIVINGDOC_TOKEN and S3 settings (--endpoint)", "--storage hosted to send the token"},
+		},
+		{
+			name: "the token and AWS settings are ambiguous",
+			env:  with(append([]string{"SLIVINGDOC_TOKEN=" + hostedToken, "SLIVINGDOC_ENDPOINT=" + g.URL()}, s3...)...),
+			want: []string{"SLIVINGDOC_TOKEN and S3 settings (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION)"},
 		},
 		{
 			name: "s3 ignores the token and the login",
@@ -257,8 +291,20 @@ func TestScenarioStorageSelection(t *testing.T) {
 		})
 	}
 
-	// Choosing hosted resolves the ambiguity with the same AWS settings.
-	runCLIOK(t, "real", with(s3...), nil, "pull", "--storage", "hosted", notes)
+	// Choosing hosted resolves the ambiguity with the same AWS settings,
+	// and a bucket taken from the default login needs no choice: S3 has
+	// no bucket to use.
+	runCLIOK(t, "real", with(append([]string{"SLIVINGDOC_BUCKET=" + hostedSpace}, s3...)...), nil, "pull", "--storage", "hosted", notes)
+	code, stdout, stderr := runCLI(t, "real", with(s3...), "pull", notes)
+	if code != 0 || !strings.HasPrefix(stdout, "OK  generation ") {
+		t.Fatalf("pull with the default login and AWS settings = exit %d, stdout %q, stderr %s", code, stdout, stderr)
+	}
+	// The startup log says which store and token source won.
+	for _, want := range []string{"storage selected", "backend=hosted", "endpoint=" + g.URL(), "space=team-notes", "token=login"} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("pull stderr = %q, want it to contain %q", stderr, want)
+		}
+	}
 }
 
 // TestScenarioExpiredLoginIsRefused proves a stored login past its expiry
@@ -268,7 +314,7 @@ func TestScenarioExpiredLoginIsRefused(t *testing.T) {
 	t.Parallel()
 	g, site, env, root := loginEnv(t)
 	approve(site, g, hostedToken, "write", time.Date(2001, 1, 1, 0, 0, 0, 0, time.UTC))
-	runLogin(t, env, site, `Logged in as ada@example.test to space "team-notes" (read and write) until 2001-01-01 00:00 UTC`, "--no-browser")
+	runLogin(t, env, site, loggedIn(g, "read and write", "until 2001-01-01 00:00 UTC"), "--no-browser")
 	code, stdout, stderr := runCLI(t, "real", env, "pull", filepath.Join(root, "notes"))
 	if code != 1 || strings.TrimSpace(stdout) != "" {
 		t.Fatalf("pull with an expired login = exit %d, stdout %q; want a startup refusal", code, stdout)
@@ -290,7 +336,7 @@ func TestScenarioLogout(t *testing.T) {
 	t.Parallel()
 	g, site, env, root := loginEnv(t)
 	approve(site, g, hostedToken, "write", loginExpiry)
-	runLogin(t, env, site, `Logged in as ada@example.test to space "team-notes" (read and write) until 2026-12-26 09:00 UTC`, "--no-browser")
+	runLogin(t, env, site, loggedIn(g, "read and write", "until 2026-12-26 09:00 UTC"), "--no-browser")
 
 	code, stdout, stderr := runCLI(t, "real", env, "logout")
 	if code != 0 || stdout != "Logged out of space \"team-notes\" at "+g.URL()+"; the token was revoked\n" {
@@ -306,5 +352,154 @@ func TestScenarioLogout(t *testing.T) {
 	code, _, stderr = runCLI(t, "real", env, "logout")
 	if code != 1 || !strings.Contains(stderr, "not logged in") {
 		t.Fatalf("second logout = exit %d, stderr %q; want a refusal", code, stderr)
+	}
+}
+
+// TestScenarioLoginGuardsWhatIsStored proves, from the outside, what a
+// login refuses to store without a person at a terminal: an approval by
+// another account for a stored space (revoked unless --force, and the
+// replaced token of another account is never revoked), and a login for a
+// space another site's login holds (revoked even with --force).
+func TestScenarioLoginGuardsWhatIsStored(t *testing.T) {
+	t.Parallel()
+	g, site, env, root := loginEnv(t)
+	approve(site, g, hostedToken, "write", loginExpiry)
+	runLogin(t, env, site, loggedIn(g, "read and write", "until 2026-12-26 09:00 UTC"), "--no-browser")
+	notes := filepath.Join(root, "notes")
+
+	const eveToken = "sld_eeeeeeeeeeeeeeee_ZXZlLWFwcHJvdmVkLXRoZS1jb2RlLWZpcnN0LXRva2Vu"
+	g.Grant(eveToken, hostedSpace, false)
+	eve := sitetest.Issue{
+		Token: eveToken, Space: hostedSpace, Access: "write", Endpoint: g.URL(), ExpiresAt: loginExpiry,
+		Account: "eve@example.test", Owner: loginAccount,
+	}
+	site.Next(sitetest.Script{Issue: eve})
+	code, stdout, stderr := runCLI(t, "real", env, "login", "--no-browser")
+	if code != 1 || strings.TrimSpace(stdout) != "" ||
+		!strings.Contains(stderr, "Approved by eve@example.test") ||
+		!strings.Contains(stderr, "approved by ada@example.test, this one by eve@example.test") ||
+		!strings.Contains(stderr, "--force") {
+		t.Fatalf("login approved by another account = exit %d, stdout %q, stderr %s", code, stdout, stderr)
+	}
+	if got := site.Revoked(); len(got) != 1 || got[0] != eveToken {
+		t.Fatalf("revoked = %v, want only the refused token", got)
+	}
+	// The stored login is untouched: a commit still goes through ada's.
+	runCLIOK(t, "real", env, nil, "pull", notes)
+
+	site.Next(sitetest.Script{Issue: eve})
+	code, stdout, stderr = runCLI(t, "real", env, "login", "--no-browser", "--force")
+	if code != 0 || !strings.HasPrefix(stdout, "Logged in as eve@example.test") ||
+		!strings.Contains(stderr, "was approved by ada@example.test, not eve@example.test, so it was not revoked") {
+		t.Fatalf("login --force = exit %d, stdout %q, stderr %s", code, stdout, stderr)
+	}
+	if got := site.Revoked(); len(got) != 1 {
+		t.Fatalf("revoked = %v; another account's replaced token must stay valid", got)
+	}
+
+	// A second site's approval for the same space and endpoint never
+	// replaces the first site's login, whatever the flags.
+	other := sitetest.Start(t)
+	other.Next(sitetest.Script{Issue: sitetest.Issue{
+		Token: hostedReader, Space: hostedSpace, Access: "read", Endpoint: g.URL(), ExpiresAt: loginExpiry,
+		Account: "eve@example.test", Owner: loginAccount,
+	}})
+	otherEnv := append(append([]string(nil), env...), "SLIVINGDOC_SITE="+other.URL())
+	code, _, stderr = runCLI(t, "real", otherEnv, "login", "--no-browser", "--force")
+	if code != 1 || !strings.Contains(stderr, "was issued by "+site.URL()+", not "+other.URL()) ||
+		!strings.Contains(stderr, "log out of that login first") {
+		t.Fatalf("login through another site = exit %d, stderr %s", code, stderr)
+	}
+	if got := other.Revoked(); len(got) != 1 || got[0] != hostedReader {
+		t.Fatalf("other site revoked = %v, want its own refused token", got)
+	}
+	if got := site.Revoked(); len(got) != 1 {
+		t.Fatalf("first site revoked = %v; the stored login must be left alone", got)
+	}
+}
+
+// TestScenarioLoginKeepsTheDefault proves the first login is the default
+// and a later one only with --default, and that a space with logins at two
+// endpoints is refused as ambiguous even though the default names it.
+func TestScenarioLoginKeepsTheDefault(t *testing.T) {
+	t.Parallel()
+	g, site, env, root := loginEnv(t)
+	approve(site, g, hostedToken, "write", loginExpiry)
+	runLogin(t, env, site, loggedIn(g, "read and write", "until 2026-12-26 09:00 UTC"), "--no-browser")
+	notes := filepath.Join(root, "notes")
+
+	const second = "second-space"
+	g.AddSpace(second, 1<<20)
+	const secondToken = "sld_5555555555555555_c2Vjb25kLXNwYWNlLXRva2VuLWZvci10aGUtZGVmYXVsdA"
+	g.Grant(secondToken, second, false)
+	site.Next(sitetest.Script{Issue: sitetest.Issue{
+		Token: secondToken, Space: second, Access: "write", Endpoint: g.URL(), ExpiresAt: loginExpiry,
+		Account: loginAccount, Owner: loginAccount,
+	}})
+	code, _, stderr := runCLI(t, "real", env, "login", "--no-browser")
+	if code != 0 || !strings.Contains(stderr, `The default login stays space "team-notes" at `+g.URL()+"; use --default to switch.") {
+		t.Fatalf("second login = exit %d, stderr %s", code, stderr)
+	}
+	// Without --bucket the default space is still the first one.
+	runCLIOK(t, "real", env, nil, "pull", notes)
+	if g.Stored(second) != 0 {
+		t.Fatal("the second space was touched")
+	}
+	writeCLIFile(t, filepath.Join(notes, "a.md"), "default\n")
+	runCLIOK(t, "real", env, nil, "commit", notes, "-m", "to the default")
+	if g.Stored(hostedSpace) == 0 {
+		t.Fatal("the commit did not reach the default space")
+	}
+
+	// A login for the default space at a second endpoint makes the space
+	// ambiguous without --endpoint.
+	g2 := gatewaytest.Start(t)
+	g2.AddSpace(hostedSpace, 1<<20)
+	g2.Grant(hostedReader, hostedSpace, true)
+	site.Next(sitetest.Script{Issue: sitetest.Issue{
+		Token: hostedReader, Space: hostedSpace, Access: "read", Endpoint: g2.URL(), ExpiresAt: loginExpiry,
+		Account: loginAccount, Owner: loginAccount,
+	}})
+	if code, _, stderr := runCLI(t, "real", env, "login", "--no-browser"); code != 0 {
+		t.Fatalf("login at a second endpoint = exit %d, stderr %s", code, stderr)
+	}
+	code, stdout, stderr := runCLI(t, "real", env, "pull", filepath.Join(root, "other"))
+	if code != 1 || strings.TrimSpace(stdout) != "" || !strings.Contains(stderr, "several stored logins match") ||
+		!strings.Contains(stderr, "pass --endpoint") {
+		t.Fatalf("pull of an ambiguous default space = exit %d, stdout %q, stderr %s", code, stdout, stderr)
+	}
+	runCLIOK(t, "real", env, nil, "pull", "--endpoint", g2.URL(), filepath.Join(root, "other"))
+}
+
+// TestScenarioCredentialsFileMustBeTheUsers proves a credentials file that
+// is a symbolic link refuses startup instead of being followed.
+func TestScenarioCredentialsFileMustBeTheUsers(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("symbolic links need a privilege on Windows")
+	}
+	g, site, env, root := loginEnv(t)
+	approve(site, g, hostedToken, "write", loginExpiry)
+	runLogin(t, env, site, loggedIn(g, "read and write", "until 2026-12-26 09:00 UTC"), "--no-browser")
+	dir := ""
+	for _, kv := range env {
+		if v, ok := strings.CutPrefix(kv, credentials.DirEnv+"="); ok {
+			dir = v
+		}
+	}
+	file := filepath.Join(dir, credentials.FileName)
+	moved := filepath.Join(t.TempDir(), "planted.json")
+	if err := os.Rename(file, moved); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(moved, file); err != nil {
+		t.Fatal(err)
+	}
+	code, _, stderr := runCLI(t, "real", env, "pull", filepath.Join(root, "notes"))
+	if code != 1 || !strings.Contains(stderr, "is a symbolic link") {
+		t.Fatalf("pull through a linked credentials file = exit %d, stderr %s", code, stderr)
+	}
+	if g.Requests() != 0 {
+		t.Fatal("a linked credentials file reached the storage API")
 	}
 }

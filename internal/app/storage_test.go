@@ -2,8 +2,10 @@ package app
 
 import (
 	"encoding/json"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -89,8 +91,22 @@ func TestResolveStorage(t *testing.T) {
 			wantHosted: true, wantToken: hostedTestToken, wantOrigin: originEnv, wantBucket: "notes", wantEndpoint: DefaultHostedEndpoint,
 		},
 		{
-			name: "auto: the token wins over a login and AWS settings", env: []string{token, notes, "AWS_PROFILE=p", "SLIVINGDOC_BUCKET=notes"},
+			name: "auto: the token wins over a login", env: []string{token, notes, "SLIVINGDOC_BUCKET=notes"},
 			wantHosted: true, wantToken: hostedTestToken, wantOrigin: originEnv, wantBucket: "notes", wantEndpoint: DefaultHostedEndpoint,
+		},
+		{
+			name: "hosted: the token with an endpoint flag and AWS settings", env: []string{token, "AWS_PROFILE=p", "SLIVINGDOC_BUCKET=notes"},
+			args:       []string{"--storage", "hosted", "--endpoint", devEndpoint},
+			wantHosted: true, wantToken: hostedTestToken, wantOrigin: originEnv, wantBucket: "notes", wantEndpoint: devEndpoint,
+		},
+		{
+			name: "auto: a bucket from the default login takes it even with AWS settings", env: []string{notes, "AWS_PROFILE=p", "AWS_REGION=eu-north-1"},
+			wantHosted: true, wantToken: loginToken, wantOrigin: originLogin, wantBucket: "notes", wantEndpoint: DefaultHostedEndpoint,
+		},
+		{
+			name: "auto: an explicit bucket takes a login when nothing configures S3", env: []string{notes, "HOME=" + t.TempDir()},
+			args:       []string{"--bucket", "notes"},
+			wantHosted: true, wantToken: loginToken, wantOrigin: originLogin, wantBucket: "notes", wantEndpoint: DefaultHostedEndpoint,
 		},
 		{
 			name: "auto: a login selects hosted", env: []string{notes, "SLIVINGDOC_BUCKET=notes"},
@@ -176,6 +192,17 @@ func TestResolveStorageRefusals(t *testing.T) {
 	expired := writeLogins(t, nil, expiredEntry)
 	twoEndpoints := writeLogins(t, &storedKey{DefaultHostedEndpoint, "team"},
 		entry(DefaultHostedEndpoint, "notes", loginToken), entry(devEndpoint, "notes", otherToken), entry(DefaultHostedEndpoint, "team", otherToken))
+	twoEndpointsDefault := writeLogins(t, &storedKey{devEndpoint, "notes"},
+		entry(DefaultHostedEndpoint, "notes", loginToken), entry(devEndpoint, "notes", otherToken))
+	awsHome := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(awsHome, ".aws"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"credentials", "config"} {
+		if err := os.WriteFile(filepath.Join(awsHome, ".aws", name), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	malformedDir := filepath.Join(t.TempDir(), "cfg")
 	if err := os.Mkdir(malformedDir, 0o700); err != nil {
 		t.Fatal(err)
@@ -199,7 +226,7 @@ func TestResolveStorageRefusals(t *testing.T) {
 		},
 		{
 			"a login and an AWS profile and endpoint are ambiguous",
-			[]string{notes, "AWS_PROFILE=p", "AWS_ENDPOINT_URL_S3=https://s3.example.test"},
+			[]string{notes, "SLIVINGDOC_BUCKET=notes", "AWS_PROFILE=p", "AWS_ENDPOINT_URL_S3=https://s3.example.test"},
 			nil,
 			[]string{"AWS_PROFILE, AWS_ENDPOINT_URL_S3", "--storage hosted"},
 		},
@@ -265,15 +292,60 @@ func TestResolveStorageRefusals(t *testing.T) {
 		},
 		{
 			"a login and a generic AWS endpoint are ambiguous",
-			[]string{notes, "AWS_ENDPOINT_URL=https://s3.example.test"},
+			[]string{notes, "SLIVINGDOC_BUCKET=notes", "AWS_ENDPOINT_URL=https://s3.example.test"},
 			nil,
 			[]string{"AWS_ENDPOINT_URL", "--storage s3"},
 		},
 		{
 			"a login and a web identity are ambiguous",
-			[]string{notes, "AWS_WEB_IDENTITY_TOKEN_FILE=/t", "AWS_SHARED_CREDENTIALS_FILE=/c"},
+			[]string{notes, "SLIVINGDOC_BUCKET=notes", "AWS_WEB_IDENTITY_TOKEN_FILE=/t", "AWS_SHARED_CREDENTIALS_FILE=/c"},
 			nil,
 			[]string{"AWS_SHARED_CREDENTIALS_FILE, AWS_WEB_IDENTITY_TOKEN_FILE"},
+		},
+		{
+			"a login and every other AWS variable are ambiguous",
+			[]string{
+				notes, "SLIVINGDOC_BUCKET=notes", "AWS_SECRET_ACCESS_KEY=s", "AWS_SESSION_TOKEN=t", "AWS_DEFAULT_REGION=r",
+				"AWS_CONFIG_FILE=/c", "AWS_ROLE_ARN=arn", "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI=/v2", "AWS_CONTAINER_CREDENTIALS_FULL_URI=http://x",
+			},
+			nil,
+			[]string{"AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN, AWS_DEFAULT_REGION, AWS_CONFIG_FILE, AWS_ROLE_ARN, AWS_CONTAINER_CREDENTIALS_FULL_URI, AWS_CONTAINER_CREDENTIALS_RELATIVE_URI"},
+		},
+		{
+			"a login and the S3-only flags are ambiguous",
+			[]string{notes, "SLIVINGDOC_BUCKET=notes"},
+			[]string{"--region", "eu-north-1", "--path-style"},
+			[]string{"(--region, --path-style)"},
+		},
+		{
+			"a login and path-style from the environment are ambiguous",
+			[]string{notes, "SLIVINGDOC_BUCKET=notes", "SLIVINGDOC_PATH_STYLE=true"},
+			nil,
+			[]string{"SLIVINGDOC_PATH_STYLE"},
+		},
+		{
+			"a login and the shared AWS files are ambiguous",
+			[]string{notes, "HOME=" + awsHome},
+			[]string{"--bucket", "notes"},
+			[]string{"~/.aws/credentials, ~/.aws/config"},
+		},
+		{
+			"two endpoints for one space even when the default names one",
+			[]string{twoEndpointsDefault},
+			nil,
+			[]string{"several stored logins", "pass --endpoint"},
+		},
+		{
+			"the token and an endpoint flag are ambiguous",
+			[]string{"SLIVINGDOC_TOKEN=" + hostedTestToken, "SLIVINGDOC_BUCKET=notes"},
+			[]string{"--endpoint", "https://minio.local"},
+			[]string{"SLIVINGDOC_TOKEN and S3 settings (--endpoint)", "--storage hosted", "--storage s3"},
+		},
+		{
+			"the token and AWS settings are ambiguous",
+			[]string{"SLIVINGDOC_TOKEN=" + hostedTestToken, "SLIVINGDOC_BUCKET=notes", "AWS_REGION=eu-north-1"},
+			nil,
+			[]string{"SLIVINGDOC_TOKEN and S3 settings (AWS_REGION)"},
 		},
 	}
 	for _, tt := range tests {
@@ -313,5 +385,36 @@ func TestStorageDescribesItsChoices(t *testing.T) {
 		if !strings.Contains(FlagReference, want) {
 			t.Fatalf("FlagReference does not document %s", want)
 		}
+	}
+}
+
+func TestS3SignalsFindTheSharedAWSFiles(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, ".aws"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".aws", "config"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name string
+		env  map[string]string
+		in   storageInputs
+		want []string
+	}{
+		{"HOME", map[string]string{"HOME": home}, storageInputs{goos: "linux"}, []string{"~/.aws/config"}},
+		{"USERPROFILE on Windows, any case", map[string]string{"userprofile": home, "HOME": "/nowhere"}, storageInputs{goos: "windows"}, []string{"~/.aws/config"}},
+		{"a relative HOME", map[string]string{"HOME": "home"}, storageInputs{goos: "linux"}, nil},
+		{"no home", nil, storageInputs{goos: "linux"}, nil},
+		{"a failing stat", map[string]string{"HOME": home}, storageInputs{goos: "linux", stat: func(string) (fs.FileInfo, error) {
+			return nil, fs.ErrPermission
+		}}, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := s3Signals(&Flags{}, tt.env, tt.in); !slices.Equal(got, tt.want) {
+				t.Fatalf("s3Signals() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }

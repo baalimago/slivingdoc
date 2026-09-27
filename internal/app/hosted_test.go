@@ -28,7 +28,7 @@ func TestLoadConfigHosted(t *testing.T) {
 		},
 		{
 			name:         "S3 variables never redirect a token",
-			env:          []string{token, "SLIVINGDOC_BUCKET=notes", "AWS_ENDPOINT_URL_S3=https://s3.example.test", "AWS_REGION=eu-north-1"},
+			env:          []string{token, "SLIVINGDOC_BUCKET=notes", "SLIVINGDOC_STORAGE=hosted", "AWS_ENDPOINT_URL_S3=https://s3.example.test", "AWS_REGION=eu-north-1"},
 			wantEndpoint: DefaultHostedEndpoint,
 		},
 		{
@@ -39,7 +39,7 @@ func TestLoadConfigHosted(t *testing.T) {
 		{
 			name:         "the flag wins over SLIVINGDOC_ENDPOINT",
 			env:          []string{token, "SLIVINGDOC_ENDPOINT=https://env.example.test"},
-			args:         []string{"--bucket", "notes", "--endpoint", "https://flag.example.test"},
+			args:         []string{"--storage", "hosted", "--bucket", "notes", "--endpoint", "https://flag.example.test"},
 			wantEndpoint: "https://flag.example.test",
 		},
 		{

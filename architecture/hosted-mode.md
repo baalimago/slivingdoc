@@ -28,10 +28,13 @@ Read this when: changing hosted-mode selection or its settings, the HTTP request
 
 ```text
 Flags.resolve → resolveStorage (login.md): --storage s3 → S3, never hosted
-  SLIVINGDOC_TOKEN non-empty → config.hosted(), tokenOrigin env
+  SLIVINGDOC_TOKEN non-empty → auto with the --endpoint flag or an S3 signal → refusal
+    → config.hosted(), tokenOrigin env
     endpoint = --endpoint | SLIVINGDOC_ENDPOINT | DefaultHostedEndpoint   (AWS variables ignored)
-  else a usable stored login for the space → config.hosted(), tokenOrigin login
+  else a usable stored login for the space → auto with an explicit bucket and an S3 signal → refusal
+    → config.hosted(), tokenOrigin login
     endpoint = the login's own (an explicit endpoint must equal it)
+  setup → logStorage: Info "storage selected" backend, endpoint, space, token source
   normalizeEndpoint → validateHosted (space grammar, token grammar, https unless loopback)
 
 app.buildService → realStoreFactory → httpstore.New(Config{Endpoint, Space: bucket, Prefix, Token,
@@ -61,7 +64,7 @@ commit on a full space (notebook, any store):
 
 ## Behavior
 
-**Selection and settings.** A non-empty `SLIVINGDOC_TOKEN` selects hosted mode (`config.hosted`) unless `--storage s3` is given; without it, a stored login for the space selects hosted mode too, and `--storage auto|hosted|s3` decides when both a login and AWS settings are present ([login.md](./login.md), Which storage a process uses). The token has no flag, so it never appears in a process listing.
+**Selection and settings.** A non-empty `SLIVINGDOC_TOKEN` selects hosted mode (`config.hosted`) unless `--storage s3` is given; under the default `--storage auto` it is refused when the `--endpoint` flag or any S3 signal (an AWS variable, an `~/.aws` file, `--region`, `--path-style`) is also present, and `--storage hosted` states the intent. Without the token, a stored login for the space selects hosted mode when its space was the default, or when nothing configures S3 ([login.md](./login.md), Which storage a process uses, has the exact table). The startup log records the backend, endpoint, space and token source (`logStorage`). The token has no flag, so it never appears in a process listing.
 
 | Setting             | Flag         | Environment           | Default                      |
 | ------------------- | ------------ | --------------------- | ---------------------------- |
@@ -130,12 +133,12 @@ Because the compacted manifest keeps no retained generation, another writer's pu
 
 ## Gotchas
 
-- `--endpoint` is shared with S3 mode: under `--storage auto` (the default) an S3 command line that passes `--endpoint` still sends the token to that host if `SLIVINGDOC_TOKEN` is also set in the environment; only the AWS variables are ignored. `--storage s3` closes this: it never reads the token. A stored login is safe either way, because it is only used at the endpoint it was issued for ([login.md](./login.md)).
+- `--endpoint` is shared with S3 mode. Under `--storage auto` (the default) an S3 command line that passes `--endpoint` while `SLIVINGDOC_TOKEN` is set in the environment refuses to start instead of sending the token to that host; `--storage hosted` sends it there on purpose, and `--storage s3` never reads the token. A CI job that sets `SLIVINGDOC_TOKEN` beside AWS variables, or passes the hosted endpoint with the `--endpoint` flag, needs `--storage hosted` (`SLIVINGDOC_ENDPOINT` alone is not a signal). A stored login is only used at the endpoint it was issued for ([login.md](./login.md)).
 - `ReplaceObject` relies on the API answering `If-Match` on an absent object with 412; a 404 there means the space is gone or the grant was revoked (`ErrAccessDenied`), never CAS contention.
 - A 507 must never be retried and never become `ErrTransport`: `do` excludes it explicitly, and the compaction branch matches `ErrQuotaExceeded` only.
 - A space that stops being reachable while `serve` runs (deleted, or the grant revoked or moved) answers 404 `no_space`, which is `ACCESS_DENIED` on every read: a pull, a first pull, or an entry recovery is refused with L and P untouched (`TestHostedUnreachableSpacePullKeepsNotes`, `TestHostedUnreachableSpaceFirstPullKeepsFiles`, `TestHostedUnreachableSpaceEntryRecoveryKeepsNotes`); `CheckAccess` alone could only catch it at startup. Do not loosen the `no_object` test: `readCurrent` reads `ErrNotFound` on `current` as the empty notebook.
 - A store refusal can also stop a recovery: when the resynchronizing `readRemote` of `entryRecovery`, `applyLocal` or `failAfterAccept` is refused (a revoked token, throttling), the call is still `RECOVERY_FAILURE` with `resynchronized=false`, but it carries the refusal's reason and action and a recovery message that makes no claim about publication (`recoveryFailure`, `recoveryRefusalMessages`), and it is not retryable unless the reason is `RATE_LIMITED` ([guarantees.md](./guarantees.md), [errors.md](./errors.md)).
-- `internal/integrationtest` drops `SLIVINGDOC_TOKEN`, `SLIVINGDOC_ENDPOINT`, `SLIVINGDOC_STORAGE`, `SLIVINGDOC_SITE` and `SLIVINGDOC_CONFIG_DIR` from spawned helpers (`sanitizedEnv`) and gives each helper an empty credentials directory, so neither a developer's token nor their login turns an S3 scenario into a hosted one.
+- `internal/integrationtest` drops `SLIVINGDOC_TOKEN`, `SLIVINGDOC_ENDPOINT`, `SLIVINGDOC_STORAGE`, `SLIVINGDOC_SITE`, `SLIVINGDOC_CONFIG_DIR`, `HOME` and the AWS variables from spawned helpers (`sanitizedEnv`) and gives each helper an empty credentials directory and an empty `HOME`, so neither a developer's token, their login, nor their `~/.aws` files change which store a scenario picks.
 - A custom `Config.Client` bypasses the no-redirect client; only tests set it.
 
 ## Related

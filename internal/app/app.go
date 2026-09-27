@@ -25,6 +25,7 @@ import (
 	"github.com/baalimago/slivingdoc/internal/mcp"
 	"github.com/baalimago/slivingdoc/internal/notebook"
 	"github.com/baalimago/slivingdoc/internal/s3store"
+	"github.com/baalimago/slivingdoc/internal/sitelogin"
 	"github.com/baalimago/slivingdoc/internal/storage"
 )
 
@@ -79,12 +80,35 @@ type ProcessOptions struct {
 	// so no browser ever starts (architecture/login.md).
 	OpenBrowser func(url string) error
 
+	// SiteClient sends the site's login, token and revoke requests. Nil
+	// uses a client that never follows a redirect; the integration helper
+	// routes the default site to a reference site through it.
+	SiteClient sitelogin.Doer
+
 	// Sleep waits between two login polls. Nil waits on a timer.
 	Sleep func(ctx context.Context, d time.Duration) error
 
 	// Hostname labels a login's token. Nil is os.Hostname.
 	Hostname func() (string, error)
+
+	// Stdin is where login reads the answer to its confirmation prompt.
+	// Nil is the process stdin.
+	Stdin io.Reader
+
+	// Terminal says whether a person can answer that prompt. Nil checks
+	// that the process stdin and stderr are both terminals.
+	Terminal func() TerminalState
 }
+
+// TerminalState says whether login can ask the person at the keyboard.
+type TerminalState int
+
+const (
+	// NoTerminal is a script, a pipe or a service: nobody can answer.
+	NoTerminal TerminalState = iota
+	// OnTerminal is stdin and stderr both on a terminal.
+	OnTerminal
+)
 
 // process is the resolved environment of the process body. Setup fills
 // every field from the options and the operating system; tests
@@ -287,6 +311,7 @@ func setup(p process) (*Runtime, error) {
 		base = rebuilt
 		logger = Module(base, ModuleApp)
 	}
+	logStorage(logger, cfg)
 	if err := p.engine.Open(); err != nil {
 		removeSessionDir(cfg.sessionDir)
 		return nil, fmt.Errorf("app: open native engine: %w", err)
@@ -484,4 +509,22 @@ func realStoreFactory(ctx context.Context, cfg config) (storage.ObjectStore, err
 		return nil, fmt.Errorf("app: create object store: %w", err)
 	}
 	return store, nil
+}
+
+// logStorage records the store the configuration chose, so an operator
+// can see at startup whether a stored login or SLIVINGDOC_TOKEN turned the
+// process hosted (architecture/login.md). It never logs the token.
+func logStorage(logger *slog.Logger, cfg config) {
+	backend, source, endpoint := "s3", "none", cfg.endpoint
+	if cfg.hosted() {
+		backend = "hosted"
+		source = "env"
+		if cfg.tokenOrigin == originLogin {
+			source = "login"
+		}
+	}
+	if endpoint == "" {
+		endpoint = "aws-default"
+	}
+	logger.Info("storage selected", "backend", backend, "endpoint", endpoint, "space", cfg.bucket, "token", source)
 }

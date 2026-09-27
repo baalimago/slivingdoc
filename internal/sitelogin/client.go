@@ -15,6 +15,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -35,11 +36,36 @@ const (
 // slowDownStep is what a slow_down answer adds to the poll interval.
 const slowDownStep = 5 * time.Second
 
-// minInterval bounds how fast the client polls whatever the site says.
-const minInterval = time.Second
+// minInterval bounds how fast the client polls whatever the site says,
+// and defaultInterval is the pause when the site names none.
+const (
+	minInterval     = time.Second
+	defaultInterval = 5 * time.Second
+)
 
-// bodyLimit bounds how much of any answer is read.
-const bodyLimit = 16 << 10
+// maxExpiresIn bounds how long the client waits for an approval, whatever
+// lifetime the site answers.
+const maxExpiresIn = 30 * time.Minute
+
+// loginPagePath is the approval page; the complete page carries the user
+// code in its fragment, so the code never reaches a server log or a
+// Referer header.
+const loginPagePath = "/cli/login"
+
+// userCodePattern is the only user code shape the contract allows: two
+// groups of four consonants.
+var userCodePattern = regexp.MustCompile(`^[BCDFGHJKLMNPQRSTVWXZ]{4}-[BCDFGHJKLMNPQRSTVWXZ]{4}$`)
+
+// TokenHint is added to every error after which a token may exist that the
+// client never received.
+const TokenHint = "a token may have been issued; revoke it on the Tokens page"
+
+// bodyLimit bounds how much of any answer is read, and requestLimit is
+// the size every request body stays below, as the site requires.
+const (
+	bodyLimit    = 16 << 10
+	requestLimit = 4 << 10
+)
 
 // clientLimit is the longest client label the start route accepts.
 const clientLimit = 64
@@ -182,7 +208,9 @@ type Approval struct {
 	deviceCode string
 	// UserCode is what the person compares on the approval page.
 	UserCode string
-	// URI is the approval page; CompleteURI carries the code already.
+	// URI is the approval page and CompleteURI the same page with the code
+	// in its fragment. The client builds both from the site origin; the
+	// site's own complete URI only has to agree.
 	URI         string
 	CompleteURI string
 	// Interval is the pause between two polls.
@@ -202,7 +230,7 @@ type startAnswer struct {
 	UserCode                string `json:"userCode"`
 	VerificationURI         string `json:"verificationUri"`
 	VerificationURIComplete string `json:"verificationUriComplete"`
-	Interval                int    `json:"interval"`
+	Interval                *int   `json:"interval"`
 	ExpiresIn               int    `json:"expiresIn"`
 }
 
@@ -219,45 +247,32 @@ func (c *Client) Start(ctx context.Context, req StartRequest) (Approval, error) 
 	if ans.DeviceCode == "" || !printable(ans.DeviceCode) {
 		return Approval{}, fmt.Errorf("%w: no usable device code", ErrProtocol)
 	}
-	if ans.UserCode == "" || len(ans.UserCode) > clientLimit || !printable(ans.UserCode) {
-		return Approval{}, fmt.Errorf("%w: no usable user code", ErrProtocol)
+	if !userCodePattern.MatchString(ans.UserCode) {
+		return Approval{}, fmt.Errorf("%w: the user code is not two groups of four consonants", ErrProtocol)
 	}
-	uri, err := c.sameOrigin(ans.VerificationURI)
-	if err != nil {
-		return Approval{}, fmt.Errorf("%w: verificationUri: %w", ErrProtocol, err)
+	uri := c.site.String() + loginPagePath
+	complete := uri + "#" + ans.UserCode
+	if ans.VerificationURIComplete != complete {
+		return Approval{}, fmt.Errorf("%w: verificationUriComplete is not %s", ErrProtocol, complete)
 	}
-	complete, err := c.sameOrigin(ans.VerificationURIComplete)
-	if err != nil {
-		return Approval{}, fmt.Errorf("%w: verificationUriComplete: %w", ErrProtocol, err)
+	interval := defaultInterval
+	if ans.Interval != nil {
+		if *ans.Interval < 0 {
+			return Approval{}, fmt.Errorf("%w: interval %d", ErrProtocol, *ans.Interval)
+		}
+		interval = max(time.Duration(*ans.Interval)*time.Second, minInterval)
 	}
-	if ans.ExpiresIn <= 0 || ans.Interval < 0 {
-		return Approval{}, fmt.Errorf("%w: interval %d, expiresIn %d", ErrProtocol, ans.Interval, ans.ExpiresIn)
+	if ans.ExpiresIn <= 0 {
+		return Approval{}, fmt.Errorf("%w: expiresIn %d", ErrProtocol, ans.ExpiresIn)
 	}
 	return Approval{
 		deviceCode:  ans.DeviceCode,
 		UserCode:    ans.UserCode,
 		URI:         uri,
 		CompleteURI: complete,
-		Interval:    max(time.Duration(ans.Interval)*time.Second, minInterval),
-		Deadline:    c.now().Add(time.Duration(ans.ExpiresIn) * time.Second),
+		Interval:    interval,
+		Deadline:    c.now().Add(min(time.Duration(ans.ExpiresIn)*time.Second, maxExpiresIn)),
 	}, nil
-}
-
-// sameOrigin accepts an approval page on the site's own origin only, so
-// the page a browser opens, or a person is told to open, can never be
-// another host or another scheme.
-func (c *Client) sameOrigin(raw string) (string, error) {
-	if !printable(raw) {
-		return "", errors.New("not a printable URL")
-	}
-	u, err := url.Parse(raw)
-	if err != nil {
-		return "", errors.New("not a URL")
-	}
-	if strings.ToLower(u.Scheme) != c.site.Scheme || strings.ToLower(u.Host) != c.site.Host || u.User != nil {
-		return "", fmt.Errorf("not on %s", c.site)
-	}
-	return raw, nil
 }
 
 // Issued is the token an approved login returns.
@@ -294,9 +309,11 @@ type tokenAnswer struct {
 // every poll and adds five seconds after each slow_down answer. A poll
 // that gets no answer or a 5xx is retried with a doubling pause, never
 // past the code's expiry, until the code expires; any other error answer
-// ends the wait. A success answer that breaks off ends it too, because the
-// site may have issued a token the client never saw. A token issued in an
-// answer outside the contract is returned inside a *RejectedTokenError.
+// ends the wait. A token issued in an answer outside the contract is
+// returned inside a *RejectedTokenError. Every other failure after which
+// the site may have issued a token (a success answer that breaks off, is
+// too large or cannot be decoded, or a cancellation while a poll is in
+// flight) carries TokenHint.
 func (c *Client) Wait(ctx context.Context, a Approval) (Issued, error) {
 	interval := a.Interval
 	var failures int
@@ -314,14 +331,17 @@ func (c *Client) Wait(ctx context.Context, a Approval) (Issued, error) {
 		}
 		var ans tokenAnswer
 		err := c.post(ctx, tokenPath, "", tokenBody{DeviceCode: a.deviceCode}, &ans)
+		if err != nil && ctx.Err() != nil {
+			return Issued{}, fmt.Errorf("sitelogin: stopped while a poll was in flight: %w; %s", ctx.Err(), TokenHint)
+		}
 		if transient(err) {
 			failures++
 			lastFailure = err
 			continue
 		}
 		failures, lastFailure = 0, nil
-		if errors.Is(err, ErrBrokenAnswer) {
-			return Issued{}, fmt.Errorf("%w; the site may have issued a token: if the Tokens page lists one you did not get, revoke it there", err)
+		if errors.Is(err, ErrBrokenAnswer) || errors.Is(err, ErrProtocol) {
+			return Issued{}, fmt.Errorf("%w; %s", err, TokenHint)
 		}
 		var refusal *Refusal
 		if errors.As(err, &refusal) {
@@ -340,7 +360,12 @@ func (c *Client) Wait(ctx context.Context, a Approval) (Issued, error) {
 		if err != nil {
 			return Issued{}, err
 		}
-		return issued(ans)
+		got, err := issued(ans)
+		var rejected *RejectedTokenError
+		if err != nil && !errors.As(err, &rejected) {
+			return Issued{}, fmt.Errorf("%w; %s", err, TokenHint)
+		}
+		return got, err
 	}
 }
 
@@ -412,14 +437,15 @@ func issued(ans tokenAnswer) (Issued, error) {
 }
 
 // Revoke withdraws token at the site. A token the site no longer knows
-// (401) is already withdrawn, so it counts as done.
+// (401 invalid_token) is already withdrawn, so it counts as done; any other
+// 401 is a failure.
 func (c *Client) Revoke(ctx context.Context, token string) error {
 	if err := httpstore.ValidateToken(token); err != nil {
 		return errors.New("sitelogin: the stored token cannot be sent")
 	}
 	err := c.post(ctx, revokePath, token, nil, nil)
 	var refusal *Refusal
-	if errors.As(err, &refusal) && refusal.Status == http.StatusUnauthorized {
+	if errors.As(err, &refusal) && refusal.Status == http.StatusUnauthorized && refusal.Code == "invalid_token" {
 		return nil
 	}
 	return err
@@ -460,6 +486,9 @@ func (c *Client) post(ctx context.Context, path, token string, in, out any) erro
 		if err != nil {
 			return fmt.Errorf("sitelogin: encode request: %w", err)
 		}
+		if len(data) >= requestLimit {
+			return fmt.Errorf("sitelogin: the request body is %d bytes, the site accepts less than %d", len(data), requestLimit)
+		}
 		body = bytes.NewReader(data)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.site.String()+path, body)
@@ -484,7 +513,7 @@ func (c *Client) post(ctx context.Context, path, token string, in, out any) erro
 		return fmt.Errorf("%w (%s): %w", ErrUnreachable, c.site, err)
 	}
 	defer resp.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, bodyLimit))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, bodyLimit+1))
 	if err != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -499,6 +528,8 @@ func (c *Client) post(ctx context.Context, path, token string, in, out any) erro
 	switch {
 	case resp.StatusCode >= 200 && resp.StatusCode < 300 && out == nil:
 		return nil
+	case resp.StatusCode == http.StatusOK && len(data) > bodyLimit:
+		return fmt.Errorf("%w: the answer is larger than %d bytes", ErrProtocol, bodyLimit)
 	case resp.StatusCode == http.StatusOK:
 		if err := json.Unmarshal(data, out); err != nil {
 			return fmt.Errorf("%w: the body is not the expected JSON", ErrProtocol)
@@ -506,7 +537,7 @@ func (c *Client) post(ctx context.Context, path, token string, in, out any) erro
 		return nil
 	default:
 		var ans errorAnswer
-		_ = json.Unmarshal(data, &ans)
+		_ = json.Unmarshal(data[:min(len(data), bodyLimit)], &ans)
 		return &Refusal{Status: resp.StatusCode, Code: httpstore.Sanitize(ans.Error, 64), Message: httpstore.Sanitize(ans.Message, 300)}
 	}
 }

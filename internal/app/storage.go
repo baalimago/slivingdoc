@@ -3,6 +3,10 @@ package app
 import (
 	"errors"
 	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -39,13 +43,28 @@ const (
 )
 
 // awsSignals returns the environment variables that mean the operator
-// configured S3 on purpose. With a stored login for the same space they
-// make auto mode refuse rather than guess.
+// configured S3 on purpose. In auto mode they make a stored login for an
+// explicit bucket, or SLIVINGDOC_TOKEN, a refusal rather than a guess.
+// Any variable starting with awsContainerPrefix counts too, and so do the
+// shared AWS files (awsFiles) and the S3-only flags --region and
+// --path-style (s3Signals).
 func awsSignals() []string {
 	return []string{
-		"AWS_ACCESS_KEY_ID", "AWS_PROFILE", "AWS_ENDPOINT_URL_S3", "AWS_ENDPOINT_URL",
-		"AWS_SHARED_CREDENTIALS_FILE", "AWS_WEB_IDENTITY_TOKEN_FILE",
+		"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_PROFILE",
+		"AWS_REGION", "AWS_DEFAULT_REGION", "AWS_CONFIG_FILE", "AWS_SHARED_CREDENTIALS_FILE",
+		"AWS_ROLE_ARN", "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_ENDPOINT_URL", "AWS_ENDPOINT_URL_S3",
+		"SLIVINGDOC_PATH_STYLE",
 	}
+}
+
+// awsContainerPrefix starts the container credential variables of the
+// AWS chain (AWS_CONTAINER_CREDENTIALS_RELATIVE_URI, _FULL_URI, ...).
+const awsContainerPrefix = "AWS_CONTAINER_CREDENTIALS_"
+
+// awsFiles are the shared AWS files, relative to the home directory, whose
+// existence is an S3 signal.
+func awsFiles() []string {
+	return []string{filepath.Join(".aws", "credentials"), filepath.Join(".aws", "config")}
 }
 
 // storageSelection is the outcome of resolveStorage: the store kind, the
@@ -62,28 +81,32 @@ func (s storageSelection) hosted() bool { return s.token != "" }
 
 // storageInputs are the injected facts resolveStorage reads besides the
 // flags and the environment: the operating system (which picks the user
-// configuration directory) and the clock (which judges expiry).
+// configuration directory and the home variable), the clock (which judges
+// expiry) and stat (which finds the shared AWS files; nil is os.Stat).
 type storageInputs struct {
 	goos string
 	now  time.Time
+	stat func(string) (fs.FileInfo, error)
 }
 
 // resolveStorage decides whether the process uses S3 or the hosted API,
-// with which bucket or space and which token (architecture/login.md):
+// with which bucket or space and which token (architecture/login.md, Which
+// storage a process uses):
 //
 //   - s3: the AWS chain only; SLIVINGDOC_TOKEN and stored logins are
 //     ignored and never read.
 //   - hosted: SLIVINGDOC_TOKEN if set, else the stored login for the space;
 //     neither is a refusal.
-//   - auto: SLIVINGDOC_TOKEN → hosted; a stored login plus an AWS variable
-//     → refusal; a stored login → hosted; otherwise S3.
+//   - auto: SLIVINGDOC_TOKEN → hosted, unless --endpoint or an S3 signal
+//     is set too (refusal). Else a stored login for the space → hosted when
+//     the bucket came from the default login, or when no S3 signal is set;
+//     an explicit bucket with an S3 signal is a refusal. Otherwise S3.
 //
 // Outside s3 mode an omitted bucket is the default login's space, but only
 // when the outcome is hosted: a login that does not apply never names an
-// S3 bucket. A stored
-// token is only used for the endpoint it was issued for: an explicit
-// endpoint that differs means the login does not apply. No refusal echoes
-// a token.
+// S3 bucket. A stored token is only used for the endpoint it was issued
+// for: an explicit endpoint that differs means the login does not apply.
+// No refusal echoes a token.
 func resolveStorage(f *Flags, env map[string]string, in storageInputs) (storageSelection, error) {
 	mode, err := parseStorageMode(resolveString(&f.storage, env["SLIVINGDOC_STORAGE"], string(storageAuto)))
 	if err != nil {
@@ -98,6 +121,10 @@ func resolveStorage(f *Flags, env map[string]string, in storageInputs) (storageS
 		return storageSelection{}, err
 	}
 	token := env["SLIVINGDOC_TOKEN"]
+	var signals []string
+	if mode == storageAuto {
+		signals = s3Signals(f, env, in)
+	}
 
 	var logins credentials.Set
 	if sel.bucket == "" || token == "" {
@@ -113,6 +140,14 @@ func resolveStorage(f *Flags, env map[string]string, in storageInputs) (storageS
 	}
 
 	if token != "" {
+		if f.endpoint.set {
+			signals = append([]string{"--endpoint"}, signals...)
+		}
+		if mode == storageAuto && len(signals) > 0 {
+			return storageSelection{}, fmt.Errorf(
+				"SLIVINGDOC_TOKEN and S3 settings (%s) are both configured; pass --storage hosted to send the token, or --storage s3",
+				strings.Join(signals, ", "))
+		}
 		sel.token, sel.origin, sel.endpoint = token, originEnv, explicit
 		if sel.endpoint == "" {
 			sel.endpoint = DefaultHostedEndpoint
@@ -141,12 +176,10 @@ func resolveStorage(f *Flags, env map[string]string, in storageInputs) (storageS
 	case err != nil:
 		return storageSelection{}, err
 	}
-	if mode == storageAuto {
-		if set := awsConfigured(env); len(set) > 0 {
-			return storageSelection{}, fmt.Errorf(
-				"a stored login for space %q and S3 settings (%s) are both configured; pass --storage hosted or --storage s3",
-				sel.bucket, strings.Join(set, ", "))
-		}
+	if mode == storageAuto && !defaulted && len(signals) > 0 {
+		return storageSelection{}, fmt.Errorf(
+			"a stored login for space %q and S3 settings (%s) are both configured; pass --storage hosted or --storage s3",
+			sel.bucket, strings.Join(signals, ", "))
 	}
 	if err := login.Usable(in.now); err != nil {
 		return storageSelection{}, fmt.Errorf("%w; run 'slivingdoc login --bucket %s', or pass --storage s3 to use S3", err, sel.bucket)
@@ -193,12 +226,45 @@ func noLoginRefusal(logins credentials.Set, explicit, space string) error {
 	return fmt.Errorf("%s; run 'slivingdoc login --bucket %s'", msg, space)
 }
 
-// awsConfigured returns the AWS signal variables set in env.
-func awsConfigured(env map[string]string) []string {
+// s3Signals returns what configures S3 on purpose, in a fixed order: the
+// awsSignals variables that are set, the container credential variables,
+// the S3-only flags, and the shared AWS files that exist under the home
+// directory.
+func s3Signals(f *Flags, env map[string]string, in storageInputs) []string {
 	var set []string
 	for _, name := range awsSignals() {
 		if env[name] != "" {
 			set = append(set, name)
+		}
+	}
+	var container []string
+	for name, value := range env {
+		if strings.HasPrefix(name, awsContainerPrefix) && value != "" {
+			container = append(container, name)
+		}
+	}
+	slices.Sort(container)
+	set = append(set, container...)
+	if f.region.set {
+		set = append(set, "--region")
+	}
+	if f.pathStyle.set {
+		set = append(set, "--path-style")
+	}
+	home := env["HOME"]
+	if in.goos == "windows" {
+		home = lookupFold(env, "USERPROFILE")
+	}
+	if home == "" || !filepath.IsAbs(home) {
+		return set
+	}
+	stat := in.stat
+	if stat == nil {
+		stat = os.Stat
+	}
+	for _, rel := range awsFiles() {
+		if _, err := stat(filepath.Join(home, rel)); err == nil {
+			set = append(set, "~/"+filepath.ToSlash(rel))
 		}
 	}
 	return set

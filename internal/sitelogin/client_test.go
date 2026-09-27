@@ -3,11 +3,13 @@ package sitelogin
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"testing/iotest"
 	"time"
@@ -96,7 +98,7 @@ func TestLoginApproved(t *testing.T) {
 	if got := starts[0].Client; len(got) != clientLimit || strings.ContainsAny(got, "\t\x00") || !strings.HasPrefix(got, "myhostx") {
 		t.Fatalf("client label = %q, want printable ASCII cut to %d", got, clientLimit)
 	}
-	if a.UserCode != "BCDF-GHJK" || a.CompleteURI != site.URL()+"/cli/login?code=BCDF-GHJK" || a.URI != site.URL()+"/cli/login" {
+	if a.UserCode != "BCDF-GHJK" || a.CompleteURI != site.URL()+"/cli/login#BCDF-GHJK" || a.URI != site.URL()+"/cli/login" {
 		t.Fatalf("approval = %+v", a)
 	}
 	if a.Interval != time.Second || !a.Deadline.Equal(clk.now.Add(10*time.Minute)) {
@@ -315,6 +317,79 @@ func TestWaitEndsWhenTheIssuedAnswerBreaks(t *testing.T) {
 	}
 }
 
+// pollDoer answers every token poll with poll and forwards the rest to
+// the real client.
+type pollDoer struct {
+	poll func(*http.Request) (*http.Response, error)
+}
+
+func (d pollDoer) Do(req *http.Request) (*http.Response, error) {
+	if strings.HasSuffix(req.URL.Path, tokenPath) {
+		return d.poll(req)
+	}
+	return http.DefaultClient.Do(req)
+}
+
+func TestWaitHintsAtATokenItNeverGot(t *testing.T) {
+	ok := func(body string) func(*http.Request) (*http.Response, error) {
+		return func(*http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{}}, nil
+		}
+	}
+	tests := []struct {
+		name   string
+		poll   func(cancel context.CancelFunc) func(*http.Request) (*http.Response, error)
+		wantIs error
+	}{
+		{"an undecodable success", func(context.CancelFunc) func(*http.Request) (*http.Response, error) { return ok(`{"token":`) }, ErrProtocol},
+		{"an oversize success", func(context.CancelFunc) func(*http.Request) (*http.Response, error) {
+			return ok(`{"token":"` + strings.Repeat("x", bodyLimit) + `"}`)
+		}, ErrProtocol},
+		{"an unsendable token", func(context.CancelFunc) func(*http.Request) (*http.Response, error) {
+			return ok(`{"token":"sld bad","space":"notes"}`)
+		}, ErrProtocol},
+		{"cancelled while the poll is in flight", func(cancel context.CancelFunc) func(*http.Request) (*http.Response, error) {
+			return func(req *http.Request) (*http.Response, error) {
+				cancel()
+				return nil, req.Context().Err()
+			}
+		}, context.Canceled},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			site := sitetest.Start(t)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			clk := &clock{now: time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)}
+			client, err := New(Config{Site: site.URL(), Sleep: clk.Sleep, Now: clk.Now, Client: pollDoer{poll: tt.poll(cancel)}})
+			if err != nil {
+				t.Fatalf("New() = %v", err)
+			}
+			a, err := client.Start(ctx, StartRequest{Access: credentials.AccessWrite})
+			if err != nil {
+				t.Fatalf("Start() = %v", err)
+			}
+			_, err = client.Wait(ctx, a)
+			if !errors.Is(err, tt.wantIs) || !strings.Contains(err.Error(), TokenHint) || strings.Contains(err.Error(), "sld bad") {
+				t.Fatalf("Wait() = %v, want %v with the Tokens page hint", err, tt.wantIs)
+			}
+		})
+	}
+	t.Run("cancelled before a poll is sent", func(t *testing.T) {
+		site := sitetest.Start(t)
+		client, _ := newClient(t, site.URL())
+		a, err := client.Start(context.Background(), StartRequest{Access: credentials.AccessWrite})
+		if err != nil {
+			t.Fatalf("Start() = %v", err)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if _, err := client.Wait(ctx, a); !errors.Is(err, context.Canceled) || strings.Contains(err.Error(), TokenHint) {
+			t.Fatalf("Wait() = %v, want a plain cancellation: no poll was sent", err)
+		}
+	})
+}
+
 func TestWaitReportsTheLastFailureAtExpiry(t *testing.T) {
 	site := sitetest.Start(t)
 	site.SetTiming(5, 60)
@@ -348,7 +423,10 @@ func answer(t *testing.T, status int, body string) string {
 }
 
 func TestStartRefusesAnswersOutsideTheContract(t *testing.T) {
-	good := `"deviceCode":"dev","userCode":"BCDF-GHJK","verificationUri":"SITE/cli/login","verificationUriComplete":"SITE/cli/login?code=BCDF-GHJK"`
+	good := `"deviceCode":"dev","userCode":"BCDF-GHJK","verificationUri":"SITE/cli/login","verificationUriComplete":"SITE/cli/login#BCDF-GHJK"`
+	withCode := func(code, complete string) string {
+		return `{"deviceCode":"dev","userCode":"` + code + `","verificationUri":"SITE/cli/login","verificationUriComplete":"` + complete + `","interval":5,"expiresIn":600}`
+	}
 	tests := []struct {
 		name   string
 		status int
@@ -356,10 +434,16 @@ func TestStartRefusesAnswersOutsideTheContract(t *testing.T) {
 		want   error
 	}{
 		{"not json", http.StatusOK, `nope`, ErrProtocol},
-		{"no device code", http.StatusOK, `{"userCode":"BCDF-GHJK","verificationUri":"SITE/cli/login","verificationUriComplete":"SITE/cli/login","interval":5,"expiresIn":600}`, ErrProtocol},
-		{"control characters in the code", http.StatusOK, `{"deviceCode":"dev","userCode":"\u001b[31m","verificationUri":"SITE/cli/login","verificationUriComplete":"SITE/cli/login","interval":5,"expiresIn":600}`, ErrProtocol},
-		{"page on another host", http.StatusOK, `{"deviceCode":"dev","userCode":"BCDF-GHJK","verificationUri":"https://evil.example.test/","verificationUriComplete":"SITE/cli/login","interval":5,"expiresIn":600}`, ErrProtocol},
-		{"page with another scheme", http.StatusOK, `{"deviceCode":"dev","userCode":"BCDF-GHJK","verificationUri":"SITE/cli/login","verificationUriComplete":"file:///etc/passwd","interval":5,"expiresIn":600}`, ErrProtocol},
+		{"no device code", http.StatusOK, `{"userCode":"BCDF-GHJK","verificationUri":"SITE/cli/login","verificationUriComplete":"SITE/cli/login#BCDF-GHJK","interval":5,"expiresIn":600}`, ErrProtocol},
+		{"control characters in the code", http.StatusOK, withCode(`\u001b[31m`, "SITE/cli/login#BCDF-GHJK"), ErrProtocol},
+		{"a vowel in the code", http.StatusOK, withCode("BCDA-GHJK", "SITE/cli/login#BCDA-GHJK"), ErrProtocol},
+		{"a lower-case code", http.StatusOK, withCode("bcdf-ghjk", "SITE/cli/login#bcdf-ghjk"), ErrProtocol},
+		{"a code without its dash", http.StatusOK, withCode("BCDFGHJK", "SITE/cli/login#BCDFGHJK"), ErrProtocol},
+		{"complete page on another host", http.StatusOK, withCode("BCDF-GHJK", "https://evil.example.test/cli/login#BCDF-GHJK"), ErrProtocol},
+		{"complete page with another scheme", http.StatusOK, withCode("BCDF-GHJK", "file:///etc/passwd"), ErrProtocol},
+		{"the code in a query", http.StatusOK, withCode("BCDF-GHJK", "SITE/cli/login?code=BCDF-GHJK"), ErrProtocol},
+		{"another code in the page", http.StatusOK, withCode("BCDF-GHJK", "SITE/cli/login#GHJK-BCDF"), ErrProtocol},
+		{"another path", http.StatusOK, withCode("BCDF-GHJK", "SITE/approve#BCDF-GHJK"), ErrProtocol},
 		{"no lifetime", http.StatusOK, `{` + good + `,"interval":5,"expiresIn":0}`, ErrProtocol},
 		{"negative interval", http.StatusOK, `{` + good + `,"interval":-1,"expiresIn":600}`, ErrProtocol},
 		{"refusal", http.StatusBadRequest, `{"error":"invalid_request","message":"bad\nspace"}`, ErrRefused},
@@ -377,6 +461,94 @@ func TestStartRefusesAnswersOutsideTheContract(t *testing.T) {
 				t.Fatalf("Start() = %q carries control characters", err)
 			}
 		})
+	}
+}
+
+func TestStartDefaultsTheIntervalAndBoundsTheLifetime(t *testing.T) {
+	good := `"deviceCode":"dev","userCode":"BCDF-GHJK","verificationUri":"SITE/ignored","verificationUriComplete":"SITE/cli/login#BCDF-GHJK"`
+	tests := []struct {
+		name     string
+		tail     string
+		interval time.Duration
+		lifetime time.Duration
+	}{
+		{"no interval", `"expiresIn":600`, 5 * time.Second, 10 * time.Minute},
+		{"a zero interval", `"interval":0,"expiresIn":600`, time.Second, 10 * time.Minute},
+		{"a day-long lifetime", `"interval":2,"expiresIn":86400`, 2 * time.Second, 30 * time.Minute},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			site := answer(t, http.StatusOK, `{`+good+`,`+tt.tail+`}`)
+			client, clk := newClient(t, site)
+			a, err := client.Start(context.Background(), StartRequest{Access: credentials.AccessWrite})
+			if err != nil {
+				t.Fatalf("Start() = %v", err)
+			}
+			if a.Interval != tt.interval || !a.Deadline.Equal(clk.now.Add(tt.lifetime)) {
+				t.Fatalf("approval timing = %v until %v, want %v for %v", a.Interval, a.Deadline, tt.interval, tt.lifetime)
+			}
+			// The pages are built locally; the site's verificationUri is
+			// never shown.
+			if a.URI != site+"/cli/login" || a.CompleteURI != site+"/cli/login#BCDF-GHJK" {
+				t.Fatalf("approval pages = %q, %q", a.URI, a.CompleteURI)
+			}
+		})
+	}
+}
+
+// recordingSite answers start and token like the contract and records the
+// content type and body size of every request.
+type recordingSite struct {
+	mu       sync.Mutex
+	requests []string
+}
+
+func (r *recordingSite) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	body, _ := io.ReadAll(req.Body)
+	r.mu.Lock()
+	r.requests = append(r.requests, fmt.Sprintf("%s %s %d", req.URL.Path, req.Header.Get("Content-Type"), len(body)))
+	r.mu.Unlock()
+	switch req.URL.Path {
+	case startPath:
+		fmt.Fprintf(w, `{"deviceCode":"dev","userCode":"BCDF-GHJK","verificationUri":"http://%[1]s/cli/login","verificationUriComplete":"http://%[1]s/cli/login#BCDF-GHJK","interval":1,"expiresIn":60}`, req.Host)
+	default:
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprint(w, `{"error":"access_denied"}`)
+	}
+}
+
+func TestRequestsAreSmallJSON(t *testing.T) {
+	rec := &recordingSite{}
+	srv := httptest.NewServer(rec)
+	t.Cleanup(srv.Close)
+	client, _ := newClient(t, srv.URL)
+	a, err := client.Start(context.Background(), StartRequest{Space: "notes", Access: credentials.AccessWrite, Client: strings.Repeat("h", 500)})
+	if err != nil {
+		t.Fatalf("Start() = %v", err)
+	}
+	if _, err := client.Wait(context.Background(), a); !errors.Is(err, ErrDenied) {
+		t.Fatalf("Wait() = %v, want ErrDenied", err)
+	}
+	if len(rec.requests) != 2 {
+		t.Fatalf("requests = %v, want a start and a poll", rec.requests)
+	}
+	for _, r := range rec.requests {
+		var path, ctype string
+		var size int
+		if _, err := fmt.Sscanf(r, "%s %s %d", &path, &ctype, &size); err != nil {
+			t.Fatalf("record %q: %v", r, err)
+		}
+		if ctype != "application/json" || size == 0 || size >= requestLimit {
+			t.Fatalf("%s sent %s with %d bytes, want application/json under %d", path, ctype, size, requestLimit)
+		}
+	}
+	huge, _ := newClient(t, srv.URL)
+	if _, err := huge.Start(context.Background(), StartRequest{Space: strings.Repeat("s", requestLimit), Access: credentials.AccessWrite}); err == nil ||
+		!strings.Contains(err.Error(), "accepts less than") {
+		t.Fatalf("Start() with an oversize body = %v, want a refusal before sending", err)
+	}
+	if len(rec.requests) != 2 {
+		t.Fatal("an oversize request was sent")
 	}
 }
 
@@ -403,6 +575,12 @@ func TestRevoke(t *testing.T) {
 	}
 	if err := client.Revoke(context.Background(), "sld bad"); err == nil || strings.Contains(err.Error(), "sld bad") {
 		t.Fatalf("Revoke() of an unsendable token = %v, want a refusal without it", err)
+	}
+	for _, body := range []string{`{"error":"unauthorized"}`, ``} {
+		other, _ := newClient(t, answer(t, http.StatusUnauthorized, body))
+		if err := other.Revoke(context.Background(), testToken); !errors.Is(err, ErrRefused) {
+			t.Fatalf("Revoke() answered 401 %q = %v, want a failure: only invalid_token means already revoked", body, err)
+		}
 	}
 	broken, _ := newClient(t, answer(t, http.StatusInternalServerError, `{"error":"internal"}`))
 	if err := broken.Revoke(context.Background(), testToken); !errors.Is(err, ErrRefused) {

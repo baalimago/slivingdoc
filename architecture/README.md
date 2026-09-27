@@ -45,7 +45,8 @@ the code and fix the doc in the same change (see
 - **[login.md](./login.md)**: `slivingdoc login` and `logout` (the
   browser device flow, `internal/sitelogin`), the credentials file
   (`internal/credentials`), and `--storage auto|hosted|s3`: which store
-  and token a process picks, and the endpoint a stored token may reach.
+  and token a process picks, the endpoint a stored token may reach, and
+  the login's threat model.
 - **[mcp-server.md](./mcp-server.md)**: the two MCP tools, schemas and
   descriptions, `decodePull`/`decodeCommit`, success and error shaping,
   instructions, `mcpReqID` logging, SDK log demotion.

@@ -1,6 +1,7 @@
 package credentials
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -110,6 +111,9 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	if _, err := set.Put(team); !errors.Is(err, ErrNoLogin) {
 		t.Fatalf("Put(new) = %v, want ErrNoLogin", err)
 	}
+	if err := set.SetDefault(team.Key); err != nil {
+		t.Fatalf("SetDefault(team) = %v", err)
+	}
 	if err := f.Save(set); err != nil {
 		t.Fatalf("Save() = %v", err)
 	}
@@ -150,6 +154,15 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 func TestPutReplacesAndRemoveClearsDefault(t *testing.T) {
 	var set Set
 	set.Put(login(apiA, "notes", testToken, AccessWrite))
+	if _, err := set.Default(); !errors.Is(err, ErrNoDefault) {
+		t.Fatalf("Default() after Put = %v, want ErrNoDefault: Put never chooses the default", err)
+	}
+	if err := set.SetDefault(Key{Endpoint: apiA, Space: "notes"}); err != nil {
+		t.Fatalf("SetDefault(notes) = %v", err)
+	}
+	if err := set.SetDefault(Key{Endpoint: apiB, Space: "notes"}); !errors.Is(err, ErrNoLogin) {
+		t.Fatalf("SetDefault(missing) = %v, want ErrNoLogin", err)
+	}
 	set.Put(login(apiA, "team", testToken, AccessWrite))
 	old, err := set.Put(login(apiA, "notes", testToken2, AccessRead))
 	if err != nil || old.Token != testToken {
@@ -189,9 +202,11 @@ func TestForSpace(t *testing.T) {
 	if _, err := set.ForSpace("notes"); !errors.Is(err, ErrAmbiguous) {
 		t.Fatalf("ForSpace(notes) = %v, want ErrAmbiguous", err)
 	}
-	set.Put(login(apiB, "notes", testToken2, AccessWrite))
-	if l, err := set.ForSpace("notes"); err != nil || l.Endpoint != apiB {
-		t.Fatalf("ForSpace(notes) with that default = %+v, %v; want the default", l, err)
+	if err := set.SetDefault(Key{Endpoint: apiB, Space: "notes"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := set.ForSpace("notes"); !errors.Is(err, ErrAmbiguous) {
+		t.Fatalf("ForSpace(notes) with a default among them = %v, want ErrAmbiguous: only an endpoint chooses", err)
 	}
 	if n := len(set.Space("notes")); n != 2 {
 		t.Fatalf("Space(notes) = %d logins, want 2", n)
@@ -387,5 +402,129 @@ func TestLoadAndSaveReportFilesystemFailures(t *testing.T) {
 	}
 	if err := blocked.Save(Set{}); err == nil {
 		t.Fatal("Save() below a file = nil, want an error")
+	}
+}
+
+// savedFile is a testFile holding one saved login.
+func savedFile(t *testing.T) File {
+	t.Helper()
+	f := testFile(t)
+	var set Set
+	set.Put(login(apiA, "notes", testToken, AccessWrite))
+	if err := f.Save(set); err != nil {
+		t.Fatalf("Save() = %v", err)
+	}
+	return f
+}
+
+func TestLoadRefusesWhatIsNotTheUsersPlainFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows has no POSIX owners, and symbolic links need a privilege")
+	}
+	t.Run("a symbolic link to a private file", func(t *testing.T) {
+		f := savedFile(t)
+		target := filepath.Join(filepath.Dir(f.Path()), "real.json")
+		if err := os.Rename(f.Path(), target); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, f.Path()); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.Load(); !errors.Is(err, ErrExposed) || !strings.Contains(err.Error(), "symbolic link") {
+			t.Fatalf("Load() = %v, want ErrExposed naming the link", err)
+		}
+	})
+	t.Run("a dangling symbolic link", func(t *testing.T) {
+		f := testFile(t)
+		if err := os.MkdirAll(filepath.Dir(f.Path()), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(filepath.Join(t.TempDir(), "planted.json"), f.Path()); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.Load(); !errors.Is(err, ErrExposed) {
+			t.Fatalf("Load() = %v, want ErrExposed: a link is never an empty file", err)
+		}
+	})
+	t.Run("a FIFO", func(t *testing.T) {
+		f := testFile(t)
+		if err := os.MkdirAll(filepath.Dir(f.Path()), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := mkfifo(f.Path()); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.Load(); !errors.Is(err, ErrExposed) || !strings.Contains(err.Error(), "not a regular file") {
+			t.Fatalf("Load() = %v, want ErrExposed without blocking", err)
+		}
+	})
+	t.Run("a file another user owns", func(t *testing.T) {
+		f := savedFile(t)
+		f.uid++
+		if _, err := f.Load(); !errors.Is(err, ErrExposed) || !strings.Contains(err.Error(), "owned by user") {
+			t.Fatalf("Load() = %v, want ErrExposed naming the owner", err)
+		}
+		if err := f.CheckDir(); !errors.Is(err, ErrExposed) {
+			t.Fatalf("CheckDir() = %v, want ErrExposed: the directory is another user's too", err)
+		}
+		if err := f.Save(Set{}); !errors.Is(err, ErrExposed) {
+			t.Fatalf("Save() = %v, want ErrExposed", err)
+		}
+	})
+	t.Run("a file larger than 1 MiB", func(t *testing.T) {
+		f := savedFile(t)
+		if err := os.WriteFile(f.Path(), make([]byte, maxFileSize+1), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.Load(); !errors.Is(err, ErrMalformed) || !strings.Contains(err.Error(), "larger than") {
+			t.Fatalf("Load() = %v, want ErrMalformed for the size", err)
+		}
+	})
+	t.Run("a directory path that is a file", func(t *testing.T) {
+		f := testFile(t)
+		if err := os.WriteFile(f.dir, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.CheckDir(); !errors.Is(err, ErrExposed) || !strings.Contains(err.Error(), "not a directory") {
+			t.Fatalf("CheckDir() = %v, want ErrExposed", err)
+		}
+	})
+}
+
+func TestLockSerializesLogins(t *testing.T) {
+	f := testFile(t)
+	first, err := f.Lock(context.Background())
+	if err != nil {
+		t.Fatalf("Lock() = %v", err)
+	}
+	if info, err := os.Stat(filepath.Join(f.dir, LockName)); err != nil || (runtime.GOOS != "windows" && info.Mode().Perm() != 0o600) {
+		t.Fatalf("lock file = %v, %v; want it beside the file, 0600", info, err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if _, err := f.Lock(ctx); err == nil {
+		t.Fatal("a second Lock() while the first is held = nil, want it to wait until ctx ends")
+	}
+	if err := first.Unlock(); err != nil {
+		t.Fatalf("Unlock() = %v", err)
+	}
+	second, err := f.Lock(context.Background())
+	if err != nil {
+		t.Fatalf("Lock() after Unlock() = %v", err)
+	}
+	if err := second.Unlock(); err != nil {
+		t.Fatalf("Unlock() = %v", err)
+	}
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(f.dir, 0o777); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.Lock(context.Background()); !errors.Is(err, ErrExposed) {
+			t.Fatalf("Lock() in a world-writable directory = %v, want ErrExposed", err)
+		}
+	}
+	blocked := File{dir: filepath.Join(f.dir, LockName, "below")}
+	if _, err := blocked.Lock(context.Background()); err == nil {
+		t.Fatal("Lock() below a file = nil, want an error")
 	}
 }

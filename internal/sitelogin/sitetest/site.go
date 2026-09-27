@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -33,10 +34,18 @@ type Issue struct {
 // Pending in turn (authorization_pending, slow_down), then Final when it
 // is set (access_denied, expired_token), else the Issue. After an issue
 // the device code is claimed and every later poll is expired_token.
+//
+// The remaining fields break the issuing answer instead: Body replaces
+// its JSON with raw bytes, Truncate announces more bytes than it sends,
+// and Stall holds the poll until the client gives up on it.
 type Script struct {
 	Pending []string
 	Final   string
 	Issue   Issue
+
+	Body     string
+	Truncate bool
+	Stall    bool
 }
 
 // StartBody is one recorded start request.
@@ -44,6 +53,18 @@ type StartBody struct {
 	Space  string `json:"space"`
 	Access string `json:"access"`
 	Client string `json:"client"`
+}
+
+type refusal struct {
+	status int
+	code   string
+}
+
+// barrier releases the issuing polls it holds once n of them wait.
+type barrier struct {
+	n       int
+	waiting int
+	release chan struct{}
 }
 
 type approval struct {
@@ -58,8 +79,14 @@ type Site struct {
 
 	mu        sync.Mutex
 	next      Script
+	queue     []Script
 	interval  int
 	expiresIn int
+	origin    string
+	userCode  string
+	complete  string
+	revokeErr *refusal
+	hold      *barrier
 	approvals map[string]*approval
 	issued    map[string]bool
 	starts    []StartBody
@@ -71,10 +98,10 @@ type Site struct {
 // live ten minutes unless SetTiming says otherwise.
 func Start(t *testing.T) *Site {
 	t.Helper()
-	s := &Site{interval: 1, expiresIn: 600, approvals: map[string]*approval{}, issued: map[string]bool{}}
+	s := &Site{interval: 1, expiresIn: 600, userCode: "BCDF-GHJK", approvals: map[string]*approval{}, issued: map[string]bool{}}
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /cli/v1/start", s.start)
-	mux.HandleFunc("POST /cli/v1/token", s.token)
+	mux.HandleFunc("POST /cli/v1/start", jsonOnly(s.start))
+	mux.HandleFunc("POST /cli/v1/token", jsonOnly(s.token))
 	mux.HandleFunc("POST /cli/v1/revoke", s.revoke)
 	s.srv = httptest.NewServer(mux)
 	t.Cleanup(s.srv.Close)
@@ -89,6 +116,55 @@ func (s *Site) Next(script Script) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.next = script
+}
+
+// Queue sets the scripts of the next approvals, one per start in order;
+// once they are used up, starts take Next's script again.
+func (s *Site) Queue(scripts ...Script) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.queue = append(s.queue, scripts...)
+}
+
+// SetOrigin makes later starts name origin instead of the server's own
+// URL in the approval page addresses, as a site behind another name
+// would.
+func (s *Site) SetOrigin(origin string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.origin = origin
+}
+
+// SetUserCode sets the code later starts answer; the default is
+// BCDF-GHJK.
+func (s *Site) SetUserCode(code string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.userCode = code
+}
+
+// SetCompleteURI makes later starts answer uri as the approval page with
+// the code filled in, instead of the page the code belongs to.
+func (s *Site) SetCompleteURI(uri string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.complete = uri
+}
+
+// RefuseRevoke makes the next revoke answer status with the error code,
+// whatever the token.
+func (s *Site) RefuseRevoke(status int, code string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.revokeErr = &refusal{status: status, code: code}
+}
+
+// HoldIssues holds the next issuing polls until n of them wait, then
+// answers those n together; later issuing polls are not held.
+func (s *Site) HoldIssues(n int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.hold = &barrier{n: n, release: make(chan struct{})}
 }
 
 // SetTiming sets the interval and lifetime, in seconds, that later starts
@@ -147,17 +223,28 @@ func (s *Site) start(w http.ResponseWriter, r *http.Request) {
 	raw := make([]byte, 32)
 	_, _ = rand.Read(raw)
 	device := base64.RawURLEncoding.EncodeToString(raw)
-	const userCode = "BCDF-GHJK"
 	s.mu.Lock()
 	s.starts = append(s.starts, body)
-	s.approvals[device] = &approval{script: s.next}
-	interval, expiresIn := s.interval, s.expiresIn
+	script := s.next
+	if len(s.queue) > 0 {
+		script, s.queue = s.queue[0], s.queue[1:]
+	}
+	s.approvals[device] = &approval{script: script}
+	interval, expiresIn, userCode := s.interval, s.expiresIn, s.userCode
+	origin := s.origin
+	if origin == "" {
+		origin = s.srv.URL
+	}
+	complete := s.complete
+	if complete == "" {
+		complete = origin + "/cli/login#" + userCode
+	}
 	s.mu.Unlock()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"deviceCode":              device,
 		"userCode":                userCode,
-		"verificationUri":         s.srv.URL + "/cli/login",
-		"verificationUriComplete": s.srv.URL + "/cli/login?code=" + userCode,
+		"verificationUri":         origin + "/cli/login",
+		"verificationUriComplete": complete,
 		"interval":                interval,
 		"expiresIn":               expiresIn,
 	})
@@ -172,31 +259,47 @@ func (s *Site) token(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.polls++
 	a, ok := s.approvals[body.DeviceCode]
 	if !ok || a.claimed {
+		s.mu.Unlock()
 		writeError(w, http.StatusBadRequest, "expired_token")
 		return
 	}
 	if a.polls < len(a.script.Pending) {
 		code := a.script.Pending[a.polls]
 		a.polls++
+		s.mu.Unlock()
 		writeError(w, http.StatusBadRequest, code)
 		return
 	}
 	if a.script.Final != "" {
+		s.mu.Unlock()
 		writeError(w, http.StatusBadRequest, a.script.Final)
 		return
 	}
 	a.claimed = true
-	issue := a.script.Issue
-	s.issued[issue.Token] = true
+	script := a.script
+	s.issued[script.Issue.Token] = true
+	release := s.join()
+	s.mu.Unlock()
+	if release != nil {
+		select {
+		case <-release:
+		case <-r.Context().Done():
+			return
+		}
+	}
+	if script.Stall {
+		<-r.Context().Done()
+		return
+	}
+	issue := script.Issue
 	var expires any
 	if !issue.ExpiresAt.IsZero() {
 		expires = issue.ExpiresAt.UTC().Format(time.RFC3339)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	data, _ := json.Marshal(map[string]any{
 		"token":     issue.Token,
 		"space":     issue.Space,
 		"access":    issue.Access,
@@ -205,12 +308,41 @@ func (s *Site) token(w http.ResponseWriter, r *http.Request) {
 		"account":   issue.Account,
 		"owner":     issue.Owner,
 	})
+	if script.Body != "" {
+		data = []byte(script.Body)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if script.Truncate {
+		w.Header().Set("Content-Length", strconv.Itoa(len(data)+64))
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
+}
+
+// join enters an issuing poll into the barrier, if one is set, and
+// returns the channel that releases it; the caller holds s.mu.
+func (s *Site) join() chan struct{} {
+	b := s.hold
+	if b == nil {
+		return nil
+	}
+	b.waiting++
+	if b.waiting == b.n {
+		close(b.release)
+		s.hold = nil
+	}
+	return b.release
 }
 
 func (s *Site) revoke(w http.ResponseWriter, r *http.Request) {
 	token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if rf := s.revokeErr; rf != nil {
+		s.revokeErr = nil
+		writeError(w, rf.status, rf.code)
+		return
+	}
 	if !ok || !s.issued[token] {
 		writeError(w, http.StatusUnauthorized, "invalid_token")
 		return
@@ -218,6 +350,26 @@ func (s *Site) revoke(w http.ResponseWriter, r *http.Request) {
 	delete(s.issued, token)
 	s.revoked = append(s.revoked, token)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// requestLimit is the site's bound on a request body.
+const requestLimit = 4 << 10
+
+// jsonOnly enforces what the real site enforces on start and token: a JSON
+// content type and a body under requestLimit.
+func jsonOnly(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Content-Type") != "application/json" {
+			writeError(w, http.StatusUnsupportedMediaType, "unsupported_media_type")
+			return
+		}
+		if r.ContentLength < 0 || r.ContentLength >= requestLimit {
+			writeError(w, http.StatusRequestEntityTooLarge, "payload_too_large")
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, requestLimit)
+		next(w, r)
+	}
 }
 
 func writeError(w http.ResponseWriter, status int, code string) {

@@ -83,24 +83,33 @@ const loginHelp = `slivingdoc login - log in to hosted storage through the brows
 
 Usage:
   slivingdoc login [--bucket <space>] [--read-only] [--site <url>] [--no-browser]
+                   [--default] [--force]
 
 Prints an approval page and a code, opens the page in a browser, and waits
 while you sign in to the site, pick the space, and approve the code. The
-site then issues a token for that one space, which is stored in
+site then issues a token for that one space. Whoever enters a code first
+decides it, so before anything is stored the login shows who approved it,
+the space and its owner, the access, the storage endpoint and the site; on
+a terminal it asks "Store this login? [y/N]" and revokes the token unless
+you answer y. The token is stored in
 <user-config-dir>/slivingdoc/credentials.json (SLIVINGDOC_CONFIG_DIR
-overrides the directory) and becomes the default login. serve, pull and
-commit then use hosted storage for that space without SLIVINGDOC_TOKEN, and
---bucket may be omitted. Logging in again for the same space replaces the
-stored token and revokes the old one. The result line names the account
-that approved the code, and the space's owner when that is someone else:
-whoever enters a code first decides it, so check that it is you.
+overrides the directory). The first login becomes the default login, and
+--default makes a later one the default; serve, pull and commit then use
+hosted storage for the default space without SLIVINGDOC_TOKEN or --bucket.
+Logging in again for the same space replaces the stored token and revokes
+the old one when the same account approved both. Without a terminal, a
+login that would replace a login or a default another account approved is
+refused unless --force is given.
 
 Flags:
-  --bucket string   space to preselect on the approval page
+  --bucket string   space to preselect; a token for another space is refused
   --read-only       ask for a read-only token
   --site string     site that approves the login              SLIVINGDOC_SITE
                     (default "https://www.slivingdoc.dev")
   --no-browser      print the page without opening a browser
+  --default         make this login the default
+  --force           without a terminal, replace another account's login or
+                    default
 `
 
 const logoutHelp = `slivingdoc logout - revoke and remove a stored login
@@ -110,9 +119,9 @@ Usage:
 
 Revokes the stored token of the space at the site that issued it and
 removes it from the credentials file. A token the site no longer knows
-counts as revoked; a token whose revocation fails stays stored, so the
-logout can be repeated. Logging out of the default login's space clears
-the default.
+(401 invalid_token) counts as revoked; a token whose revocation fails
+stays stored, so the logout can be repeated. Logging out of the default
+login's space clears the default.
 
 Flags:
   --bucket string   space to log out of (default: the default login's space)

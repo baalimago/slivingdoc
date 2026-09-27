@@ -6,14 +6,19 @@
 package credentials
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/gofrs/flock"
 
 	"github.com/baalimago/slivingdoc/internal/httpstore"
 	"github.com/baalimago/slivingdoc/internal/strictjson"
@@ -27,6 +32,16 @@ const DirEnv = "SLIVINGDOC_CONFIG_DIR"
 
 // FormatVersion is the only credentials file version this build reads.
 const FormatVersion = 1
+
+// LockName is the lock file beside FileName that serializes the
+// read-modify-write of a login or logout.
+const LockName = "credentials.lock"
+
+// maxFileSize bounds how much of the credentials file Load reads.
+const maxFileSize = 1 << 20
+
+// lockRetry is how often Lock tries again while another process holds it.
+const lockRetry = 20 * time.Millisecond
 
 // The file and directory modes: the token is readable by its owner only.
 const (
@@ -150,7 +165,8 @@ type Set struct {
 // Logins returns a copy of the stored logins in file order.
 func (s Set) Logins() []Login { return slices.Clone(s.logins) }
 
-// Default returns the default login: the one stored last by a login.
+// Default returns the default login: the first one stored, or the one a
+// login stored with --default.
 func (s Set) Default() (Login, error) {
 	if !s.hasDef {
 		return Login{}, fmt.Errorf("%w in %s", ErrNoDefault, s.where())
@@ -169,13 +185,10 @@ func (s Set) Lookup(k Key) (Login, error) {
 }
 
 // ForSpace returns the one login a process uses for space when no endpoint
-// is configured: the default login when it names space, else the only
-// login stored for space. Several logins for space at different endpoints,
-// none of them the default, are ErrAmbiguous.
+// is configured: the only login stored for space. Several logins for space
+// at different endpoints are ErrAmbiguous, even when the default names one
+// of them: only an endpoint chooses between them.
 func (s Set) ForSpace(space string) (Login, error) {
-	if s.hasDef && s.def.Space == space {
-		return s.Lookup(s.def)
-	}
 	matches := s.Space(space)
 	switch len(matches) {
 	case 0:
@@ -202,11 +215,10 @@ func (s Set) Space(space string) []Login {
 	return out
 }
 
-// Put stores l, replacing a login for the same key, and makes it the
-// default. It returns the login it replaced, or ErrNoLogin when the key
-// was new.
+// Put stores l, replacing a login for the same key; the default is left
+// alone (SetDefault). It returns the login it replaced, or ErrNoLogin when
+// the key was new.
 func (s *Set) Put(l Login) (Login, error) {
-	s.def, s.hasDef = l.Key, true
 	for i, old := range s.logins {
 		if old.Key == l.Key {
 			s.logins[i] = l
@@ -215,6 +227,16 @@ func (s *Set) Put(l Login) (Login, error) {
 	}
 	s.logins = append(s.logins, l)
 	return Login{}, fmt.Errorf("%w for space %q at %s", ErrNoLogin, l.Space, l.Endpoint)
+}
+
+// SetDefault makes the login stored for k the default; a missing key is
+// ErrNoLogin.
+func (s *Set) SetDefault(k Key) error {
+	if _, err := s.Lookup(k); err != nil {
+		return err
+	}
+	s.def, s.hasDef = k, true
+	return nil
 }
 
 // Remove deletes the login stored for k and clears the default when it
@@ -241,9 +263,11 @@ func (s Set) where() string {
 // File is the credentials file of one configuration directory.
 type File struct {
 	dir string
-	// private says whether the platform has POSIX permission bits that
-	// Load checks: every one but Windows.
+	// private says whether the platform has POSIX owners and permission
+	// bits that Load checks: every one but Windows.
 	private bool
+	// uid is the effective user that must own the file and its directory.
+	uid int
 }
 
 // Locate resolves the credentials file from the environment: DirEnv when
@@ -255,13 +279,13 @@ func Locate(getenv func(string) string, goos string) (File, error) {
 		if !filepath.IsAbs(dir) {
 			return File{}, fmt.Errorf("%w: %s must be an absolute path", ErrNoConfigDir, DirEnv)
 		}
-		return File{dir: filepath.Clean(dir), private: goos != "windows"}, nil
+		return File{dir: filepath.Clean(dir), private: goos != "windows", uid: os.Geteuid()}, nil
 	}
 	base, err := userConfigDir(getenv, goos)
 	if err != nil {
 		return File{}, err
 	}
-	return File{dir: filepath.Join(base, "slivingdoc"), private: goos != "windows"}, nil
+	return File{dir: filepath.Join(base, "slivingdoc"), private: goos != "windows", uid: os.Geteuid()}, nil
 }
 
 // Path is the credentials file path.
@@ -302,20 +326,48 @@ func userConfigDir(getenv func(string) string, goos string) (string, error) {
 // Set: nobody has logged in yet. Anything else that cannot be read or
 // parsed strictly is an error naming the file.
 //
-// Like ssh, Load refuses an existing file that group or other can read or
-// write, or whose directory group or other can write, on every platform
-// but Windows: another user could read the tokens or plant their own. Save
-// refuses such a directory too.
+// Like ssh, Load refuses a symbolic link, anything but a regular file, and
+// on every platform but Windows a file another user owns or that group or
+// other can read or write, or a directory another user owns or that group
+// or other can write: another user could read the tokens or plant their
+// own. The file is opened without following a final symbolic link where
+// the platform can, checked through the open descriptor, and read up to
+// 1 MiB.
 func (f File) Load() (Set, error) {
-	data, err := os.ReadFile(f.Path())
-	if errors.Is(err, os.ErrNotExist) {
+	link, err := os.Lstat(f.Path())
+	if errors.Is(err, fs.ErrNotExist) {
 		return Set{location: f.Path()}, nil
-	}
-	if err := f.checkPrivate(); err != nil {
-		return Set{}, err
 	}
 	if err != nil {
 		return Set{}, fmt.Errorf("credentials: read %s: %w", f.Path(), err)
+	}
+	if link.Mode()&fs.ModeSymlink != 0 {
+		return Set{}, fmt.Errorf("%w: %s is a symbolic link; replace it with the file itself", ErrExposed, f.Path())
+	}
+	file, err := os.OpenFile(f.Path(), openFlags, 0)
+	if errors.Is(err, fs.ErrNotExist) {
+		return Set{location: f.Path()}, nil
+	}
+	if err != nil {
+		return Set{}, fmt.Errorf("credentials: open %s: %w", f.Path(), err)
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return Set{}, fmt.Errorf("credentials: stat %s: %w", f.Path(), err)
+	}
+	if err := f.CheckDir(); err != nil {
+		return Set{}, err
+	}
+	if err := f.checkFile(info, func() (int, error) { return fileOwner(file) }); err != nil {
+		return Set{}, err
+	}
+	data, err := io.ReadAll(io.LimitReader(file, maxFileSize+1))
+	if err != nil {
+		return Set{}, fmt.Errorf("credentials: read %s: %w", f.Path(), err)
+	}
+	if len(data) > maxFileSize {
+		return Set{}, fmt.Errorf("%w %s: larger than %d bytes", ErrMalformed, f.Path(), maxFileSize)
 	}
 	set, err := decode(data)
 	if err != nil {
@@ -325,31 +377,93 @@ func (f File) Load() (Set, error) {
 	return set, nil
 }
 
-// CheckDir returns ErrExposed when the directory exists and group or
-// other can write it; a missing directory is private. Load checks it only
-// when the file exists, so a command that will write the file calls it
-// first.
+// CheckDir returns ErrExposed when the directory exists and is not a
+// directory, is owned by another user, or group or other can write it; a
+// missing directory is private. Load checks it only when the file exists,
+// so a command that will write the file calls it first.
 func (f File) CheckDir() error {
+	info, err := os.Stat(f.dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("credentials: stat %s: %w", f.dir, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%w: %s is not a directory", ErrExposed, f.dir)
+	}
 	if !f.private {
 		return nil
 	}
-	if info, err := os.Stat(f.dir); err == nil && info.Mode().Perm()&0o022 != 0 {
+	if err := f.checkOwner(func() (int, error) { return pathOwner(f.dir) }, f.dir); err != nil {
+		return err
+	}
+	if info.Mode().Perm()&0o022 != 0 {
 		return fmt.Errorf("%w: other users can write to %s; run 'chmod go-w %s'", ErrExposed, f.dir, f.dir)
 	}
 	return nil
 }
 
-// checkPrivate refuses an exposed directory or file; a missing one is
-// private.
-func (f File) checkPrivate() error {
-	if err := f.CheckDir(); err != nil {
-		return err
+// checkFile refuses an opened credentials file that is not a regular file,
+// another user's, or accessible to group or other.
+func (f File) checkFile(info fs.FileInfo, owner func() (int, error)) error {
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("%w: %s is not a regular file", ErrExposed, f.Path())
 	}
 	if !f.private {
 		return nil
 	}
-	if info, err := os.Stat(f.Path()); err == nil && info.Mode().Perm()&0o077 != 0 {
+	if err := f.checkOwner(owner, f.Path()); err != nil {
+		return err
+	}
+	if info.Mode().Perm()&0o077 != 0 {
 		return fmt.Errorf("%w: other users can access %s; run 'chmod 600 %s'", ErrExposed, f.Path(), f.Path())
+	}
+	return nil
+}
+
+func (f File) checkOwner(ownerOf func() (int, error), path string) error {
+	owner, err := ownerOf()
+	if err != nil {
+		return fmt.Errorf("credentials: %s: %w", path, err)
+	}
+	if owner != f.uid {
+		return fmt.Errorf("%w: %s is owned by user %d, not by you (user %d)", ErrExposed, path, owner, f.uid)
+	}
+	return nil
+}
+
+// Lock is a held credentials lock.
+type Lock struct {
+	fl *flock.Flock
+}
+
+// Lock takes the lock beside the file, creating the directory 0700 when
+// needed, so a login or logout reads, changes and writes the file without
+// another one interleaving. It waits while another process holds it,
+// until ctx ends.
+func (f File) Lock(ctx context.Context) (*Lock, error) {
+	if err := os.MkdirAll(f.dir, dirMode); err != nil {
+		return nil, fmt.Errorf("credentials: create %s: %w", f.dir, err)
+	}
+	if err := f.CheckDir(); err != nil {
+		return nil, err
+	}
+	fl := flock.New(filepath.Join(f.dir, LockName), flock.SetPermissions(fileMode))
+	locked, err := fl.TryLockContext(ctx, lockRetry)
+	if err != nil {
+		return nil, fmt.Errorf("credentials: lock %s: %w", fl.Path(), err)
+	}
+	if !locked {
+		return nil, fmt.Errorf("credentials: lock %s: another login or logout holds it", fl.Path())
+	}
+	return &Lock{fl: fl}, nil
+}
+
+// Unlock releases the lock.
+func (l *Lock) Unlock() error {
+	if err := l.fl.Unlock(); err != nil {
+		return fmt.Errorf("credentials: unlock %s: %w", l.fl.Path(), err)
 	}
 	return nil
 }
@@ -364,7 +478,7 @@ func (f File) Save(s Set) error {
 	if err := os.MkdirAll(f.dir, dirMode); err != nil {
 		return fmt.Errorf("credentials: create %s: %w", f.dir, err)
 	}
-	if err := f.checkPrivate(); err != nil {
+	if err := f.CheckDir(); err != nil {
 		return err
 	}
 	tmp, err := os.CreateTemp(f.dir, ".credentials-*.json")

@@ -63,29 +63,33 @@ slivingdoc login --bucket my-space      # or: npx -y slivingdoc login --bucket m
 
 It prints a code and opens an approval page in your browser (`--no-browser`
 just prints the page, for SSH and headless machines). Sign in, check that
-the code matches, pick the space and the access, and approve. The token is
+the code matches, pick the space and the access, and approve. Whoever
+enters a code first decides it, so the terminal then shows who approved it,
+the space, its owner, the access and the storage endpoint, and asks
+`Store this login? [y/N]`; answer `y` only if that was you. The token is
 stored in your user configuration directory
 (`~/.config/slivingdoc/credentials.json` on Linux; `SLIVINGDOC_CONFIG_DIR`
-moves it), so the MCP host needs neither a token nor, for your default
-space, `--bucket`:
+moves it), and your first login becomes the default login, so the MCP host
+needs neither a token nor a bucket:
 
 ```json
 {
   "mcpServers": {
     "slivingdoc": {
       "command": "npx",
-      "args": ["-y", "slivingdoc", "serve", "--bucket", "my-space"]
+      "args": ["-y", "slivingdoc", "serve"]
     }
   }
 }
 ```
 
-The result line names the account that approved the code, and the space's
-owner when that is someone else; whoever enters a code first decides it, so
-check that it was you. Logging in again for the same space at the same
-storage endpoint replaces the stored token and revokes the old one.
-`slivingdoc logout` revokes the stored token.
-Restart the MCP host after logging in again.
+For another logged-in space, name it and the store:
+`"serve", "--storage", "hosted", "--bucket", "other-space"` (`--bucket`
+alone also works when nothing on the machine configures S3). A later
+login keeps the default unless you pass `--default`. Logging in again for
+the same space at the same storage endpoint replaces the stored token and
+revokes the old one when you approved both. `slivingdoc logout` revokes
+the stored token. Restart the MCP host after logging in again.
 
 For CI, or instead of logging in, give slivingdoc an API token and the
 space name:
@@ -102,21 +106,27 @@ space name:
 }
 ```
 
-The token replaces the AWS settings; `--region` and `--path-style` are
-ignored. Everything else works the same way. `SLIVINGDOC_TOKEN` wins over a
-stored login. If you have both a login and AWS settings in the environment,
-slivingdoc refuses to guess: pass `--storage hosted` or `--storage s3`
-(`--storage s3` never sends a token anywhere).
+The token replaces the AWS settings. Everything else works the same way.
+`SLIVINGDOC_TOKEN` wins over a stored login. slivingdoc refuses to guess
+between S3 and hosted storage: a token next to S3 settings (an AWS
+variable, `~/.aws/credentials` or `~/.aws/config`, `--region`,
+`--path-style`) or next to an `--endpoint` flag, and a login for a
+`--bucket` you named next to S3 settings, refuse to start until you pass
+`--storage hosted` or `--storage s3` (`--storage s3` never sends a token
+anywhere). Each process logs which store and token source it chose.
 
 **Upgrading an S3 setup:** a login changes only a command line or MCP entry
-that runs in the default `--storage auto`, sets no `SLIVINGDOC_TOKEN`, names
-the logged-in space as its bucket (`--bucket` or `SLIVINGDOC_BUCKET`), and
-either sets no endpoint or sets the endpoint the login was issued for
-(`--endpoint` or `SLIVINGDOC_ENDPOINT`). Such an entry for an S3 bucket of
-the same name now uses hosted storage; with AWS settings in its environment,
-or once that login has expired, it refuses to start instead. An entry that
-sets its own S3 endpoint stays on S3. Add `--storage s3` (or
-`SLIVINGDOC_STORAGE=s3`) to keep an entry on S3 whatever is stored.
+that runs in the default `--storage auto`, sets no `SLIVINGDOC_TOKEN`, and
+either names no bucket (the login's default space is then used) or names
+the logged-in space as its bucket (`--bucket` or `SLIVINGDOC_BUCKET`) on a
+machine with no S3 settings at all, and either sets no endpoint or sets the
+endpoint the login was issued for. Such an entry now uses hosted storage;
+an entry that names the space as its bucket next to S3 settings refuses to
+start instead, as does one whose login has expired. An entry that sets its
+own S3 endpoint stays on S3. Add `--storage s3` (or `SLIVINGDOC_STORAGE=s3`)
+to keep an entry on S3 whatever is stored. A hosted entry that sets
+`SLIVINGDOC_TOKEN` next to AWS settings, or passes `--endpoint` as a flag,
+now needs `--storage hosted`.
 
 ## How it works
 
@@ -211,7 +221,9 @@ defaults to your login's space. The most common flags:
     login always uses the endpoint it was issued for.
 
 [^3]: `auto` uses `SLIVINGDOC_TOKEN`, else a `slivingdoc login` for the
-    space, else S3; `hosted` and `s3` force the choice.
+    space, else S3, and refuses when S3 settings make that a guess (see
+    [`architecture/login.md`](architecture/login.md)); `hosted` and `s3`
+    force the choice.
 
 `slivingdoc serve -h` prints the full reference, and
 [`architecture/running.md`](architecture/running.md) covers everything an operator

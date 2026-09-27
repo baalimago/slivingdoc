@@ -52,6 +52,7 @@ type Gateway struct {
 	refusals []refusal
 	pageSize int
 	requests int
+	used     map[string]int
 }
 
 type space struct {
@@ -75,7 +76,7 @@ type refusal struct {
 // Start runs a gateway for the test and stops it at cleanup.
 func Start(t testing.TB) *Gateway {
 	t.Helper()
-	g := &Gateway{spaces: map[string]*space{}, grants: map[string]grant{}, pageSize: 1000}
+	g := &Gateway{spaces: map[string]*space{}, grants: map[string]grant{}, used: map[string]int{}, pageSize: 1000}
 	g.srv = httptest.NewServer(http.HandlerFunc(g.serve))
 	t.Cleanup(g.srv.Close)
 	return g
@@ -150,6 +151,14 @@ func (g *Gateway) Requests() int {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return g.requests
+}
+
+// Used counts the requests that presented token as their bearer
+// credential, whether or not the gateway knows it.
+func (g *Gateway) Used(token string) int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.used[token]
 }
 
 func (g *Gateway) serve(w http.ResponseWriter, r *http.Request) {
@@ -266,6 +275,9 @@ func operation(method, rest string) routeMatch {
 func (g *Gateway) authorize(w http.ResponseWriter, r *http.Request, name string) (*space, grant, bool) {
 	token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 	g.mu.Lock()
+	if ok {
+		g.used[token]++
+	}
 	gr, known := g.grants[token]
 	sp, exists := g.spaces[name]
 	g.mu.Unlock()
