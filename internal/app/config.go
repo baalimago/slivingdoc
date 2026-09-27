@@ -34,8 +34,9 @@ type config struct {
 	endpoint    string
 	token       string
 	tokenOrigin tokenOrigin
-	// bucketFrom says whether the bucket was named or taken from the
-	// default login, so a space mismatch names the right fix.
+	// bucketFrom says which setting named the bucket: --bucket,
+	// SLIVINGDOC_BUCKET, the default login, the token's own space, or none,
+	// so a space mismatch or a refused token names the right fix.
 	bucketFrom          bucketSource
 	pathStyle           bool
 	workspaceRoot       string

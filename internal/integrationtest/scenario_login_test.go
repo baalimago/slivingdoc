@@ -964,3 +964,55 @@ func TestScenarioTokenIgnoresABrokenCredentialsFile(t *testing.T) {
 		t.Fatalf("credentials file = %q, %v; want it untouched", data, err)
 	}
 }
+
+// TestScenarioOldServerTakesTheDefaultLoginsSpace proves that against a
+// server without the token lookup, SLIVINGDOC_TOKEN with no bucket uses
+// the default login's space only when that login is for the same endpoint,
+// and that a login for another endpoint is a refusal naming it.
+func TestScenarioOldServerTakesTheDefaultLoginsSpace(t *testing.T) {
+	t.Parallel()
+	g, site, env, root := loginEnv(t)
+	approve(site, g, hostedToken, "write", loginExpiry)
+	runLogin(t, env, site, loggedIn(g, "read and write", "until 2026-12-26 09:00 UTC"), "--no-browser")
+	g.DisableTokenLookup()
+	with := func(extra ...string) []string { return append(append([]string(nil), env...), extra...) }
+
+	const envToken = "sld_5555555555555555_b2xkLXNlcnZlci10b2tlbi1iZXNpZGUtdGhlLWxvZ2luLXh4eA"
+	g.Grant(envToken, hostedSpace, false)
+	code, stdout, stderr := runCLI(t, "real", with("SLIVINGDOC_TOKEN="+envToken, "SLIVINGDOC_ENDPOINT="+g.URL()), "pull", filepath.Join(root, "same"))
+	if code != 0 || !strings.HasPrefix(stdout, "OK  generation ") ||
+		!strings.Contains(stderr, "space="+hostedSpace) || !strings.Contains(stderr, `from="default login"`) {
+		t.Fatalf("pull on an old server with the default login at its endpoint = exit %d, stdout %q, stderr %s", code, stdout, stderr)
+	}
+	if used := g.Used(); used[envToken] == 0 {
+		t.Fatalf("space requests per token = %v, want the variable's token used", used)
+	}
+
+	other := gatewaytest.Start(t)
+	other.AddSpace(hostedSpace, 1<<20)
+	other.Grant(envToken, hostedSpace, false)
+	other.DisableTokenLookup()
+	code, stdout, stderr = runCLI(t, "real", with("SLIVINGDOC_TOKEN="+envToken, "SLIVINGDOC_ENDPOINT="+other.URL()), "pull", filepath.Join(root, "other"))
+	if code != 1 || strings.TrimSpace(stdout) != "" ||
+		!strings.Contains(stderr, "the default login is for "+g.URL()+", not "+other.URL()) ||
+		!strings.Contains(stderr, "pass the space name as --bucket or SLIVINGDOC_BUCKET") ||
+		strings.Contains(stderr, envToken) || strings.Contains(stderr, hostedToken) {
+		t.Fatalf("pull on an old server with the default login elsewhere = exit %d, stdout %q, stderr %s", code, stdout, stderr)
+	}
+}
+
+// TestScenarioTokenRefusesAnotherSpaceFromTheVariable proves a
+// SLIVINGDOC_BUCKET that names another space than the token's is refused
+// with the fix for the variable.
+func TestScenarioTokenRefusesAnotherSpaceFromTheVariable(t *testing.T) {
+	t.Parallel()
+	g, _, env, root := loginEnv(t)
+	g.AddSpace("other-notes", 1<<20)
+	tokenEnv := append(append([]string(nil), env...),
+		"SLIVINGDOC_TOKEN="+hostedToken, "SLIVINGDOC_ENDPOINT="+g.URL(), "SLIVINGDOC_BUCKET=other-notes")
+	code, stdout, stderr := runCLI(t, "real", tokenEnv, "pull", filepath.Join(root, "named"))
+	if code != 1 || strings.TrimSpace(stdout) != "" ||
+		!strings.Contains(stderr, `the token reaches hosted space "`+hostedSpace+`", not "other-notes" from SLIVINGDOC_BUCKET; unset SLIVINGDOC_BUCKET`) {
+		t.Fatalf("pull with SLIVINGDOC_BUCKET for another space = exit %d, stdout %q, stderr %s", code, stdout, stderr)
+	}
+}

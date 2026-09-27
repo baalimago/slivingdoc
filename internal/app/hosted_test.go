@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -250,31 +251,31 @@ func TestCheckStoreHosted(t *testing.T) {
 		return s
 	}
 
-	if err := checkStore(context.Background(), newStore(t, hostedTestToken), originEnv); err != nil {
+	if err := checkStore(context.Background(), newStore(t, hostedTestToken), config{tokenOrigin: originEnv}); err != nil {
 		t.Fatalf("checkStore with a read-only token = %v, want success without the write probe", err)
 	}
 	if g.Stored("notes") != 0 {
 		t.Fatal("the hosted check wrote to the space")
 	}
 
-	err := checkStore(context.Background(), newStore(t, "sld_unknown"), originEnv)
+	err := checkStore(context.Background(), newStore(t, "sld_unknown"), config{tokenOrigin: originEnv})
 	if err == nil || !strings.Contains(err.Error(), "refused the token") || strings.Contains(err.Error(), "sld_unknown") {
 		t.Fatalf("checkStore with an unknown token = %v, want a redacted token refusal", err)
 	}
-	err = checkStore(context.Background(), newStore(t, "sld_unknown"), originLogin)
+	err = checkStore(context.Background(), newStore(t, "sld_unknown"), config{tokenOrigin: originLogin})
 	if err == nil || !strings.Contains(err.Error(), "refused the stored login") ||
 		!strings.Contains(err.Error(), "run 'slivingdoc login' again") || strings.Contains(err.Error(), "sld_unknown") {
 		t.Fatalf("checkStore with an unknown stored login = %v, want a redacted refusal that says to log in again", err)
 	}
 
 	g.RefuseNext(http.MethodGet, http.StatusNotFound, "not_found")
-	err = checkStore(context.Background(), newStore(t, hostedTestToken), originEnv)
+	err = checkStore(context.Background(), newStore(t, hostedTestToken), config{tokenOrigin: originEnv})
 	if err == nil || !strings.Contains(err.Error(), "INCOMPATIBLE_STORE") {
 		t.Fatalf("checkStore against a server without /v1 = %v, want INCOMPATIBLE_STORE", err)
 	}
 
 	g.RefuseNextWithReason(http.MethodGet, http.StatusTooManyRequests, "rate_limited", "slow_reads")
-	err = checkStore(context.Background(), newStore(t, hostedTestToken), originEnv)
+	err = checkStore(context.Background(), newStore(t, hostedTestToken), config{tokenOrigin: originEnv})
 	if err == nil || !strings.Contains(err.Error(), "hosted storage check failed") || strings.Contains(err.Error(), "INCOMPATIBLE_STORE") {
 		t.Fatalf("checkStore while throttled = %v, want a check failure that is not INCOMPATIBLE_STORE", err)
 	}
@@ -282,7 +283,7 @@ func TestCheckStoreHosted(t *testing.T) {
 
 func TestCheckStoreProbesPlainStores(t *testing.T) {
 	store := &refusingStore{err: storage.ErrTransport}
-	err := checkStore(context.Background(), store, originEnv)
+	err := checkStore(context.Background(), store, config{tokenOrigin: originEnv})
 	if err == nil || !strings.Contains(err.Error(), "S3 compatibility probe failed") {
 		t.Fatalf("checkStore on a plain store = %v, want the probe diagnostic", err)
 	}
@@ -365,7 +366,7 @@ func TestResolveHostedSpaceFallsBackToTheDefaultLogin(t *testing.T) {
 		want     string
 	}{
 		{"same endpoint", g.URL(), ""},
-		{"another endpoint", devEndpoint, "pass the space name as --bucket"},
+		{"another endpoint", devEndpoint, "the default login is for " + devEndpoint + ", not " + g.URL() + "; pass the space name as --bucket"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			dir := strings.TrimPrefix(writeLogins(t, &storedKey{row.endpoint, "notes"}, entry(row.endpoint, "notes", loginToken)), credentials.DirEnv+"=")
@@ -384,8 +385,41 @@ func TestResolveHostedSpaceFallsBackToTheDefaultLogin(t *testing.T) {
 			}
 		})
 	}
-	broken := func() (credentials.Set, error) { return credentials.Set{}, errors.New("malformed credentials file") }
-	if _, err := resolveHostedSpace(context.Background(), cfg, broken); err == nil || !strings.Contains(err.Error(), "cannot supply it: malformed") {
-		t.Fatalf("resolve with a broken file = %v, want the refusal naming it", err)
+	if _, err := resolveHostedSpace(context.Background(), cfg, noLogins); err == nil || !strings.Contains(err.Error(), "no default login names one") {
+		t.Fatalf("resolve without a default login = %v, want the refusal saying so", err)
+	}
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, credentials.FileName), []byte(`{"version":1,"logins":[{"token":"`+loginToken+`"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	broken := func() (credentials.Set, error) {
+		return loadLogins(map[string]string{credentials.DirEnv: dir}, runtime.GOOS)
+	}
+	_, err := resolveHostedSpace(context.Background(), cfg, broken)
+	if err == nil || !errors.Is(err, credentials.ErrMalformed) ||
+		!strings.Contains(err.Error(), "the stored logins cannot supply it: credentials: malformed") ||
+		!strings.Contains(err.Error(), "fix or remove the credentials file, or pass the space name as --bucket") ||
+		strings.Contains(err.Error(), "--storage s3") || strings.Contains(err.Error(), loginToken) {
+		t.Fatalf("resolve with a malformed file = %v, want the redacted fallback refusal matching ErrMalformed", err)
+	}
+}
+
+// TestHostedCheckErrorFollowsTheSpaceSource proves a refused token names
+// the setting its space came from.
+func TestHostedCheckErrorFollowsTheSpaceSource(t *testing.T) {
+	denied := fmt.Errorf("%w: no", storage.ErrAccessDenied)
+	for _, row := range []struct {
+		cfg  config
+		want string
+	}{
+		{config{tokenOrigin: originLogin, bucket: "team", bucketFrom: bucketFromLogin}, "run 'slivingdoc login' again"},
+		{config{tokenOrigin: originEnv, bucket: "team", bucketFrom: bucketFromLogin}, `check SLIVINGDOC_TOKEN, or pass --bucket: the space "team" came from the default login`},
+		{config{tokenOrigin: originEnv, bucket: "team", bucketFrom: bucketFromEnv}, "check SLIVINGDOC_TOKEN and SLIVINGDOC_BUCKET"},
+		{config{tokenOrigin: originEnv, bucket: "team", bucketFrom: bucketFromFlag}, "check SLIVINGDOC_TOKEN and --bucket"},
+	} {
+		if err := hostedCheckError(denied, row.cfg); !strings.Contains(err.Error(), row.want) {
+			t.Fatalf("hostedCheckError(%v) = %v, want it to contain %q", row.cfg.bucketFrom, err, row.want)
+		}
 	}
 }

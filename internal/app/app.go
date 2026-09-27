@@ -366,7 +366,7 @@ func buildService(p process, cfg config) (*Service, config, error) {
 	if err != nil {
 		return nil, config{}, err
 	}
-	if err := checkStore(probeCtx, store, cfg.tokenOrigin); err != nil {
+	if err := checkStore(probeCtx, store, cfg); err != nil {
 		return nil, config{}, err
 	}
 	svc, err := NewService(p.engine, store, cfg.serviceConfig(), p.hooks)
@@ -397,7 +397,7 @@ func resolveHostedSpace(ctx context.Context, cfg config, logins func() (credenti
 	case errors.Is(err, httpstore.ErrTokenLookupUnsupported):
 		return defaultLoginSpace(cfg, logins)
 	case err != nil:
-		return config{}, hostedCheckError(err, cfg.tokenOrigin)
+		return config{}, hostedCheckError(err, cfg)
 	case cfg.bucket == "":
 		cfg.bucket, cfg.bucketFrom = info.Space, bucketFromToken
 		return cfg, nil
@@ -410,19 +410,47 @@ func resolveHostedSpace(ctx context.Context, cfg config, logins func() (credenti
 
 // defaultLoginSpace is the fallback for a server that cannot name the
 // token's space: the default login's space, when that login was issued for
-// the endpoint the token goes to.
+// the endpoint the token goes to. The refusals name what is missing: a
+// readable credentials file, a default login, or one for this endpoint.
 func defaultLoginSpace(cfg config, logins func() (credentials.Set, error)) (config, error) {
-	const refusal = "app: hosted storage cannot name the token's space; pass the space name as --bucket or SLIVINGDOC_BUCKET"
+	const refusal = "app: hosted storage cannot name the token's space"
+	const fix = "pass the space name as --bucket or SLIVINGDOC_BUCKET"
 	set, err := logins()
 	if err != nil {
-		return config{}, fmt.Errorf("%s (the stored logins cannot supply it: %s)", refusal, mcp.Redact(err.Error()))
+		return config{}, fmt.Errorf("%s, and the stored logins cannot supply it: %w; fix or remove the credentials file, or %s",
+			refusal, redactCause(err, credentials.ErrMalformed, credentials.ErrExposed), fix)
 	}
 	def, err := set.Default()
-	if err != nil || def.Endpoint != cfg.endpoint {
-		return config{}, errors.New(refusal)
+	switch {
+	case err != nil:
+		return config{}, fmt.Errorf("%s, and no default login names one; %s", refusal, fix)
+	case def.Endpoint != cfg.endpoint:
+		return config{}, fmt.Errorf("%s, and the default login is for %s, not %s; %s", refusal, def.Endpoint, cfg.endpoint, fix)
 	}
 	cfg.bucket, cfg.bucketFrom = def.Space, bucketFromLogin
 	return cfg, nil
+}
+
+// redactedError is a cause reduced to its redacted text. It unwraps only to
+// the sentinel the cause matched, so errors.Is still classifies it while
+// the raw cause never travels in the chain.
+type redactedError struct {
+	text string
+	kind error
+}
+
+func (e redactedError) Error() string { return e.text }
+func (e redactedError) Unwrap() error { return e.kind }
+
+func redactCause(err error, kinds ...error) error {
+	out := redactedError{text: mcp.Redact(err.Error())}
+	for _, kind := range kinds {
+		if errors.Is(err, kind) {
+			out.kind = kind
+			break
+		}
+	}
+	return out
 }
 
 // spaceMismatch is the refusal for a token that reaches another space than
@@ -450,9 +478,9 @@ type accessChecker interface {
 
 // checkStore proves the store before any request is served: the hosted
 // access check when the store offers one, else the S3 compatibility probe.
-// origin names where a hosted token came from, so a refused token points
-// at the fix that applies: the variable, or logging in again.
-func checkStore(ctx context.Context, store storage.ObjectStore, origin tokenOrigin) error {
+// cfg names where a hosted token and its space came from, so a refused
+// token points at the fix that applies (hostedCheckError).
+func checkStore(ctx context.Context, store storage.ObjectStore, cfg config) error {
 	checker, ok := store.(accessChecker)
 	if !ok {
 		if err := storage.Probe(ctx, store); err != nil {
@@ -463,19 +491,24 @@ func checkStore(ctx context.Context, store storage.ObjectStore, origin tokenOrig
 		return nil
 	}
 	if err := checker.CheckAccess(ctx); err != nil {
-		return hostedCheckError(err, origin)
+		return hostedCheckError(err, cfg)
 	}
 	return nil
 }
 
-// hostedCheckError is the startup refusal for a failed hosted check;
-// origin names where the token came from, so a refused token points at the
-// fix that applies: the variable, or logging in again.
-func hostedCheckError(err error, origin tokenOrigin) error {
+// hostedCheckError is the startup refusal for a failed hosted check. A
+// refused token points at the fix that applies: logging in again for a
+// stored login, else the variable and the setting the space came from.
+func hostedCheckError(err error, cfg config) error {
+	denied := errors.Is(err, storage.ErrAccessDenied)
 	switch {
-	case errors.Is(err, storage.ErrAccessDenied) && origin == originLogin:
+	case denied && cfg.tokenOrigin == originLogin:
 		return fmt.Errorf("app: hosted storage refused the stored login: %s; run 'slivingdoc login' again, or check --bucket", mcp.Redact(err.Error()))
-	case errors.Is(err, storage.ErrAccessDenied):
+	case denied && cfg.bucketFrom == bucketFromLogin:
+		return fmt.Errorf("app: hosted storage refused the token: %s; check SLIVINGDOC_TOKEN, or pass --bucket: the space %q came from the default login", mcp.Redact(err.Error()), cfg.bucket)
+	case denied && cfg.bucketFrom == bucketFromEnv:
+		return fmt.Errorf("app: hosted storage refused the token: %s; check SLIVINGDOC_TOKEN and SLIVINGDOC_BUCKET", mcp.Redact(err.Error()))
+	case denied:
 		return fmt.Errorf("app: hosted storage refused the token: %s; check SLIVINGDOC_TOKEN and --bucket", mcp.Redact(err.Error()))
 	case errors.Is(err, storage.ErrIncompatible):
 		return fmt.Errorf("app: INCOMPATIBLE_STORE: hosted storage check failed: %s", mcp.Redact(err.Error()))

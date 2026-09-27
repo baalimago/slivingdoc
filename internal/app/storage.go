@@ -204,7 +204,7 @@ func resolveStorage(f *Flags, env map[string]string, in storageInputs) (storageS
 	}
 	logins, err := loadLogins(env, in.goos)
 	if err != nil {
-		return storageSelection{}, err
+		return storageSelection{}, fmt.Errorf("%w; fix or remove it, or pass --storage s3", err)
 	}
 	defaulted := false
 	if sel.bucket == "" {
@@ -248,7 +248,7 @@ func resolveStorage(f *Flags, env map[string]string, in storageInputs) (storageS
 
 // loadLogins reads the stored logins. A process whose environment names
 // no configuration directory has none; a file that exists and cannot be
-// read strictly refuses startup, whatever the mode that did not need it.
+// read is an error, which each caller words with its own fix.
 func loadLogins(env map[string]string, goos string) (credentials.Set, error) {
 	file, err := credentials.Locate(func(name string) string { return env[name] }, goos)
 	if errors.Is(err, credentials.ErrNoConfigDir) {
@@ -257,11 +257,7 @@ func loadLogins(env map[string]string, goos string) (credentials.Set, error) {
 	if err != nil {
 		return credentials.Set{}, err
 	}
-	set, err := file.Load()
-	if err != nil {
-		return credentials.Set{}, fmt.Errorf("%w; fix or remove it, or pass --storage s3", err)
-	}
-	return set, nil
+	return file.Load()
 }
 
 // findLogin picks the stored login for space: exactly the explicit

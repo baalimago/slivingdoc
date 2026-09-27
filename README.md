@@ -111,8 +111,10 @@ The token replaces the AWS settings and names the space; `--region` and
 `--path-style` are ignored. Everything else works the same way.
 `SLIVINGDOC_TOKEN` wins over a stored login and alone is enough: with no
 bucket it uses the token's own space, even when you are logged in to
-another one, and it does not read the stored logins at all. A bucket you
-name must be the token's space, or startup is refused. slivingdoc refuses to guess
+another one, and it reads the stored logins only when an older server
+cannot name the token's space and you gave no bucket (it then uses the
+default login's space if that login is for the same endpoint). A bucket
+you name must be the token's space, or startup is refused. slivingdoc refuses to guess
 between S3 and hosted storage: a token next to a setting that names an S3
 host (an `--endpoint` flag, `AWS_ENDPOINT_URL` or `AWS_ENDPOINT_URL_S3`;
 a region, AWS credentials and `~/.aws` files are fine), and a login for a
