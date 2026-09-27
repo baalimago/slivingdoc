@@ -3,25 +3,73 @@ Test coverage: 85.9% 😍👌
 [![slivingdoc banner](img/banner.svg)](https://slivingdoc.dev)
 
 <div align="center">
-  <p>Shared notes for people and agents.</p>
+  <p><strong>Shared notes for your agents.</strong></p>
   <p>
-    Pull and commit through MCP or the CLI. slivingdoc merges
-    non-conflicting concurrent changes and stores the durable notebook in
-    your S3-compatible bucket.
+    Plain text files that many agents and people pull and commit at the
+    same time, with Git-style merges instead of overwrites. Keep them in
+    your own S3-compatible bucket, or let
+    <a href="https://slivingdoc.dev">slivingdoc.dev</a> host them, free to
+    start.
+  </p>
+  <p>
+    <a href="https://slivingdoc.dev">Website</a> ·
+    <a href="https://slivingdoc.dev/docs/">Docs</a> ·
+    <a href="https://slivingdoc.dev/pricing/">Pricing</a> ·
+    <a href="architecture/README.md">Architecture</a>
   </p>
 </div>
 
+<p align="center">
+  <img src="img/demo.gif" width="800" alt="Two agents pull the same notes, edit different sections of plan.md and commit at the same moment. Both commits succeed and a pull shows both edits. Then both add a different line in the same place, and the second commit returns CONTENT_CONFLICT with conflict markers in the file.">
+</p>
+
+## Why
+
+You run several coding agents at once, such as a few Claude Code sessions
+next to Codex, and you want them to share what they learn. A `NOTES.md`
+committed next to the code ends in merge conflicts or lost edits, and a
+memory service keeps the notes where you can't read them. slivingdoc keeps
+the notes as ordinary files that agents edit with the tools they already
+have, and makes writing to them at the same time safe.
+
 ## Features
 
-- **Gitlike semantics:** `slivingdoc` uses terminology we (and agents) all know, designed for ease of use
-- **Merge-safe concurrent writes:** non-conflicting changes merge; overlapping edits return a conflict instead of being overwritten
-- **High speed processing:** the solution is quite simple conceptually, allowing for very high scale and parallelism
-- **Plug-and-play:** setup the bucket, point at it, and start syncing notes!
+- **Merge-safe concurrent writes:** non-conflicting changes merge;
+  overlapping edits return a conflict instead of being overwritten
+- **Plain files:** UTF-8 text in a directory, readable and editable with
+  any editor; no database, no embeddings
+- **Two operations:** `notes_pull` and `notes_commit` over MCP, and the same
+  `pull` and `commit` from the command line
+- **Your bucket or ours:** any S3-compatible bucket that supports
+  conditional writes, or a hosted space at
+  [slivingdoc.dev](https://slivingdoc.dev)
+- **Read-only and writable paths:** let a fleet of agents read instructions
+  it can never change, or confine each agent to its own directory
+- **One binary:** Git merge semantics through a statically linked libgit2;
+  no Git executable, no server to run
 
 [`architecture/`](architecture/README.md) documents the contract behind
 these guarantees, one concern per file.
 
 ## Get started
+
+### Hosted (quickest)
+
+Sign in at [slivingdoc.dev](https://slivingdoc.dev) with GitHub or Google,
+create a token on the Tokens page, and copy the snippet for your client
+(Claude Code, Codex, Claude Desktop, Cursor, or the CLI). For Claude Code:
+
+```sh
+claude mcp add slivingdoc \
+  --env SLIVINGDOC_TOKEN=<your-api-token> \
+  -- npx -y slivingdoc serve
+```
+
+The free tier holds 10 MB of notes and 250,000 requests a month; more costs
+$1 a month per step ([pricing](https://slivingdoc.dev/pricing/)).
+[Hosted storage](#hosted-storage) below has the details.
+
+### Self-hosted, on your own bucket
 
 Connect an MCP host or use the CLI directly:
 
