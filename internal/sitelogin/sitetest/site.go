@@ -604,8 +604,9 @@ func (s *Site) revoke(w http.ResponseWriter, r *http.Request) {
 // requestLimit is the site's bound on a request body.
 const requestLimit = 4 << 10
 
-// jsonOnly enforces what the real site enforces on its POST routes: a JSON
-// content type and a body under requestLimit.
+// jsonOnly enforces a stricter form of the real site's POST rules: exactly
+// the JSON content type and a declared body under requestLimit. Its error
+// codes are its own; the real site answers both refusals invalid_request.
 func jsonOnly(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Content-Type") != "application/json" {
@@ -621,11 +622,12 @@ func jsonOnly(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// decodeStrict decodes a request body as the site does: one JSON object
-// whose keys are among names, spelled exactly (encoding/json alone would
-// match them ignoring case), none of them null, each of v's JSON type, and
-// nothing after it. Anything else is an error, which each route answers
-// with 400 invalid_request.
+// decodeStrict decodes a request body as strictly as the site does, or more:
+// one JSON object whose keys are among names, spelled exactly (encoding/json
+// alone would match them ignoring case), none of them null, each of v's JSON
+// type, and nothing after it. Anything else is an error, which each route
+// answers with 400 invalid_request. The real site is looser in one place: it
+// answers a null or non-string deviceCode with expired_token.
 func decodeStrict(r *http.Request, v any, names ...string) error {
 	data, err := io.ReadAll(r.Body)
 	if err != nil {
