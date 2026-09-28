@@ -14,7 +14,7 @@ Read this when: cutting a release, changing `scripts/release.go`, `release.yml`,
 | `npm/slivingdoc/package.json` | Launcher version (must equal the tag), `mcpName: io.github.baalimago/slivingdoc`, `prepublishOnly` |
 | `npm/slivingdoc/scripts/check-release.mjs` | Publication gate: every required asset, `SHA256SUMS` and `NOTICE` present in the GitHub release |
 | `server.json` | Official MCP Registry card; its versions move with `package.json`. Card edits (description, environment variables) reach the Registry only with the next release |
-| `glama.json` | Claims the Glama directory listing for `baalimago`; Glama reads it from the default branch, not from a release |
+| `glama.json` | Claims the Glama directory listing for `baalimago`; no release job reads it |
 | `scripts/check-release-ref.sh` | Reusable pipeline reference must be an immutable 40-hex SHA |
 | `scripts/make-sha256sums.sh` | Checksum file of the uploaded bytes |
 | `release_test.go` | `TestReleaseWorkflowReference`, `TestMCPRegistryManifest`, `TestMCPRegistryPublishWorkflow`, `TestReleaseChecksumGrammar`, `TestReleaseBinary` |
@@ -65,7 +65,7 @@ push tag v* → .github/workflows/release.yml
 
 ## Gotchas
 
-- `TestMCPRegistryManifest` checks that `server.json` matches `package.json`, and that it declares `SLIVINGDOC_TOKEN` (optional, secret) and `SLIVINGDOC_BUCKET` (optional): either one configures a server, the token for hosted storage and the bucket for S3. `publish-npm` checks that `package.json` matches the tag.
+- `TestMCPRegistryManifest` checks that `server.json` matches `package.json`, and that it declares `SLIVINGDOC_TOKEN` (optional, secret) and `SLIVINGDOC_BUCKET` (optional): neither is required, since the token (or a stored login) selects hosted storage and the bucket selects S3. It also caps the description at 100 characters, the Registry's limit. `publish-npm` checks that `package.json` matches the tag.
 - `release.yml` has `permissions: contents: write` at the top; the publish jobs narrow it to `contents: read` plus `id-token: write`.
 - The pipeline appends `dist/*` to the checksum command; passing `dist` yourself makes `sha256sum` fail on a directory.
 - `tagExists` treats an unreachable origin as "absent" with a warning; the push fails later if the tag does exist remotely.

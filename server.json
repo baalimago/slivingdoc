@@ -30,22 +30,22 @@
       "environmentVariables": [
         {
           "name": "SLIVINGDOC_TOKEN",
-          "description": "API token from slivingdoc.dev for hosted storage; replaces the bucket and AWS settings.",
+          "description": "API token from slivingdoc.dev for hosted storage; use it instead of the bucket and AWS settings, and leave AWS_ENDPOINT_URL_S3 unset.",
           "isRequired": false,
           "isSecret": true,
-          "valueHint": "sld_..."
+          "placeholder": "sld_..."
         },
         {
           "name": "SLIVINGDOC_BUCKET",
           "description": "S3-compatible bucket that stores the shared text workspace. Not needed with SLIVINGDOC_TOKEN, which names its own space.",
           "isRequired": false,
-          "valueHint": "my-notes"
+          "placeholder": "my-notes"
         },
         {
           "name": "AWS_PROFILE",
           "description": "Optional AWS profile used by the standard AWS credential chain.",
           "isRequired": false,
-          "valueHint": "slivingdoc"
+          "placeholder": "slivingdoc"
         },
         {
           "name": "AWS_REGION",
@@ -57,13 +57,13 @@
           "name": "AWS_ENDPOINT_URL_S3",
           "description": "Optional endpoint for an S3-compatible store such as SeaweedFS.",
           "isRequired": false,
-          "valueHint": "http://localhost:8333"
+          "placeholder": "http://localhost:8333"
         },
         {
           "name": "SLIVINGDOC_WORKSPACE_ROOT",
           "description": "Optional root that contains directories agents may pull and commit.",
           "isRequired": false,
-          "valueHint": "/srv/notes"
+          "placeholder": "/srv/notes"
         }
       ],
       "transport": {
