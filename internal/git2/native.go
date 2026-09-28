@@ -528,16 +528,27 @@ func libgit2ImportPack(odb *odbHandle, data []byte) error {
 	return nil
 }
 
+// shallowRecord reports whether a MarkShallow call changed the shallow file.
+type shallowRecord uint8
+
+const (
+	// shallowUnchanged means the boundary was already recorded.
+	shallowUnchanged shallowRecord = iota
+	// shallowRecorded means the boundary was appended and the open handle
+	// must reload its graft table to honor it.
+	shallowRecorded
+)
+
 // libgit2MarkShallow records a commit as a shallow history boundary: its
 // parents can be absent because the checkpoint pack omits pre-checkpoint
 // history. The shallow file lives in the repository git directory, exactly
 // where libgit2 and Git read it. Writing the file does not make the boundary
 // visible to this handle; repository.MarkShallow reopens the repository for
 // that.
-func libgit2MarkShallow(repo *repoHandle, oid git.OID) error {
+func libgit2MarkShallow(repo *repoHandle, oid git.OID) (shallowRecord, error) {
 	dir, err := libgit2RepoPath(repo)
 	if err != nil {
-		return fmt.Errorf("locate git directory: %w", err)
+		return shallowUnchanged, fmt.Errorf("locate git directory: %w", err)
 	}
 	path := filepath.Join(dir, "shallow")
 	line := oid.String() + "\n"
@@ -545,24 +556,24 @@ func libgit2MarkShallow(repo *repoHandle, oid git.OID) error {
 	switch existing, err := os.ReadFile(path); {
 	case err == nil:
 		if bytes.Contains(existing, []byte(line)) {
-			return nil
+			return shallowUnchanged, nil
 		}
 	case !errors.Is(err, fs.ErrNotExist):
-		return fmt.Errorf("read shallow file: %w", err)
+		return shallowUnchanged, fmt.Errorf("read shallow file: %w", err)
 	}
 
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
-		return fmt.Errorf("open shallow file: %w", err)
+		return shallowUnchanged, fmt.Errorf("open shallow file: %w", err)
 	}
 	if _, err := f.WriteString(line); err != nil {
 		f.Close()
-		return fmt.Errorf("write shallow file: %w", err)
+		return shallowUnchanged, fmt.Errorf("write shallow file: %w", err)
 	}
 	if err := f.Close(); err != nil {
-		return fmt.Errorf("close shallow file: %w", err)
+		return shallowUnchanged, fmt.Errorf("close shallow file: %w", err)
 	}
-	return nil
+	return shallowRecorded, nil
 }
 
 func libgit2RepoPath(repo *repoHandle) (string, error) {
@@ -627,4 +638,34 @@ func nativeLookupError(op string, rc C.int) error {
 func nativeError(op string) error {
 	class, message := errorLastFn()
 	return &git.NativeError{Op: op, Class: class, Message: message}
+}
+
+// readShallowBoundaries returns the boundaries recorded in <gitdir>/shallow:
+// the graft table a handle opened now would load. A missing file is an
+// empty table.
+func readShallowBoundaries(repo *repoHandle) (map[git.OID]struct{}, error) {
+	dir, err := libgit2RepoPath(repo)
+	if err != nil {
+		return nil, fmt.Errorf("locate git directory: %w", err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "shallow"))
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return map[git.OID]struct{}{}, nil
+		}
+		return nil, fmt.Errorf("read shallow file: %w", err)
+	}
+	set := map[git.OID]struct{}{}
+	for _, line := range bytes.Split(data, []byte("\n")) {
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 {
+			continue
+		}
+		id, err := git.ParseOID(string(line))
+		if err != nil {
+			return nil, fmt.Errorf("shallow file: %w", err)
+		}
+		set[id] = struct{}{}
+	}
+	return set, nil
 }

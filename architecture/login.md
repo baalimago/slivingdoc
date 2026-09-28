@@ -112,11 +112,12 @@ serve | pull | commit: Flags.resolve → resolveStorage(flags, env, {GOOS, now, 
     token → resolveHostedSpace (httpstore.DescribeToken): no bucket → the token's space (bucketFromToken);
             a bucket the token does not reach → refusal (spaceMismatch)
             ErrTokenLookupUnsupported: a bucket → kept; none → refusal: pass the space name as --space or SLIVINGDOC_SPACE
-  checkStore → hostedCheckError: a refused token's hint follows tokenOrigin, then bucketFrom
+  checkStoreWithProof → checkStore → hostedCheckError: a refused token's hint follows tokenOrigin, then bucketFrom
   every request: Store.request → TokenSource.Token (re-mints once 80 % of the lifetime passed)
                  401 → TokenSource.Rejected → a replayable request is resent once with a newly minted token
   setup order: logStorage (Info "storage selected" backend=s3|hosted endpoint=…[ (AWS_ENDPOINT_URL)] space=… token=none|env|login),
-    engine open, buildService, then Info "hosted space resolved" space=… from=--space|--bucket|SLIVINGDOC_SPACE|SLIVINGDOC_BUCKET|default space|token
+    engine open, buildService, then Info "hosted space resolved" space=… from=--space|--bucket|SLIVINGDOC_SPACE|SLIVINGDOC_BUCKET|default space|token,
+    then logStoreCheck (Debug "hosted store access checked")
 ```
 
 ## Behavior

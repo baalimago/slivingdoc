@@ -27,6 +27,11 @@ type remoteState struct {
 	tree       git.OID
 }
 
+// acceptedState is the remote state of a validated manifest head.
+func acceptedState(m storage.Manifest, etag storage.ETag, tree git.OID) remoteState {
+	return remoteState{manifest: m, etag: etag, present: true, generation: m.Generation, head: m.Head, tree: tree}
+}
+
 // baseline converts the remote state into the accepted baseline P records.
 func (r remoteState) baseline() workspace.Baseline {
 	return workspace.Baseline{RemoteGeneration: r.generation, Head: r.head, Tree: r.tree}
@@ -38,14 +43,51 @@ func emptyRemote() remoteState {
 	return remoteState{present: false, tree: workspace.EmptyTreeID}
 }
 
-// readRemote reads and validates current, downloads only the packs absent
-// from the local byte cache, imports the complete descriptor chain into the
-// private repository, and validates the accepted history and text before
+// importMode selects which descriptor packs importRemote brings into the
+// private repository.
+type importMode uint8
+
+const (
+	// importMissing imports only the packs whose head commit the repository
+	// lacks: a pack import is atomic, so a present head proves its pack
+	// landed whole (architecture/pull.md).
+	importMissing importMode = iota
+	// importAll re-imports every pack from its verified bytes: the repair
+	// for a repository whose objects no longer validate.
+	importAll
+)
+
+// loadMode selects how far readRemote trusts the private repository.
+type loadMode uint8
+
+const (
+	// loadReusing serves a head this workspace already accepted after a
+	// presence check (reuseAccepted); every other head is imported and
+	// validated.
+	loadReusing loadMode = iota
+	// loadStrict always imports the missing packs and validates the whole
+	// accepted history: the recovery path, and the retry after an engine
+	// failure on a reused state.
+	loadStrict
+)
+
+// readRemote reads and validates current, imports the descriptor packs the
+// private repository lacks (downloading only those absent from the local
+// byte cache), and validates the accepted history and text before
 // returning. A stale observation whose referenced pack disappeared is
 // discarded and current is re-read; an unchanged manifest that still
 // references the missing pack is a storage-integrity error
 // (architecture/pull.md). The reader never guesses state from object names.
 func (n *Notebook) readRemote(ctx context.Context) (remoteState, error) {
+	return n.readRemoteMode(ctx, loadReusing)
+}
+
+// readRemoteStrict is readRemote without the reuse of an accepted head.
+func (n *Notebook) readRemoteStrict(ctx context.Context) (remoteState, error) {
+	return n.readRemoteMode(ctx, loadStrict)
+}
+
+func (n *Notebook) readRemoteMode(ctx context.Context, mode loadMode) (remoteState, error) {
 	for restart := 0; ; restart++ {
 		data, etag, present, err := n.readCurrent(ctx)
 		if err != nil {
@@ -59,40 +101,153 @@ func (n *Notebook) readRemote(ctx context.Context) (remoteState, error) {
 			return remoteState{}, storageIntegrity(ReasonManifestInvalid, err, "current is not a valid manifest")
 		}
 
-		if err := n.importRemote(ctx, m); err != nil {
-			if !errors.Is(err, errStaleManifest) {
-				return remoteState{}, err
-			}
-			if restart >= n.retryLimit {
-				return remoteState{}, storageIntegrity(ReasonPackInvalid, nil, "manifest did not stabilize after %d stale reads", restart)
-			}
-			// The referenced pack disappeared during cleanup: re-read
-			// current and restart only when the manifest actually moved.
-			_, newETag, newPresent, rerr := n.readCurrent(ctx)
-			if rerr != nil {
-				return remoteState{}, rerr
-			}
-			if !newPresent || newETag == etag {
-				return remoteState{}, storageIntegrity(ReasonPackInvalid, nil, "manifest references a pack that is missing and unchanged after re-read")
-			}
-			continue
+		st, err := n.loadRemote(ctx, m, etag, mode)
+		if err == nil {
+			return st, nil
 		}
-
-		st := remoteState{manifest: m, etag: etag, present: true, generation: m.Generation, head: m.Head}
-		if err := git.ValidateHistory(n.ws.Repo(), m.Head, m.Checkpoint.Head); err != nil {
-			return remoteState{}, storageIntegrity(ReasonHistoryInvalid, err, "accepted state is incomplete")
+		if !errors.Is(err, errStaleManifest) {
+			return remoteState{}, err
 		}
-		commit, err := n.ws.Repo().ReadCommit(m.Head)
-		if err != nil {
-			return remoteState{}, storageIntegrity(ReasonHistoryInvalid, err, "accepted state %s is unreadable", m.Head)
+		if restart >= n.retryLimit {
+			return remoteState{}, storageIntegrity(ReasonPackInvalid, nil, "manifest did not stabilize after %d stale reads", restart)
 		}
-		if _, err := git.ReadSnapshot(n.ws.Repo(), commit.Tree); err != nil {
-			return remoteState{}, storageIntegrity(ReasonHistoryInvalid, err, "accepted state is not valid notebook text")
+		// The referenced pack disappeared during cleanup: re-read
+		// current and restart only when the manifest actually moved.
+		_, newETag, newPresent, rerr := n.readCurrent(ctx)
+		if rerr != nil {
+			return remoteState{}, rerr
 		}
-		n.recordTail(m)
-		st.tree = commit.Tree
-		return st, nil
+		if !newPresent || newETag == etag {
+			return remoteState{}, storageIntegrity(ReasonPackInvalid, nil, "manifest references a pack that is missing and unchanged after re-read")
+		}
 	}
+}
+
+// loadRemote serves the manifest from the private repository. In
+// loadReusing mode a head this workspace already accepted is reused after a
+// presence check (reuseAccepted); otherwise the packs the repository lacks
+// are imported and the accepted state validated. The repository is a cache
+// the manifest describes, never an authority: objects an earlier call
+// imported can since have been damaged, so a validation failure caused by
+// missing objects re-imports every pack from its verified bytes once before
+// the failure is reported (architecture/pull.md).
+func (n *Notebook) loadRemote(ctx context.Context, m storage.Manifest, etag storage.ETag, mode loadMode) (remoteState, error) {
+	if mode == loadReusing {
+		if st, verdict := n.reuseAccepted(m, etag); verdict == reuseHit {
+			return st, nil
+		}
+	}
+	if err := n.importRemote(ctx, m, importMissing); err != nil {
+		return remoteState{}, err
+	}
+	st, verdict, err := n.validateRemote(m, etag)
+	if verdict != validationObjectsMissing {
+		return st, err
+	}
+	if err := n.importRemote(ctx, m, importAll); err != nil {
+		return remoteState{}, err
+	}
+	st, _, err = n.validateRemote(m, etag)
+	return st, err
+}
+
+// reuseVerdict classifies one reuseAccepted attempt.
+type reuseVerdict uint8
+
+const (
+	// reuseMiss means the head is not the accepted baseline, or the
+	// repository cannot prove it: the caller imports and validates.
+	reuseMiss reuseVerdict = iota
+	// reuseHit means the accepted head was served from the repository.
+	reuseHit
+)
+
+// reuseAccepted serves a manifest whose head this workspace already
+// accepted without importing or walking history: the accepted baseline was
+// validated when it was recorded, and Git objects are immutable, so only
+// presence can have changed. It re-checks the presence of every descriptor
+// head (a pack import is atomic, so a present head proves its pack), the
+// head commit, and that it names the baseline tree. It deliberately does not
+// walk or read the tree: every caller reads the objects it needs, and an
+// engine failure there drives one strict reload that validates and repairs
+// (Notebook.pull, Notebook.commit). Any gap here is a miss that sends the
+// caller to the full import-and-validate path (architecture/pull.md).
+func (n *Notebook) reuseAccepted(m storage.Manifest, etag storage.ETag) (remoteState, reuseVerdict) {
+	base := n.ws.Baseline()
+	if base.Head.IsZero() || base.Head != m.Head {
+		return remoteState{}, reuseMiss
+	}
+	repo := n.ws.Repo()
+	heads := make([]git.OID, 0, 1+len(m.Increments))
+	heads = append(heads, m.Checkpoint.Head)
+	for _, inc := range m.Increments {
+		heads = append(heads, inc.Head)
+	}
+	for _, head := range heads {
+		if present, err := repo.HasObject(head); err != nil || !present {
+			return remoteState{}, reuseMiss
+		}
+	}
+	commit, err := repo.ReadCommit(m.Head)
+	if err != nil || commit.Tree != base.Tree {
+		return remoteState{}, reuseMiss
+	}
+	// The boundary is deliberately not recorded here: only a validated
+	// history proves the manifest's checkpoint head is an ancestor of the
+	// accepted head, and a wrong graft would silently truncate every later
+	// walk. A handle whose graft table predates a boundary another process
+	// wrote therefore keeps walking past it until a strict load reloads the
+	// table, which the commit retry forces (architecture/pull.md).
+	n.recordTail(m)
+	return acceptedState(m, etag, commit.Tree), reuseHit
+}
+
+// validationVerdict classifies a validateRemote failure so loadRemote
+// repairs only what a re-import can fix.
+type validationVerdict uint8
+
+const (
+	// validationOK means the accepted state is complete and valid.
+	validationOK validationVerdict = iota
+	// validationObjectsMissing means a commit, tree, or blob of the accepted
+	// history is absent from or unreadable in the repository
+	// (git.ErrObjectMissing): re-importing the verified packs can repair it.
+	validationObjectsMissing
+	// validationContentInvalid means the head tree is present but is not
+	// valid notebook state; no import changes that.
+	validationContentInvalid
+)
+
+// verdictFor separates the two validation failures the repository can
+// produce: an object it cannot supply (repairable by re-importing the
+// verified packs) from stored state that breaks a notebook content rule,
+// which no import changes. A blob is proven by presence during the history
+// walk and read during the snapshot read, so only the snapshot read meets a
+// present-but-unreadable object.
+func verdictFor(err error) validationVerdict {
+	if errors.Is(err, git.ErrObjectMissing) {
+		return validationObjectsMissing
+	}
+	return validationContentInvalid
+}
+
+// validateRemote proves the imported history from the head down to the
+// shallow boundary and the head tree's text, then returns the remote state.
+func (n *Notebook) validateRemote(m storage.Manifest, etag storage.ETag) (remoteState, validationVerdict, error) {
+	if err := git.ValidateHistory(n.ws.Repo(), m.Head, m.Checkpoint.Head); err != nil {
+		return remoteState{}, verdictFor(err), storageIntegrity(ReasonHistoryInvalid, err, "accepted state is incomplete")
+	}
+	// A head the manifest names that cannot be read is an object failure,
+	// never a content rule: the commit either is not there or is damaged.
+	commit, err := n.ws.Repo().ReadCommit(m.Head)
+	if err != nil {
+		return remoteState{}, validationObjectsMissing, storageIntegrity(ReasonHistoryInvalid, err, "accepted state %s is unreadable", m.Head)
+	}
+	if _, err := git.ReadSnapshot(n.ws.Repo(), commit.Tree); err != nil {
+		return remoteState{}, verdictFor(err), storageIntegrity(ReasonHistoryInvalid, err, "accepted state is not valid notebook text")
+	}
+	n.recordTail(m)
+	return acceptedState(m, etag, commit.Tree), validationOK, nil
 }
 
 // readCurrent reads the authoritative manifest object. ErrNotFound maps to
@@ -114,41 +269,60 @@ func (n *Notebook) readCurrent(ctx context.Context) (data []byte, etag storage.E
 }
 
 // importRemote imports the manifest's descriptor chain: the checkpoint
-// pack, the shallow boundary, and every increment in manifest order. The
-// imports are strictly sequential — the boundary must exist before the
-// tail lands on it — but the downloads behind them overlap through
-// prefetchPacks: S3 has no bulk read, so a long tail fetched serially
-// costs one round-trip latency per generation.
-func (n *Notebook) importRemote(ctx context.Context, m storage.Manifest) error {
+// pack, the shallow boundary, and every increment in manifest order. With
+// importMissing a pack whose head commit the repository already holds is
+// neither fetched nor imported, so an unchanged tail costs one existence
+// check per descriptor instead of one import. The imports are strictly
+// sequential — the boundary must exist before the tail lands on it — but
+// the downloads behind them overlap through prefetchPacks: S3 has no bulk
+// read, so a long tail fetched serially costs one round-trip latency per
+// generation.
+func (n *Notebook) importRemote(ctx context.Context, m storage.Manifest, mode importMode) error {
 	specs := make([]packSpec, 0, 1+len(m.Increments))
 	specs = append(specs, packSpec{
 		key:  m.Checkpoint.Key.String(),
 		sha:  m.Checkpoint.SHA256,
 		size: m.Checkpoint.Size,
+		head: m.Checkpoint.Head,
 	})
 	for _, inc := range m.Increments {
-		specs = append(specs, packSpec{key: inc.Key.String(), sha: inc.SHA256, size: inc.Size})
+		specs = append(specs, packSpec{key: inc.Key.String(), sha: inc.SHA256, size: inc.Size, head: inc.Head})
 	}
-	next, stop := n.prefetchPacks(ctx, specs)
+	wanted := make([]bool, len(specs))
+	var missing []packSpec
+	for i, spec := range specs {
+		if mode == importMissing {
+			present, err := n.ws.Repo().HasObject(spec.head)
+			if err != nil {
+				return storageIntegrity(ReasonEngineFailed, err, "check pack %s", spec.key)
+			}
+			if present {
+				continue
+			}
+		}
+		wanted[i] = true
+		missing = append(missing, spec)
+	}
+	next, stop := n.prefetchPacks(ctx, missing)
 	defer stop()
 
-	data, err := next()
-	if err != nil {
-		return err
-	}
-	if err := git.ImportPack(n.ws.Repo(), data); err != nil {
-		return storageIntegrity(ReasonPackInvalid, err, "import checkpoint pack %s", m.Checkpoint.Key)
-	}
-	if err := git.MarkShallow(n.ws.Repo(), m.Checkpoint.Head); err != nil {
-		return storageIntegrity(ReasonEngineFailed, err, "record checkpoint boundary %s", m.Checkpoint.Head)
-	}
-	for _, inc := range m.Increments {
-		data, err := next()
-		if err != nil {
-			return err
+	for i, spec := range specs {
+		if wanted[i] {
+			data, err := next()
+			if err != nil {
+				return err
+			}
+			if err := git.ImportPack(n.ws.Repo(), data); err != nil {
+				if i == 0 {
+					return storageIntegrity(ReasonPackInvalid, err, "import checkpoint pack %s", spec.key)
+				}
+				return storageIntegrity(ReasonPackInvalid, err, "import increment pack %s", spec.key)
+			}
 		}
-		if err := git.ImportPack(n.ws.Repo(), data); err != nil {
-			return storageIntegrity(ReasonPackInvalid, err, "import increment pack %s", inc.Key)
+		if i == 0 {
+			if err := git.MarkShallow(n.ws.Repo(), m.Checkpoint.Head); err != nil {
+				return storageIntegrity(ReasonEngineFailed, err, "record checkpoint boundary %s", m.Checkpoint.Head)
+			}
 		}
 	}
 	return nil
@@ -181,6 +355,11 @@ type packFetchResult struct {
 // the dispatcher select on it, and next itself returns once the context
 // ends, so no participant can wait on a partner that already left.
 func (n *Notebook) prefetchPacks(ctx context.Context, specs []packSpec) (next func() ([]byte, error), stop func()) {
+	if len(specs) == 0 {
+		return func() ([]byte, error) {
+			return nil, storageIntegrity(ReasonInternal, nil, "no pack was requested")
+		}, func() {}
+	}
 	fctx, cancel := context.WithCancel(ctx)
 	results := make([]chan packFetchResult, len(specs))
 	for i := range results {
@@ -222,12 +401,14 @@ func (n *Notebook) prefetchPacks(ctx context.Context, specs []packSpec) (next fu
 	return next, cancel
 }
 
-// packSpec identifies one pack descriptor: the protocol key and the
-// authoritative SHA-256 and size from the manifest.
+// packSpec identifies one pack descriptor: the protocol key, the
+// authoritative SHA-256 and size from the manifest, and the head commit
+// whose presence proves the pack was imported.
 type packSpec struct {
 	key  string
 	sha  storage.SHA256
 	size uint64
+	head git.OID
 }
 
 // ensurePack returns the exact pack bytes for a descriptor. A cache hit
@@ -354,7 +535,8 @@ func (n *Notebook) lookupPublication(ctx context.Context, id storage.UUID) (bool
 }
 
 // recoverState is the generic recovery path (architecture/guarantees.md): it
-// rereads authoritative current, imports the complete descriptor chain,
+// rereads authoritative current strictly (no reuse of the accepted head, so
+// a damaged repository is repaired), imports the missing descriptor packs,
 // reconstructs the head tree, and applies it to L and P through the
 // workspace. The report states the failed stage, whether remote acceptance
 // is known, and whether resynchronization succeeded. A failed repair leaves
@@ -362,7 +544,7 @@ func (n *Notebook) lookupPublication(ctx context.Context, id storage.UUID) (bool
 // recovery.
 func (n *Notebook) recoverState(ctx context.Context, stage string, accepted RemoteAccepted) (recoveryReport, error) {
 	report := recoveryReport{stage: stage, remoteAccepted: accepted}
-	remote, err := n.readRemote(ctx)
+	remote, err := n.readRemoteStrict(ctx)
 	if err != nil {
 		return report, err
 	}

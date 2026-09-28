@@ -73,8 +73,20 @@ func (n *Notebook) commit(ctx context.Context, message string) (Result, error) {
 	baseTree := n.ws.Baseline().Tree
 	attemptStart := n.now()
 
+	mode := loadReusing
 	for attempt := 1; ; attempt++ {
-		casLost, result, err := n.attemptPublication(ctx, message, baseTree, localTree, attemptStart)
+		casLost, result, err := n.attemptPublication(ctx, message, baseTree, localTree, attemptStart, mode)
+		if err != nil && mode == loadReusing && engineFailed(err) {
+			// An attempt that could have been served from the accepted head
+			// may have met damage the presence sweep cannot see, or a stale
+			// shallow graft table. One strict attempt reloads, validates, and
+			// repairs the repository before the failure is final; it costs one
+			// wasted attempt when the reuse had already missed
+			// (architecture/pull.md).
+			mode = loadStrict
+			attempt--
+			continue
+		}
 		if err != nil {
 			return Result{}, err
 		}
@@ -97,8 +109,8 @@ func (n *Notebook) commit(ctx context.Context, message string) (Result, error) {
 // terminal. result carries the winning attempt's change summary and is
 // meaningful only when casLost is false and err is nil; a lost attempt's
 // summary is discarded with the attempt.
-func (n *Notebook) attemptPublication(ctx context.Context, message string, baseTree, localTree git.OID, attemptStart time.Time) (casLost bool, result Result, err error) {
-	remote, err := n.readRemote(ctx)
+func (n *Notebook) attemptPublication(ctx context.Context, message string, baseTree, localTree git.OID, attemptStart time.Time, mode loadMode) (casLost bool, result Result, err error) {
+	remote, err := n.readRemoteMode(ctx, mode)
 	if err != nil {
 		return false, Result{}, err
 	}
@@ -677,4 +689,12 @@ func newFoldedPairFiles(merged, remote git.Snapshot) []ErrorFile {
 	}
 	slices.SortFunc(files, func(a, b ErrorFile) int { return strings.Compare(a.Path, b.Path) })
 	return files
+}
+
+// engineFailed reports a STORAGE_INTEGRITY/ENGINE_FAILED error: the native
+// engine could not read or build objects, which for a reused accepted state
+// means the private repository, not the remote, may be damaged.
+func engineFailed(err error) bool {
+	var e *Error
+	return errors.As(err, &e) && e.Code == CodeStorageIntegrity && e.Reason == ReasonEngineFailed
 }

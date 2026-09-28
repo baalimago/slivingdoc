@@ -128,6 +128,9 @@ process scenario
 - A `testing.Short()` guard, a Docker-conditional skip, or a second "full gate" command hides coverage; none is allowed.
 - A scenario with an injected store must set `HarnessConfig.Prefix` to the prefix the store was built with (`NewHarness` fails otherwise); `Bucket` defaults to `test-bucket` and `Endpoint` to empty.
 - `HarnessConfig.RetryLimit`, `CheckpointPacks`, `RetainedCheckpts` are pointers because zero is a meaningful value.
+- The stale shallow-graft fix (`internal/git2/shallow_test.go`) stays a unit test on purpose: it needs two live repository handles over one private directory at the same time, which the harness cannot express, because two harnesses over one workspace must not run concurrently (below).
+- `HarnessConfig.PackCacheRoot` empty gives the harness the private per-workspace cache. Production resolves the shared root instead whenever the host has a user cache directory ([config.md](./config.md)), so a scenario that needs the shared directory sets the field; the always-on default itself is proven through the process boundary (`TestScenarioSharedPackCacheReusesStoreProof`) and in `TestLoadConfigSharedPackCache`.
+- `HarnessConfig.WorkspaceRoot` and `PrivateRoot` reopen the roots of an earlier harness, standing in for a new process over existing private state (the repository-repair scenarios in `scenario_import_test.go` and `scenario_pull_test.go`). Two harnesses over one workspace must not run concurrently.
 - `helperMain` needs a per-helper cache dir (`helperCacheEnv`); a shared path leaks private state across tests and counts.
 - The SeaweedFS pin lives in `tests3.Image` and in `.github/workflows/ci.yml`; keep them in sync.
 

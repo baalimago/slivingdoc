@@ -108,9 +108,11 @@ Runtime layout (implemented):
 ```text
 L  visible directory       caller path; UTF-8 text files only
 P  <private-root>/<key>/   state.json, operation.lock, repo/, staging/,
-                           pulled, pack-cache/ (--shared-pack-cache
-                           relocates pack-cache to one identity-keyed dir
-                           under <user-cache-dir>/slivingdoc/pack-cache/)
+                           pulled (pack bytes and the store proof live in
+                           one identity-keyed dir under
+                           <user-cache-dir>/slivingdoc/pack-cache/; pack-cache/
+                           stays in P when there is no user cache dir, or when
+                           that dir is at or below the workspace root)
 R  <bucket>/<prefix>/      current                manifest v1, strict; the only
                                                   accepted-state authority
                            packs/checkpoints/<gen>-<id>.pack   complete state
@@ -296,8 +298,11 @@ line ranges) with a nonzero exit. `commit` requires
    `SLIVINGDOC_TOKEN` or a stored login selects hosted mode (`--storage`,
    architecture/login.md); tests substitute the deterministic fake.
 5. **Probe the store.** `storage.Probe` proves the endpoint honors
-   `If-None-Match`, `If-Match`, and read-after-write. A hosted store runs
-   its `CheckAccess` instead (server description plus a read-only space
+   `If-None-Match`, `If-Match`, and read-after-write. A proof recorded by
+   the same version and store configuration within 24 hours
+   (`probe-ok.json` in the identity's shared pack-cache directory) stands
+   in for it, so only the first process of a store identity probes. A hosted store
+   runs its `CheckAccess` instead (server description plus a read-only space
    check). A failure exits nonzero with a redacted diagnostic **before** any
    transport serves a request.
 6. **Serve.** `mcp.NewServer` registers exactly `notes_pull` and

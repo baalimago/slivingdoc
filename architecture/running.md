@@ -142,7 +142,6 @@ makes the choice explicit ([Choosing the storage](#choosing-the-storage)).
 | Credentials directory             | none                     | `SLIVINGDOC_CONFIG_DIR`           | `<user-config-dir>/slivingdoc` |
 | Workspace root                    | `--workspace-root`       | `SLIVINGDOC_WORKSPACE_ROOT`       | session dir / working dir    |
 | Private state root                | `--private-root`         | `SLIVINGDOC_PRIVATE_ROOT`         | session dir / user cache     |
-| Shared pack cache                 | `--shared-pack-cache`    | `SLIVINGDOC_SHARED_PACK_CACHE`    | `false`                      |
 | CAS retry limit                   | `--commit-retries`       | `SLIVINGDOC_COMMIT_RETRIES`       | `8` (0..100)                 |
 | Checkpoint pack count             | `--checkpoint-packs`     | `SLIVINGDOC_CHECKPOINT_PACKS`     | `256` (minimum 1)            |
 | Retained checkpoints              | `--retained-checkpoints` | `SLIVINGDOC_RETAINED_CHECKPOINTS` | `1` (0..64)                  |
@@ -184,11 +183,8 @@ directory, which you can still open after the process exits.
 
 ### The shared pack cache
 
-By default every workspace keeps its own cache of downloaded pack bytes
-inside its private state, so several agents on one machine each download the
-same packs, and an ephemeral session throws its cache away at shutdown.
-`--shared-pack-cache` moves that cache to one durable directory per
-notebook:
+Downloaded pack bytes are cached in one durable directory per notebook,
+shared by every workspace and every process on the machine:
 
 ```text
 <user-cache-dir>/slivingdoc/pack-cache/<bucket>-<prefix>-<digest>/
@@ -199,15 +195,48 @@ same directory from its own configuration, so agents share downloads with no
 coordination: the first cold pull populates the directory and later pulls by
 any agent read from it. Entries are keyed by SHA-256 and re-verified against
 the authoritative manifest on every read, so a corrupt or foreign entry is
-discarded and re-downloaded, never trusted. Only pack bytes are shared;
-each workspace keeps its own private repository, baseline, and locks.
+discarded and re-downloaded, never trusted. Only pack bytes and the store
+compatibility proof (below) are shared; each workspace keeps its own
+private repository, baseline, and locks.
+
+The same directory records the outcome of the startup compatibility probe
+in `probe-ok.json`. The probe is nine dependent round trips proving a
+property of the endpoint, so a one-shot `pull` or `commit` against a
+distant bucket pays seconds for it on every start. A process reuses a
+record written by the same slivingdoc version for the same endpoint,
+region, bucket, prefix, and addressing mode within the last 24 hours and
+starts without probing; an absent, corrupt, foreign, or expired record
+simply means the probe runs and rewrites it. Remove the file to force a
+probe on the next start. The record does not bind credentials: a
+credential that stopped working is refused by the first request, not at
+startup.
+
+Reusing the record means the endpoint's conditional-write behavior is taken
+on trust for up to 24 hours. An endpoint that silently stops honoring
+`If-Match` inside that window is no longer refused at startup, and a
+publication can be lost instead. A long-lived `serve` process always had
+that exposure, and without a bound, because it probes once and then runs
+for as long as the host keeps it alive; the record gives the one-shot
+commands the same property rather than a new one. Delete `probe-ok.json`
+to force a fresh proof on the next start.
+
+There is no switch. Two hosts fall back to a private `pack-cache/` inside
+each workspace's private state, with a debug log line: one without a
+resolvable user cache directory (no `HOME` and no `XDG_CACHE_HOME`), and a
+workspace root that contains the user cache directory, where the shared
+directory would become notebook content.
 
 Writing into the cache is best-effort: a read-only or full cache directory
 logs a warning and the operation continues. That makes a pre-populated
 read-only cache (for example baked into a container image) work as-is.
 
-The directory names make manual cleanup easy: remove a notebook's directory
-when you are done with it, and the next pull simply re-downloads.
+Two operational notes. Nothing prunes the directory: it grows with every
+publication until a checkpoint makes most entries unreferenced, and the
+names make manual cleanup easy: remove a notebook's directory when you are
+done with it, and the next pull simply re-downloads. And the directory is
+trusted at the level of the user who owns it: pack entries are verified on
+read, but the proof record is not, so on a host where several principals
+share `XDG_CACHE_HOME`, point it somewhere private.
 
 ## Read-only paths
 
@@ -432,7 +461,10 @@ at startup with the `INCOMPATIBLE_STORE` category; when the failure is
 an operational error rather than a missing capability, the diagnostic
 names the underlying reason (for example the S3 `AccessDenied` or
 `InvalidAccessKeyId` error) while the probe key and any secret stay
-redacted. Bucket versioning is not required.
+redacted. Bucket versioning is not required. The proof is recorded in
+the shared pack cache and reused for 24 hours (see
+[the shared pack cache](#the-shared-pack-cache)), so only the first
+process of a store identity pays for the probe.
 
 ## Hosted storage
 

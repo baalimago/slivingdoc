@@ -51,6 +51,12 @@ type HarnessConfig struct {
 	// PackCacheRoot is the shared pack-cache root served to the app; empty
 	// keeps the private per-workspace cache.
 	PackCacheRoot string
+	// WorkspaceRoot and PrivateRoot reuse existing roots instead of fresh
+	// temporary ones, so a scenario can reopen the private state an earlier
+	// harness left behind, as a new process would. Empty creates fresh
+	// roots.
+	WorkspaceRoot string
+	PrivateRoot   string
 	// RetryLimit, CheckpointPacks, and RetainedCheckpoints override the
 	// documented defaults (8, 256, 1). They are pointers because zero is a
 	// documented value of two of them (no retries, no retained generation),
@@ -146,8 +152,14 @@ func NewHarness(t *testing.T, cfg HarnessConfig) *Harness {
 		t.Fatal("a protocol prefix is required for an injected store")
 	}
 
-	workspaceRoot := t.TempDir()
-	privateRoot := t.TempDir()
+	workspaceRoot := cfg.WorkspaceRoot
+	if workspaceRoot == "" {
+		workspaceRoot = t.TempDir()
+	}
+	privateRoot := cfg.PrivateRoot
+	if privateRoot == "" {
+		privateRoot = t.TempDir()
+	}
 	serviceCfg := app.ServiceConfig{
 		Bucket:              bucket,
 		Prefix:              prefix,
@@ -222,6 +234,9 @@ func (h *Harness) Client(name string) *sdk.ClientSession {
 
 // PrivateRoot returns the per-test configured private root.
 func (h *Harness) PrivateRoot() string { return h.privateRoot }
+
+// WorkspaceRoot returns the harness's visible workspace root.
+func (h *Harness) WorkspaceRoot() string { return h.workspaceRoot }
 
 // Path returns the request path below the workspace root.
 func (h *Harness) Path(rel string) string {

@@ -326,7 +326,16 @@ func setup(p process) (*Runtime, error) {
 		return nil, fmt.Errorf("app: open native engine: %w", err)
 	}
 	logger.Debug("native engine open", "pinned", true)
-	svc, resolved, err := buildService(p, cfg)
+	// Logged before the store check: without a shared cache there is no
+	// recorded proof, which is what explains a probe on every start — and a
+	// refused check returns before this point.
+	switch cfg.packCache {
+	case packCacheNoUserDir:
+		logger.Debug("shared pack cache unavailable", "reason", "no user cache directory")
+	case packCacheBelowWorkspace:
+		logger.Debug("shared pack cache unavailable", "reason", "pack cache directory is at or below the workspace root")
+	}
+	svc, resolved, check, err := buildService(p, cfg)
 	if err != nil {
 		p.engine.Close()
 		removeSessionDir(cfg.sessionDir)
@@ -335,6 +344,7 @@ func setup(p process) (*Runtime, error) {
 	if resolved.hosted() {
 		logger.Info("hosted space resolved", "space", resolved.bucket, "from", resolved.bucketFrom.String())
 	}
+	logStoreCheck(logger, check)
 	return &Runtime{p: p, svc: svc, cfg: resolved, base: base, logger: logger}, nil
 }
 
@@ -350,10 +360,12 @@ func run(p process) error {
 }
 
 // buildService resolves the hosted space, constructs the S3 or hosted
-// store, runs the startup check, and wires the notebook service. It returns
-// the configuration with the resolved space. Any failure is a startup
-// refusal: no transport runs and no operation is accepted.
-func buildService(p process, cfg config) (*Service, config, error) {
+// store, runs the startup check (or reuses a recorded proof of it,
+// architecture/storage.md), and wires the notebook service. It returns the
+// configuration with the resolved space and how the store was checked. Any
+// failure is a startup refusal: no transport runs and no operation is
+// accepted.
+func buildService(p process, cfg config) (*Service, config, storeCheckReport, error) {
 	storeFactory := p.storeFactory
 	if storeFactory == nil {
 		storeFactory = realStoreFactory
@@ -366,30 +378,52 @@ func buildService(p process, cfg config) (*Service, config, error) {
 		// name it (mintedTokens), so no GET /v1/token is needed.
 		tokens, err := newMintedTokens(*cfg.login, cfg.bucket, p.siteClient, p.now)
 		if err != nil {
-			return nil, config{}, fmt.Errorf("app: %s", mcp.Redact(err.Error()))
+			return nil, config{}, storeCheckReport{}, fmt.Errorf("app: %s", mcp.Redact(err.Error()))
 		}
 		if _, err := tokens.Token(probeCtx); err != nil {
-			return nil, config{}, mintRefusal(err, cfg)
+			return nil, config{}, storeCheckReport{}, mintRefusal(err, cfg)
 		}
 		cfg.tokens = tokens
 	case cfg.hosted():
 		var err error
 		if cfg, err = resolveHostedSpace(probeCtx, cfg); err != nil {
-			return nil, config{}, err
+			return nil, config{}, storeCheckReport{}, err
 		}
 	}
 	store, err := storeFactory(context.Background(), cfg)
 	if err != nil {
-		return nil, config{}, err
+		return nil, config{}, storeCheckReport{}, err
 	}
-	if err := checkStore(probeCtx, store, cfg); err != nil {
-		return nil, config{}, err
+	check, err := checkStoreWithProof(probeCtx, store, cfg, cfg.probeProofs(time.Now))
+	if err != nil {
+		return nil, config{}, check, err
 	}
 	svc, err := NewService(p.engine, store, cfg.serviceConfig(), p.hooks)
 	if err != nil {
-		return nil, config{}, err
+		return nil, config{}, check, err
 	}
-	return svc, cfg, nil
+	return svc, cfg, check, nil
+}
+
+// logStoreCheck records how startup satisfied itself about the store. A
+// proof that could not be written is the one warning: the probe ran, so
+// nothing is unproven, but the next process pays for it again.
+func logStoreCheck(logger *slog.Logger, r storeCheckReport) {
+	switch r.outcome {
+	case storeProofReused:
+		logger.Debug("store compatibility proof reused", "probedAt", r.probedAt.UTC().Format(time.RFC3339))
+	case storeAccessChecked:
+		logger.Debug("hosted store access checked")
+	default:
+		if r.proofErr != nil {
+			logger.Debug("store compatibility probed", "proof", r.proofErr.Error())
+		} else {
+			logger.Debug("store compatibility probed")
+		}
+		if r.recordErr != nil {
+			logger.Warn("store compatibility proof write failed", "error", r.recordErr.Error())
+		}
+	}
 }
 
 // resolveHostedSpace asks the hosted API which space the SLIVINGDOC_TOKEN

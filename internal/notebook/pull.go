@@ -31,14 +31,28 @@ func (n *Notebook) Pull(ctx context.Context) (Result, error) {
 	return n.pull(ctx)
 }
 
-// pull is Pull under the held operation lock.
+// pull is Pull under the held operation lock. An attempt that could have
+// been served from the accepted head and then failed in the engine may have
+// met damage the presence sweep cannot see, or a stale shallow graft table,
+// so one strict attempt reloads, validates and repairs before the failure is
+// final (architecture/pull.md). Every engine failure below precedes any
+// local mutation; a failure after it is RECOVERY_FAILURE, which engineFailed
+// does not match, so no retry can run over a half-written L.
 func (n *Notebook) pull(ctx context.Context) (Result, error) {
 	if n.ws.RecoveryRequired() {
 		if err := n.entryRecovery(ctx); err != nil {
 			return Result{}, err
 		}
 	}
+	res, err := n.pullAttempt(ctx, loadReusing)
+	if err != nil && engineFailed(err) {
+		return n.pullAttempt(ctx, loadStrict)
+	}
+	return res, err
+}
 
+// pullAttempt is one pull against a remote state loaded in the given mode.
+func (n *Notebook) pullAttempt(ctx context.Context, mode loadMode) (Result, error) {
 	local, err := n.ws.Snapshot(ctx)
 	if err != nil {
 		return Result{}, n.mapLocalError(err)
@@ -48,7 +62,7 @@ func (n *Notebook) pull(ctx context.Context) (Result, error) {
 		return Result{}, invalidRequest(ReasonInvalidContent, err, nil, "visible files cannot be represented as notebook state")
 	}
 
-	remote, err := n.readRemote(ctx)
+	remote, err := n.readRemoteMode(ctx, mode)
 	if err != nil {
 		return Result{}, err
 	}

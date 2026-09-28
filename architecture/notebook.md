@@ -10,8 +10,8 @@ Read this when: wiring a notebook, changing a default or range, adding a metric,
 |------|---------|
 | `internal/notebook/notebook.go` | `Workspace` (consumer-owned interface), `Config`, `New`, `Notebook`, defaults and ranges, `ValidateMessage`, `holdWorkspace`, `entryRecovery`, `applyLocal`, `failAfterAccept`, `mapLocalError`, `rejectMarkers`, `materializeTree`, stage constants |
 | `internal/notebook/pull.go` | `Pull`, `pinProtected`. See [pull.md](./pull.md) |
-| `internal/notebook/commit.go` | `Commit`, `attemptPublication`, `buildProposal`, `publish`, `enforcePolicy`. See [commit.md](./commit.md) |
-| `internal/notebook/remote.go` | `remoteState`, `readRemote`, `readCurrent`, `importRemote`, `prefetchPacks`, `ensurePack`, `cacheRead`, `cacheWrite`, `lookupPublication`, `recoverState` |
+| `internal/notebook/commit.go` | `Commit`, `attemptPublication`, `buildProposal`, `publish`, `enforcePolicy`. See [commit.md](./commit.md) , `engineFailed` |
+| `internal/notebook/remote.go` | `remoteState`, `acceptedState`, `readRemote`, `readRemoteStrict`, `loadMode`, `readCurrent`, `loadRemote`, `reuseAccepted` (`reuseVerdict`), `validateRemote` (`validationVerdict`, `verdictFor`), `importRemote` (`importMode`), `prefetchPacks`, `ensurePack`, `cacheRead`, `cacheWrite`, `lookupPublication`, `recoverState` |
 | `internal/notebook/checkpoint.go` | `runCheckpoint`, `compactManifest`, `cleanup`, `cleanupRoots`, `recordTail`. See [checkpoints.md](./checkpoints.md) |
 | `internal/notebook/result.go` | `Result{Generation, Stat}`, `diffStat` |
 | `internal/notebook/metrics.go` | `Metrics`: atomic counters and gauges |
@@ -33,11 +33,15 @@ app.Service.notebookFor(path)
 Notebook.Pull(ctx)   → see pull.md
 Notebook.Commit(ctx, message) → see commit.md
   both: RecoveryRequired()? → entryRecovery → recoverState → RECOVERY_FAILURE (stage entry)
-        readRemote → readCurrent → storage.DecodeManifest → importRemote
+        readRemote → readCurrent → storage.DecodeManifest → loadRemote
+          reuseAccepted (head == baseline head): HasObject(each descriptor head)
+                     → ReadCommit(head) == baseline tree → git.ReadSnapshot(head tree) → done
+          else importRemote(importMissing): HasObject(head) per descriptor
                      → prefetchPacks → ensurePack (cache or ReadObject, verify)
                      → git.ImportPack(checkpoint) → git.MarkShallow(checkpoint head)
                      → git.ImportPack(each increment)
-                     → git.ValidateHistory → ReadCommit(head) → git.ReadSnapshot(head tree)
+               validateRemote: git.ValidateHistory → ReadCommit(head) → git.ReadSnapshot(head tree)
+                     → only when objects are missing: importRemote(importAll), validateRemote again
 ```
 
 ## Behavior
@@ -65,7 +69,7 @@ Notebook.Commit(ctx, message) → see commit.md
 
 ### Remote read (`remote.go`)
 
-- `readRemote` is the only way the notebook learns R. It reads `current` (absent means the implicit generation-0 state: `emptyRemote`, canonical empty tree, no head), strictly decodes it, imports the checkpoint pack, marks the checkpoint head shallow, imports every increment in manifest order, validates history from `m.Head` down to the shallow boundary, and proves the head tree is valid notebook text before returning. It also updates the tail metrics (`recordTail`). Every call re-imports the checkpoint and every active increment into the private repository; the byte cache only skips the download (see [pull.md](./pull.md)).
+- `readRemote` is the only way the notebook learns R. It reads `current` (absent means the implicit generation-0 state: `emptyRemote`, canonical empty tree, no head), strictly decodes it, and either reuses a head this workspace already accepted after a presence check of every descriptor head and of the head tree (`reuseAccepted`, no history walk), or imports the checkpoint pack and every increment whose head commit the private repository lacks (in manifest order, marking the checkpoint head shallow after the checkpoint step), validates history from `m.Head` down to the shallow boundary, and proves the head tree is valid notebook text before returning. It also updates the tail metrics (`recordTail`). A present head commit stands for its whole pack, so an unchanged tail imports nothing; a validation failure re-imports every pack once from verified bytes before it is reported (see [pull.md](./pull.md)).
 - A referenced pack that returns `ErrNotFound` yields `errStaleManifest`: the reader rereads `current` and restarts only if the ETag changed; an unchanged manifest is `STORAGE_INTEGRITY`/`PACK_INVALID`. Restarts are bounded by `retryLimit`.
 - Pack bytes come from the byte cache when the file named by the SHA-256 has the right size and a fresh SHA-256 match (`cacheRead`; a mismatch deletes the entry). Otherwise they are downloaded, checked against descriptor size and SHA-256, and cached through temp file + rename (`cacheWrite`). A cache write failure is only a warning.
 - `prefetchPacks` runs up to 16 downloads ahead of the sequential importer; `next()` yields packs in manifest order and every participant honors cancellation.
@@ -100,7 +104,7 @@ The notebook never takes a logger at construction. `WithLogger` attaches a logge
 ## Gotchas
 
 - Checkpoint and cleanup run synchronously inside the `Commit` call that triggered them (not in a goroutine), so the commit's latency includes them even though their outcome cannot change its result.
-- `readRemote` re-imports every active pack on each call (pull, every commit attempt, checkpoint reread), so its cost grows with the tail length until a checkpoint compacts it. Imported objects are harmless cache, never state, even when the caller later fails.
+- `readRemote` imports only absent packs and validates the whole history only when the head moved (pull, commit attempt, checkpoint reread), so that cost grows with the tail length until a checkpoint compacts it; an unchanged head costs a presence sweep. Imported objects are harmless cache, never state, even when the caller later fails; a damaged repository is healed by the one-time full re-import inside `loadRemote`, by `commit`'s strict retry after an engine failure on a reused state, and by `recoverState`, which always loads strictly (`readRemoteStrict`).
 - The notebook has no lock of its own: `Pull` and `Commit` hold the workspace operation lock for the whole operation (`holdWorkspace` over `Workspace.Hold`) and pass the held context to every workspace call; see [workspace.md](./workspace.md). `holdWorkspace` maps a failure to take the lock through `mapLocalError`, so a closed workspace, a lock-file error, or a lock wait ended by cancellation or a deadline is `STORAGE_FAILURE`/`LOCAL_STATE` before anything changed.
 
 ## Related

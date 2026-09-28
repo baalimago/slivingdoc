@@ -12,7 +12,10 @@ import (
 var (
 	// ErrNoNewObjects reports an increment export with nothing to publish.
 	ErrNoNewObjects = errors.New("no new objects")
-	// ErrObjectMissing reports notebook content absent from the local store.
+	// ErrObjectMissing reports notebook content the local object store
+	// cannot supply: absent, or present but unreadable. Both are repaired by
+	// re-importing the verified packs that carry it, so every failed object
+	// read in this package carries it (architecture/pull.md).
 	ErrObjectMissing = errors.New("object missing from the object store")
 	// ErrEmptyPack reports an import of zero bytes.
 	ErrEmptyPack = errors.New("empty pack")
@@ -30,4 +33,15 @@ type UnsupportedModeError struct {
 
 func (e *UnsupportedModeError) Error() string {
 	return fmt.Sprintf("unsupported file mode %o for %q", uint32(e.Mode), e.Name)
+}
+
+// unreadable marks a failed object read with ErrObjectMissing so a caller
+// can tell a recoverable store failure from a content rule the stored state
+// breaks. An engine that already classified the read (git2's ENOTFOUND) is
+// not annotated twice.
+func unreadable(err error, format string, args ...any) error {
+	if errors.Is(err, ErrObjectMissing) {
+		return fmt.Errorf(format+": %w", append(args, err)...)
+	}
+	return fmt.Errorf(format+": %w: %w", append(args, ErrObjectMissing, err)...)
 }

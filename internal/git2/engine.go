@@ -107,7 +107,13 @@ func newRepository(e *engine, handle *repoHandle) (*repository, error) {
 	if err != nil {
 		return nil, fmt.Errorf("git2: open object database: %w", err)
 	}
-	return &repository{engine: e, handle: handle, odb: odb}, nil
+	grafts, err := readShallowBoundaries(handle)
+	if err != nil {
+		odb.free()
+		handle.free()
+		return nil, fmt.Errorf("git2: read shallow boundaries: %w", err)
+	}
+	return &repository{engine: e, handle: handle, odb: odb, grafts: grafts}, nil
 }
 
 // attachODB takes ownership of handle: it frees it when the database fails.
@@ -126,6 +132,10 @@ type repository struct {
 	handle *repoHandle
 	odb    *odbHandle
 	closed bool
+	// grafts is the shallow boundary table the current handle loaded, at
+	// open or at its last reload. A boundary recorded in the file by another
+	// handle is honored only after a reload (architecture/git-engine.md).
+	grafts map[git.OID]struct{}
 }
 
 func (r *repository) WriteBlob(data []byte) (git.OID, error) {
@@ -236,8 +246,12 @@ func (r *repository) MarkShallow(oid git.OID) error {
 	if err := r.usable(); err != nil {
 		return fmt.Errorf("git2: mark shallow: %w", err)
 	}
-	if err := markShallowFn(r.handle, oid); err != nil {
+	rec, err := markShallowFn(r.handle, oid)
+	if err != nil {
 		return fmt.Errorf("git2: mark shallow: write boundary: %w", err)
+	}
+	if _, loaded := r.grafts[oid]; rec == shallowUnchanged && loaded {
+		return nil
 	}
 	if err := r.reloadShallowGrafts(); err != nil {
 		return fmt.Errorf("git2: mark shallow: %w", err)
@@ -246,7 +260,9 @@ func (r *repository) MarkShallow(oid git.OID) error {
 }
 
 // libgit2 loads the shallow graft table only when a repository is opened, so
-// a handle that outlives the boundary it wrote keeps walking past it.
+// a handle that outlives a boundary written after it opened — by itself or
+// by another process sharing the repository — keeps walking past it. The
+// reopen is skipped only for a boundary this handle has already loaded.
 func (r *repository) reloadShallowGrafts() error {
 	path, err := libgit2RepoPath(r.handle)
 	if err != nil {
@@ -260,9 +276,15 @@ func (r *repository) reloadShallowGrafts() error {
 	if err != nil {
 		return fmt.Errorf("reload shallow grafts: open object database: %w", err)
 	}
+	grafts, err := readShallowBoundaries(handle)
+	if err != nil {
+		odb.free()
+		handle.free()
+		return fmt.Errorf("reload shallow grafts: %w", err)
+	}
 	r.odb.free()
 	r.handle.free()
-	r.handle, r.odb = handle, odb
+	r.handle, r.odb, r.grafts = handle, odb, grafts
 	return nil
 }
 
