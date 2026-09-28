@@ -170,9 +170,16 @@ var slivingdocEnv = map[string]bool{
 	"SLIVINGDOC_LOG_TIMESTAMP": true,
 	// A token would point the released binary at the hosted API instead of
 	// refusing, which is the opposite of what these tests assert.
-	"SLIVINGDOC_TOKEN": true, "SLIVINGDOC_ENDPOINT": true,
+	"SLIVINGDOC_TOKEN": true, "SLIVINGDOC_ENDPOINT": true, "SLIVINGDOC_STORAGE": true,
+	"SLIVINGDOC_SITE": true, "SLIVINGDOC_CONFIG_DIR": true, "SLIVINGDOC_SPACE": true,
 	"NO_COLOR": true, "LOG_LEVEL": true,
 }
+
+// releaseConfigDir is the credentials directory of every spawned binary:
+// an empty directory TestMain creates for this run and removes after it,
+// so a developer's own 'slivingdoc login' never reaches the release checks
+// (architecture/login.md).
+var releaseConfigDir string
 
 // sanitizedEnv is the ambient environment without any slivingdoc
 // configuration. Everything else is preserved, because the same spawner
@@ -187,7 +194,7 @@ func sanitizedEnv() []string {
 		}
 		out = append(out, kv)
 	}
-	return out
+	return append(out, "SLIVINGDOC_CONFIG_DIR="+releaseConfigDir)
 }
 
 // startAndWait runs name with args and collects its streams and exit code.
@@ -531,7 +538,14 @@ func TestReleaseBinaryCommandSurface(t *testing.T) {
 }
 
 func TestMain(m *testing.M) {
+	dir, err := os.MkdirTemp("", "slivingdoc-release-config-")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "create the release credentials directory: %v\n", err)
+		os.Exit(1)
+	}
+	releaseConfigDir = dir
 	code := m.Run()
+	_ = os.RemoveAll(releaseConfigDir)
 	if releaseBinaryDir != "" {
 		_ = os.RemoveAll(releaseBinaryDir)
 	}

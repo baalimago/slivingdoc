@@ -1,8 +1,8 @@
 # Local SeaweedFS for manual slivingdoc evaluation
 #
 # This environment is for humans only. Automated tests start their own
-# S3-compatible containers through testcontainers (internal/tests3) and never
-# read this file; no test depends on this environment running.
+# S3-compatible container through the Docker Engine API (internal/tests3) and
+# never read this file; no test depends on this environment running.
 #
 #   docker compose up -d
 #   docker compose down          # stop

@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -14,6 +17,7 @@ import (
 
 	"github.com/baalimago/slivingdoc/internal/app"
 	"github.com/baalimago/slivingdoc/internal/cli"
+	"github.com/baalimago/slivingdoc/internal/credentials"
 	"github.com/baalimago/slivingdoc/internal/git2"
 	"github.com/baalimago/slivingdoc/internal/storage"
 	"github.com/baalimago/slivingdoc/internal/storage/fake"
@@ -37,8 +41,29 @@ func TestMain(m *testing.M) {
 		fmt.Fprintf(os.Stderr, "s3 integration unavailable: %v\nDocker is required to run this suite; start the daemon and re-run.\n", err)
 		os.Exit(1)
 	}
+	// Every scenario and helper works in temporary directories. On a memory
+	// filesystem their fsyncs and the creation and removal of the private
+	// repositories cost no disk I/O; nothing a scenario asserts depends on
+	// the disk (architecture/testing.md, Scratch on a memory filesystem).
+	// An explicit TMPDIR wins, and without a fitting memory filesystem the
+	// suite keeps the default.
+	scratch := ""
+	if _, set := os.LookupEnv("TMPDIR"); !set {
+		dir, err := memoryScratch()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "integrationtest: %v; using the default temporary directory\n", err)
+		} else if err := os.Setenv("TMPDIR", dir); err != nil {
+			fmt.Fprintf(os.Stderr, "integrationtest: set TMPDIR: %v\n", err)
+			os.Exit(1)
+		} else {
+			scratch = dir
+		}
+	}
 	code := m.Run()
 	tests3.Terminate()
+	if scratch != "" {
+		_ = os.RemoveAll(scratch)
+	}
 	os.Exit(code)
 }
 
@@ -57,6 +82,37 @@ func helperMain(mode string) int {
 		Stdout:   os.Stdout,
 		Stderr:   os.Stderr,
 		Signals:  make(chan os.Signal, 1), // the helper never receives OS signals
+		// No scenario ever starts a browser: a failing opener proves that
+		// the login treats a missing browser as non-fatal.
+		OpenBrowser: func(string) error { return errors.New("no browser in the integration helper") },
+		// The login poll waits a hundredth of what the site asks for, so a
+		// slow_down (five more seconds) costs 50 ms; the sitelogin unit
+		// tests pin the exact durations.
+		Sleep: func(ctx context.Context, d time.Duration) error {
+			timer := time.NewTimer(d / 100)
+			defer timer.Stop()
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-timer.C:
+				return nil
+			}
+		},
+	}
+	// A scenario that interrupts a login asks for the operating system's
+	// signals instead of the channel nothing feeds.
+	if os.Getenv(helperSignalsEnv) != "" {
+		opts.Signals = nil
+	}
+	// A scenario of the default site routes its requests to a reference
+	// site that answers with the default site's addresses.
+	if to := os.Getenv(helperSiteRouteEnv); to != "" {
+		target, err := url.Parse(to)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "slivingdoc: bad integration site route:", err)
+			return 2
+		}
+		opts.SiteClient = routedSite{to: target}
 	}
 	switch mode {
 	case "fake":
@@ -91,6 +147,27 @@ func mustGetwd() string {
 		return ""
 	}
 	return dir
+}
+
+// helperSignalsEnv makes the helper take the operating system's
+// termination signals; helperSiteRouteEnv sends the requests for any site
+// to the reference site at its URL.
+const (
+	helperSignalsEnv   = "SLIVINGDOC_INTEGRATION_OS_SIGNALS"
+	helperSiteRouteEnv = "SLIVINGDOC_INTEGRATION_SITE_ROUTE"
+)
+
+// routedSite sends a login request to the reference site whatever origin
+// it names, and never follows a redirect, like the real site client.
+type routedSite struct {
+	to *url.URL
+}
+
+func (r routedSite) Do(req *http.Request) (*http.Response, error) {
+	out := req.Clone(req.Context())
+	out.URL.Scheme, out.URL.Host, out.Host = r.to.Scheme, r.to.Host, ""
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	return client.Do(out)
 }
 
 // helperCacheEnv carries the per-helper user-cache directory to the spawned
@@ -155,6 +232,13 @@ func spawnHelperIn(t *testing.T, dir, mode string, extraEnv []string, args ...st
 		"SLIVINGDOC_PREFIX=integration-prefix",
 		"SLIVINGDOC_WORKSPACE_ROOT="+workspaceRoot,
 		"SLIVINGDOC_PRIVATE_ROOT="+privateRoot,
+		// An empty credentials directory of its own: a developer's
+		// 'slivingdoc login' never turns a scenario hosted
+		// (architecture/login.md). Login scenarios pass their own.
+		credentials.DirEnv+"="+t.TempDir(),
+		// An empty home: a developer's ~/.aws files are an S3 signal that
+		// would turn a hosted scenario into an ambiguity refusal.
+		"HOME="+t.TempDir(),
 	)
 	env = overrideEnv(env, extraEnv)
 	// The race runtime sleeps atexit_sleep_ms (default 1 s) on every clean
@@ -216,7 +300,9 @@ func overrideEnv(env, overrides []string) []string {
 }
 
 // sanitizedEnv returns the test process environment without AWS credential
-// and endpoint variables or a hosted API token, so a spawned helper can
+// and endpoint variables, a hosted API token, a storage, site or
+// credentials-directory choice, or HOME (the helper gets an empty one), so a
+// spawned helper can
 // never observe the developer's cloud configuration. It also drops
 // NO_COLOR: terminal-colour scenarios model their own environment and must
 // not inherit a user's output preference.
@@ -228,9 +314,14 @@ func sanitizedEnv() []string {
 		case "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
 			"AWS_PROFILE", "AWS_DEFAULT_REGION", "AWS_REGION", "AWS_ENDPOINT_URL_S3",
 			"AWS_ENDPOINT_URL", "AWS_CA_BUNDLE", "AWS_SHARED_CREDENTIALS_FILE",
-			"AWS_CONFIG_FILE", "SLIVINGDOC_BUCKET", "SLIVINGDOC_PREFIX",
+			"AWS_CONFIG_FILE", "AWS_ROLE_ARN", "AWS_WEB_IDENTITY_TOKEN_FILE",
+			"SLIVINGDOC_PATH_STYLE", "SLIVINGDOC_BUCKET", "SLIVINGDOC_SPACE", "SLIVINGDOC_PREFIX",
 			"SLIVINGDOC_WORKSPACE_ROOT", "SLIVINGDOC_PRIVATE_ROOT",
-			"SLIVINGDOC_TOKEN", "SLIVINGDOC_ENDPOINT", "NO_COLOR":
+			"SLIVINGDOC_TOKEN", "SLIVINGDOC_ENDPOINT",
+			"SLIVINGDOC_STORAGE", "SLIVINGDOC_SITE", credentials.DirEnv, "NO_COLOR", "HOME":
+			continue
+		}
+		if strings.HasPrefix(name, "AWS_CONTAINER_CREDENTIALS_") {
 			continue
 		}
 		out = append(out, kv)

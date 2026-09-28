@@ -131,7 +131,7 @@ func TestCheckStoreWithProof(t *testing.T) {
 	proofs := probeProofStore{dir: filepath.Join(t.TempDir(), "identity"), version: Version, store: testStore, now: func() time.Time { return at }}
 
 	store := fake.New("")
-	report, err := checkStoreWithProof(context.Background(), store, proofs)
+	report, err := checkStoreWithProof(context.Background(), store, config{}, proofs)
 	if err != nil || report.outcome != storeProbed || report.recordErr != nil {
 		t.Fatalf("first check = %+v, %v; want a recorded probe", report, err)
 	}
@@ -140,7 +140,7 @@ func TestCheckStoreWithProof(t *testing.T) {
 	}
 
 	store = fake.New("")
-	report, err = checkStoreWithProof(context.Background(), store, proofs)
+	report, err = checkStoreWithProof(context.Background(), store, config{}, proofs)
 	if err != nil || report.outcome != storeProofReused || !report.probedAt.Equal(at) {
 		t.Fatalf("second check = %+v, %v; want the reused proof", report, err)
 	}
@@ -149,7 +149,7 @@ func TestCheckStoreWithProof(t *testing.T) {
 	}
 
 	failing := probeProofStore{dir: filepath.Join(t.TempDir(), "other"), version: Version, store: testStore, now: func() time.Time { return at }}
-	report, err = checkStoreWithProof(context.Background(), &refusingStore{err: storage.ErrTransport}, failing)
+	report, err = checkStoreWithProof(context.Background(), &refusingStore{err: storage.ErrTransport}, config{}, failing)
 	if err == nil || report.outcome != storeProbed {
 		t.Fatalf("failing probe = %+v, %v; want the probe refusal", report, err)
 	}

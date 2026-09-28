@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
@@ -53,6 +54,7 @@ type Gateway struct {
 	hooks    []hook
 	pageSize int
 	requests int
+	used     map[string]int
 	// noTokenLookup makes GET /v1/token unknown, like a server that
 	// predates it.
 	noTokenLookup bool
@@ -85,7 +87,7 @@ type hook struct {
 // Start runs a gateway for the test and stops it at cleanup.
 func Start(t testing.TB) *Gateway {
 	t.Helper()
-	g := &Gateway{spaces: map[string]*space{}, grants: map[string]grant{}, pageSize: 1000}
+	g := &Gateway{spaces: map[string]*space{}, grants: map[string]grant{}, used: map[string]int{}, pageSize: 1000}
 	g.srv = httptest.NewServer(http.HandlerFunc(g.serve))
 	t.Cleanup(g.srv.Close)
 	return g
@@ -106,6 +108,14 @@ func (g *Gateway) Grant(token, space string, readOnly bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.grants[token] = grant{space: space, readOnly: readOnly}
+}
+
+// Revoke withdraws token's grant, so every later request with it answers
+// 401, as for a token revoked or expired on the site.
+func (g *Gateway) Revoke(token string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	delete(g.grants, token)
 }
 
 // DeleteSpace removes a space and everything it holds; its grants stay
@@ -179,6 +189,14 @@ func (g *Gateway) Requests() int {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return g.requests
+}
+
+// Used counts, per bearer token, the space requests and token lookups
+// that presented it, whether or not the gateway knows the token.
+func (g *Gateway) Used() map[string]int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return maps.Clone(g.used)
 }
 
 func (g *Gateway) serve(w http.ResponseWriter, r *http.Request) {
@@ -320,6 +338,9 @@ func operation(method, rest string) routeMatch {
 func (g *Gateway) authorize(w http.ResponseWriter, r *http.Request, name string) (*space, grant, bool) {
 	token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 	g.mu.Lock()
+	if ok {
+		g.used[token]++
+	}
 	gr, known := g.grants[token]
 	sp, exists := g.spaces[name]
 	g.mu.Unlock()
@@ -351,6 +372,9 @@ func (g *Gateway) describeToken(w http.ResponseWriter, r *http.Request) {
 	}
 	token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 	g.mu.Lock()
+	if ok {
+		g.used[token]++
+	}
 	gr, known := g.grants[token]
 	_, exists := g.spaces[gr.space]
 	g.mu.Unlock()

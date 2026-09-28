@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -30,7 +31,7 @@ func TestLoadConfigHosted(t *testing.T) {
 		},
 		{
 			name:         "S3 variables never redirect a token",
-			env:          []string{token, "SLIVINGDOC_BUCKET=notes", "AWS_ENDPOINT_URL_S3=https://s3.example.test", "AWS_REGION=eu-north-1"},
+			env:          []string{token, "SLIVINGDOC_BUCKET=notes", "SLIVINGDOC_STORAGE=hosted", "AWS_ENDPOINT_URL_S3=https://s3.example.test", "AWS_REGION=eu-north-1"},
 			wantEndpoint: DefaultHostedEndpoint,
 		},
 		{
@@ -41,7 +42,7 @@ func TestLoadConfigHosted(t *testing.T) {
 		{
 			name:         "the flag wins over SLIVINGDOC_ENDPOINT",
 			env:          []string{token, "SLIVINGDOC_ENDPOINT=https://env.example.test"},
-			args:         []string{"--bucket", "notes", "--endpoint", "https://flag.example.test"},
+			args:         []string{"--storage", "hosted", "--bucket", "notes", "--endpoint", "https://flag.example.test"},
 			wantEndpoint: "https://flag.example.test",
 		},
 		{
@@ -147,8 +148,8 @@ func TestResolveHostedSpace(t *testing.T) {
 	if cfg, err := resolve("notes", hostedTestToken); err != nil || cfg.bucket != "notes" {
 		t.Fatalf("resolve against an older server with --bucket = %q, %v; want --bucket kept", cfg.bucket, err)
 	}
-	if _, err := resolve("", hostedTestToken); err == nil || !strings.Contains(err.Error(), "pass the space name as --bucket") {
-		t.Fatalf("resolve against an older server without --bucket = %v, want a refusal asking for --bucket", err)
+	if _, err := resolve("", hostedTestToken); err == nil || !strings.Contains(err.Error(), "pass the space name as --space") {
+		t.Fatalf("resolve against an older server without --bucket = %v, want a refusal asking for --space", err)
 	}
 }
 
@@ -190,6 +191,8 @@ func TestSetupHostedUsesTheTokensSpace(t *testing.T) {
 	g.AddSpace("notes", 1<<20)
 	g.Grant(hostedTestToken, "notes", false)
 	p := testProcess([]string{"SLIVINGDOC_TOKEN=" + hostedTestToken, "SLIVINGDOC_ENDPOINT=" + g.URL()})
+	var logs strings.Builder
+	p.stderr = &logs
 	var built string
 	p.storeFactory = func(ctx context.Context, cfg config) (storage.ObjectStore, error) {
 		built = cfg.bucket
@@ -202,6 +205,9 @@ func TestSetupHostedUsesTheTokensSpace(t *testing.T) {
 	t.Cleanup(func() { _ = rt.Close() })
 	if built != "notes" || rt.cfg.bucket != "notes" || rt.cfg.serviceConfig().Bucket != "notes" {
 		t.Fatalf("store built for %q, runtime bucket %q; want the token's space notes", built, rt.cfg.bucket)
+	}
+	if got := logs.String(); strings.Count(got, "hosted space resolved") != 1 || !strings.Contains(got, "space=notes") || !strings.Contains(got, "from=token") {
+		t.Fatalf("setup logs = %s, want one hosted space resolved record for notes from the token", got)
 	}
 }
 
@@ -242,26 +248,31 @@ func TestCheckStoreHosted(t *testing.T) {
 		return s
 	}
 
-	if err := checkStore(context.Background(), newStore(t, hostedTestToken)); err != nil {
+	if err := checkStore(context.Background(), newStore(t, hostedTestToken), config{tokenOrigin: originEnv}); err != nil {
 		t.Fatalf("checkStore with a read-only token = %v, want success without the write probe", err)
 	}
 	if g.Stored("notes") != 0 {
 		t.Fatal("the hosted check wrote to the space")
 	}
 
-	err := checkStore(context.Background(), newStore(t, "sld_unknown"))
+	err := checkStore(context.Background(), newStore(t, "sld_unknown"), config{tokenOrigin: originEnv})
 	if err == nil || !strings.Contains(err.Error(), "refused the token") || strings.Contains(err.Error(), "sld_unknown") {
 		t.Fatalf("checkStore with an unknown token = %v, want a redacted token refusal", err)
 	}
+	err = checkStore(context.Background(), newStore(t, "sld_unknown"), config{tokenOrigin: originLogin, bucket: "notes"})
+	if err == nil || !strings.Contains(err.Error(), `refused the token minted for space "notes"`) ||
+		!strings.Contains(err.Error(), "'slivingdoc login' again") || strings.Contains(err.Error(), "sld_unknown") {
+		t.Fatalf("checkStore with a refused minted token = %v, want a redacted refusal that says to log in again", err)
+	}
 
 	g.RefuseNext(http.MethodGet, http.StatusNotFound, "not_found")
-	err = checkStore(context.Background(), newStore(t, hostedTestToken))
+	err = checkStore(context.Background(), newStore(t, hostedTestToken), config{tokenOrigin: originEnv})
 	if err == nil || !strings.Contains(err.Error(), "INCOMPATIBLE_STORE") {
 		t.Fatalf("checkStore against a server without /v1 = %v, want INCOMPATIBLE_STORE", err)
 	}
 
 	g.RefuseNextWithReason(http.MethodGet, http.StatusTooManyRequests, "rate_limited", "slow_reads")
-	err = checkStore(context.Background(), newStore(t, hostedTestToken))
+	err = checkStore(context.Background(), newStore(t, hostedTestToken), config{tokenOrigin: originEnv})
 	if err == nil || !strings.Contains(err.Error(), "hosted storage check failed") || strings.Contains(err.Error(), "INCOMPATIBLE_STORE") {
 		t.Fatalf("checkStore while throttled = %v, want a check failure that is not INCOMPATIBLE_STORE", err)
 	}
@@ -269,7 +280,7 @@ func TestCheckStoreHosted(t *testing.T) {
 
 func TestCheckStoreProbesPlainStores(t *testing.T) {
 	store := &refusingStore{err: storage.ErrTransport}
-	err := checkStore(context.Background(), store)
+	err := checkStore(context.Background(), store, config{tokenOrigin: originEnv})
 	if err == nil || !strings.Contains(err.Error(), "S3 compatibility probe failed") {
 		t.Fatalf("checkStore on a plain store = %v, want the probe diagnostic", err)
 	}
@@ -286,3 +297,73 @@ func (s *refusingStore) CreateObject(context.Context, string, []byte) (storage.E
 }
 
 func (s *refusingStore) DeleteObjects(context.Context, []string) error { return nil }
+
+// TestResolveHostedSpaceNamesWhereTheSpaceCameFrom proves a named space
+// that SLIVINGDOC_TOKEN does not reach is refused with the fix that
+// applies to the setting that named it, never silently replaced.
+func TestResolveHostedSpaceNamesWhereTheSpaceCameFrom(t *testing.T) {
+	g := gatewaytest.Start(t)
+	g.AddSpace("notes", 1<<20)
+	g.Grant(hostedTestToken, "notes", false)
+	for _, row := range []struct {
+		name string
+		cfg  config
+		want string
+	}{
+		{
+			"SLIVINGDOC_BUCKET",
+			config{bucket: "team", bucketFrom: bucketFromEnv, tokenOrigin: originEnv},
+			`not "team" from SLIVINGDOC_BUCKET; unset SLIVINGDOC_BUCKET to use the token's space`,
+		},
+		{
+			"a named bucket",
+			config{bucket: "team", bucketFrom: bucketFromFlag, tokenOrigin: originEnv},
+			`not "team" from --bucket; drop --bucket to use the token's space`,
+		},
+		{
+			"--space",
+			config{bucket: "team", bucketFrom: bucketFromSpaceFlag, tokenOrigin: originEnv},
+			`not "team" from --space; drop --space to use the token's space`,
+		},
+		{
+			"SLIVINGDOC_SPACE",
+			config{bucket: "team", bucketFrom: bucketFromSpaceEnv, tokenOrigin: originEnv},
+			`not "team" from SLIVINGDOC_SPACE; unset SLIVINGDOC_SPACE to use the token's space`,
+		},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			cfg := row.cfg
+			cfg.endpoint, cfg.token = g.URL(), hostedTestToken
+			_, err := resolveHostedSpace(context.Background(), cfg)
+			if err == nil || !strings.Contains(err.Error(), row.want) {
+				t.Fatalf("resolveHostedSpace() = %v, want it to contain %q", err, row.want)
+			}
+		})
+	}
+	cfg, err := resolveHostedSpace(context.Background(), config{endpoint: g.URL(), token: hostedTestToken, bucket: "notes", bucketFrom: bucketFromEnv, tokenOrigin: originEnv})
+	if err != nil || cfg.bucket != "notes" {
+		t.Fatalf("resolveHostedSpace() of an agreeing space = %q, %v", cfg.bucket, err)
+	}
+}
+
+// TestHostedCheckErrorFollowsTheSpaceSource proves a refused token names
+// the setting its space came from.
+func TestHostedCheckErrorFollowsTheSpaceSource(t *testing.T) {
+	denied := fmt.Errorf("%w: no", storage.ErrAccessDenied)
+	for _, row := range []struct {
+		cfg  config
+		want string
+	}{
+		{config{tokenOrigin: originLogin, bucket: "team", bucketFrom: bucketFromLogin}, "run 'slivingdoc space' to list the login's spaces, or 'slivingdoc login' again"},
+		{config{tokenOrigin: originEnv, bucket: "team", bucketFrom: bucketFromEnv}, "check SLIVINGDOC_TOKEN and SLIVINGDOC_BUCKET"},
+		{config{tokenOrigin: originEnv, bucket: "team", bucketFrom: bucketFromFlag}, "check SLIVINGDOC_TOKEN and --bucket"},
+		{config{tokenOrigin: originEnv, bucket: "team", bucketFrom: bucketFromSpaceFlag}, "check SLIVINGDOC_TOKEN and --space"},
+		{config{tokenOrigin: originEnv, bucket: "team", bucketFrom: bucketFromSpaceEnv}, "check SLIVINGDOC_TOKEN and SLIVINGDOC_SPACE"},
+		{config{tokenOrigin: originEnv}, "check SLIVINGDOC_TOKEN and --space"},
+		{config{tokenOrigin: originEnv, bucket: "team", bucketFrom: bucketFromToken}, `check SLIVINGDOC_TOKEN: it named space "team" but was then refused`},
+	} {
+		if err := hostedCheckError(denied, row.cfg); !strings.Contains(err.Error(), row.want) {
+			t.Fatalf("hostedCheckError(%v) = %v, want it to contain %q", row.cfg.bucketFrom, err, row.want)
+		}
+	}
+}

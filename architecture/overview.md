@@ -47,7 +47,7 @@ This reuses mature Git merge behavior without operating a Git server, a mounted 
 | File | Purpose |
 |------|---------|
 | `main.go` | `main()`: `cli.Run(ctx, os.Args, git2.New(), app.ProcessOptions{...})` |
-| `cmd/serve`, `cmd/pull`, `cmd/commit`, `cmd/version` | The four subcommands over `internal/app` |
+| `cmd/serve`, `cmd/pull`, `cmd/commit`, `cmd/login`, `cmd/version` | The subcommands over `internal/app` (`cmd/login` holds `login`, `logout` and `space`) |
 | `internal/app/service.go` | `Service`: maps a request path to one `workspace.Workspace` + `notebook.Notebook` pair (`notebookFor`) |
 | `internal/notebook/notebook.go` | `Notebook`, `Config`, `New`, recovery helpers; `Pull` is in `pull.go`, `Commit` in `commit.go` |
 | `internal/workspace/workspace.go` | `Workspace`, `Open`: L and P, the operation lock |
@@ -61,8 +61,11 @@ One line per `internal/` package.
 
 | Package | Owns |
 |---------|------|
-| `app` | Process body: flag/env resolution (`config.go`), startup order (`app.go`), `Service` path-to-notebook map (`service.go`), CLI report rendering (`command.go`), logging, `DEBUG_PERF` profiling |
-| `cli` | The command map (`serve|s`, `pull|p`, `commit|c`, `version|v`), usage text, `Run` router |
+| `app` | Process body: flag/env resolution (`config.go`), storage selection (`storage.go`), login, logout and space (`login.go`, `space.go`), minted space tokens (`minted.go`), startup order (`app.go`), `Service` path-to-notebook map (`service.go`), CLI report rendering (`command.go`), logging, `DEBUG_PERF` profiling |
+| `cli` | The command map (`serve|s`, `pull|p`, `commit|c`, `login`, `logout`, `space`, `version|v`), usage text, `Run` router |
+| `credentials` | The stored account logins of `slivingdoc login` and their default spaces: the strict, versioned `credentials.json` under the user configuration directory, written 0600 by temp file and rename. See [login.md](./login.md) |
+| `sitelogin` | Client of the site's CLI login routes (start, key polling, spaces, space-token minting, revoke) that validates every answer and never follows a redirect. See [login.md](./login.md) |
+| `sitelogin/sitetest` | Test-only reference server of the site's CLI login routes with scripted approvals |
 | `git` | Go-facing engine seam (`Engine`, `Repository`) and all Git policy: trees, snapshots, merge structuring, packs, history validation, path/content rules, read-only/writable `PathPolicy`, diffstat. See [git-engine.md](./git-engine.md) |
 | `git/gittest` | Deterministic fake object hashing shared by fakes in higher packages (test-only) |
 | `git2` | The only CGo package: pinned libgit2 v1.9.6 behind the `git` seam. See [git-engine.md](./git-engine.md) |
@@ -72,12 +75,12 @@ One line per `internal/` package.
 | `storage/fake` | Deterministic in-memory `ObjectStore` with fault injection (tests) |
 | `storage/contract` | One contract suite run against every `ObjectStore` (tests) |
 | `s3store` | The only production AWS SDK package (test-only `tests3/s3.go` also uses the SDK to create its bucket): S3 adapter, prefix join, multipart upload, semantic error mapping |
-| `httpstore` | The second production `ObjectStore`, selected by `SLIVINGDOC_TOKEN`: the hosted storage API over HTTPS with a bearer token and one space, status-to-semantic error mapping, `CheckAccess` instead of the probe. See [hosted-mode.md](./hosted-mode.md) |
+| `httpstore` | The second production `ObjectStore`, selected by `SLIVINGDOC_TOKEN` or a stored login: the hosted storage API over HTTPS with a bearer token (fixed, or from a `TokenSource` of minted tokens) and one space, status-to-semantic error mapping, `CheckAccess` instead of the probe. See [hosted-mode.md](./hosted-mode.md) |
 | `httpstore/gatewaytest` | Test-only reference server of the hosted API over `storage/fake` |
 | `mcp` | stdio MCP server: two strict tool schemas, strict decoding, error/success envelopes, redaction, `mcpReqID` logging |
 | `strictjson` | Strict JSON value tree shared by the manifest and `state.json` (rejects unknown, duplicate, missing, null) |
 | `pathutil` | `ExpandHome` for `~/` request paths |
-| `tests3` | testcontainers S3 backend (SeaweedFS) for tests; `tests3/lease` owns the shared container |
+| `tests3` | S3 test backend (a SeaweedFS container, started through the Docker Engine API) for tests; `tests3/lease` owns the shared container |
 | `integrationtest` | Test-only black-box scenario suite: the behavioral contract of the whole server |
 
 ## Dependency direction
@@ -99,7 +102,8 @@ Rules the import graph follows (verified by `grep` over non-test imports):
 - `git` imports no internal package. Everything above it speaks `git.OID`, `git.Snapshot`, `git.Repository`.
 - `git2` imports only `git`. In production only `main.go` imports it; tests in `integrationtest`, `cmd/pull`, `cmd/commit`, `app`, `notebook`, and `workspace` import it for native runs. Every other package receives a `git.Engine`.
 - `s3store` imports only `storage`, and only `app` (`realStoreFactory`, the default when `ProcessOptions.StoreFactory` is nil) and `integrationtest` import it.
-- `httpstore` imports only `storage` (and the standard library); only `app` (`realStoreFactory`, `validateHosted`) imports it in production. `httpstore/gatewaytest` imports `storage` and `storage/fake` and is imported only by tests (`httpstore`, `app` and `notebook` in their `hosted_test.go`, `integrationtest`).
+- `httpstore` imports only `storage` (and the standard library); in production `app` (`realStoreFactory`, `validateHosted`, `PrepareLogin`), `credentials` and `sitelogin` (its validators and `Sanitize`) import it.
+- `credentials` imports `httpstore` and `strictjson`; `sitelogin` imports `credentials` and `httpstore`; only `app` imports either in production, and `sitelogin/sitetest` only tests (`sitelogin`, `app`, `integrationtest`). `httpstore/gatewaytest` imports `storage` and `storage/fake` and is imported only by tests (`httpstore`, `app` and `notebook` in their `hosted_test.go`, `integrationtest`).
 - `notebook` imports `workspace`, `git`, `storage`; it never imports `mcp` or `app`.
 - `workspace` imports `git` and `strictjson`; it never reads remote state.
 - `storage` imports `git` (for `git.OID` in the manifest) and `strictjson`.
@@ -110,7 +114,8 @@ Rules the import graph follows (verified by `grep` over non-test imports):
 ```text
 main.go:main
   → cli.Run → app.Setup (config, git2 Open + version check, s3store + storage.Probe,
-                          or httpstore + CheckAccess when SLIVINGDOC_TOKEN is set)
+                          or httpstore + CheckAccess when SLIVINGDOC_TOKEN or a stored
+                          login selects hosted mode, see login.md)
   → Runtime.Serve → mcp.NewServer (notes_pull, notes_commit)      [serve]
     or Runtime.Pull / Runtime.Commit → app.Report                  [pull, commit]
       → Service.Pull/Commit(path) → Service.notebookFor(path)

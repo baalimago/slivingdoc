@@ -279,12 +279,23 @@ func storageFailure(reason Reason, cause error, format string, args ...any) erro
 	if r, m, ok := refusalMessage(cause); ok {
 		reason, message = r, m
 	}
+	if errors.Is(cause, storage.ErrCredentialRenewed) {
+		message += credentialRenewedHint + storageSays(cause)
+	}
 	action, _ := actionFor(CodeStorageFailure, reason, nil)
 	return &Error{
 		Code: CodeStorageFailure, Reason: reason, Action: action,
 		Message: message, Cause: cause,
 	}
 }
+
+// credentialRenewedHint explains a streamed upload whose short-lived token
+// the storage refused: the token may have expired or been renewed while
+// the upload ran, or been revoked alone, which a retry with a new token
+// resolves; only a refusal the new token's mint also meets (a revoked
+// login key, a suspended account) fails the retry.
+const credentialRenewedHint = ": the storage refused the stored login's token during the upload; it may have expired or been renewed, " +
+	"and nothing was published, so retry"
 
 // refusalMessage is storeRefusal with the store's own sanitized line
 // appended to the message when the refusal carries one.
@@ -319,7 +330,7 @@ var recoveryRefusalMessages = map[Reason]string{
 	ReasonRateLimited: "the storage is slowing down requests from this account, so the notebook directory could not be repaired yet; wait, then pull",
 	ReasonAccessDenied: "the storage refused the read that repairs the notebook directory: the token is missing, revoked, read-only, " +
 		"or not granted this space, the space does not exist, or --endpoint does not point at the storage API. " +
-		"Check SLIVINGDOC_TOKEN, --bucket and --endpoint, then pull",
+		"Check SLIVINGDOC_TOKEN, --space and --endpoint, then pull",
 	ReasonObjectTooLarge: "the storage refused the read that repairs the notebook directory as larger than it serves; an operator must check the storage",
 }
 
@@ -351,7 +362,7 @@ func storeRefusal(cause error) (Reason, string, bool) {
 	case errors.Is(cause, storage.ErrAccessDenied):
 		return ReasonAccessDenied, "the storage refused the request: the token is missing, revoked, read-only, " +
 			"or not granted this space, the space does not exist, or --endpoint does not point at the storage API. " +
-			"Check SLIVINGDOC_TOKEN, --bucket and --endpoint", true
+			"Check SLIVINGDOC_TOKEN, --space and --endpoint", true
 	case errors.Is(cause, storage.ErrTooLarge):
 		return ReasonObjectTooLarge, "the notebook data to upload is larger than the storage accepts in one object; " +
 			"nothing was published", true

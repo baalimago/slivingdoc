@@ -78,13 +78,17 @@ type Config struct {
 	// Endpoint is the normalized server base URL without /v1, for example
 	// https://api.slivingdoc.dev.
 	Endpoint string
-	// Space is the space name, the CLI's --bucket.
+	// Space is the space name, the CLI's --space (or --bucket).
 	Space string
 	// Prefix is the notebook prefix inside the space; validated.
 	Prefix string
 	// Token is the API bearer token. It is sent only in the Authorization
-	// header and never appears in an error.
+	// header and never appears in an error. Tokens, when set, replaces it.
 	Token string
+	// Tokens supplies the bearer token of each request instead of Token:
+	// a stored login's short-lived space tokens, re-minted before they
+	// expire and once after the server refuses one.
+	Tokens TokenSource
 	// UserAgent is sent with every request; empty sends none of our own.
 	UserAgent string
 	// Client sends the requests; nil uses a default client.
@@ -96,6 +100,47 @@ type Config struct {
 	// Backoff returns the wait before retry attempt n (1-based); nil uses
 	// the default.
 	Backoff func(n int) time.Duration
+}
+
+// TokenSource supplies the bearer token of every request. Token returns
+// the token to send now; Rejected reports one the server answered 401 to,
+// so the next Token call returns another. The store sends a replayable
+// request once more with that other token; a streamed upload fails, and
+// the next request uses the new token. Both are called concurrently.
+type TokenSource interface {
+	Token(ctx context.Context) (string, error)
+	Rejected(token string)
+}
+
+// RenewingSource is a TokenSource of short-lived tokens, marked by
+// RenewsTokens. A streamed upload whose token such a source gave was
+// refused with 401 fails with storage.ErrCredentialRenewed instead of the
+// access refusal a fixed token's 401 is: the token may have expired or
+// been renewed while the upload ran, or revoked alone; the retry asks
+// the source again and gets a new token either way. Only a refusal the
+// source's renewal meets too (a revoked login key, a suspended account)
+// fails the retry.
+type RenewingSource interface {
+	TokenSource
+	RenewsTokens()
+}
+
+// staticToken is the TokenSource of a fixed Config.Token.
+type staticToken string
+
+func (t staticToken) Token(context.Context) (string, error) { return string(t), nil }
+
+func (staticToken) Rejected(string) {}
+
+// tokenSource validates cfg's token setting and returns its source.
+func tokenSource(cfg Config) (TokenSource, error) {
+	if cfg.Tokens != nil {
+		return cfg.Tokens, nil
+	}
+	if err := ValidateToken(cfg.Token); err != nil {
+		return nil, err
+	}
+	return staticToken(cfg.Token), nil
 }
 
 const defaultRetries = 2
@@ -110,7 +155,7 @@ type Store struct {
 	space     string // <endpoint>/v1/spaces/<space>
 	name      string
 	prefix    string
-	token     string
+	tokens    TokenSource
 	userAgent string
 	retries   int
 	backoff   func(int) time.Duration
@@ -130,10 +175,11 @@ func New(cfg Config) (*Store, error) {
 	if err := storage.ValidatePrefix(cfg.Prefix); err != nil {
 		return nil, err
 	}
-	if err := ValidateToken(cfg.Token); err != nil {
+	tokens, err := tokenSource(cfg)
+	if err != nil {
 		return nil, err
 	}
-	s := newClient(cfg)
+	s := newClient(cfg, tokens)
 	s.space = s.root + "/spaces/" + cfg.Space
 	s.name = cfg.Space
 	s.prefix = cfg.Prefix
@@ -141,8 +187,8 @@ func New(cfg Config) (*Store, error) {
 }
 
 // newClient binds the transport settings of cfg: client, server root,
-// token, retries. It validates nothing and addresses no space.
-func newClient(cfg Config) *Store {
+// token source, retries. It validates nothing and addresses no space.
+func newClient(cfg Config, tokens TokenSource) *Store {
 	client := cfg.Client
 	if client == nil {
 		// Never follow a redirect: Go would turn a PUT into a body-less
@@ -163,7 +209,7 @@ func newClient(cfg Config) *Store {
 	return &Store{
 		client:    client,
 		root:      strings.TrimSuffix(cfg.Endpoint, "/") + "/v1",
-		token:     cfg.Token,
+		tokens:    tokens,
 		userAgent: cfg.UserAgent,
 		retries:   retries,
 		backoff:   backoff,
@@ -202,10 +248,11 @@ type tokenBody struct {
 // DescribeToken asks the server which space the token reaches
 // (GET /v1/token), after the same tokenless server check as CheckAccess,
 // so the token only goes to an endpoint that answered as this API.
-// cfg.Space and cfg.Prefix are ignored. A token that reaches no space, or
-// that the server refuses, is ErrAccessDenied; a server without the
-// endpoint is ErrTokenLookupUnsupported; an answer outside the API grammar
-// is ErrIncompatible.
+// It describes the fixed cfg.Token; cfg.Space, cfg.Prefix and cfg.Tokens
+// are ignored. A token that reaches no space, or that the server refuses,
+// is ErrAccessDenied; a server without the endpoint is
+// ErrTokenLookupUnsupported; an answer outside the API grammar is
+// ErrIncompatible.
 func DescribeToken(ctx context.Context, cfg Config) (TokenInfo, error) {
 	if err := ValidateEndpoint(cfg.Endpoint); err != nil {
 		return TokenInfo{}, err
@@ -213,7 +260,7 @@ func DescribeToken(ctx context.Context, cfg Config) (TokenInfo, error) {
 	if err := ValidateToken(cfg.Token); err != nil {
 		return TokenInfo{}, err
 	}
-	s := newClient(cfg)
+	s := newClient(cfg, staticToken(cfg.Token))
 	if err := s.checkServer(ctx); err != nil {
 		return TokenInfo{}, err
 	}
@@ -256,7 +303,7 @@ func (b tokenBody) info() (TokenInfo, error) {
 	}
 	access := Access(b.Access)
 	if access != AccessRead && access != AccessWrite {
-		return TokenInfo{}, fmt.Errorf("httpstore: describe token: access %q is neither read nor write: %w", sanitize(b.Access, 16), storage.ErrIncompatible)
+		return TokenInfo{}, fmt.Errorf("httpstore: describe token: access %q is neither read nor write: %w", Sanitize(b.Access, 16), storage.ErrIncompatible)
 	}
 	info := TokenInfo{Space: b.Space, Access: access}
 	if b.ExpiresAt != nil {
@@ -565,7 +612,11 @@ func (s *Store) request(ctx context.Context, method, target string, body io.Read
 		return nil, fmt.Errorf("build request: %w", err)
 	}
 	if auth {
-		req.Header.Set("Authorization", "Bearer "+s.token)
+		token, err := s.tokens.Token(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("token: %w", err)
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	// Ask for the stored bytes: a transparently decompressed body would
 	// lose its length and differ from the pack descriptor.
@@ -577,8 +628,53 @@ func (s *Store) request(ctx context.Context, method, target string, body io.Read
 }
 
 // send performs one request. A failure before any response is ambiguous
-// for a write: the request may have landed.
+// for a write: the request may have landed. A 401 reports the token to the
+// source; a replayable request goes once more when the source then has
+// another token. A streamed one returns the 401, or, for a RenewingSource,
+// a storage.Refusal of storage.ErrCredentialRenewed that keeps the
+// server's sanitized message, so the caller retries instead of reporting a
+// refused credential.
 func (s *Store) send(req *http.Request) (*http.Response, error) {
+	resp, err := s.sendOnce(req)
+	if err != nil || resp.StatusCode != http.StatusUnauthorized {
+		return resp, err
+	}
+	used, ok := strings.CutPrefix(req.Header.Get("Authorization"), "Bearer ")
+	if !ok {
+		return resp, nil
+	}
+	s.tokens.Rejected(used)
+	if req.Body != nil && req.Body != http.NoBody && req.GetBody == nil {
+		if _, renewing := s.tokens.(RenewingSource); !renewing {
+			return resp, nil
+		}
+		refusal := newRefusal(resp.StatusCode, readAPIError(resp))
+		refusal.Err = storage.ErrCredentialRenewed
+		drain(resp)
+		return nil, fmt.Errorf("the server refused the token of an upload that cannot be sent again: %w", refusal)
+	}
+	next, err := s.tokens.Token(req.Context())
+	if err != nil {
+		drain(resp)
+		return nil, fmt.Errorf("the server refused the token and no other could be had: %w", err)
+	}
+	if next == used {
+		return resp, nil
+	}
+	retry := req.Clone(req.Context())
+	if req.GetBody != nil {
+		body, err := req.GetBody()
+		if err != nil {
+			return resp, nil
+		}
+		retry.Body = body
+	}
+	drain(resp)
+	retry.Header.Set("Authorization", "Bearer "+next)
+	return s.sendOnce(retry)
+}
+
+func (s *Store) sendOnce(req *http.Request) (*http.Response, error) {
 	resp, err := s.client.Do(req)
 	if err != nil {
 		if ctxErr := req.Context().Err(); ctxErr != nil {
@@ -638,8 +734,8 @@ type apiError struct {
 // the client, travels as storage.Refusal.Message.
 func (s *Store) statusError(resp *http.Response) error {
 	body := readAPIError(resp)
-	code := strings.ToLower(sanitize(body.Code, 64))
-	reason := strings.ToLower(sanitize(body.Reason, 64))
+	code := strings.ToLower(Sanitize(body.Code, 64))
+	reason := strings.ToLower(Sanitize(body.Reason, 64))
 	refusal := newRefusal(resp.StatusCode, body)
 	switch {
 	case (resp.StatusCode == http.StatusInsufficientStorage || code == "quota_exceeded") && reason == "request_limit":
@@ -690,13 +786,13 @@ func readAPIError(resp *http.Response) apiError {
 // and reason) and the server's sanitized message; the caller sets Err.
 func newRefusal(status int, body apiError) *storage.Refusal {
 	detail := "HTTP " + strconv.Itoa(status)
-	if code := strings.ToLower(sanitize(body.Code, 64)); code != "" {
+	if code := strings.ToLower(Sanitize(body.Code, 64)); code != "" {
 		detail += " " + code
 	}
-	if reason := strings.ToLower(sanitize(body.Reason, 64)); reason != "" {
+	if reason := strings.ToLower(Sanitize(body.Reason, 64)); reason != "" {
 		detail += " (" + reason + ")"
 	}
-	return &storage.Refusal{Detail: detail, Message: sanitize(body.Message, 300)}
+	return &storage.Refusal{Detail: detail, Message: Sanitize(body.Message, 300)}
 }
 
 // usageNotFound maps a 404 of the usage check, which addresses the space,
@@ -756,9 +852,9 @@ func drain(resp *http.Response) {
 	_ = resp.Body.Close()
 }
 
-// sanitize keeps printable ASCII, collapses white space, and bounds the
+// Sanitize keeps printable ASCII, collapses white space, and bounds the
 // length, so server text stays one safe diagnostic line.
-func sanitize(s string, limit int) string {
+func Sanitize(s string, limit int) string {
 	var b strings.Builder
 	for _, r := range s {
 		if r >= ' ' && r <= '~' {

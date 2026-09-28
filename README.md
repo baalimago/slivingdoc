@@ -86,11 +86,16 @@ echo "hello from $(hostname)" > notes/hello.md
 npx -y slivingdoc commit notes -m "First note"
 ```
 
+On your own machine, `npx -y slivingdoc login` can stand in for the token:
+it stores an account login that reaches the spaces your account can use,
+with a default space for commands that name none (see
+[Hosted storage](#hosted-storage)).
+
 To bring in colleagues, make an invite link on your space's Members page
 at slivingdoc.dev, with Read or Read and write access. Each colleague opens
-the link, signs in, presses Join, makes their own token for the space, and
-pulls into a new or empty folder. Everyone pulls the same notes, and those
-with Read and write access commit to them. Their requests and storage count
+the link, signs in, presses Join, makes their own token for the space (or
+runs `slivingdoc login`), and pulls into a new or empty folder. Everyone
+pulls the same notes, and those with Read and write access commit to them. Their requests and storage count
 against your plan. [Hosted storage](#hosted-storage) below has the details.
 
 ### Self-hosted, on your own bucket
@@ -127,8 +132,54 @@ Pi OS armhf.
 ### Hosted storage
 
 Rather not run a bucket? Create a space at [slivingdoc.dev](https://slivingdoc.dev),
-then give slivingdoc an API token. Each token reaches exactly one space, so
-the token is all it needs:
+then log in to your account from your terminal:
+
+```sh
+slivingdoc login      # or: npx -y slivingdoc login
+```
+
+It prints a code and opens an approval page in your browser (`--no-browser`
+just prints the page, for SSH and headless machines). Sign in, check that
+the code matches, pick the access, and approve. Whoever enters a code
+first decides it, so the terminal then shows who approved it, the access,
+the storage endpoint and every space the login reaches with its owner,
+and asks `Store this login? [y/N]`; answer `y` only if that was you. An
+account key is stored in your user configuration directory
+(`~/.config/slivingdoc/credentials.json` on Linux; `SLIVINGDOC_CONFIG_DIR`
+moves it). It never reaches the storage service: each process trades it
+for a token of one space that lasts an hour and is kept in memory only.
+
+When your account reaches one space, it becomes the default space.
+Otherwise choose one (or pass `--space` to `login`):
+
+```sh
+slivingdoc space              # list the spaces; * marks the default
+slivingdoc space my-space     # make my-space the default
+```
+
+With a default space the MCP host needs neither a token nor a bucket:
+
+```json
+{
+  "mcpServers": {
+    "slivingdoc": {
+      "command": "npx",
+      "args": ["-y", "slivingdoc", "serve"]
+    }
+  }
+}
+```
+
+For another space your login reaches, name it and the store:
+`"serve", "--storage", "hosted", "--space", "other-space"` (`--space`
+alone also works when nothing on the machine configures S3). Logging in
+again replaces the stored key and revokes the old one when you approved
+both. `slivingdoc logout` revokes the key and every token made from it.
+Restart the MCP host after logging in again or changing the default
+space.
+
+For CI, or instead of logging in, give slivingdoc an API token. Each token
+reaches exactly one space, so the token is all it needs:
 
 ```json
 {
@@ -144,6 +195,31 @@ the token is all it needs:
 
 The token replaces the AWS settings and names the space; `--region` and
 `--path-style` are ignored. Everything else works the same way.
+`SLIVINGDOC_TOKEN` wins over a stored login and alone is enough: with no
+bucket it uses the token's own space, and a stored login plays no part.
+A bucket you name must be the token's space, or startup is refused. slivingdoc refuses to guess
+between S3 and hosted storage: a token next to a setting that names an S3
+host (an `--endpoint` flag, `AWS_ENDPOINT_URL` or `AWS_ENDPOINT_URL_S3`;
+a region, AWS credentials and `~/.aws` files are fine), and a login for a
+space you named next to S3 settings (an AWS variable,
+`~/.aws/credentials` or `~/.aws/config`, `--region`, `--path-style`),
+refuse to start until you pass
+`--storage hosted` or `--storage s3` (`--storage s3` never sends a token
+anywhere). Each process logs which store and token source it chose.
+
+**Upgrading an S3 setup:** a login changes only a command line or MCP entry
+that runs in the default `--storage auto`, sets no `SLIVINGDOC_TOKEN`, and
+either names no bucket (the login's default space is then used) or names
+a bucket (`--bucket`, `--space`, `SLIVINGDOC_BUCKET` or `SLIVINGDOC_SPACE`)
+on a
+machine with no S3 settings at all, and either sets no endpoint or sets the
+endpoint the login was issued for. Such an entry now uses hosted storage;
+an entry that names the space as its bucket next to S3 settings refuses to
+start instead, as does one whose login has expired. An entry that sets its
+own S3 endpoint stays on S3. Add `--storage s3` (or `SLIVINGDOC_STORAGE=s3`)
+to keep an entry on S3 whatever is stored. A hosted entry that sets
+`SLIVINGDOC_TOKEN` next to `AWS_ENDPOINT_URL` or `AWS_ENDPOINT_URL_S3`, or
+passes `--endpoint` as a flag, now needs `--storage hosted`.
 
 ## How it works
 
@@ -165,25 +241,39 @@ and
 ## Configuration
 
 `serve`, `pull`, and `commit` read the same flags and environment
-variables. `--bucket` is required, except with a hosted token, which names
-its own space. The most common flags:
+variables. `--bucket` is required, unless you are logged in (it then
+defaults to your login's default space) or give a hosted token (which names its
+own space). `--space` and `SLIVINGDOC_SPACE` are the same setting under
+its hosted name; both spellings with different values are refused. The
+most common flags:
 
 | Flag               | Environment                 | Default             |
 | ------------------ | --------------------------- | ------------------- |
 | `--bucket`         | `SLIVINGDOC_BUCKET`         | — (required)[^3]    |
+| `--space`          | `SLIVINGDOC_SPACE`          | same as `--bucket`  |
 | `--workspace-root` | `SLIVINGDOC_WORKSPACE_ROOT` | temporary dir[^1]   |
 | `--endpoint`       | `AWS_ENDPOINT_URL_S3`[^2]   | AWS resolution      |
 | `--region`         | `AWS_REGION`                | `us-east-1`         |
+| `--storage`        | `SLIVINGDOC_STORAGE`        | `auto`[^3]          |
 | (environment only) | `SLIVINGDOC_TOKEN`          | empty (S3 mode)     |
 
 [^1]: `serve` with no configured root takes a per-process temporary
     notebook directory and removes it at shutdown; the notes themselves live
     in the bucket. `pull` and `commit` default to the working directory.
 
-[^2]: With `SLIVINGDOC_TOKEN` set, `--endpoint` names the hosted API instead:
-    `SLIVINGDOC_ENDPOINT`, default `https://api.slivingdoc.dev`.
-[^3]: With `SLIVINGDOC_TOKEN` set, `--bucket` is optional and defaults to the
-    one space the token reaches; a `--bucket` naming another space is refused.
+[^2]: In hosted mode `--endpoint` names the hosted API instead:
+    `SLIVINGDOC_ENDPOINT`, default `https://api.slivingdoc.dev`. Under the
+    default `--storage auto`, an `--endpoint` flag beside `SLIVINGDOC_TOKEN`
+    refuses to start; pass `--storage hosted` to mean the hosted API. A
+    stored login always uses the endpoint it was issued for.
+
+[^3]: `auto` uses `SLIVINGDOC_TOKEN`, else a `slivingdoc login`, else
+    S3, and refuses when S3 settings make that a guess (see
+    [`architecture/login.md`](architecture/login.md)); `hosted` and `s3`
+    force the choice. With a hosted token `--space` is optional and
+    defaults to the one space the token reaches; a `--space` naming
+    another space is refused. With a login, `--space` defaults to the default space set by
+    `slivingdoc space <name>`.
 
 `slivingdoc serve -h` prints the full reference, and
 [`architecture/running.md`](architecture/running.md) covers everything an operator

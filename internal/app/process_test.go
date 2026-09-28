@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/baalimago/slivingdoc/internal/credentials"
 	"github.com/baalimago/slivingdoc/internal/git"
 	"github.com/baalimago/slivingdoc/internal/git2"
 	"github.com/baalimago/slivingdoc/internal/mcp"
@@ -116,13 +117,16 @@ func spawnHelper(t *testing.T, mode string) *helperProc {
 	if err != nil {
 		t.Fatalf("stdout pipe: %v", err)
 	}
-	env := append(os.Environ(),
+	// A developer's stored login or storage choice never reaches the
+	// helper (architecture/login.md).
+	env := helperEnv(os.Environ(),
 		"SLIVINGDOC_PROCESS_HELPER="+mode,
 		"SLIVINGDOC_PROCESS_HELPER_CACHE="+t.TempDir(),
 		"SLIVINGDOC_BUCKET=process-bucket",
 		"SLIVINGDOC_PREFIX=process-prefix",
 		"SLIVINGDOC_WORKSPACE_ROOT="+workspaceRoot,
 		"SLIVINGDOC_PRIVATE_ROOT="+privateRoot,
+		credentials.DirEnv+"="+t.TempDir(),
 	)
 	proc, err := os.StartProcess(os.Args[0], []string{os.Args[0]}, &os.ProcAttr{
 		Env:   env,
@@ -363,4 +367,23 @@ func assertProtocolOnlyStdout(t *testing.T, data []byte) {
 	if line == 0 {
 		t.Fatal("stdout carries no protocol messages")
 	}
+}
+
+// helperEnv drops the variables that choose the store, the token or the
+// site, and every name overrides sets, then appends overrides, so the
+// child sees each name once and which duplicate wins never matters.
+func helperEnv(env []string, overrides ...string) []string {
+	drop := map[string]bool{"SLIVINGDOC_STORAGE": true, SiteEnv: true, "SLIVINGDOC_TOKEN": true, "SLIVINGDOC_ENDPOINT": true}
+	for _, kv := range overrides {
+		name, _, _ := strings.Cut(kv, "=")
+		drop[name] = true
+	}
+	var out []string
+	for _, kv := range env {
+		name, _, _ := strings.Cut(kv, "=")
+		if !drop[name] {
+			out = append(out, kv)
+		}
+	}
+	return append(out, overrides...)
 }

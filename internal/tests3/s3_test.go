@@ -6,6 +6,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
 // recorder captures the failure a policy decision produces without ending
@@ -130,5 +132,22 @@ func TestEndpointFromFile(t *testing.T) {
 	}
 	if _, ready, err := endpointFromFile(path); err == nil || ready || !strings.Contains(err.Error(), "docker unavailable") {
 		t.Fatalf("endpointFromFile(error) = ready %t, err %v", ready, err)
+	}
+}
+
+func TestBucketCreated(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"created", nil, true},
+		{"already owned", fmt.Errorf("create: %w", &types.BucketAlreadyOwnedByYou{}), true},
+		{"already exists", fmt.Errorf("create: %w", &types.BucketAlreadyExists{}), true},
+		{"gateway not ready", errors.New("connection refused"), false},
+	} {
+		if got := bucketCreated(tt.err); got != tt.want {
+			t.Fatalf("%s: bucketCreated() = %v, want %v", tt.name, got, tt.want)
+		}
 	}
 }

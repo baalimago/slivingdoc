@@ -4,7 +4,8 @@
 
 `architecture/` holds one doc per command and subsystem: an overview, the
 product contract, pull, commit, conflicts, checkpoints, the notebook, the Git
-engine, the workspace, storage, the S3 store, hosted storage mode, the CLI,
+engine, the workspace, storage, the S3 store, hosted storage mode, login and
+storage selection, the CLI,
 the MCP server, configuration, errors, logging, security, guarantees,
 testing, build, releasing, running, and recorded decisions. Start at
 [architecture/README.md](architecture/README.md): it indexes every doc
@@ -34,8 +35,9 @@ without re-checking the code:
 
 slivingdoc is a standalone MCP server that gives many agents one shared
 directory of UTF-8 text notes, stored durably in S3-compatible object storage
-or, when `SLIVINGDOC_TOKEN` is set, in a space of the slivingdoc hosted storage
-API (architecture/hosted-mode.md). It uses Git data structures and merge behavior internally but never invokes a
+or, when `SLIVINGDOC_TOKEN` is set or `slivingdoc login` stored an account
+login, in a space of the slivingdoc hosted storage API
+(architecture/hosted-mode.md, architecture/login.md). It uses Git data structures and merge behavior internally but never invokes a
 Git executable and never exposes a Git repository. The contract is split
 by concern under [`architecture/`](architecture/README.md). Three states
 shape every operation. **L** is the caller-controlled visible directory.
@@ -51,7 +53,7 @@ shape every operation. **L** is the caller-controlled visible directory.
 +----------------------------------------------+
 |  main.go -> internal/cli                     |
 |  command router: serve | pull | commit |     |
-|  version                                     |
+|  login | logout | space | version            |
 +----------------------+-----------------------+
                        |
                        v
@@ -122,7 +124,8 @@ supplies the strict JSON value tree shared by the manifest and
 `state.json`. `internal/storage/fake` and `internal/storage/contract`
 provide the deterministic object store and the one contract suite run
 against the fake, the real S3 backend, and the hosted adapter.
-`internal/tests3` starts the pinned S3-compatible testcontainers backend;
+`internal/tests3` starts the pinned S3-compatible backend container through
+a small Docker Engine API client;
 `internal/httpstore/gatewaytest` is the in-process reference server of the
 hosted storage API.
 
@@ -135,6 +138,8 @@ slivingdoc/
 |   |-- serve/               serve|s: the MCP stdio server over internal/app
 |   |-- pull/                pull|p: one-shot notes_pull for humans
 |   |-- commit/              commit|c: one-shot notes_commit for humans
+|   |-- login/               login, logout and space: browser device login,
+|   |                        stored account key, default space, revocation
 |   `-- version/             version|v: the exact "slivingdoc <semver>" line
 |-- release_test.go          release layer: dependency baselines, checksum
 |                            grammar, release reference, built binary
@@ -181,15 +186,22 @@ slivingdoc/
     |   `-- fake/            deterministic in-memory ObjectStore
     |-- s3store/             the ONLY production AWS SDK package: S3 adapter, prefix
     |                        join, multipart upload, semantic error mapping
-    |-- httpstore/           hosted storage API adapter (SLIVINGDOC_TOKEN):
+    |-- credentials/         the stored logins: strict versioned
+    |                        credentials.json (0600, temp file + rename)
+    |-- sitelogin/           client of the site's CLI login routes (start,
+    |   |                    key polling, spaces, space-token minting, revoke)
+    |   `-- sitetest/        test-only reference site with scripted approvals
+    |-- httpstore/           hosted storage API adapter (SLIVINGDOC_TOKEN or a
+    |                        stored login):
     |   |                    bearer token, space, status-to-semantic error
     |   |                    mapping, access check instead of the probe
     |   `-- gatewaytest/     test-only reference server of the hosted API
     |-- strictjson/          neutral strict JSON value tree (manifest and
     |                        state.json)
-    |-- tests3/              testcontainers S3 backend helper (currently
-    |                        SeaweedFS) (one container per `go test`
-    |                        invocation)
+    |-- tests3/              S3 backend container over the Docker Engine
+    |                        API (currently SeaweedFS): one per test
+    |                        process, or one leased container under
+    |                        `make test`
     |-- pathutil/            ExpandHome: ~ expansion for notebook paths and roots
     |-- mcp/                 stdio MCP server: the two strict tool schemas,
     |                        strict decoding, self-contained safe error text,
@@ -254,7 +266,7 @@ Checkpoint and cleanup (synchronous inside the triggering commit, best-effort)
 
 `main.go` is one call: `os.Exit(cli.Run(ctx, os.Args, git2.New(), opts))`.
 `internal/cli` holds the command map (`serve|s`, `pull|p`, `commit|c`,
-`version|v`) and routes through `go_away_boilerplate/pkg/cmd`. Each `cmd/`
+`login`, `logout`, `space`, `version|v`) and routes through `go_away_boilerplate/pkg/cmd`. Each `cmd/`
 package implements `cmd.Command`. The router parses the selected command's
 flag set, then calls `Setup` and `Run`.
 
@@ -283,7 +295,8 @@ line ranges) with a nonzero exit. `commit` requires
    libgit2 is exactly the pinned v1.9.6 and refuses any other ABI.
 4. **Build the object store.** The `StoreFactory` seam builds the
    `internal/s3store` adapter, or the `internal/httpstore` adapter when
-   `SLIVINGDOC_TOKEN` is set; tests substitute the deterministic fake.
+   `SLIVINGDOC_TOKEN` or a stored login selects hosted mode (`--storage`,
+   architecture/login.md); tests substitute the deterministic fake.
 5. **Probe the store.** `storage.Probe` proves the endpoint honors
    `If-None-Match`, `If-Match`, and read-after-write. A proof recorded by
    the same version and store configuration within 24 hours
@@ -305,13 +318,37 @@ Flags beat environment variables, which beat defaults. The full table
 lives in [`architecture/running.md`](architecture/running.md) and in `HelpText` and
 `FlagReference` of
 `internal/app/config.go`, which `slivingdoc serve -h` prints — that code
-copy is the authoritative one. Behavior worth remembering: `--bucket` is
-required (it names the hosted space when `SLIVINGDOC_TOKEN` is set, and the
-token is read from the environment only), `--private-root` must not be at or
-below the workspace root, `--commit-retries` exhaustion is `REMOTE_BUSY`, and an invalid
-`--read-only-paths` or `--writable-paths` entry refuses startup before any
-native or S3 dependency loads — as does a path named by both settings,
-which is a configuration error rather than a precedence rule.
+copy is the authoritative one. Behavior worth remembering:
+
+- `--space` and `SLIVINGDOC_SPACE` are the hosted names of `--bucket` and
+  `SLIVINGDOC_BUCKET`: one setting, and both spellings with different
+  values are refused.
+- `--bucket` is required for S3. In hosted mode it is optional. A
+  `SLIVINGDOC_TOKEN` reaches one space, which `httpstore.DescribeToken`
+  reads from `GET /v1/token` (`app.resolveHostedSpace`); a space that is
+  given must equal it or startup is refused. On a server without
+  `GET /v1/token`, a given space is kept, and with none startup is
+  refused.
+- A stored login is an account key, sent only to the site that issued
+  it. `serve`, `pull` and `commit` mint one-hour tokens for one space at
+  that site and keep them in memory only; `serve` renews them. The space
+  is `--space`, then `SLIVINGDOC_SPACE`, then the default stored by
+  `slivingdoc space <name>`; with none, startup is refused. A minted token
+  is only sent to the login's endpoint.
+- The token comes from `SLIVINGDOC_TOKEN` or a stored login only, never a
+  flag. An environment token never reads `credentials.json`.
+- In `--storage auto`, an environment token beside `--endpoint`,
+  `AWS_ENDPOINT_URL` or `AWS_ENDPOINT_URL_S3` is refused. A stored login
+  wins over S3 when the space is the stored default, or when an explicit
+  space comes with no S3 setting at all; an explicit space plus any S3
+  setting is refused as ambiguous. architecture/login.md has the exact
+  table.
+- `--private-root` must not be at or below the workspace root.
+- `--commit-retries` exhaustion is `REMOTE_BUSY`.
+- An invalid `--read-only-paths` or `--writable-paths` entry refuses
+  startup before any native or S3 dependency loads, as does a path named
+  by both settings, which is a configuration error rather than a
+  precedence rule.
 
 The `serve`, `pull`, and `commit` commands share every flag. The
 subcommand comes first. `slivingdoc version` and `-h` on any command exit
@@ -438,7 +475,8 @@ An unrecognized internal error maps to retryable `STORAGE_FAILURE` rather
 than leaking. Two deliberate exceptions come from hosted storage
 (architecture/hosted-mode.md): `STORAGE_FAILURE` is not retryable for the
 account refusals a retry cannot change, and the hosted server's own
-message, sanitized and redacted, is appended to their message. That text
+message, sanitized and redacted, is appended to their message and to the
+retryable upload refusal of a renewed stored-login token. That text
 is untrusted server output in agent-facing results. Caller-facing text
 must never contain a credential, an S3 key, a private path, a Git object ID,
 or Git vocabulary.

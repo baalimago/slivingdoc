@@ -107,3 +107,6 @@ func assertSpecialDirUntouched(t *testing.T, dir string) {
 		t.Fatalf("valid note = %q (err %v), want the untouched fixture", data, err)
 	}
 }
+
+// mkfifo plants a FIFO at path, for the credentials file scenarios.
+func mkfifo(path string) error { return unix.Mkfifo(path, 0o600) }

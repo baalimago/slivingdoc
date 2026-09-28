@@ -246,9 +246,9 @@ type storeCheckReport struct {
 // store identity skips the probe, and a successful probe records a new proof
 // when proofs are enabled. A proof that cannot be written never fails
 // startup; the report carries the cause.
-func checkStoreWithProof(ctx context.Context, store storage.ObjectStore, proofs probeProofStore) (storeCheckReport, error) {
+func checkStoreWithProof(ctx context.Context, store storage.ObjectStore, cfg config, proofs probeProofStore) (storeCheckReport, error) {
 	if _, hosted := store.(accessChecker); hosted {
-		return storeCheckReport{outcome: storeAccessChecked}, checkStore(ctx, store)
+		return storeCheckReport{outcome: storeAccessChecked}, checkStore(ctx, store, cfg)
 	}
 	report := storeCheckReport{outcome: storeProbed}
 	if proofs.enabled() {
@@ -258,7 +258,7 @@ func checkStoreWithProof(ctx context.Context, store storage.ObjectStore, proofs 
 		}
 		report.proofErr = err
 	}
-	if err := checkStore(ctx, store); err != nil {
+	if err := checkStore(ctx, store, cfg); err != nil {
 		return report, err
 	}
 	if proofs.enabled() {

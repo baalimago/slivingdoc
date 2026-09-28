@@ -41,6 +41,11 @@ var (
 	ErrAccessDenied = errors.New("storage: access denied")
 	// ErrTooLarge reports an object larger than the store accepts.
 	ErrTooLarge = errors.New("storage: object too large")
+	// ErrCredentialRenewed reports a request the store refused because its
+	// short-lived credential expired or was replaced while it ran, and which
+	// could not be sent again: a streamed upload. It is no refusal of the
+	// credentials: the upload did not land, and a retry uses the new one.
+	ErrCredentialRenewed = errors.New("storage: the short-lived credential was renewed during the upload")
 )
 
 // Refusal carries the text a store wrote for the person running the

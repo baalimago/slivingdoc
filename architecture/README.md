@@ -40,8 +40,14 @@ the code and fix the doc in the same change (see
   compaction (`planCheckpoint`, `compactManifest`), shallow history,
   retention (`--retained-checkpoints`), and generation-fenced cleanup.
 - **[cli.md](./cli.md)**: `main.go`, `cli.Run` and the `cmd/serve`,
-  `pull`, `commit`, `version` commands, `app.Setup` to `Runtime`, the
+  `pull`, `commit`, `login`, `logout`, `space`, `version` commands, `app.Setup` to `Runtime`, the
   shutdown path, the CLI report and colour, `DEBUG_PERF`.
+- **[login.md](./login.md)**: `slivingdoc login`, `space` and `logout`
+  (the browser device flow and the account key, `internal/sitelogin`),
+  the credentials file and default spaces (`internal/credentials`),
+  minted space tokens, and `--storage auto|hosted|s3`: which store and
+  credential a process picks, the hosts a key or token may reach, and
+  the login's threat model.
 - **[mcp-server.md](./mcp-server.md)**: the two MCP tools, schemas and
   descriptions, `decodePull`/`decodeCommit`, success and error shaping,
   instructions, `mcpReqID` logging, SDK log demotion.
@@ -67,7 +73,8 @@ the code and fix the doc in the same change (see
   (addressing, conditional writes, multipart, error mapping, metadata
   headers, IAM permissions) and the `internal/tests3` container.
 - **[hosted-mode.md](./hosted-mode.md)**: `internal/httpstore`, the
-  hosted storage API adapter selected by `SLIVINGDOC_TOKEN`: settings,
+  hosted storage API adapter selected by `SLIVINGDOC_TOKEN` or a stored
+  login ([login.md](./login.md)): settings,
   the `CheckAccess` startup check, requests and redirects, the
   status-to-error mapping, retries, compaction of a full space, and the
   `gatewaytest` reference server.
@@ -112,8 +119,8 @@ the code and fix the doc in the same change (see
   conflicts.md → guarantees.md**.
 - Adding a storage backend: **storage.md → s3store.md or hosted-mode.md
   → testing.md**.
-- Working on hosted storage: **hosted-mode.md → storage.md → errors.md →
-  commit.md → checkpoints.md**.
+- Working on hosted storage: **hosted-mode.md → login.md → storage.md →
+  errors.md → commit.md → checkpoints.md**.
 - Adding a flag or command: **config.md → cli.md → running.md**.
 - Changing what an agent sees: **product-contract.md → mcp-server.md →
   errors.md**.

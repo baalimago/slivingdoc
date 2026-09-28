@@ -7,9 +7,11 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/baalimago/slivingdoc/internal/credentials"
 	"github.com/baalimago/slivingdoc/internal/git"
 	"github.com/baalimago/slivingdoc/internal/mcp"
 	"github.com/baalimago/slivingdoc/internal/notebook"
@@ -342,4 +344,48 @@ func containsCode(data []byte, want string) bool {
 		return false
 	}
 	return m["code"] == want
+}
+
+func TestLogStorageNamesTheStoreAndItsSource(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		cfg  config
+		env  map[string]string
+		want []string
+	}{
+		{"s3 at the AWS default", config{bucket: "b"}, nil, []string{"backend=s3", `endpoint="aws-default (SDK: env or profile)"`, "token=none"}},
+		{
+			"s3 at AWS_ENDPOINT_URL",
+			config{bucket: "b"},
+			map[string]string{"AWS_ENDPOINT_URL": "https://user:secret@minio.local/path"},
+			[]string{"backend=s3", `endpoint="https://minio.local (AWS_ENDPOINT_URL)"`},
+		},
+		{
+			"s3 at AWS_ENDPOINT_URL_S3 despite an empty --endpoint",
+			config{bucket: "b"},
+			map[string]string{"AWS_ENDPOINT_URL_S3": "https://s3.local", "AWS_ENDPOINT_URL": "https://minio.local"},
+			[]string{`endpoint="https://s3.local (AWS_ENDPOINT_URL_S3)"`},
+		},
+		{"s3 at a bad AWS_ENDPOINT_URL", config{bucket: "b"}, map[string]string{"AWS_ENDPOINT_URL": "http://[::1"}, []string{`endpoint="an unparsable URL (AWS_ENDPOINT_URL)"`}},
+		{"s3 at an AWS_ENDPOINT_URL without a scheme", config{bucket: "b"}, map[string]string{"AWS_ENDPOINT_URL": "user:secret@minio.local"}, []string{`endpoint="an unparsable URL (AWS_ENDPOINT_URL)"`}},
+		{"s3 at an IPv6 AWS_ENDPOINT_URL with a zone", config{bucket: "b"}, map[string]string{"AWS_ENDPOINT_URL": "https://[fe80::1%25u:p]:9000/x"}, []string{`endpoint="https://[fe80::1]:9000 (AWS_ENDPOINT_URL)"`}},
+		{"s3 at a scheme-relative AWS_ENDPOINT_URL", config{bucket: "b"}, map[string]string{"AWS_ENDPOINT_URL": "//u:p@minio.local"}, []string{`endpoint="an unparsable URL (AWS_ENDPOINT_URL)"`}},
+		{"s3 at its own endpoint", config{bucket: "b", endpoint: "https://s3.local"}, map[string]string{"AWS_ENDPOINT_URL": "https://minio.local"}, []string{"endpoint=https://s3.local"}},
+		{"hosted through the environment", config{bucket: "b", token: "t", endpoint: DefaultHostedEndpoint, tokenOrigin: originEnv}, nil, []string{"backend=hosted", "token=env"}},
+		{"hosted with the token's own space", config{token: "t", endpoint: DefaultHostedEndpoint, tokenOrigin: originEnv}, nil, []string{`space="the token's own"`}},
+		{"hosted through a login", config{bucket: "b", login: &credentials.Login{}, endpoint: DefaultHostedEndpoint, tokenOrigin: originLogin}, nil, []string{"backend=hosted", "token=login", "space=b"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf strings.Builder
+			logStorage(slog.New(slog.NewTextHandler(&buf, nil)), tt.cfg, tt.env)
+			for _, want := range tt.want {
+				if !strings.Contains(buf.String(), want) {
+					t.Fatalf("record = %q, want %q", buf.String(), want)
+				}
+			}
+			if strings.Contains(buf.String(), "secret") {
+				t.Fatalf("record = %q leaks the endpoint's password", buf.String())
+			}
+		})
+	}
 }
