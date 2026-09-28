@@ -3,25 +3,97 @@ Test coverage: 86.1% 😍👌
 [![slivingdoc banner](img/banner.svg)](https://slivingdoc.dev)
 
 <div align="center">
-  <p>Shared notes for people and agents.</p>
+  <p><strong>Shared notes for your agents.</strong></p>
   <p>
-    Pull and commit through MCP or the CLI. slivingdoc merges
-    non-conflicting concurrent changes and stores the durable notebook in
-    your S3-compatible bucket.
+    Plain text files that many agents and people pull and commit at the
+    same time, with Git-style merges instead of overwrites. Store them
+    durably in your own S3-compatible bucket, or let
+    <a href="https://slivingdoc.dev">slivingdoc.dev</a> host them, free to
+    start.
+  </p>
+  <p>
+    <a href="https://slivingdoc.dev">Website</a> ·
+    <a href="https://slivingdoc.dev/docs/">Docs</a> ·
+    <a href="https://slivingdoc.dev/pricing/">Pricing</a> ·
+    <a href="architecture/README.md">Architecture</a>
   </p>
 </div>
 
+<p align="center">
+  <img src="img/demo.gif" width="800" alt="Two agents pull the same notes and edit different sections of plan.md. The second commits without pulling the first one's change, and both commits succeed; a pull shows both edits. Then both add a different line in the same place, and the second commit returns CONTENT_CONFLICT with conflict markers in the file.">
+</p>
+
+## Why
+
+You run several coding agents at once, such as a few Claude Code sessions
+next to Codex, and you want them to share what they learn. A `NOTES.md`
+committed next to the code ends in merge conflicts or lost edits, and a
+memory service often keeps the notes in a store you can't open in an
+editor. slivingdoc keeps
+the notes as ordinary files that agents edit with the tools they already
+have, and makes writing to them at the same time safe.
+
+It works without agents too. Colleagues, or your own machines, can share
+a folder of UTF-8 text files with two commands, `slivingdoc pull` and
+`slivingdoc commit`: like a simpler Git, with no repository to set up, no
+staging and no branches.
+
 ## Features
 
-- **Gitlike semantics:** `slivingdoc` uses terminology we (and agents) all know, designed for ease of use
-- **Merge-safe concurrent writes:** non-conflicting changes merge; overlapping edits return a conflict instead of being overwritten
-- **High speed processing:** the solution is quite simple conceptually, allowing for very high scale and parallelism
-- **Plug-and-play:** setup the bucket, point at it, and start syncing notes!
+- **Merge-safe concurrent writes:** non-conflicting changes merge;
+  overlapping edits return a conflict instead of being overwritten
+- **Plain files:** UTF-8 text in a directory, readable and editable with
+  any editor; no database, no embeddings
+- **Two operations:** `notes_pull` and `notes_commit` over MCP, and the same
+  `pull` and `commit` from the command line, so people share the files too
+- **Your bucket or ours:** any S3-compatible bucket that supports
+  conditional writes, or a hosted space at
+  [slivingdoc.dev](https://slivingdoc.dev)
+- **Read-only and writable paths:** keep shared instructions out of reach
+  of an agent's commits, or confine each agent to its own directory
+- **One binary:** Git merge semantics through a statically linked libgit2;
+  no Git executable, no daemon or database to run
 
 [`architecture/`](architecture/README.md) documents the contract behind
 these guarantees, one concern per file.
 
 ## Get started
+
+### Hosted (quickest)
+
+Sign in at [slivingdoc.dev](https://slivingdoc.dev) with GitHub or Google.
+The welcome steps name your space, create a token and show the snippet for
+your client (Claude Code, Claude Desktop, Cursor, Codex, or the CLI); later
+tokens come from the Tokens page. For Claude Code:
+
+```sh
+claude mcp add slivingdoc \
+  --env SLIVINGDOC_TOKEN=<your-api-token> \
+  -- npx -y slivingdoc serve
+```
+
+The free tier holds one space, 10 MB of notes and 250,000 requests a
+month; each extra 100 MB, 250,000 requests or space costs $1 a month
+([pricing](https://slivingdoc.dev/pricing/)). The endpoint defaults to the
+hosted service, so the site's `--endpoint` flag is optional.
+
+Or, from the command line, share notes with colleagues:
+
+```sh
+export SLIVINGDOC_TOKEN=<your-api-token>
+npx -y slivingdoc pull notes
+echo "hello from $(hostname)" > notes/hello.md
+npx -y slivingdoc commit notes -m "First note"
+```
+
+To bring in colleagues, make an invite link on your space's Members page
+at slivingdoc.dev, with Read or Read and write access. Each colleague opens
+the link, signs in, presses Join, makes their own token for the space, and
+pulls into a new or empty folder. Everyone pulls the same notes, and those
+with Read and write access commit to them. Their requests and storage count
+against your plan. [Hosted storage](#hosted-storage) below has the details.
+
+### Self-hosted, on your own bucket
 
 Connect an MCP host or use the CLI directly:
 
@@ -75,72 +147,20 @@ The token replaces the AWS settings and names the space; `--region` and
 
 ## How it works
 
-The server exposes two MCP tools over stdio:
-
-| Tool           | Inputs                       | Success result |
-| -------------- | ---------------------------- | -------------- |
-| `notes_pull`   | `path` (optional)            | `OK`           |
-| `notes_commit` | `message`, `path` (optional) | `OK`           |
-
-No path needed. Each server takes its own private notebook directory and
-tells the agent where it is, in the server instructions and in every tool
-result, so nothing has to be configured or coordinated between agents. Pass
-`--workspace-root` instead when you want a fixed directory that humans and
-agents share, and `path` then addresses any directory below it.
-
-`notes_pull` writes the current notebook into your directory.
-`notes_commit` publishes your changes and incorporates concurrent
-non-conflicting changes. Between calls there is no protocol at all —
-agents edit the files with the tools they already have, and humans can
-write in the same directory with any editor. The next commit carries
-their changes too.
-
-Humans can also drive both operations directly, without an MCP host. The
-path is optional and defaults to the working directory; a relative path
-resolves against it:
-
-```text
-slivingdoc pull notes
-# edit UTF-8 text files under notes/
-slivingdoc commit notes -m "meeting summary"
-```
-
-Success prints the unified result report: the `OK` status, the accepted
-remote generation, per-file insertion and deletion counts, a totals
-trailer, and a `read-only: <entries>` trailer when the process has a
-configured read-only set. A domain error exits nonzero and prints a
-candid report: the status line (the error code, a middle dot, and the
-`reason` token), the message, every affected file with its reason and
-line ranges, a `next:` line naming the caller's next step, the retryable
-verdict, and the same read-only trailer when configured. Colour appears
-only on a real terminal and is disabled by any non-empty `NO_COLOR`.
-MCP errors provide the same essential fields in their text item, including a
-diagnostic ID for server-log correlation. An engine failure adds a plain-language
-detail when the engine could name the cause; otherwise the cause stays in the
-server log, which the diagnostic ID points at.
-
-Pass `--read-only-paths docs,faq.md` (or `SLIVINGDOC_READ_ONLY_PATHS`) to
-let a fleet of agents read those notebook paths but never change them: a
-commit that touches one is refused and the files are reset, while a human
-process started without the flag keeps full write access.
-
-### The git part
-
-Letting all agents write at once would work, but they would get overrun by race conditions.
-So `slivingdoc` has built-in git via [libgit2](https://github.com/libgit2/libgit2) which effectively
-does:
-
-1. `git pull`
-1. (potential conflict resolution locally)
-1. `git add .`
-1. `git commit -m "<agent message>"`
-1. `git push`
-1. (potential conflict resolution locally)
-
-All of these git operations are handled locally within a private mirror of the notes directory
-leaving a "streamlined" git sequence. This works due to two compromises, firstly that the local
-notes directory is prone to be changed on `notes_pull`, precedence goes to the remote state, leaving
-conflict markers. Secondly, the system only works for text (clean UTF-8).
+Each agent or person pulls the notebook into a plain directory, edits files
+with any tool, and commits. slivingdoc merges concurrent commits the way Git
+would, through a built-in libgit2, and returns `CONTENT_CONFLICT` with
+conflict markers in the file when edits overlap. The website has the
+details:
+[how pull and commit work](https://slivingdoc.dev/docs/concepts/how-it-works/),
+[using the CLI](https://slivingdoc.dev/docs/guides/cli/),
+[connecting an MCP host](https://slivingdoc.dev/docs/guides/mcp-hosts/),
+[the MCP tools](https://slivingdoc.dev/docs/reference/mcp-tools/),
+[resolving conflicts](https://slivingdoc.dev/docs/guides/conflicts/),
+[read-only and writable paths](https://slivingdoc.dev/docs/guides/path-policies/),
+and
+[sharing a directory with people](https://slivingdoc.dev/docs/guides/shared-directory/).
+[`architecture/`](architecture/README.md) holds the exact contract.
 
 ## Configuration
 
