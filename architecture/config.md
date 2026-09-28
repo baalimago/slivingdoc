@@ -32,12 +32,13 @@ app.Setup(engine, flags, opts) → setup(process)
         SLIVINGDOC_TOKEN non-empty (hosted) → endpoint: --endpoint | SLIVINGDOC_ENDPOINT | DefaultHostedEndpoint
         otherwise → region: --region | AWS_REGION | us-east-1; endpoint: --endpoint | AWS_ENDPOINT_URL_S3
         ephemeral && no root set → newSessionDir() → <session>/notebook, <session>/private
-        sharedPackCache → <cacheDir>/slivingdoc/pack-cache
+        cacheDir known → packCacheRoot = <cacheDir>/slivingdoc/pack-cache (else private cache)
         --log-level set → slogcolor.ParseLevels (fail fast)
       → config.finish(cwd)
           bucket required (optional with a token), ValidatePrefix, normalizeEndpoint,
           hosted ? validateHosted (space, token, https unless loopback) : region required,
-          absolute(roots), RootsOverlap checks, numeric bounds, resolvePolicy
+          absolute(roots), RootsOverlap (refuses the private root, falls back
+          for the pack-cache root), numeric bounds, resolvePolicy
   → config.serviceConfig() → NewService / StoreFactory
   → realStoreFactory → hosted ? httpstore.New(Config{Endpoint, Space: Bucket, Prefix, Token, UserAgent})
                               : s3store.New(Config{Bucket, Prefix, Region, Endpoint}, Options{ForcePathStyle})
@@ -57,7 +58,6 @@ app.Setup(engine, flags, opts) → setup(process)
 | Path style | `--path-style` | `SLIVINGDOC_PATH_STYLE` | `false` | `strconv.ParseBool`; unused when hosted |
 | Workspace root | `--workspace-root` | `SLIVINGDOC_WORKSPACE_ROOT` | serve with neither root configured: `<session>/notebook`; otherwise cwd | non-empty; made absolute |
 | Private root | `--private-root` | `SLIVINGDOC_PRIVATE_ROOT` | serve with neither root configured: `<session>/private`; otherwise `<user-cache-dir>/slivingdoc` | not at or below workspace root |
-| Shared pack cache | `--shared-pack-cache` | `SLIVINGDOC_SHARED_PACK_CACHE` | `false` | needs a user cache dir (checked in `Flags.resolve`); not at or below workspace root |
 | Commit retries | `--commit-retries` | `SLIVINGDOC_COMMIT_RETRIES` | 8 | 0..100 |
 | Checkpoint packs | `--checkpoint-packs` | `SLIVINGDOC_CHECKPOINT_PACKS` | 256 | at least 1 |
 | Retained checkpoints | `--retained-checkpoints` | `SLIVINGDOC_RETAINED_CHECKPOINTS` | 1 | 0..64 |
@@ -70,7 +70,7 @@ Not flags: `NO_COLOR` and `DEBUG_PERF` are read from the environment only ([logg
 
 **Precedence.** An explicitly set flag wins over the environment, which wins over the default (`resolveString`, `resolveBool`, `resolveInt`); exception: the S3 transport endpoint, see Gotchas. Each flag type records `set`, so an explicitly empty flag (`--read-only-paths=`) does not fall back to the environment; that is how a process clears an inherited value. An empty environment value counts as unset. For roots, an explicitly empty flag counts as configured and then fails the empty-root check (`resolveRoot`, `absolute`). A duplicated environment variable takes its last value (`environ`).
 
-**Value grammar.** Booleans use `strconv.ParseBool` (`boolFlag` also accepts the bare form: `--path-style`, `--shared-pack-cache`, `--log-timestamp`). Integers are unsigned decimal only: `parseUnsigned` rejects any sign or non-digit and bounds the value to 31 bits. Path-set values are comma-separated, trimmed, and empty pieces dropped (`splitPathEntries`).
+**Value grammar.** Booleans use `strconv.ParseBool` (`boolFlag` also accepts the bare form: `--path-style`, `--log-timestamp`). Integers are unsigned decimal only: `parseUnsigned` rejects any sign or non-digit and bounds the value to 31 bits. Path-set values are comma-separated, trimmed, and empty pieces dropped (`splitPathEntries`).
 
 **Bucket, prefix, endpoint.** `--bucket` names the S3 bucket; slivingdoc never creates or configures it. `--prefix` is empty or a slash-separated relative key prefix with no leading or trailing slash, empty segment, backslash, `.` or `..` segment (`ValidatePrefix`); one prefix holds one notebook, and the adapter joins it to protocol keys ([storage.md](./storage.md)). `--endpoint` must be an absolute `http`/`https` URL without user information, query or fragment; `normalizeEndpoint` lowercases scheme and host, removes a trailing slash and keeps a non-root path. A custom endpoint always uses path-style addressing; `--path-style` extends that to the default AWS endpoint (`s3store.New`).
 
@@ -82,9 +82,9 @@ Not flags: `NO_COLOR` and `DEBUG_PERF` are read from the environment only ([logg
 
 **Ephemeral session directory.** When `ProcessOptions.Ephemeral` is set (only `serve`) and neither root is configured, `resolve` calls `NewSessionDir` (default `os.MkdirTemp("", "slivingdoc-")`) and uses `<session>/notebook` and `<session>/private`. The random component keeps two servers apart; the durable notebook is the bucket. `Runtime.Close` removes the whole directory, and a refusal after creation removes it too. Configuring either root disables this: the workspace root then defaults to the startup cwd and the private root to `<user-cache-dir>/slivingdoc`, and neither is removed. `pull` and `commit` never take a session directory.
 
-**Roots.** Both roots and the pack-cache root become absolute and clean (`absolute`: `~` or `~/` expansion, then join to cwd). Without a resolvable user cache directory the private-root default degrades to `<cwd>/slivingdoc`, which overlaps a cwd workspace root and refuses startup; set `--private-root`. The private root and the shared pack-cache root must not be at or below the workspace root (`workspace.RootsOverlap`), because private state inside a visible directory would become notebook content. `workspace.Open` re-checks both.
+**Roots.** Both roots and the pack-cache root become absolute and clean (`absolute`: `~` or `~/` expansion, then join to cwd). Without a resolvable user cache directory the private-root default degrades to `<cwd>/slivingdoc`, which overlaps a cwd workspace root and refuses startup; set `--private-root`. The private root must not be at or below the workspace root, while a shared pack-cache root in that position falls back to the private cache (`workspace.RootsOverlap`), because private state inside a visible directory would become notebook content. `workspace.Open` re-checks both.
 
-**Shared pack cache.** When enabled, `packCacheRoot` is `<cacheDir>/slivingdoc/pack-cache`; each notebook identity gets `<sanitized bucket>-<sanitized prefix>-<16 hex of the identity digest>` below it (`SharedCacheDirName`; `sanitizeCacheComponent` lowercases, maps every non-`[a-z0-9]` to `-`, and truncates each part to 32). Enabling it without a resolvable user cache directory refuses startup. The same identity directory holds the recorded store compatibility proof `probe-ok.json` that lets a later process skip the startup probe (`config.probeProofs`, [storage.md](./storage.md)). See [workspace.md](./workspace.md).
+**Shared pack cache.** Always on: `packCacheRoot` is `<cacheDir>/slivingdoc/pack-cache`, and each notebook identity gets `<sanitized bucket>-<sanitized prefix>-<16 hex of the identity digest>` below it (`SharedCacheDirName`; `sanitizeCacheComponent` lowercases, maps every non-`[a-z0-9]` to `-`, and truncates each part to 32). There is no flag. Two cases keep the private per-workspace cache instead (`packCacheRoot` empty, `packCacheMode` says why, `setup` logs it at debug): no resolvable user cache directory (`packCacheNoUserDir`), and a shared directory at or below the workspace root, where it would become notebook content (`packCacheBelowWorkspace`, decided in `config.finish` with `RootsOverlap`). The same identity directory holds the recorded store compatibility proof `probe-ok.json` that lets a later process skip the startup probe (`config.probeProofs`, [storage.md](./storage.md)); without a shared cache there is no proof. See [workspace.md](./workspace.md).
 
 **Numeric bounds.** `--commit-retries` counts retries after the first CAS attempt; exhaustion is `REMOTE_BUSY`. Retry delay uses full jitter from an exponential ceiling starting at 25 ms, capped at 2 s (`notebook.defaultBackoffMin`/`defaultBackoffMax`). `--checkpoint-packs` is the active tail length that schedules a checkpoint; `--retained-checkpoints` is how many previous checkpoint generations the manifest keeps ([checkpoints.md](./checkpoints.md)). The bounds are the notebook's constants, so flag and notebook validation cannot drift.
 

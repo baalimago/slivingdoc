@@ -42,7 +42,7 @@ serve:  serve.Command.Setup → app.Setup(engine, flags, opts)
               runtimeLogger (only when cfg.logConfigured)
               engine.Open()                                        # pinned libgit2 check
               buildService → storeFactory(ctx, cfg)                # realStoreFactory → s3store.New | httpstore.New (token)
-                           → checkStoreWithProof (30 s, probeTimeout) # storage.Probe unless --shared-pack-cache holds a fresh
+                           → checkStoreWithProof (30 s, probeTimeout) # storage.Probe unless the shared pack cache holds a fresh
                                                                    # probe-ok.json (storage.md); CheckAccess for a hosted store
                                                                    # refusal: "app: INCOMPATIBLE_STORE: ..." or "app: hosted storage ..."
                            → NewService(engine, store, cfg.serviceConfig(), hooks)

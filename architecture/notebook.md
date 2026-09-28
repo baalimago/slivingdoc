@@ -10,8 +10,8 @@ Read this when: wiring a notebook, changing a default or range, adding a metric,
 |------|---------|
 | `internal/notebook/notebook.go` | `Workspace` (consumer-owned interface), `Config`, `New`, `Notebook`, defaults and ranges, `ValidateMessage`, `holdWorkspace`, `entryRecovery`, `applyLocal`, `failAfterAccept`, `mapLocalError`, `rejectMarkers`, `materializeTree`, stage constants |
 | `internal/notebook/pull.go` | `Pull`, `pinProtected`. See [pull.md](./pull.md) |
-| `internal/notebook/commit.go` | `Commit`, `attemptPublication`, `buildProposal`, `publish`, `enforcePolicy`. See [commit.md](./commit.md) |
-| `internal/notebook/remote.go` | `remoteState`, `acceptedState`, `readRemote`, `readRemoteStrict`, `loadMode`, `readCurrent`, `loadRemote`, `reuseAccepted`, `validateRemote`, `importRemote`, `prefetchPacks`, `ensurePack`, `cacheRead`, `cacheWrite`, `lookupPublication`, `recoverState` |
+| `internal/notebook/commit.go` | `Commit`, `attemptPublication`, `buildProposal`, `publish`, `enforcePolicy`. See [commit.md](./commit.md) , `engineFailed` |
+| `internal/notebook/remote.go` | `remoteState`, `acceptedState`, `readRemote`, `readRemoteStrict`, `loadMode`, `readCurrent`, `loadRemote`, `reuseAccepted` (`reuseVerdict`), `validateRemote` (`validationVerdict`, `verdictFor`), `importRemote` (`importMode`), `prefetchPacks`, `ensurePack`, `cacheRead`, `cacheWrite`, `lookupPublication`, `recoverState` |
 | `internal/notebook/checkpoint.go` | `runCheckpoint`, `compactManifest`, `cleanup`, `cleanupRoots`, `recordTail`. See [checkpoints.md](./checkpoints.md) |
 | `internal/notebook/result.go` | `Result{Generation, Stat}`, `diffStat` |
 | `internal/notebook/metrics.go` | `Metrics`: atomic counters and gauges |
@@ -34,13 +34,14 @@ Notebook.Pull(ctx)   → see pull.md
 Notebook.Commit(ctx, message) → see commit.md
   both: RecoveryRequired()? → entryRecovery → recoverState → RECOVERY_FAILURE (stage entry)
         readRemote → readCurrent → storage.DecodeManifest → loadRemote
-                     → reuseAccepted (head == baseline head: presence check of the head tree only)
-                     → else importRemote(importMissing): HasObject(head) per descriptor
+          reuseAccepted (head == baseline head): HasObject(each descriptor head)
+                     → ReadCommit(head) == baseline tree → git.ReadSnapshot(head tree) → done
+          else importRemote(importMissing): HasObject(head) per descriptor
                      → prefetchPacks → ensurePack (cache or ReadObject, verify)
-                     → validateRemote; on failure importRemote(importAll) once, validate again
                      → git.ImportPack(checkpoint) → git.MarkShallow(checkpoint head)
                      → git.ImportPack(each increment)
-                     → git.ValidateHistory → ReadCommit(head) → git.ReadSnapshot(head tree)
+               validateRemote: git.ValidateHistory → ReadCommit(head) → git.ReadSnapshot(head tree)
+                     → only when objects are missing: importRemote(importAll), validateRemote again
 ```
 
 ## Behavior

@@ -14,12 +14,12 @@ import (
 	"github.com/baalimago/slivingdoc/internal/strictjson"
 )
 
-// The store compatibility proof (architecture/storage.md): with
-// --shared-pack-cache, one successful probe of a store identity is recorded
-// below that identity's shared cache directory, and a later process of the
-// same slivingdoc version reuses the record instead of probing again until
-// it expires. The record proves a property of the endpoint, so it is keyed
-// by the endpoint's identity, never by a workspace.
+// The store compatibility proof (architecture/storage.md): one successful
+// probe of a store identity is recorded below that identity's shared
+// pack-cache directory, and a later process of the same slivingdoc version
+// reuses the record instead of probing again until it expires. The record
+// proves a property of the endpoint, so it is keyed by that endpoint's
+// identity and repeats its configuration, never by a workspace.
 const (
 	probeProofFile    = "probe-ok.json"
 	probeProofVersion = 1
@@ -49,8 +49,8 @@ type probedStore struct {
 }
 
 // probeProofStore locates, validates, and writes the proof of one store
-// identity. The zero value (no directory) disables proofs, which is the
-// configuration without --shared-pack-cache.
+// identity. The zero value (no directory) disables proofs, which is a
+// process without a shared pack cache.
 type probeProofStore struct {
 	dir     string
 	version string
@@ -83,7 +83,11 @@ func (s probeProofStore) check() (time.Time, error) {
 	if p.Slivingdoc != s.version {
 		return time.Time{}, fmt.Errorf("recorded proof is from slivingdoc %s", p.Slivingdoc)
 	}
-	if recorded := (probedStore{p.Endpoint, p.Region, p.Bucket, p.Prefix, p.PathStyle}); recorded != s.store {
+	recorded := probedStore{
+		endpoint: p.Endpoint, region: p.Region, bucket: p.Bucket,
+		prefix: p.Prefix, pathStyle: p.PathStyle,
+	}
+	if recorded != s.store {
 		return time.Time{}, errors.New("recorded proof is for another store configuration")
 	}
 	probedAt, err := time.Parse(time.RFC3339, p.ProbedAt)
@@ -189,10 +193,19 @@ func decodeProbeProof(data []byte) (probeProof, error) {
 		return probeProof{}, fmt.Errorf("unsupported version %d", ver.Num)
 	}
 	p := probeProof{Version: probeProofVersion}
-	for name, dst := range map[string]*string{
-		"slivingdoc": &p.Slivingdoc, "probedAt": &p.ProbedAt,
-		"endpoint": &p.Endpoint, "region": &p.Region, "bucket": &p.Bucket, "prefix": &p.Prefix,
+	// Field order is fixed so two missing fields always name the same one.
+	for _, f := range []struct {
+		name string
+		dst  *string
+	}{
+		{"slivingdoc", &p.Slivingdoc},
+		{"probedAt", &p.ProbedAt},
+		{"endpoint", &p.Endpoint},
+		{"region", &p.Region},
+		{"bucket", &p.Bucket},
+		{"prefix", &p.Prefix},
 	} {
+		name, dst := f.name, f.dst
 		v, ok := root.Field(name)
 		if !ok || v.Kind != strictjson.String {
 			return probeProof{}, fmt.Errorf("field %q is missing or has the wrong kind", name)

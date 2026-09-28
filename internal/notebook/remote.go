@@ -25,10 +25,6 @@ type remoteState struct {
 	generation uint64
 	head       git.OID
 	tree       git.OID
-	// reused marks a state served by reuseAccepted: the head was accepted
-	// before and only presence was re-checked, so an engine failure reading
-	// its history is a reason to reload strictly (architecture/pull.md).
-	reused bool
 }
 
 // acceptedState is the remote state of a validated manifest head.
@@ -171,10 +167,11 @@ const (
 // validated when it was recorded, and Git objects are immutable, so only
 // presence can have changed. It re-checks the presence of every descriptor
 // head (a pack import is atomic, so a present head proves its pack), the
-// head commit, the closure of its tree (exactly what a merge and a
-// materialization read), and records the checkpoint boundary; any gap is a
-// miss that sends the caller to the full import-and-validate path
-// (architecture/pull.md).
+// head commit, and that it names the baseline tree. It deliberately does not
+// walk or read the tree: every caller reads the objects it needs, and an
+// engine failure there drives one strict reload that validates and repairs
+// (Notebook.pull, Notebook.commit). Any gap here is a miss that sends the
+// caller to the full import-and-validate path (architecture/pull.md).
 func (n *Notebook) reuseAccepted(m storage.Manifest, etag storage.ETag) (remoteState, reuseVerdict) {
 	base := n.ws.Baseline()
 	if base.Head.IsZero() || base.Head != m.Head {
@@ -195,16 +192,14 @@ func (n *Notebook) reuseAccepted(m storage.Manifest, etag storage.ETag) (remoteS
 	if err != nil || commit.Tree != base.Tree {
 		return remoteState{}, reuseMiss
 	}
-	if err := git.ValidateTree(repo, commit.Tree); err != nil {
-		return remoteState{}, reuseMiss
-	}
-	if err := git.MarkShallow(repo, m.Checkpoint.Head); err != nil {
-		return remoteState{}, reuseMiss
-	}
+	// The boundary is deliberately not recorded here: only a validated
+	// history proves the manifest's checkpoint head is an ancestor of the
+	// accepted head, and a wrong graft would silently truncate every later
+	// walk. A handle whose graft table predates a boundary another process
+	// wrote therefore keeps walking past it until a strict load reloads the
+	// table, which the commit retry forces (architecture/pull.md).
 	n.recordTail(m)
-	st := acceptedState(m, etag, commit.Tree)
-	st.reused = true
-	return st, reuseHit
+	return acceptedState(m, etag, commit.Tree), reuseHit
 }
 
 // validationVerdict classifies a validateRemote failure so loadRemote
@@ -215,26 +210,41 @@ const (
 	// validationOK means the accepted state is complete and valid.
 	validationOK validationVerdict = iota
 	// validationObjectsMissing means a commit, tree, or blob of the accepted
-	// history is absent or unreadable in the repository: re-importing the
-	// verified packs can repair it.
+	// history is absent from or unreadable in the repository
+	// (git.ErrObjectMissing): re-importing the verified packs can repair it.
 	validationObjectsMissing
 	// validationContentInvalid means the head tree is present but is not
 	// valid notebook state; no import changes that.
 	validationContentInvalid
 )
 
+// verdictFor separates the two validation failures the repository can
+// produce: an object it cannot supply (repairable by re-importing the
+// verified packs) from stored state that breaks a notebook content rule,
+// which no import changes. A blob is proven by presence during the history
+// walk and read during the snapshot read, so only the snapshot read meets a
+// present-but-unreadable object.
+func verdictFor(err error) validationVerdict {
+	if errors.Is(err, git.ErrObjectMissing) {
+		return validationObjectsMissing
+	}
+	return validationContentInvalid
+}
+
 // validateRemote proves the imported history from the head down to the
 // shallow boundary and the head tree's text, then returns the remote state.
 func (n *Notebook) validateRemote(m storage.Manifest, etag storage.ETag) (remoteState, validationVerdict, error) {
 	if err := git.ValidateHistory(n.ws.Repo(), m.Head, m.Checkpoint.Head); err != nil {
-		return remoteState{}, validationObjectsMissing, storageIntegrity(ReasonHistoryInvalid, err, "accepted state is incomplete")
+		return remoteState{}, verdictFor(err), storageIntegrity(ReasonHistoryInvalid, err, "accepted state is incomplete")
 	}
+	// A head the manifest names that cannot be read is an object failure,
+	// never a content rule: the commit either is not there or is damaged.
 	commit, err := n.ws.Repo().ReadCommit(m.Head)
 	if err != nil {
 		return remoteState{}, validationObjectsMissing, storageIntegrity(ReasonHistoryInvalid, err, "accepted state %s is unreadable", m.Head)
 	}
 	if _, err := git.ReadSnapshot(n.ws.Repo(), commit.Tree); err != nil {
-		return remoteState{}, validationContentInvalid, storageIntegrity(ReasonHistoryInvalid, err, "accepted state is not valid notebook text")
+		return remoteState{}, verdictFor(err), storageIntegrity(ReasonHistoryInvalid, err, "accepted state is not valid notebook text")
 	}
 	n.recordTail(m)
 	return acceptedState(m, etag, commit.Tree), validationOK, nil

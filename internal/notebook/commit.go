@@ -77,10 +77,12 @@ func (n *Notebook) commit(ctx context.Context, message string) (Result, error) {
 	for attempt := 1; ; attempt++ {
 		casLost, result, err := n.attemptPublication(ctx, message, baseTree, localTree, attemptStart, mode)
 		if err != nil && mode == loadReusing && engineFailed(err) {
-			// The reused accepted state may hide damage below its head tree
-			// that only the history walk of the export meets. One strict
-			// attempt reloads, validates, and repairs the repository before
-			// the failure is final (architecture/pull.md).
+			// An attempt that could have been served from the accepted head
+			// may have met damage the presence sweep cannot see, or a stale
+			// shallow graft table. One strict attempt reloads, validates, and
+			// repairs the repository before the failure is final; it costs one
+			// wasted attempt when the reuse had already missed
+			// (architecture/pull.md).
 			mode = loadStrict
 			attempt--
 			continue

@@ -86,7 +86,7 @@ func ReadSnapshot(repo Repository, tree OID) (Snapshot, error) {
 func walkTree(repo Repository, tree OID, prefix string, files *[]File) error {
 	entries, err := repo.ReadTree(tree)
 	if err != nil {
-		return fmt.Errorf("tree %s: %w", tree, err)
+		return unreadable(err, "tree %s", tree)
 	}
 	for _, e := range entries {
 		path := prefix + e.Name
@@ -98,7 +98,7 @@ func walkTree(repo Repository, tree OID, prefix string, files *[]File) error {
 		case ModeBlob:
 			data, err := repo.ReadBlob(e.ID)
 			if err != nil {
-				return fmt.Errorf("blob %q (%s): %w", path, e.ID, err)
+				return unreadable(err, "blob %q (%s)", path, e.ID)
 			}
 			*files = append(*files, File{Path: path, Data: data})
 		default:

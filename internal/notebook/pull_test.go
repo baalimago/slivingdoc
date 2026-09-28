@@ -117,7 +117,7 @@ func TestPullDownloadsOnlyMissingPacks(t *testing.T) {
 	writeLocal(t, w, map[string]string{"a.md": "v1"})
 	pullOK(t, nb)
 	commitOK(t, nb, "first")
-	reader, _, _ := newNotebook(t, nbConfig{store: store, ids: &testIDSource{}})
+	reader, _, _ := newNotebook(t, nbConfig{store: store, ids: &testIDSource{n: readerIDBase}})
 
 	// First pull of a cold reader: current plus the checkpoint pack.
 	getsAfterCommit := store.Calls(fake.OpGet)
@@ -151,7 +151,7 @@ func TestPullCacheCorruptionForcesFreshDownload(t *testing.T) {
 	pullOK(t, nb)
 	commitOK(t, nb, "first")
 	m := readManifest(t, store)
-	reader, rw, _ := newNotebook(t, nbConfig{store: store, ids: &testIDSource{}})
+	reader, rw, _ := newNotebook(t, nbConfig{store: store, ids: &testIDSource{n: readerIDBase}})
 	cachePath := filepath.Join(rw.CacheDir(), m.Checkpoint.SHA256.String())
 	if err := os.MkdirAll(rw.CacheDir(), 0o700); err != nil {
 		t.Fatalf("create cache dir: %v", err)
@@ -365,7 +365,7 @@ func TestPullPackGetFailureLeavesBaselineUnchanged(t *testing.T) {
 	if err := store.DeleteObjects(context.Background(), []string{m.Checkpoint.Key.String()}); err != nil {
 		t.Fatalf("DeleteObjects() = %v", err)
 	}
-	reader, rw, _ := newNotebook(t, nbConfig{store: store, ids: &testIDSource{}})
+	reader, rw, _ := newNotebook(t, nbConfig{store: store, ids: &testIDSource{n: readerIDBase}})
 	writeLocal(t, rw, map[string]string{"local.md": "mine"})
 	baselineBefore := rw.Baseline()
 	before := localSnapshot(t, rw)
@@ -396,7 +396,7 @@ func TestPullCorruptPackRejected(t *testing.T) {
 	if err := store.PutObject(context.Background(), m.Checkpoint.Key.String(), strings.NewReader("garbage pack bytes"), storage.Metadata{}); err != nil {
 		t.Fatalf("corrupt pack: %v", err)
 	}
-	reader, rw, _ := newNotebook(t, nbConfig{store: store, ids: &testIDSource{}})
+	reader, rw, _ := newNotebook(t, nbConfig{store: store, ids: &testIDSource{n: readerIDBase}})
 	baselineBefore := rw.Baseline()
 
 	assertErrorCode(t, errOnly(reader.Pull(context.Background())), CodeStorageIntegrity)
@@ -881,7 +881,7 @@ func TestPullRepairsValidationFailureByFullReimport(t *testing.T) {
 	writeLocal(t, w, map[string]string{"a.md": "v1"})
 	pullOK(t, nb)
 	commitOK(t, nb, "first")
-	reader, rw, _ := newNotebook(t, nbConfig{store: store, ids: &testIDSource{}})
+	reader, rw, _ := newNotebook(t, nbConfig{store: store, ids: &testIDSource{n: readerIDBase}})
 	pullOK(t, reader)
 
 	repo, ok := rw.Repo().(*fakeRepository)
@@ -928,7 +928,7 @@ func TestPullRepairsAncestorLossBelowReusedHead(t *testing.T) {
 	commitOK(t, nb, "first")
 	writeLocal(t, w, map[string]string{"b.md": "v2"})
 	commitOK(t, nb, "second")
-	reader, rw, _ := newNotebook(t, nbConfig{store: store, ids: &testIDSource{}})
+	reader, rw, _ := newNotebook(t, nbConfig{store: store, ids: &testIDSource{n: readerIDBase}})
 	pullOK(t, reader)
 
 	m := readManifest(t, store)
@@ -945,4 +945,148 @@ func TestPullRepairsAncestorLossBelowReusedHead(t *testing.T) {
 	}
 	writeLocal(t, rw, map[string]string{"c.md": "v3"})
 	commitOK(t, reader, "third")
+}
+
+// readerIDBase starts a second notebook's deterministic publication IDs
+// well past the writer's, so a reader that publishes can never reuse an ID
+// the manifest already binds to another commit.
+const readerIDBase = 1000
+
+// breakBlobRead makes one blob of the reader's repository present but
+// unreadable: HasObject answers from the raw map and still says yes, while
+// ReadBlob fails. It is the damage class a presence check cannot see, and
+// the one an engine reports for a corrupt object inside an intact pack.
+func breakBlobRead(t *testing.T, w *workspace.Workspace, content string) (*fakeRepository, git.OID) {
+	t.Helper()
+	repo, ok := w.Repo().(*fakeRepository)
+	if !ok {
+		t.Fatalf("repository is %T, want the fake", w.Repo())
+	}
+	blob, err := repo.WriteBlob([]byte(content))
+	if err != nil {
+		t.Fatalf("WriteBlob() = %v", err)
+	}
+	delete(repo.data.blobs, blob)
+	if present, err := repo.HasObject(blob); err != nil || !present {
+		t.Fatalf("broken blob presence = %v, %v; want it still present", present, err)
+	}
+	return repo, blob
+}
+
+// TestCommitRepairsUnreadableObject proves the repair covers an object the
+// store still lists but can no longer supply, which a presence check cannot
+// see: the history walk proves blobs by presence, so only the snapshot read
+// meets it. Deleting the file locally is what stops the scan from rewriting
+// the object, and the commit's change summary still reads the accepted tree
+// that holds it. Classifying that failure as content damage instead would
+// leave every later commit broken for good (architecture/pull.md).
+func TestCommitRepairsUnreadableObject(t *testing.T) {
+	store := fake.New("")
+	nb, w, _ := newNotebook(t, nbConfig{store: store, ids: &testIDSource{}})
+	writeLocal(t, w, map[string]string{"a.md": "v1", "b.md": "v2"})
+	pullOK(t, nb)
+	commitOK(t, nb, "first")
+	reader, rw, _ := newNotebook(t, nbConfig{store: store, ids: &testIDSource{n: readerIDBase}})
+	pullOK(t, reader)
+
+	repo, blob := breakBlobRead(t, rw, "v1")
+	removeLocal(t, rw, "a.md")
+
+	res := commitOK(t, reader, "drop a")
+	if res.Generation != 2 {
+		t.Fatalf("generation = %d, want 2", res.Generation)
+	}
+	if data, err := repo.ReadBlob(blob); err != nil || string(data) != "v1" {
+		t.Fatalf("blob after the commit = %q, %v; want it re-imported", data, err)
+	}
+	if got, want := localSnapshot(t, rw), map[string]string{"b.md": "v2"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("L after the commit = %v, want %v", got, want)
+	}
+}
+
+// TestCommitStrictRetryRepairsReusedState proves the commit retry. The
+// accepted-head fast path checks every descriptor head and reads the head
+// tree, so the damage it cannot see is an ancestor object no longer
+// reachable from the head tree — here the root tree of the first generation,
+// after the file it held was deleted. The export walks that history and
+// fails; the commit then reloads strictly once, which validates, repairs,
+// and publishes, without spending a CAS retry (architecture/pull.md).
+func TestCommitStrictRetryRepairsReusedState(t *testing.T) {
+	store := fake.New("")
+	nb, w, _ := newNotebook(t, nbConfig{store: store, ids: &testIDSource{}})
+	writeLocal(t, w, map[string]string{"a.md": "v1"})
+	pullOK(t, nb)
+	commitOK(t, nb, "first")
+	firstTree := readManifest(t, store).Checkpoint.Head
+
+	writeLocal(t, w, map[string]string{"b.md": "v2"}) // a.md is gone from L
+	commitOK(t, nb, "second")
+	reader, rw, _ := newNotebook(t, nbConfig{store: store, ids: &testIDSource{n: readerIDBase}})
+	pullOK(t, reader)
+
+	repo, ok := rw.Repo().(*fakeRepository)
+	if !ok {
+		t.Fatalf("repository is %T, want the fake", rw.Repo())
+	}
+	root, err := repo.ReadCommit(firstTree)
+	if err != nil {
+		t.Fatalf("ReadCommit(first) = %v", err)
+	}
+	// The first generation's tree is an ancestor object the head tree does
+	// not reach, so the fast path cannot see it go.
+	delete(repo.data.trees, root.Tree)
+	delete(repo.data.raw, root.Tree)
+
+	writeLocal(t, rw, map[string]string{"b.md": "v2", "c.md": "v3"})
+	res := commitOK(t, reader, "third")
+
+	if res.Generation != 3 {
+		t.Fatalf("generation = %d, want 3", res.Generation)
+	}
+	if present, err := repo.HasObject(root.Tree); err != nil || !present {
+		t.Fatalf("ancestor tree after the commit: present=%v err=%v; want it re-imported", present, err)
+	}
+	// One strict reload, not a CAS retry: exactly one increment per commit.
+	if m := readManifest(t, store); len(m.Increments) != 2 {
+		t.Fatalf("increments = %d, want one per publication", len(m.Increments))
+	}
+}
+
+// TestPullStrictRetryRepairsReusedState proves the pull retry, the mirror of
+// the commit one: the merge needs the accepted tree object itself, which the
+// scan cannot rewrite once the visible directory differs from it, so a tree
+// the store can no longer supply fails the merge. One strict reload
+// validates, re-imports and repairs, and the pull reports the accepted state
+// (architecture/pull.md).
+func TestPullStrictRetryRepairsReusedState(t *testing.T) {
+	store := fake.New("")
+	nb, w, _ := newNotebook(t, nbConfig{store: store, ids: &testIDSource{}})
+	writeLocal(t, w, map[string]string{"a.md": "v1", "b.md": "v2"})
+	pullOK(t, nb)
+	commitOK(t, nb, "first")
+	reader, rw, _ := newNotebook(t, nbConfig{store: store, ids: &testIDSource{n: readerIDBase}})
+	pullOK(t, reader)
+
+	repo, ok := rw.Repo().(*fakeRepository)
+	if !ok {
+		t.Fatalf("repository is %T, want the fake", rw.Repo())
+	}
+	head := rw.Baseline().Tree
+	delete(repo.data.trees, head)
+	if present, err := repo.HasObject(head); err != nil || !present {
+		t.Fatalf("broken tree presence = %v, %v; want it still present", present, err)
+	}
+	// L now differs from the accepted tree, so the scan rebuilds another
+	// tree and the merge has to read the accepted one.
+	removeLocal(t, rw, "a.md")
+
+	pullOK(t, reader)
+	if _, err := repo.ReadTree(head); err != nil {
+		t.Fatalf("accepted tree after the pull = %v; want it re-imported", err)
+	}
+	// The local deletion is an unpublished local change, so the merge keeps
+	// it: the repair restores the object, never the caller's edit.
+	if got, want := localSnapshot(t, rw), map[string]string{"b.md": "v2"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("L after the pull = %v, want %v", got, want)
+	}
 }

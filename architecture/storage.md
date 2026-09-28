@@ -13,7 +13,7 @@ Read this when: implementing a new `ObjectStore` backend (this is the seam), add
 | `internal/storage/key.go` | `PackKind` (`KindCheckpoint`, `KindIncrement`), `Key` + `String`/`MarshalJSON`, `ParseKey`, `ValidatePrefix`, `JoinKey`, `ErrInvalidKey`, `ErrInvalidPrefix` |
 | `internal/storage/manifest.go` | `CurrentKey`, `Manifest`, `Checkpoint`, `Increment`, `Retained`, `DecodeManifest`, `EncodeManifest`, `validateManifest`, `checkDescriptorKey`, `ErrIntegrity` |
 | `internal/storage/probe.go` | `Probe` (startup compatibility proof) |
-| `internal/app/probeproof.go` | `checkStoreWithProof`, `probeProofStore` (the recorded proof that stands in for the probe with `--shared-pack-cache`) |
+| `internal/app/probeproof.go` | `checkStoreWithProof`, `probeProofStore` (the recorded proof in the shared pack cache that stands in for the probe) |
 | `internal/storage/upload.go` | `UploadUnique` (ambiguous-put resolution), `VerifyObject` (streamed size + SHA-256 proof) |
 | `internal/storage/sha256.go` | `SHA256`, `ParseSHA256` (canonical lowercase 64-hex), `ErrInvalidSHA256` |
 | `internal/storage/uuid.go` | `UUID`, `NewUUIDv7`, `ParseUUIDv7` (canonical lowercase v7, RFC 4122 variant), `ErrInvalidUUID` |
@@ -31,8 +31,8 @@ Consumers: `internal/notebook/remote.go` (`readCurrent`, `readRemote`), `interna
 ```text
 startup:  app.buildService → storeFactory → checkStoreWithProof
             store has CheckAccess (hosted) → CheckAccess instead of the probe (hosted-mode.md)
-            --shared-pack-cache and a fresh probe-ok.json of this identity → no probe (see Probe below)
-            otherwise → storage.Probe(ctx, store), then record probe-ok.json when the flag is on:
+            a fresh probe-ok.json of this identity in the shared pack cache → no probe (see Probe below)
+            otherwise → storage.Probe(ctx, store), then record probe-ok.json:
             CreateObject(probe/<uuid>) → CreateObject again (want ErrPreconditionFailed)
             → ReadObject (bytes + ETag) → ReplaceObject("wrong-etag") (want ErrPreconditionFailed)
             → ReadObject (unchanged) → ReplaceObject(etag) (new ETag) → ReadObject (new bytes)
@@ -113,7 +113,7 @@ S3 holds no bare repository and no `.git` directory. Protocol keys are relative 
 
 **Probe.** `Probe` uses a fresh `probe/<uuidv7>` key and proves `If-None-Match: *` (second create fails), read-after-create with a non-empty ETag, `If-Match` (a wrong ETag fails without mutation), a matching replace yields a new ETag, and immediate read-after-write. Any deviation returns `ErrIncompatible`; an operational failure wraps both `ErrIncompatible` and its cause, so the startup diagnostic names the real reason. The key is deleted on every path (`defer`), and a denied delete does not fail startup. Bucket versioning is not required.
 
-**Recorded proof.** The probe proves a property of the endpoint, not of a process, so with `--shared-pack-cache` a successful probe is recorded as `probe-ok.json` (`{"version":1,"slivingdoc":"<version>","probedAt":"<RFC 3339 UTC>"}`) below the identity's shared pack-cache directory (`internal/app/probeproof.go`, `checkStoreWithProof`). The record repeats the endpoint, region, bucket, prefix, and `--path-style` it proved, and a later process with the same values and slivingdoc version reuses a record younger than 24 hours (`probeProofTTL`) and makes no store request at startup. The proof binds the store configuration, not the credentials: a credential that stopped working is refused by the first real request instead of at startup ([s3store.md](./s3store.md)). Reusing the proof also means that process never audits the remote packs it already holds; a cold reader remains the detector of a corrupt remote pack ([pull.md](./pull.md)). A record that is absent, strictly undecodable, from another version or store configuration, expired, or dated in the future sends startup back to the live probe, which then writes a fresh record; a record that cannot be written is a warning, never a refusal. Without the flag every process probes. A hosted store is unaffected: its `CheckAccess` runs every time. `INCOMPATIBLE_STORE` is still proved once per distinct store before any real write.
+**Recorded proof.** The probe proves a property of the endpoint, not of a process, so a successful probe is recorded as `probe-ok.json` (`{"version":1,"slivingdoc":"<version>","probedAt":"<RFC 3339 UTC>","endpoint":"…","region":"…","bucket":"…","prefix":"…","pathStyle":false}`, every field required) below the identity's shared pack-cache directory (`internal/app/probeproof.go`, `checkStoreWithProof`). The record repeats the endpoint, region, bucket, prefix, and `--path-style` it proved, and a later process with the same values and slivingdoc version reuses a record younger than 24 hours (`probeProofTTL`) and makes no store request at startup. The proof binds the store configuration, not the credentials: a credential that stopped working is refused by the first real request instead of at startup ([s3store.md](./s3store.md)). Reusing the proof also means that process never audits the remote packs it already holds; a cold reader remains the detector of a corrupt remote pack ([pull.md](./pull.md)). A record that is absent, strictly undecodable, from another version or store configuration, expired, or dated in the future sends startup back to the live probe, which then writes a fresh record; a record that cannot be written is a warning, never a refusal. A process without a shared pack cache ([config.md](./config.md)) probes every time. A hosted store is unaffected: its `CheckAccess` runs every time. `INCOMPATIBLE_STORE` is still proved once per distinct store before any real write.
 
 ## Implementing a new backend
 

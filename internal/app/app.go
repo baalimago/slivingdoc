@@ -281,6 +281,15 @@ func setup(p process) (*Runtime, error) {
 		return nil, fmt.Errorf("app: open native engine: %w", err)
 	}
 	logger.Debug("native engine open", "pinned", true)
+	// Logged before the store check: without a shared cache there is no
+	// recorded proof, which is what explains a probe on every start — and a
+	// refused check returns before this point.
+	switch cfg.packCache {
+	case packCacheNoUserDir:
+		logger.Debug("shared pack cache unavailable", "reason", "no user cache directory")
+	case packCacheBelowWorkspace:
+		logger.Debug("shared pack cache unavailable", "reason", "pack cache directory is at or below the workspace root")
+	}
 	svc, resolved, check, err := buildService(p, cfg)
 	if err != nil {
 		p.engine.Close()

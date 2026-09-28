@@ -41,7 +41,7 @@ func ExportIncrement(repo Repository, head, base OID) (Pack, error) {
 func ExportCheckpoint(repo Repository, head OID) (Pack, error) {
 	commit, err := repo.ReadCommit(head)
 	if err != nil {
-		return Pack{}, fmt.Errorf("git: export checkpoint: %w", err)
+		return Pack{}, unreadable(err, "git: export checkpoint")
 	}
 	set := map[OID]struct{}{head: {}}
 	if err := treeClosure(repo, commit.Tree, set); err != nil {
@@ -101,7 +101,7 @@ func ValidateHistory(repo Repository, head, shallow OID) error {
 		seen[id] = struct{}{}
 		commit, err := repo.ReadCommit(id)
 		if err != nil {
-			return fmt.Errorf("git: validate history: commit %s: %w", id, err)
+			return unreadable(err, "git: validate history: commit %s", id)
 		}
 		if err := treeClosureValidate(repo, commit.Tree, seen); err != nil {
 			return fmt.Errorf("git: validate history: commit %s: %w", id, err)
@@ -111,22 +111,10 @@ func ValidateHistory(repo Repository, head, shallow OID) error {
 				if id == shallow {
 					continue // the declared boundary can name missing history
 				}
-				return fmt.Errorf("git: validate history: parent %s of %s unavailable: %w", parent, id, err)
+				return unreadable(err, "git: validate history: parent %s of %s unavailable", parent, id)
 			}
 			queue = append(queue, parent)
 		}
-	}
-	return nil
-}
-
-// ValidateTree verifies that every tree and blob of one tree closure is
-// present in the repository. It is the presence half of ValidateHistory for
-// a head whose history was already proven: consecutive reads of an
-// unchanged accepted state need the objects a merge and a materialization
-// will touch, not the commit chain below them (architecture/pull.md).
-func ValidateTree(repo Repository, tree OID) error {
-	if err := treeClosureValidate(repo, tree, map[OID]struct{}{}); err != nil {
-		return fmt.Errorf("git: validate tree: %w", err)
 	}
 	return nil
 }
@@ -173,7 +161,7 @@ func reachableFromCommit(repo Repository, head OID, includeParents bool) (map[OI
 		seen[id] = struct{}{}
 		commit, err := repo.ReadCommit(id)
 		if err != nil {
-			return nil, fmt.Errorf("commit %s: %w", id, err)
+			return nil, unreadable(err, "commit %s", id)
 		}
 		set[id] = struct{}{}
 		if err := treeClosure(repo, commit.Tree, set); err != nil {
@@ -200,7 +188,7 @@ func treeClosure(repo Repository, tree OID, set map[OID]struct{}) error {
 		seen[id] = struct{}{}
 		entries, err := repo.ReadTree(id)
 		if err != nil {
-			return fmt.Errorf("tree %s: %w", id, err)
+			return unreadable(err, "tree %s", id)
 		}
 		set[id] = struct{}{}
 		for _, e := range entries {
@@ -233,7 +221,7 @@ func treeClosureValidate(repo Repository, tree OID, seen map[OID]struct{}) error
 		seen[id] = struct{}{}
 		entries, err := repo.ReadTree(id)
 		if err != nil {
-			return fmt.Errorf("tree %s: %w", id, err)
+			return unreadable(err, "tree %s", id)
 		}
 		for _, e := range entries {
 			switch e.Mode {
@@ -245,7 +233,7 @@ func treeClosureValidate(repo Repository, tree OID, seen map[OID]struct{}) error
 				}
 				present, err := repo.HasObject(e.ID)
 				if err != nil {
-					return fmt.Errorf("blob %s: %w", e.ID, err)
+					return unreadable(err, "blob %s", e.ID)
 				}
 				if !present {
 					return fmt.Errorf("blob %s: %w", e.ID, ErrObjectMissing)

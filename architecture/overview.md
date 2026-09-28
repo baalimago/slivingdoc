@@ -22,7 +22,7 @@ Out of scope: a Git executable, `git-remote-s3`, `git2go`, a public Git remote, 
 | Term | Meaning |
 |------|---------|
 | L (local state) | The caller-controlled visible directory. Agents and humans edit it; slivingdoc rewrites it during calls. |
-| P (private state) | `<private-root>/<derived-key>/`: `repo/`, `state.json`, `operation.lock`, `pulled`, `staging/`, and `pack-cache/` (unless `--shared-pack-cache` moves it to a shared per-identity directory). Server-owned. |
+| P (private state) | `<private-root>/<derived-key>/`: `repo/`, `state.json`, `operation.lock`, `pulled`, `staging/`, and, only on a host without a user cache directory, `pack-cache/` (otherwise pack bytes live in the shared per-identity directory under the user cache). Server-owned. |
 | Accepted baseline | The remote state recorded in P (`workspace.Baseline`: generation, head, tree) that L's unpublished changes are relative to. |
 | R (remote state) | The accepted state indexed by the S3 object `current`. Unreferenced S3 objects are not part of R. |
 | Pack | An immutable Git pack file. |

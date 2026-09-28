@@ -12,7 +12,7 @@ Read this when: adding or changing a native operation, touching tree building, s
 | `internal/git/types.go` | `FileMode` (`ModeBlob` 100644, `ModeTree` 040000), `TreeEntry`, `Commit`, `CommitSpec`, `AuthorName`/`AuthorEmail`, `IndexEntry`, `MergeIndex`, `MergeFileResult`, `MarkerRange`, `Conflict`, `MergeResult`, `Snapshot`, `File`, `Pack` |
 | `internal/git/oid.go` | `ParseOID` (40 lowercase hex only), `IsZero`, `MarshalJSON`, `ErrInvalidOID` |
 | `internal/git/tree.go` | `BuildTree`, `ReadSnapshot`, `walkTree`, `EmptyTree`, `SortTreeEntries`, `treeEntryLess` |
-| `internal/git/pack.go` | `ExportIncrement`, `ExportCheckpoint`, `ImportPack`, `MarkShallow`, `ValidateHistory`, `ValidateTree`, `writePack`, `reachableFromCommit`, `treeClosure`, `treeClosureValidate` |
+| `internal/git/pack.go` | `ExportIncrement`, `ExportCheckpoint`, `ImportPack`, `MarkShallow`, `ValidateHistory`, `writePack`, `reachableFromCommit`, `treeClosure`, `treeClosureValidate` |
 | `internal/git/commit.go` | `CreateCommit`, `ValidateCommitMessage` |
 | `internal/git/merge.go` | `Merge`, `MaterializeTree`, `FindConflictBlocks`. See [conflicts.md](./conflicts.md) |
 | `internal/git/path.go` | `ValidatePath`, `validateSegment`, `isWindowsDeviceName`, `ValidateContent`, `ValidateSnapshot`, `ValidateFoldedDirectories`, `FoldedDirectoryPairs`, `PathCollisionError` |

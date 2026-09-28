@@ -59,7 +59,10 @@ func TestProbeProofRejects(t *testing.T) {
 		{name: "missing store field", data: `{"version":1,"slivingdoc":"1.2.3","probedAt":"2026-09-28T10:00:00Z"}`, now: at, want: "corrupt"},
 		{name: "bad time", data: `{"version":1,"slivingdoc":"1.2.3","probedAt":"yesterday",` + store + `}`, now: at, want: "corrupt"},
 		{name: "other version", data: `{"version":1,"slivingdoc":"9.9.9","probedAt":"2026-09-28T10:00:00Z",` + store + `}`, now: at, want: "from slivingdoc 9.9.9"},
+		{name: "other endpoint", data: record(`"endpoint":"https://other.example","region":"auto","bucket":"b","prefix":"p","pathStyle":true`), now: at, want: "another store"},
+		{name: "other region", data: record(`"endpoint":"https://s3.example","region":"eu-north-1","bucket":"b","prefix":"p","pathStyle":true`), now: at, want: "another store"},
 		{name: "other bucket", data: record(`"endpoint":"https://s3.example","region":"auto","bucket":"other","prefix":"p","pathStyle":true`), now: at, want: "another store"},
+		{name: "other prefix", data: record(`"endpoint":"https://s3.example","region":"auto","bucket":"b","prefix":"other","pathStyle":true`), now: at, want: "another store"},
 		{name: "other addressing", data: record(`"endpoint":"https://s3.example","region":"auto","bucket":"b","prefix":"p","pathStyle":false`), now: at, want: "another store"},
 		{name: "expired", data: valid, now: at.Add(probeProofTTL + time.Second), want: "expired"},
 		{name: "future", data: valid, now: at.Add(-time.Minute), want: "future"},
@@ -155,10 +158,10 @@ func TestCheckStoreWithProof(t *testing.T) {
 	}
 }
 
-// TestSetupReusesStoreProof drives the process body: with
-// --shared-pack-cache the second setup of one store identity makes no store
-// request, an expired record sends it back to the probe, and without the
-// flag every setup probes.
+// TestSetupReusesStoreProof drives the process body: the second setup of
+// one store identity makes no store request, an expired record sends it
+// back to the probe, and a host without a user cache directory probes every
+// time.
 func TestSetupReusesStoreProof(t *testing.T) {
 	cacheDir := t.TempDir()
 	var stores []*fake.Store
@@ -182,25 +185,37 @@ func TestSetupReusesStoreProof(t *testing.T) {
 		return s.Calls(fake.OpCreate) + s.Calls(fake.OpReplace) + s.Calls(fake.OpGet) + s.Calls(fake.OpDelete)
 	}
 
-	if got := start(t, "--shared-pack-cache"); got.Calls(fake.OpCreate) != 2 {
+	if got := start(t); got.Calls(fake.OpCreate) != 2 {
 		t.Fatalf("first setup probe creates = %d, want 2", got.Calls(fake.OpCreate))
 	}
 	proofs, err := filepath.Glob(filepath.Join(cacheDir, "slivingdoc", "pack-cache", "*", probeProofFile))
 	if err != nil || len(proofs) != 1 {
 		t.Fatalf("proof records = %v, %v; want exactly one", proofs, err)
 	}
-	if got := start(t, "--shared-pack-cache"); requests(got) != 0 {
+	if got := start(t); requests(got) != 0 {
 		t.Fatalf("second setup store requests = %d, want 0", requests(got))
 	}
-	if got := start(t); got.Calls(fake.OpCreate) != 2 {
-		t.Fatalf("setup without the flag probe creates = %d, want 2", got.Calls(fake.OpCreate))
+	noCacheDir := testProcess([]string{"SLIVINGDOC_BUCKET=bucket"}, "--private-root", t.TempDir())
+	noCacheDir.cacheDir = ""
+	noCacheDir.storeFactory = func(context.Context, config) (storage.ObjectStore, error) {
+		s := fake.New("")
+		stores = append(stores, s)
+		return s, nil
+	}
+	if rt, err := setup(noCacheDir); err != nil {
+		t.Fatalf("setup(no cache dir) = %v", err)
+	} else {
+		rt.Close()
+	}
+	if got := stores[len(stores)-1]; got.Calls(fake.OpCreate) != 2 {
+		t.Fatalf("setup without a user cache directory probe creates = %d, want 2", got.Calls(fake.OpCreate))
 	}
 
 	stale := `{"version":1,"slivingdoc":"` + Version + `","probedAt":"2000-01-01T00:00:00Z","endpoint":"","region":"us-east-1","bucket":"bucket","prefix":"slivingdoc","pathStyle":false}`
 	if err := os.WriteFile(proofs[0], []byte(stale), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if got := start(t, "--shared-pack-cache"); got.Calls(fake.OpCreate) != 2 {
+	if got := start(t); got.Calls(fake.OpCreate) != 2 {
 		t.Fatalf("setup with an expired proof probe creates = %d, want 2", got.Calls(fake.OpCreate))
 	}
 	data, err := os.ReadFile(proofs[0])

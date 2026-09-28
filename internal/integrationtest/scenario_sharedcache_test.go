@@ -147,8 +147,8 @@ func TestScenarioSharedPackCacheCorruption(t *testing.T) {
 // carries the store compatibility proof (architecture/storage.md): the
 // first one-shot process probes the store and records the proof below the
 // identity-selected shared directory, a later process of the same identity
-// starts without probing and says so, and a process without the flag keeps
-// probing on every start. The proof is observable only through the process
+// starts without probing and says so, and a process with another user cache
+// directory probes again. The proof is observable only through the process
 // boundary, because the probe lives in the process body.
 func TestScenarioSharedPackCacheReusesStoreProof(t *testing.T) {
 	t.Parallel()
@@ -158,7 +158,7 @@ func TestScenarioSharedPackCacheReusesStoreProof(t *testing.T) {
 	notes := filepath.Join(root, "notes")
 	const probed, reused = "store compatibility probed", "store compatibility proof reused"
 
-	code, _, stderr := runCLI(t, "fake", env, "pull", notes, "--shared-pack-cache")
+	code, _, stderr := runCLI(t, "fake", env, "pull", notes)
 	if code != 0 || !strings.Contains(stderr, probed) || strings.Contains(stderr, reused) {
 		t.Fatalf("first pull = exit %d, want 0 and a probe record; stderr: %s", code, stderr)
 	}
@@ -167,13 +167,14 @@ func TestScenarioSharedPackCacheReusesStoreProof(t *testing.T) {
 		t.Fatalf("proof records below the shared cache = %v, %v; want exactly one", proofs, err)
 	}
 
-	code, _, stderr = runCLI(t, "fake", env, "pull", notes, "--shared-pack-cache")
+	code, _, stderr = runCLI(t, "fake", env, "pull", notes)
 	if code != 0 || !strings.Contains(stderr, reused) || strings.Contains(stderr, probed) {
 		t.Fatalf("second pull = exit %d, want 0 and the reused proof; stderr: %s", code, stderr)
 	}
 
-	code, _, stderr = runCLI(t, "fake", env, "pull", notes)
+	other := append(append([]string(nil), env...), helperCacheEnv+"="+t.TempDir())
+	code, _, stderr = runCLI(t, "fake", other, "pull", notes)
 	if code != 0 || !strings.Contains(stderr, probed) || strings.Contains(stderr, reused) {
-		t.Fatalf("pull without the flag = exit %d, want 0 and a probe; stderr: %s", code, stderr)
+		t.Fatalf("pull with another cache directory = exit %d, want 0 and a probe; stderr: %s", code, stderr)
 	}
 }

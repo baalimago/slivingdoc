@@ -163,9 +163,14 @@ var slivingdocEnv = map[string]bool{
 	"AWS_SHARED_CREDENTIALS_FILE": true, "AWS_CONFIG_FILE": true,
 	"SLIVINGDOC_BUCKET": true, "SLIVINGDOC_PREFIX": true,
 	"SLIVINGDOC_WORKSPACE_ROOT": true, "SLIVINGDOC_PRIVATE_ROOT": true,
-	"SLIVINGDOC_PATH_STYLE": true, "SLIVINGDOC_SHARED_PACK_CACHE": true,
+	"SLIVINGDOC_PATH_STYLE":       true,
 	"SLIVINGDOC_COMMIT_RETRIES":   true,
 	"SLIVINGDOC_CHECKPOINT_PACKS": true, "SLIVINGDOC_RETAINED_CHECKPOINTS": true,
+	"SLIVINGDOC_READ_ONLY_PATHS": true, "SLIVINGDOC_WRITABLE_PATHS": true,
+	"SLIVINGDOC_LOG_TIMESTAMP": true,
+	// A token would point the released binary at the hosted API instead of
+	// refusing, which is the opposite of what these tests assert.
+	"SLIVINGDOC_TOKEN": true, "SLIVINGDOC_ENDPOINT": true,
 	"NO_COLOR": true, "LOG_LEVEL": true,
 }
 

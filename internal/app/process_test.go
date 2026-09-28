@@ -37,10 +37,13 @@ func TestMain(m *testing.M) {
 // failing fake for the startup-refusal modes.
 func helperMain(mode string) int {
 	p := process{
-		args:     os.Args[1:],
-		env:      os.Environ(),
-		cwd:      mustGetwd(),
-		cacheDir: filepath.Join(os.TempDir(), "slivingdoc-cache"),
+		args: os.Args[1:],
+		env:  os.Environ(),
+		cwd:  mustGetwd(),
+		// Per helper: a shared fixed directory would carry a recorded store
+		// proof from one helper into the next and let a refusal test start
+		// serving instead.
+		cacheDir: os.Getenv("SLIVINGDOC_PROCESS_HELPER_CACHE"),
 		stdout:   os.Stdout,
 		stderr:   os.Stderr,
 		signals:  make(chan os.Signal, 1), // the helper never receives OS signals
@@ -115,6 +118,7 @@ func spawnHelper(t *testing.T, mode string) *helperProc {
 	}
 	env := append(os.Environ(),
 		"SLIVINGDOC_PROCESS_HELPER="+mode,
+		"SLIVINGDOC_PROCESS_HELPER_CACHE="+t.TempDir(),
 		"SLIVINGDOC_BUCKET=process-bucket",
 		"SLIVINGDOC_PREFIX=process-prefix",
 		"SLIVINGDOC_WORKSPACE_ROOT="+workspaceRoot,

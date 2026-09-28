@@ -40,8 +40,8 @@ type ServiceConfig struct {
 }
 
 // probeProofs locates the store compatibility proof of this configuration:
-// below the identity's shared pack-cache directory when --shared-pack-cache
-// is on, else disabled (architecture/storage.md).
+// below the identity's shared pack-cache directory, or disabled when the
+// process has no shared cache (architecture/storage.md).
 func (cfg config) probeProofs(now func() time.Time) probeProofStore {
 	if cfg.packCacheRoot == "" {
 		return probeProofStore{}
