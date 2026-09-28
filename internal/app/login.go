@@ -64,9 +64,8 @@ func (f *LogoutFlags) Bind(fs *flag.FlagSet) {
 }
 
 // Login is a prepared login: the flags are valid and the credentials file
-// is readable (or is an earlier build's, which the login replaces), so
-// the approval a person gives in the browser can be stored. Nothing has
-// been sent yet.
+// is readable, so the approval a person gives in the browser can be
+// stored. Nothing has been sent yet.
 type Login struct {
 	opts   ProcessOptions
 	file   credentials.File
@@ -91,15 +90,14 @@ type Login struct {
 
 // PrepareLogin validates the login flags against the environment and
 // reads the credentials file, so a login that could not be stored is
-// refused before the site is asked for anything. A file an earlier build
-// wrote (credentials.ErrOutdated) is no refusal: the login replaces it.
+// refused before the site is asked for anything.
 func PrepareLogin(f *LoginFlags, opts ProcessOptions) (*Login, error) {
 	env := environ(opts.Env)
 	file, err := credentialsFile(env)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := file.Load(); err != nil && !errors.Is(err, credentials.ErrOutdated) {
+	if _, err := file.Load(); err != nil {
 		return nil, fmt.Errorf("login: %w", err)
 	}
 	if err := file.CheckDir(); err != nil {
@@ -327,35 +325,14 @@ func (l *Login) confirm(ctx context.Context, errOut io.Writer) (consent, error) 
 
 // storeOutcome is what storing a login changed: the login it replaced,
 // nil when there was none; the default space before and after, empty for
-// none; whether an earlier build's file was replaced, and the tokens it
-// held; and why the lock could not be released after the login was saved,
+// none; and why the lock could not be released after the login was saved,
 // if so.
 type storeOutcome struct {
 	replaced     *credentials.Login
 	priorDefault string
 	defaultSpace string
-	file         fileOutcome
-	// earlier holds the tokens of the replaced earlier file, read under
-	// the lock; report revokes them once the new file is saved.
-	earlier   []credentials.OutdatedToken
-	unlockErr error
+	unlockErr    error
 }
-
-// earlierRevocation counts the tokens of a replaced earlier file that were
-// revoked, and holds why each other one was not.
-type earlierRevocation struct {
-	revoked int
-	failed  []error
-}
-
-// fileOutcome is whether storing a login replaced an earlier build's
-// credentials file.
-type fileOutcome int
-
-const (
-	fileKept fileOutcome = iota
-	fileReplaced
-)
 
 // store writes the login under the credentials lock. It refuses a login
 // for an endpoint another site's login holds, and, unless the person
@@ -387,10 +364,7 @@ func (l *Login) store(ctx context.Context, stored credentials.Login, spaces []si
 	// Read under the lock, so a login that finished in another terminal
 	// meanwhile keeps its entry.
 	set, err := l.file.Load()
-	var outdated *credentials.OutdatedFileError
-	if errors.As(err, &outdated) {
-		set, out.file, out.earlier = credentials.Set{}, fileReplaced, outdated.Tokens
-	} else if err != nil {
+	if err != nil {
 		return storeOutcome{}, fmt.Errorf("login: %w; nothing was stored", err)
 	}
 	for _, other := range set.Logins() {
@@ -425,28 +399,6 @@ func (l *Login) store(ctx context.Context, stored credentials.Login, spaces []si
 	return out, nil
 }
 
-// revokeEarlier revokes, best effort, each token of an earlier build's
-// file at the site that issued it, once the new file replaced it: the new
-// login does not own them, and nothing lists them afterwards. It runs only
-// after the save, so a login that could not be stored leaves them valid.
-func (l *Login) revokeEarlier(ctx context.Context, tokens []credentials.OutdatedToken) earlierRevocation {
-	rctx, cancel := revocationContext(ctx)
-	defer cancel()
-	var out earlierRevocation
-	for _, t := range tokens {
-		client, err := siteClient(t.Site, l.opts)
-		if err == nil {
-			err = client.Revoke(rctx, t.Token)
-		}
-		if err != nil {
-			out.failed = append(out.failed, fmt.Errorf("at %s: %s", mcp.Redact(t.Site), mcp.Redact(err.Error())))
-			continue
-		}
-		out.revoked++
-	}
-	return out
-}
-
 // chooseDefault is the default space after a login: the one asked for,
 // else the only one listed, else the prior default when still listed.
 func chooseDefault(asked string, spaces []sitelogin.Space, prior string) string {
@@ -463,8 +415,7 @@ func chooseDefault(asked string, spaces []sitelogin.Space, prior string) string 
 }
 
 // report tells the person what the stored login changed besides itself:
-// the default space, an earlier build's file it replaced, and the key it
-// replaced, which is revoked only when the same account approved it.
+// the default space and the key it replaced, which is revoked only when the same account approved it.
 func (l *Login) report(ctx context.Context, stored credentials.Login, spaces []sitelogin.Space, out storeOutcome) {
 	errOut := l.opts.errOut()
 	switch {
@@ -480,9 +431,6 @@ func (l *Login) report(ctx context.Context, stored credentials.Login, spaces []s
 		}
 		fmt.Fprintln(errOut, "Run 'slivingdoc space <name>' to choose the default space, or pass --space to serve, pull and commit.")
 	}
-	if out.file == fileReplaced {
-		fmt.Fprintln(errOut, describeEarlier(l.revokeEarlier(ctx, out.earlier)))
-	}
 	replaced := out.replaced
 	if replaced == nil || replaced.Key == stored.Key {
 		return
@@ -497,24 +445,6 @@ func (l *Login) report(ctx context.Context, stored credentials.Login, spaces []s
 	if err := revoke(rctx, *replaced, l.opts); err != nil {
 		fmt.Fprintf(errOut, "The earlier login key for %s could not be revoked (%s); revoke it on the Tokens page.\n",
 			mcp.Redact(replaced.Endpoint), mcp.Redact(err.Error()))
-	}
-}
-
-// describeEarlier is the report line of a replaced earlier file.
-func describeEarlier(r earlierRevocation) string {
-	const replaced = "The credentials file of an earlier slivingdoc was replaced"
-	switch {
-	case r.revoked == 0 && len(r.failed) == 0:
-		return replaced + "; it held no token to revoke."
-	case len(r.failed) == 0:
-		return fmt.Sprintf("%s and its tokens were revoked (%d).", replaced, r.revoked)
-	default:
-		reasons := make([]string, len(r.failed))
-		for i, err := range r.failed {
-			reasons[i] = err.Error()
-		}
-		return fmt.Sprintf("%s; %d of its tokens were revoked, and %d could not be (%s); revoke those on the Tokens page.",
-			replaced, r.revoked, len(r.failed), strings.Join(reasons, "; "))
 	}
 }
 

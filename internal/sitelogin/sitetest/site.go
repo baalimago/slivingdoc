@@ -75,10 +75,9 @@ type Script struct {
 	Stall    bool
 }
 
-// StartBody is one recorded start request. Space is what an older client
-// sends; the site ignores it.
+// StartBody is one recorded start request. A field outside it is refused
+// as invalid_request.
 type StartBody struct {
-	Space  string `json:"space"`
 	Access string `json:"access"`
 	Client string `json:"client"`
 }
@@ -327,7 +326,9 @@ func (s *Site) Mints() []Minted {
 
 func (s *Site) start(w http.ResponseWriter, r *http.Request) {
 	var body StartBody
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || (body.Access != "write" && body.Access != "read") {
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&body); err != nil || (body.Access != "write" && body.Access != "read") {
 		writeError(w, http.StatusBadRequest, "invalid_request")
 		return
 	}

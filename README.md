@@ -119,11 +119,8 @@ reaches exactly one space, so the token is all it needs:
 The token replaces the AWS settings and names the space; `--region` and
 `--path-style` are ignored. Everything else works the same way.
 `SLIVINGDOC_TOKEN` wins over a stored login and alone is enough: with no
-bucket it uses the token's own space, even when you are logged in to
-another space, and it reads the stored login only when an older server
-cannot name the token's space and you gave no bucket (it then uses the
-default space stored for the same endpoint). A bucket
-you name must be the token's space, or startup is refused. slivingdoc refuses to guess
+bucket it uses the token's own space, and a stored login plays no part.
+A bucket you name must be the token's space, or startup is refused. slivingdoc refuses to guess
 between S3 and hosted storage: a token next to a setting that names an S3
 host (an `--endpoint` flag, `AWS_ENDPOINT_URL` or `AWS_ENDPOINT_URL_S3`;
 a region, AWS credentials and `~/.aws` files are fine), and a login for a
@@ -249,9 +246,8 @@ most common flags:
     S3, and refuses when S3 settings make that a guess (see
     [`architecture/login.md`](architecture/login.md)); `hosted` and `s3`
     force the choice. With a hosted token `--space` is optional and
-    defaults to the one space the token reaches (or, on an older server,
-    the stored default space); a `--space` naming another space is
-    refused. With a login, `--space` defaults to the default space set by
+    defaults to the one space the token reaches; a `--space` naming
+    another space is refused. With a login, `--space` defaults to the default space set by
     `slivingdoc space <name>`.
 
 `slivingdoc serve -h` prints the full reference, and

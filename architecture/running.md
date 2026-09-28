@@ -543,11 +543,9 @@ only, and `serve` gets a new one before it expires. It is stored in
 on macOS, `%AppData%\slivingdoc\` on Windows; `SLIVINGDOC_CONFIG_DIR`
 names another directory), mode 0600, with one login per storage endpoint
 and that endpoint's default space. Logging in again replaces the stored
-key. A credentials file from an earlier slivingdoc (one token per space)
-is refused by every command with `run 'slivingdoc login' again`; `login`
-first revokes each of its tokens at its site, best effort, then replaces
-it and says how many were revoked and which could not be (revoke those on
-the Tokens page). The file, and its
+key. A credentials file of another format version is refused by every
+command, `login` included, which says to remove it and run
+`slivingdoc login`; nothing rewrites it in place. The file, and its
 directory, must belong to you and must not be accessible to other users:
 like ssh, slivingdoc refuses a symbolic link or anything but a regular
 file, a file or directory another user owns, a file group or other can
@@ -635,8 +633,9 @@ stored login: any of
    variables) or `--storage s3`. Otherwise
    hosted storage with that token, whatever other S3 settings exist: a
    region, AWS credentials and `~/.aws` files are not read in hosted mode. It
-   wins over a stored login, so a read-only token in one MCP entry and a
-   login in another can sit side by side.
+   wins over a stored login and never reads the credentials file, so a
+   read-only token in one MCP entry and a login in another can sit side by
+   side.
 2. A login is stored and no space is given: hosted storage with the
    login's default space, whatever S3 settings exist (S3 would have no
    bucket); with no default space, startup is refused, naming

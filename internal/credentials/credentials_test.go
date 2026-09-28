@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -293,7 +292,6 @@ func TestLoadRefusesMalformedFiles(t *testing.T) {
 		{"array", `[]`},
 		{"unknown top field", `{"version":2,"logins":[],"extra":1}`},
 		{"missing version", `{"logins":[]}`},
-		{"newer version", `{"version":3,"logins":[]}`},
 		{"missing logins", `{"version":2}`},
 		{"duplicate key", `{"version":2,"version":2,"logins":[]}`},
 		{"login not object", `{"version":2,"logins":[1]}`},
@@ -340,28 +338,23 @@ func TestLoadRefusesMalformedFiles(t *testing.T) {
 	}
 }
 
-func TestLoadRefusesAnEarlierFile(t *testing.T) {
-	f := testFile(t)
-	writeRaw(t, f, `{"version":1,"logins":[{"endpoint":"https://api.slivingdoc.dev","space":"notes",`+
-		`"site":"https://www.slivingdoc.dev","token":"`+testToken+`","access":"write"},`+
-		`{"space":"team","site":"https://www.slivingdoc.dev","token":"`+testToken+`"},`+
-		`{"site":"https://user:pw@evil.example","token":"`+testToken+`"},{"site":"https://www.slivingdoc.dev","token":"sld bad"},`+
-		`{"token":"`+testToken+`"},"not an object"],"default":{"x":1}}`)
-	_, err := f.Load()
-	if !errors.Is(err, ErrOutdated) || errors.Is(err, ErrMalformed) || !strings.Contains(err.Error(), "slivingdoc login") ||
-		!strings.Contains(err.Error(), f.Path()) || strings.Contains(err.Error(), testToken) {
-		t.Fatalf("Load() of a version 1 file = %v, want ErrOutdated naming login and the file, not the token", err)
-	}
-	// The tokens come back for revocation: each sendable one with a plain
-	// site once; an entry without either is skipped.
-	var outdated *OutdatedFileError
-	if !errors.As(err, &outdated) || outdated.Path != f.Path() ||
-		!slices.Equal(outdated.Tokens, []OutdatedToken{{Site: "https://www.slivingdoc.dev", Token: testToken}}) {
-		t.Fatalf("Load() of a version 1 file = %#v, want its one sendable token", err)
-	}
-	writeRaw(t, f, `{"version":1}`)
-	if _, err := f.Load(); !errors.As(err, &outdated) || len(outdated.Tokens) != 0 {
-		t.Fatalf("Load() of a version 1 file without logins = %v, want ErrOutdated and no tokens", err)
+// TestLoadRefusesAnotherVersion proves a file of any version but
+// FormatVersion is refused as unsupported, whatever it holds, with the fix
+// and the file named and no field of it echoed.
+func TestLoadRefusesAnotherVersion(t *testing.T) {
+	for _, data := range []string{
+		`{"version":1,"logins":[{"site":"https://www.slivingdoc.dev","token":"` + testToken + `"}]}`,
+		`{"version":3,"logins":[],"extra":"` + testToken + `"}`,
+		`{"version":0}`,
+	} {
+		f := testFile(t)
+		writeRaw(t, f, data)
+		_, err := f.Load()
+		if !errors.Is(err, ErrUnsupportedVersion) || errors.Is(err, ErrMalformed) ||
+			!strings.Contains(err.Error(), "remove "+f.Path()+" and run 'slivingdoc login'") ||
+			!strings.Contains(err.Error(), "reads version 2 only") || strings.Contains(err.Error(), testToken) {
+			t.Fatalf("Load(%s) = %v, want ErrUnsupportedVersion naming the file and the fix, not the token", data, err)
+		}
 	}
 }
 

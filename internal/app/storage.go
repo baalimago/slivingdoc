@@ -231,7 +231,7 @@ type storageInputs struct {
 //     or when no S3 signal is set; an explicit bucket with an S3 signal is
 //     a refusal. Otherwise S3.
 //
-// With SLIVINGDOC_TOKEN the stored logins are never read here: an omitted
+// With SLIVINGDOC_TOKEN the stored logins are never read: an omitted
 // bucket stays empty and resolveHostedSpace asks the API for the token's
 // space. With a stored login the space is the bucket setting, else the
 // login's default space; with neither it is a refusal naming
@@ -287,10 +287,9 @@ func resolveStorage(f *Flags, env map[string]string, in storageInputs) (storageS
 	case err != nil:
 		return storageSelection{}, err
 	}
-	defaulted := false
 	if sel.bucket == "" {
 		if space, err := logins.DefaultSpace(login.Endpoint); err == nil {
-			sel.bucket, defaulted, sel.bucketFrom = space, true, bucketFromLogin
+			sel.bucket, sel.bucketFrom = space, bucketFromLogin
 		}
 	}
 	if sel.bucket == "" {
@@ -298,7 +297,7 @@ func resolveStorage(f *Flags, env map[string]string, in storageInputs) (storageS
 			"the stored login for %s has no default space; run 'slivingdoc space' to list its spaces and 'slivingdoc space <name>' to choose one, or pass --space (for S3, pass --storage s3 and --bucket)",
 			login.Endpoint)
 	}
-	if mode == storageAuto && !defaulted {
+	if mode == storageAuto && sel.bucketFrom != bucketFromLogin {
 		if signals := s3Signals(f, env, in); len(signals) > 0 {
 			return storageSelection{}, fmt.Errorf(
 				"a stored login and S3 settings (%s) are both configured for %q; pass --storage hosted or --storage s3",
@@ -314,7 +313,7 @@ func resolveStorage(f *Flags, env map[string]string, in storageInputs) (storageS
 
 // loadLogins reads the stored logins. A process whose environment names
 // no configuration directory has none; a file that exists and cannot be
-// read is an error, which each caller words with its own fix.
+// read is an error.
 func loadLogins(env map[string]string, goos string) (credentials.Set, error) {
 	file, err := credentials.Locate(func(name string) string { return env[name] }, goos)
 	if errors.Is(err, credentials.ErrNoConfigDir) {

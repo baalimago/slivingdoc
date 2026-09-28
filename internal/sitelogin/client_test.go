@@ -97,7 +97,7 @@ func TestLoginApproved(t *testing.T) {
 		t.Fatalf("Start() = %v", err)
 	}
 	starts := site.Starts()
-	if len(starts) != 1 || starts[0].Space != "" || starts[0].Access != "read" {
+	if len(starts) != 1 || starts[0].Access != "read" {
 		t.Fatalf("start requests = %+v", starts)
 	}
 	if got := starts[0].Client; len(got) != clientLimit || strings.ContainsAny(got, "\t\x00") || !strings.HasPrefix(got, "myhostx") {

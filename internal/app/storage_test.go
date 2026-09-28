@@ -16,7 +16,6 @@ import (
 const (
 	loginToken  = "sld_1111111111111111_c3RvcmVkLWxvZ2luLXRva2VuLWZvci1hcHAtdGVzdHMteHg"
 	otherToken  = "sld_2222222222222222_b3RoZXItbG9naW4tdG9rZW4tZm9yLWFwcC10ZXN0cy14eHg"
-	thirdToken  = "sld_3333333333333333_dGhpcmQtbG9naW4tdG9rZW4tZm9yLWFwcC10ZXN0cy14eHh4"
 	devEndpoint = "https://api.dev.slivingdoc.dev"
 	longAgo     = "2001-01-01T00:00:00Z"
 )
@@ -80,14 +79,6 @@ func writeLogins(t *testing.T, defs []storedDefault, logins ...storedLogin) stri
 		t.Fatal(err)
 	}
 	return writeRawLogins(t, data)
-}
-
-// outdatedLogins writes a version 1 credentials file, as an earlier build
-// did.
-func outdatedLogins(t *testing.T) string {
-	t.Helper()
-	return writeRawLogins(t, []byte(`{"version":1,"logins":[{"endpoint":"https://api.slivingdoc.dev","space":"notes",`+
-		`"site":"https://www.slivingdoc.dev","token":"`+loginToken+`","access":"write"}]}`))
 }
 
 // awsHomeDir is a home directory holding both shared AWS files.
@@ -253,7 +244,7 @@ func TestResolveStorageRefusals(t *testing.T) {
 	two := writeLogins(t, defaults(DefaultHostedEndpoint, "notes"), entry(DefaultHostedEndpoint, loginToken), entry(devEndpoint, otherToken))
 	awsHome := awsHomeDir(t)
 	malformed := writeRawLogins(t, []byte(`{"version":2,"logins":[{"key":"`+loginToken+`"}]}`))
-	outdated := outdatedLogins(t)
+	unsupported := writeRawLogins(t, []byte(`{"version":1,"logins":[]}`))
 	empty := credentials.DirEnv + "=" + t.TempDir()
 	tests := []struct {
 		name string
@@ -310,10 +301,10 @@ func TestResolveStorageRefusals(t *testing.T) {
 			[]string{"malformed credentials file", "--storage s3"},
 		},
 		{
-			"an earlier build's credentials file",
-			[]string{outdated, "SLIVINGDOC_BUCKET=notes"},
+			"a credentials file of another version",
+			[]string{unsupported, "SLIVINGDOC_BUCKET=notes"},
 			nil,
-			[]string{"from an earlier slivingdoc", "run 'slivingdoc login' again", "--storage s3"},
+			[]string{"unsupported credentials file version", "run 'slivingdoc login'", "--storage s3"},
 		},
 		{
 			"an unknown storage",

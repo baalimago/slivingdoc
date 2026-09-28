@@ -35,8 +35,8 @@ without re-checking the code:
 
 slivingdoc is a standalone MCP server that gives many agents one shared
 directory of UTF-8 text notes, stored durably in S3-compatible object storage
-or, when `SLIVINGDOC_TOKEN` is set or `slivingdoc login` stored a token for
-the space, in a space of the slivingdoc hosted storage API
+or, when `SLIVINGDOC_TOKEN` is set or `slivingdoc login` stored an account
+login, in a space of the slivingdoc hosted storage API
 (architecture/hosted-mode.md, architecture/login.md). It uses Git data structures and merge behavior internally but never invokes a
 Git executable and never exposes a Git repository. The contract is split
 by concern under [`architecture/`](architecture/README.md). Three states
@@ -322,8 +322,8 @@ copy is the authoritative one. Behavior worth remembering:
   `SLIVINGDOC_TOKEN` reaches one space, which `httpstore.DescribeToken`
   reads from `GET /v1/token` (`app.resolveHostedSpace`); a space that is
   given must equal it or startup is refused. On a server without
-  `GET /v1/token`, a given space is kept, and with none the default space
-  stored for that endpoint is used.
+  `GET /v1/token`, a given space is kept, and with none startup is
+  refused.
 - A stored login is an account key, sent only to the site that issued
   it. `serve`, `pull` and `commit` mint one-hour tokens for one space at
   that site and keep them in memory only; `serve` renews them. The space
@@ -331,8 +331,7 @@ copy is the authoritative one. Behavior worth remembering:
   `slivingdoc space <name>`; with none, startup is refused. A minted token
   is only sent to the login's endpoint.
 - The token comes from `SLIVINGDOC_TOKEN` or a stored login only, never a
-  flag. An environment token reads `credentials.json` only for the
-  old-server fallback above.
+  flag. An environment token never reads `credentials.json`.
 - In `--storage auto`, an environment token beside `--endpoint`,
   `AWS_ENDPOINT_URL` or `AWS_ENDPOINT_URL_S3` is refused. A stored login
   wins over S3 when the space is the stored default, or when an explicit

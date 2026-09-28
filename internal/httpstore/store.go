@@ -248,19 +248,19 @@ type tokenBody struct {
 // DescribeToken asks the server which space the token reaches
 // (GET /v1/token), after the same tokenless server check as CheckAccess,
 // so the token only goes to an endpoint that answered as this API.
-// cfg.Space and cfg.Prefix are ignored. A token that reaches no space, or
-// that the server refuses, is ErrAccessDenied; a server without the
-// endpoint is ErrTokenLookupUnsupported; an answer outside the API grammar
-// is ErrIncompatible.
+// It describes the fixed cfg.Token; cfg.Space, cfg.Prefix and cfg.Tokens
+// are ignored. A token that reaches no space, or that the server refuses,
+// is ErrAccessDenied; a server without the endpoint is
+// ErrTokenLookupUnsupported; an answer outside the API grammar is
+// ErrIncompatible.
 func DescribeToken(ctx context.Context, cfg Config) (TokenInfo, error) {
 	if err := ValidateEndpoint(cfg.Endpoint); err != nil {
 		return TokenInfo{}, err
 	}
-	tokens, err := tokenSource(cfg)
-	if err != nil {
+	if err := ValidateToken(cfg.Token); err != nil {
 		return TokenInfo{}, err
 	}
-	s := newClient(cfg, tokens)
+	s := newClient(cfg, staticToken(cfg.Token))
 	if err := s.checkServer(ctx); err != nil {
 		return TokenInfo{}, err
 	}

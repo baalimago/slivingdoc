@@ -152,13 +152,3 @@ func TestStaticTokenIsNotRetried(t *testing.T) {
 		t.Fatalf("sent %d requests, want 1: a fixed token has no other to try", got)
 	}
 }
-
-func TestDescribeTokenTakesATokenSource(t *testing.T) {
-	g := gatewaytest.Start(t)
-	g.AddSpace(testSpace, 1<<20)
-	g.Grant(testToken, testSpace, true)
-	info, err := DescribeToken(context.Background(), Config{Endpoint: g.URL(), Tokens: &rotating{tokens: []string{testToken}}, Backoff: noBackoff})
-	if err != nil || info.Space != testSpace || info.Access != AccessRead {
-		t.Fatalf("DescribeToken() = %+v, %v", info, err)
-	}
-}

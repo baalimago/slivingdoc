@@ -34,10 +34,6 @@ const DirEnv = "SLIVINGDOC_CONFIG_DIR"
 // FormatVersion is the only credentials file version this build reads.
 const FormatVersion = 2
 
-// outdatedVersion is the per-space login file of earlier builds, which is
-// refused with ErrOutdated rather than read.
-const outdatedVersion = 1
-
 // LockName is the lock file beside FileName that serializes the
 // read-modify-write of a login, a logout or a default space.
 const LockName = "credentials.lock"
@@ -60,9 +56,10 @@ var (
 	ErrNoConfigDir = errors.New("credentials: no configuration directory")
 	// ErrMalformed reports a credentials file this build cannot read.
 	ErrMalformed = errors.New("credentials: malformed credentials file")
-	// ErrOutdated reports a credentials file an earlier build wrote, with
-	// one token per space; a new login replaces it.
-	ErrOutdated = errors.New("credentials: the credentials file is from an earlier slivingdoc; run 'slivingdoc login' again")
+	// ErrUnsupportedVersion reports a credentials file of a version this
+	// build does not read. It is never rewritten in place: the person
+	// removes it and logs in again.
+	ErrUnsupportedVersion = errors.New("credentials: unsupported credentials file version")
 	// ErrNoLogin reports that no stored login matches the request.
 	ErrNoLogin = errors.New("credentials: no stored login")
 	// ErrNoDefault reports that no default space is stored for an
@@ -399,10 +396,8 @@ func (f File) Load() (Set, error) {
 		return Set{}, fmt.Errorf("%w %s: larger than %d bytes", ErrMalformed, f.Path(), maxFileSize)
 	}
 	set, err := decode(data)
-	var outdated *OutdatedFileError
-	if errors.As(err, &outdated) {
-		outdated.Path = f.Path()
-		return Set{}, outdated
+	if errors.Is(err, ErrUnsupportedVersion) {
+		return Set{}, fmt.Errorf("%w; remove %s and run 'slivingdoc login'", err, f.Path())
 	}
 	if err != nil {
 		return Set{}, fmt.Errorf("%w %s: %w", ErrMalformed, f.Path(), err)
@@ -559,58 +554,7 @@ const (
 	fieldExpiresAt     = "expiresAt"
 	fieldAccount       = "account"
 	fieldSpace         = "space"
-	// fieldToken is a version 1 login's token.
-	fieldToken = "token"
 )
-
-// OutdatedFileError is ErrOutdated for a file an earlier build wrote, with
-// the tokens it held and the site that issued each, so the login that
-// replaces the file can revoke them. Error never contains a token.
-type OutdatedFileError struct {
-	Path   string
-	Tokens []OutdatedToken
-}
-
-// OutdatedToken is one token of an earlier build's file.
-type OutdatedToken struct {
-	Site  string
-	Token string
-}
-
-func (e *OutdatedFileError) Error() string {
-	return fmt.Sprintf("%s (%s)", ErrOutdated.Error(), e.Path)
-}
-
-func (e *OutdatedFileError) Unwrap() error { return ErrOutdated }
-
-// outdatedTokens reads, leniently, the tokens of a version 1 file: an
-// entry without a plain site URL or a sendable token is skipped, since the
-// file is being replaced either way and its tokens are revoked best
-// effort.
-func outdatedTokens(root strictjson.Value) []OutdatedToken {
-	list, ok := root.Field(fieldLogins)
-	if !ok || list.Kind != strictjson.Array {
-		return nil
-	}
-	var tokens []OutdatedToken
-	for _, item := range list.Arr {
-		if item.Kind != strictjson.Object {
-			continue
-		}
-		site, err := urlField(item, fieldSite)
-		if err != nil {
-			continue
-		}
-		token, err := stringField(item, fieldToken)
-		if err != nil || httpstore.ValidateToken(token) != nil {
-			continue
-		}
-		if !slices.Contains(tokens, OutdatedToken{Site: site, Token: token}) {
-			tokens = append(tokens, OutdatedToken{Site: site, Token: token})
-		}
-	}
-	return tokens
-}
 
 func decode(data []byte) (Set, error) {
 	root, err := strictjson.Parse(data)
@@ -624,11 +568,8 @@ func decode(data []byte) (Set, error) {
 	if !ok || ver.Kind != strictjson.Number {
 		return Set{}, errors.New("missing numeric version")
 	}
-	switch {
-	case ver.Num == outdatedVersion:
-		return Set{}, &OutdatedFileError{Tokens: outdatedTokens(root)}
-	case ver.Num != FormatVersion:
-		return Set{}, fmt.Errorf("version %d is not %d; a newer slivingdoc wrote it", ver.Num, FormatVersion)
+	if ver.Num != FormatVersion {
+		return Set{}, fmt.Errorf("%w: it is version %d, and this slivingdoc reads version %d only", ErrUnsupportedVersion, ver.Num, FormatVersion)
 	}
 	if err := root.RejectUnknown(fieldVersion, fieldLogins, fieldDefaultSpaces); err != nil {
 		return Set{}, err

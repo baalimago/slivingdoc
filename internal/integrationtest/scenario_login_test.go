@@ -165,8 +165,8 @@ func TestScenarioLoginThenPullAndCommit(t *testing.T) {
 		!strings.Contains(stderr, "    team-notes (read and write), owned by ada@example.test\n") {
 		t.Fatalf("login stderr = %q, want the browser fallback and the space list", stderr)
 	}
-	if starts := site.Starts(); len(starts) != 1 || starts[0].Space != "" || starts[0].Access != "write" || starts[0].Client == "" {
-		t.Fatalf("start requests = %+v, want one without a space, with a client label", starts)
+	if starts := site.Starts(); len(starts) != 1 || starts[0].Access != "write" || starts[0].Client == "" {
+		t.Fatalf("start requests = %+v, want one with the access and a client label and no other field", starts)
 	}
 	if polls := site.Polls(); polls != 4 {
 		t.Fatalf("token polls = %d, want 4 (three waits, then the key)", polls)
@@ -755,39 +755,34 @@ func mustDo(t *testing.T, err error) {
 	}
 }
 
-// TestScenarioEarlierCredentialsFile proves a credentials file an earlier
-// build wrote, with one token per space, refuses startup with the fix, and
-// that a new login revokes its tokens at the site that issued them and
-// replaces it, never sending them to the storage API.
-func TestScenarioEarlierCredentialsFile(t *testing.T) {
+// TestScenarioUnsupportedCredentialsFile proves a credentials file of any
+// version but the current one refuses startup and login alike with the
+// fix, contacts neither the site nor the storage API, and stays as it was;
+// once it is removed, login works.
+func TestScenarioUnsupportedCredentialsFile(t *testing.T) {
 	t.Parallel()
 	g, site, env, root := loginEnv(t)
-	writeCLIFile(t, credentialsPath(env), `{"version":1,"logins":[{"endpoint":"`+g.URL()+`","space":"team-notes","site":"`+
-		site.URL()+`","token":"`+hostedToken+`","access":"write"}]}`)
+	other := `{"version":1,"logins":[{"site":"` + site.URL() + `","token":"` + hostedToken + `"}]}`
+	writeCLIFile(t, credentialsPath(env), other)
 	mustDo(t, os.Chmod(credentialsDir(env), 0o700))
 	mustDo(t, os.Chmod(credentialsPath(env), 0o600))
-	// space and logout refuse it alike (internal/app unit tests).
-	code, stdout, stderr := runCLI(t, "real", env, "pull", filepath.Join(root, "notes"))
-	if code != 1 || strings.TrimSpace(stdout) != "" || !strings.Contains(stderr, "from an earlier slivingdoc; run 'slivingdoc login' again") ||
-		strings.Contains(stderr, hostedToken) {
-		t.Fatalf("pull with an earlier file = exit %d, stdout %q, stderr %s", code, stdout, stderr)
+	const fix = "and run 'slivingdoc login'"
+	for _, args := range [][]string{{"pull", filepath.Join(root, "notes")}, {"login", "--no-browser"}} {
+		code, stdout, stderr := runCLI(t, "real", env, args...)
+		if code != 1 || strings.TrimSpace(stdout) != "" || !strings.Contains(stderr, "unsupported credentials file version") ||
+			!strings.Contains(stderr, fix) || strings.Contains(stderr, hostedToken) {
+			t.Fatalf("%s with a version 1 file = exit %d, stdout %q, stderr %s", args[0], code, stdout, stderr)
+		}
 	}
-	// The site issued the earlier token, so the login that replaces the
-	// file revokes it there; it never goes to the storage API.
-	site.Issued(hostedToken, g.URL())
+	if g.Requests() != 0 || len(site.Starts()) != 0 || len(site.Revoked()) != 0 {
+		t.Fatal("a refused command contacted the site or the storage API")
+	}
+	if data, err := os.ReadFile(credentialsPath(env)); err != nil || string(data) != other {
+		t.Fatalf("credentials file = %q, %v; want it untouched", data, err)
+	}
+	mustDo(t, os.Remove(credentialsPath(env)))
 	approve(site, g, loginKey, "write", loginExpiry)
-	code, stdout, stderr = runCLI(t, "real", env, "login", "--no-browser")
-	if code != 0 || stdout != loggedIn(g, "read and write", withDefault)+"\n" ||
-		!strings.Contains(stderr, "The credentials file of an earlier slivingdoc was replaced and its tokens were revoked (1).") ||
-		strings.Contains(stderr, hostedToken) {
-		t.Fatalf("login over an earlier file = exit %d, stdout %q, stderr %s", code, stdout, stderr)
-	}
-	if revoked := site.Revoked(); g.Requests() != 0 || len(revoked) != 1 || revoked[0] != hostedToken {
-		t.Fatalf("revoked = %v after %d storage requests, want the earlier token revoked at its site only", revoked, g.Requests())
-	}
-	if data, err := os.ReadFile(credentialsPath(env)); err != nil || !strings.Contains(string(data), `"version": 2`) || strings.Contains(string(data), hostedToken) {
-		t.Fatalf("credentials file after the login = %q (%v), want version 2 without the earlier token", data, err)
-	}
+	runLogin(t, env, site, loggedIn(g, "read and write", withDefault), "--no-browser")
 }
 
 // TestScenarioLoginBrokenAnswers proves every way a login can lose a key
@@ -1036,39 +1031,33 @@ func TestScenarioTokenIgnoresABrokenCredentialsFile(t *testing.T) {
 	}
 }
 
-// TestScenarioOldServerTakesTheStoredDefaultSpace proves that against a
-// server without the token lookup, SLIVINGDOC_TOKEN with no bucket uses
-// the default space stored for the same endpoint, and that without one
-// for that endpoint it is a refusal naming the fix.
-func TestScenarioOldServerTakesTheStoredDefaultSpace(t *testing.T) {
+// TestScenarioOldServerTokenNeedsASpace proves a stored login plays no
+// part in a SLIVINGDOC_TOKEN process: against a server without the token
+// lookup, the token with no space is refused naming --space even when the
+// login stores a default space for that endpoint, and with --space it
+// reaches the space with the variable's token alone.
+func TestScenarioOldServerTokenNeedsASpace(t *testing.T) {
 	t.Parallel()
 	g, site, env, root := loginEnv(t)
 	approve(site, g, loginKey, "write", loginExpiry)
 	runLogin(t, env, site, loggedIn(g, "read and write", withDefault), "--no-browser")
 	g.DisableTokenLookup()
-	with := func(extra ...string) []string { return append(append([]string(nil), env...), extra...) }
-
 	const envToken = "sld_5555555555555555_b2xkLXNlcnZlci10b2tlbi1iZXNpZGUtdGhlLWxvZ2luLXh4eA"
 	g.Grant(envToken, hostedSpace, false)
-	code, stdout, stderr := runCLI(t, "real", with("SLIVINGDOC_TOKEN="+envToken, "SLIVINGDOC_ENDPOINT="+g.URL()), "pull", filepath.Join(root, "same"))
-	if code != 0 || !strings.HasPrefix(stdout, "OK  generation ") ||
-		!strings.Contains(stderr, "space="+hostedSpace) || !strings.Contains(stderr, `from="default space"`) {
-		t.Fatalf("pull on an old server with a default space for its endpoint = exit %d, stdout %q, stderr %s", code, stdout, stderr)
+	tokenEnv := append(append([]string(nil), env...), "SLIVINGDOC_TOKEN="+envToken, "SLIVINGDOC_ENDPOINT="+g.URL())
+
+	code, stdout, stderr := runCLI(t, "real", tokenEnv, "pull", filepath.Join(root, "unnamed"))
+	if code != 1 || strings.TrimSpace(stdout) != "" ||
+		!strings.Contains(stderr, "hosted storage cannot name the token's space; pass the space name as --space or SLIVINGDOC_SPACE") ||
+		strings.Contains(stderr, envToken) || strings.Contains(stderr, loginKey) {
+		t.Fatalf("pull on an old server without a space = exit %d, stdout %q, stderr %s", code, stdout, stderr)
+	}
+	code, stdout, stderr = runCLI(t, "real", tokenEnv, "pull", "--space", hostedSpace, filepath.Join(root, "named"))
+	if code != 0 || !strings.HasPrefix(stdout, "OK  generation ") || !strings.Contains(stderr, "from=--space") {
+		t.Fatalf("pull on an old server with --space = exit %d, stdout %q, stderr %s", code, stdout, stderr)
 	}
 	if used := g.Used(); used[envToken] == 0 || len(site.Mints()) != 0 {
-		t.Fatalf("space requests per token = %v, want the variable's token alone", used)
-	}
-
-	other := gatewaytest.Start(t)
-	other.AddSpace(hostedSpace, 1<<20)
-	other.Grant(envToken, hostedSpace, false)
-	other.DisableTokenLookup()
-	code, stdout, stderr = runCLI(t, "real", with("SLIVINGDOC_TOKEN="+envToken, "SLIVINGDOC_ENDPOINT="+other.URL()), "pull", filepath.Join(root, "other"))
-	if code != 1 || strings.TrimSpace(stdout) != "" ||
-		!strings.Contains(stderr, "no default space is stored for "+other.URL()) ||
-		!strings.Contains(stderr, "pass the space name as --space or SLIVINGDOC_SPACE") ||
-		strings.Contains(stderr, envToken) || strings.Contains(stderr, loginKey) {
-		t.Fatalf("pull on an old server without a default space for it = exit %d, stdout %q, stderr %s", code, stdout, stderr)
+		t.Fatalf("space requests per token = %v after %d mints, want the variable's token alone", used, len(site.Mints()))
 	}
 }
 
