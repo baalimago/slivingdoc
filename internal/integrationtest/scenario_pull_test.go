@@ -241,8 +241,11 @@ func TestScenarioPullStaleReader(t *testing.T) {
 }
 
 // TestScenarioPullCacheCorruption proves that a corrupt cached pack is
-// never a false hit: the next pull discards it, re-downloads the verified
-// bytes, and heals the cache (architecture/pull.md).
+// never a false hit: a pull that needs the pack discards the entry,
+// re-downloads the verified bytes, and heals the cache
+// (architecture/pull.md). The private repository is emptied and reopened
+// as a new process would, because a repository that already holds the
+// pack's objects never consults the cache for it.
 func TestScenarioPullCacheCorruption(t *testing.T) {
 	t.Parallel()
 	h := newFakeHarness(t, HarnessConfig{})
@@ -254,15 +257,24 @@ func TestScenarioPullCacheCorruption(t *testing.T) {
 	packKey := m.Checkpoint.Key.String()
 	b.assertOK(t, b.Pull("", pathB))
 
-	// Corrupt the cached bytes of the checkpoint pack.
+	// Corrupt the cached bytes of the checkpoint pack and drop the imported
+	// objects, so the next process must obtain the pack again.
 	cacheFile := filepath.Join(b.PackCacheDir(pathB), m.Checkpoint.SHA256.String())
 	b.WriteFile(cacheFile, "corrupt cache entry")
-
-	b.assertOK(t, b.Pull("", pathB))
-	if got := b.Recorder().CountKey(OpGet, packKey); got != 2 {
-		t.Fatalf("pack gets after cache corruption = %d, want the re-download", got)
+	for _, f := range packFiles(t, filepath.Join(b.PrivateDir(pathB), "repo", ".git", "objects", "pack")) {
+		if err := os.Remove(f); err != nil {
+			t.Fatalf("remove an imported pack: %v", err)
+		}
 	}
-	wantBytes, err := b.ReadObject(packKey)
+	c := newSharedHarness(t, h.Raw(), h.cfg.Prefix, HarnessConfig{
+		WorkspaceRoot: b.WorkspaceRoot(), PrivateRoot: b.PrivateRoot(),
+	})
+
+	c.assertOK(t, c.Pull("", pathB))
+	if got := c.Recorder().CountKey(OpGet, packKey); got != 1 {
+		t.Fatalf("pack gets after cache corruption = %d, want the one re-download", got)
+	}
+	wantBytes, err := c.ReadObject(packKey)
 	if err != nil {
 		t.Fatalf("read pack through the raw store: %v", err)
 	}
@@ -273,13 +285,7 @@ func TestScenarioPullCacheCorruption(t *testing.T) {
 	if string(gotBytes) != string(wantBytes) {
 		t.Fatalf("cache entry is not healed to the verified pack bytes")
 	}
-	// The corrupt bytes never reached the visible directory.
-	assertVisibleFiles(t, b, pathB, map[string]string{"a.md": "alpha"})
-	// The next pull is warm again: the healed cache stops the download.
-	b.assertOK(t, b.Pull("", pathB))
-	if got := b.Recorder().CountKey(OpGet, packKey); got != 2 {
-		t.Fatalf("pack gets after the healed cache = %d, want the cached hit", got)
-	}
+	assertVisibleFiles(t, c, pathB, map[string]string{"a.md": "alpha"})
 }
 
 // TestScenarioPullFirstPullGuard proves the first-pull guard

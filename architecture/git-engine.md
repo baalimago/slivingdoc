@@ -12,7 +12,7 @@ Read this when: adding or changing a native operation, touching tree building, s
 | `internal/git/types.go` | `FileMode` (`ModeBlob` 100644, `ModeTree` 040000), `TreeEntry`, `Commit`, `CommitSpec`, `AuthorName`/`AuthorEmail`, `IndexEntry`, `MergeIndex`, `MergeFileResult`, `MarkerRange`, `Conflict`, `MergeResult`, `Snapshot`, `File`, `Pack` |
 | `internal/git/oid.go` | `ParseOID` (40 lowercase hex only), `IsZero`, `MarshalJSON`, `ErrInvalidOID` |
 | `internal/git/tree.go` | `BuildTree`, `ReadSnapshot`, `walkTree`, `EmptyTree`, `SortTreeEntries`, `treeEntryLess` |
-| `internal/git/pack.go` | `ExportIncrement`, `ExportCheckpoint`, `ImportPack`, `MarkShallow`, `ValidateHistory`, `writePack`, `reachableFromCommit`, `treeClosure`, `treeClosureValidate` |
+| `internal/git/pack.go` | `ExportIncrement`, `ExportCheckpoint`, `ImportPack`, `MarkShallow`, `ValidateHistory`, `ValidateTree`, `writePack`, `reachableFromCommit`, `treeClosure`, `treeClosureValidate` |
 | `internal/git/commit.go` | `CreateCommit`, `ValidateCommitMessage` |
 | `internal/git/merge.go` | `Merge`, `MaterializeTree`, `FindConflictBlocks`. See [conflicts.md](./conflicts.md) |
 | `internal/git/path.go` | `ValidatePath`, `validateSegment`, `isWindowsDeviceName`, `ValidateContent`, `ValidateSnapshot`, `ValidateFoldedDirectories`, `FoldedDirectoryPairs`, `PathCollisionError` |
@@ -73,7 +73,7 @@ git2.repository.X → r.mu lock → usable() → xxxFn (seam var) → libgit2Xxx
 - `ExportCheckpoint(head)`: the head commit plus its complete tree closure, no ancestors. Imports into an empty repository. See [checkpoints.md](./checkpoints.md).
 - `writePack` sorts objects by OID and hashes the bytes while writing; `Pack.SHA256` is the checksum stored in manifest descriptors. The packbuilder is single-threaded, so bytes are deterministic for the pinned release, and delta bases always live inside the pack.
 - `ImportPack` refuses zero bytes (`ErrEmptyPack`); libgit2's writepack indexer validates the pack and trailer and imports nothing from a truncated or corrupt pack. The notebook has already checked size and SHA-256 against the descriptor.
-- `MarkShallow` appends the OID to `<gitdir>/shallow` (idempotent) and reopens the repository and object database, because libgit2 loads shallow grafts only on open.
+- `MarkShallow` appends the OID to `<gitdir>/shallow` (idempotent) and reopens the repository and object database unless this handle has already loaded that boundary (`repository.grafts`, read from the file at open and after each reload), because libgit2 loads shallow grafts only on open. A boundary another process appended to a shared private repository is therefore honored the first time this handle marks it; a boundary this handle already holds costs one file read.
 - `ValidateHistory(head, shallow)` walks every commit from `head`, reading every tree (`ReadTree`) and proving every blob with `HasObject` (never a full blob read); only the declared shallow commit may name missing parents. With libgit2, every commit listed in the `shallow` file reads with zero parents, so the walk stops at the first shallow-listed commit (the notebook package's fake repository mirrors this). One seen set spans the walk, so cost is proportional to unique objects.
 
 ### Paths and content (`path.go`)

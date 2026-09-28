@@ -119,6 +119,18 @@ func ValidateHistory(repo Repository, head, shallow OID) error {
 	return nil
 }
 
+// ValidateTree verifies that every tree and blob of one tree closure is
+// present in the repository. It is the presence half of ValidateHistory for
+// a head whose history was already proven: consecutive reads of an
+// unchanged accepted state need the objects a merge and a materialization
+// will touch, not the commit chain below them (architecture/pull.md).
+func ValidateTree(repo Repository, tree OID) error {
+	if err := treeClosureValidate(repo, tree, map[OID]struct{}{}); err != nil {
+		return fmt.Errorf("git: validate tree: %w", err)
+	}
+	return nil
+}
+
 // writePack writes one complete pack for the given objects, hashing the pack
 // bytes while writing so the returned SHA-256 covers exactly the exported
 // bytes. Objects are sorted by OID so the exported bytes are stable for the

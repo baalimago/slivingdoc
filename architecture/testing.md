@@ -118,6 +118,7 @@ process scenario
 - A `testing.Short()` guard, a Docker-conditional skip, or a second "full gate" command hides coverage; none is allowed.
 - A scenario with an injected store must set `HarnessConfig.Prefix` to the prefix the store was built with (`NewHarness` fails otherwise); `Bucket` defaults to `test-bucket` and `Endpoint` to empty.
 - `HarnessConfig.RetryLimit`, `CheckpointPacks`, `RetainedCheckpts` are pointers because zero is a meaningful value.
+- `HarnessConfig.WorkspaceRoot` and `PrivateRoot` reopen the roots of an earlier harness, standing in for a new process over existing private state (the repository-repair scenarios in `scenario_import_test.go` and `scenario_pull_test.go`). Two harnesses over one workspace must not run concurrently.
 - `helperMain` needs a per-helper cache dir (`helperCacheEnv`); a shared path leaks private state across tests and counts.
 - The SeaweedFS pin lives in `tests3.Image` and in `.github/workflows/ci.yml`; keep them in sync.
 

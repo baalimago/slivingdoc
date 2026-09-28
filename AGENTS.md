@@ -283,8 +283,11 @@ line ranges) with a nonzero exit. `commit` requires
    `internal/s3store` adapter, or the `internal/httpstore` adapter when
    `SLIVINGDOC_TOKEN` is set; tests substitute the deterministic fake.
 5. **Probe the store.** `storage.Probe` proves the endpoint honors
-   `If-None-Match`, `If-Match`, and read-after-write. A hosted store runs
-   its `CheckAccess` instead (server description plus a read-only space
+   `If-None-Match`, `If-Match`, and read-after-write. With
+   `--shared-pack-cache`, a proof recorded by the same version within 24
+   hours (`probe-ok.json` in the identity's shared directory) stands in for
+   it, so only the first process of a store identity probes. A hosted store
+   runs its `CheckAccess` instead (server description plus a read-only space
    check). A failure exits nonzero with a redacted diagnostic **before** any
    transport serves a request.
 6. **Serve.** `mcp.NewServer` registers exactly `notes_pull` and

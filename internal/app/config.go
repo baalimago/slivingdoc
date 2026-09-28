@@ -106,7 +106,7 @@ func (f *Flags) Bind(fs *flag.FlagSet) {
 	fs.Var(&f.pathStyle, "path-style", "force S3 path-style addressing")
 	fs.Var(&f.workspaceRoot, "workspace-root", "visible workspace root")
 	fs.Var(&f.privateRoot, "private-root", "private state root")
-	fs.Var(&f.sharedPackCache, "shared-pack-cache", "share downloaded pack bytes between workspaces of one notebook")
+	fs.Var(&f.sharedPackCache, "shared-pack-cache", "share downloaded pack bytes and the store compatibility proof between workspaces of one notebook")
 	fs.Var(&f.commitRetries, "commit-retries", "CAS retries after the first attempt")
 	fs.Var(&f.checkpointPacks, "checkpoint-packs", "active tail length that schedules a checkpoint")
 	fs.Var(&f.retainedCheckpoints, "retained-checkpoints", "retained previous checkpoint generations")
@@ -600,8 +600,9 @@ const FlagReference = `  --bucket string               S3 bucket (required), or 
   --private-root string         private state root (default: beside the      SLIVINGDOC_PRIVATE_ROOT
                                 temporary workspace root, else
                                 <user-cache-dir>/slivingdoc)
-  --shared-pack-cache           share downloaded pack bytes between          SLIVINGDOC_SHARED_PACK_CACHE
-                                workspaces of one notebook under
+  --shared-pack-cache           share downloaded pack bytes and the store    SLIVINGDOC_SHARED_PACK_CACHE
+                                compatibility proof between workspaces of
+                                one notebook under
                                 <user-cache-dir>/slivingdoc/pack-cache
                                 (default false)
   --commit-retries int          CAS retries after the first attempt          SLIVINGDOC_COMMIT_RETRIES

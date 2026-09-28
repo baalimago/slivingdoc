@@ -187,8 +187,18 @@ same directory from its own configuration, so agents share downloads with no
 coordination: the first cold pull populates the directory and later pulls by
 any agent read from it. Entries are keyed by SHA-256 and re-verified against
 the authoritative manifest on every read, so a corrupt or foreign entry is
-discarded and re-downloaded, never trusted. Only pack bytes are shared;
-each workspace keeps its own private repository, baseline, and locks.
+discarded and re-downloaded, never trusted. Only pack bytes and the store
+compatibility proof (below) are shared; each workspace keeps its own
+private repository, baseline, and locks.
+
+The same directory records the outcome of the startup compatibility probe
+in `probe-ok.json`. The probe is nine dependent round trips proving a
+property of the endpoint, so a one-shot `pull` or `commit` against a
+distant bucket pays seconds for it on every start. With the flag, a
+process reuses a record written by the same slivingdoc version within the
+last 24 hours and starts without probing; an absent, corrupt, foreign, or
+expired record simply means the probe runs and rewrites it. Remove the
+file to force a probe on the next start.
 
 Writing into the cache is best-effort: a read-only or full cache directory
 logs a warning and the operation continues. That makes a pre-populated
@@ -420,7 +430,10 @@ at startup with the `INCOMPATIBLE_STORE` category; when the failure is
 an operational error rather than a missing capability, the diagnostic
 names the underlying reason (for example the S3 `AccessDenied` or
 `InvalidAccessKeyId` error) while the probe key and any secret stay
-redacted. Bucket versioning is not required.
+redacted. Bucket versioning is not required. With `--shared-pack-cache`
+the proof is recorded and reused for 24 hours (see
+[the shared pack cache](#the-shared-pack-cache)), so only the first
+process of a store identity pays for the probe.
 
 ## Hosted storage
 

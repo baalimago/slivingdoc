@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/baalimago/slivingdoc/internal/git"
 	"github.com/baalimago/slivingdoc/internal/notebook"
@@ -36,6 +37,21 @@ type ServiceConfig struct {
 	// every unmatched path (architecture/product-contract.md, Read-only and
 	// writable paths).
 	WritablePaths []string
+}
+
+// probeProofs locates the store compatibility proof of this configuration:
+// below the identity's shared pack-cache directory when --shared-pack-cache
+// is on, else disabled (architecture/storage.md).
+func (cfg config) probeProofs(now func() time.Time) probeProofStore {
+	if cfg.packCacheRoot == "" {
+		return probeProofStore{}
+	}
+	return probeProofStore{
+		dir:     filepath.Join(cfg.packCacheRoot, workspace.SharedCacheDirName(cfg.serviceConfig().identity())),
+		version: Version,
+		store:   probedStore{cfg.endpoint, cfg.region, cfg.bucket, cfg.prefix, cfg.pathStyle},
+		now:     now,
+	}
 }
 
 // serviceConfig converts the resolved process configuration into the
@@ -207,12 +223,14 @@ func (s *Service) notebookFor(ctx context.Context, path string) (*notebook.Noteb
 // identity is the storage identity derived from the normalized
 // configuration (architecture/workspace.md and config.md): the endpoint,
 // region, bucket, prefix, and the manifest protocol version.
-func (s *Service) identity() workspace.Identity {
+func (s *Service) identity() workspace.Identity { return s.cfg.identity() }
+
+func (c ServiceConfig) identity() workspace.Identity {
 	return workspace.Identity{
-		Endpoint:        s.cfg.Endpoint,
-		Region:          s.cfg.Region,
-		Bucket:          s.cfg.Bucket,
-		Prefix:          s.cfg.Prefix,
+		Endpoint:        c.Endpoint,
+		Region:          c.Region,
+		Bucket:          c.Bucket,
+		Prefix:          c.Prefix,
 		ManifestVersion: workspace.ManifestVersion,
 	}
 }

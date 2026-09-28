@@ -73,6 +73,7 @@ Where the code has since diverged, the code wins and the note says so.
 41. Store account refusals (full space, request allowance, throttling, denied credentials, oversized object) are `STORAGE_FAILURE` reasons; all but throttling are not retryable, and the store's own one-line message is appended to the caller's message.
 42. A commit refused because the space is full is published as a whole-state checkpoint when that shrinks the space, keeping no retained generation, so deleting notes frees room (an exception to decision 17).
 43. A hosted token reaches exactly one space, so the process takes the space from the token (`GET /v1/token`) and `--bucket` is optional in hosted mode. A `--bucket` naming another space refuses startup instead of either side winning; against a server without the lookup, a given `--bucket` keeps working ([hosted-mode.md](./hosted-mode.md)).
+44. The S3 compatibility probe proves a property of the endpoint, so with `--shared-pack-cache` its success is recorded (`probe-ok.json`) in the identity's shared directory and reused by the same slivingdoc version and store configuration for 24 hours instead of re-proved by every process; credentials are not bound, so a credential failure moves from a startup refusal to the first request. A one-shot `pull` otherwise spends most of its time on the probe's nine dependent round trips against a distant bucket. Without the flag, and for hosted stores, startup is unchanged ([storage.md](./storage.md)).
 
 ### Deferred work
 
