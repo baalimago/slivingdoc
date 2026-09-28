@@ -46,6 +46,7 @@ type registryManifest struct {
 		EnvironmentVariables []struct {
 			Name       string `json:"name"`
 			IsRequired bool   `json:"isRequired"`
+			IsSecret   bool   `json:"isSecret"`
 		} `json:"environmentVariables"`
 		Transport struct {
 			Type string `json:"type"`
@@ -108,14 +109,20 @@ func TestMCPRegistryManifest(t *testing.T) {
 		t.Fatalf("registry package arguments = %+v, want one positional serve", entry.PackageArguments)
 	}
 
-	hasBucket := false
+	// Either variable alone configures a server: the token selects hosted
+	// storage and names its space, the bucket selects S3. Neither is required
+	// on its own, and the token is a credential.
+	variables := map[string]struct{ required, secret bool }{}
 	for _, variable := range entry.EnvironmentVariables {
-		if variable.Name == "SLIVINGDOC_BUCKET" && variable.IsRequired {
-			hasBucket = true
-		}
+		variables[variable.Name] = struct{ required, secret bool }{variable.IsRequired, variable.IsSecret}
 	}
-	if !hasBucket {
-		t.Fatal("registry manifest does not require SLIVINGDOC_BUCKET")
+	token, hasToken := variables["SLIVINGDOC_TOKEN"]
+	if !hasToken || token.required || !token.secret {
+		t.Fatalf("registry SLIVINGDOC_TOKEN = %+v (declared %v), want declared, optional and secret", token, hasToken)
+	}
+	bucket, hasBucket := variables["SLIVINGDOC_BUCKET"]
+	if !hasBucket || bucket.required {
+		t.Fatalf("registry SLIVINGDOC_BUCKET = %+v (declared %v), want declared and optional", bucket, hasBucket)
 	}
 }
 
