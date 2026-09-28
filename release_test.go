@@ -28,9 +28,10 @@ import (
 const releaseTestVersion = "0.0.0-release-test"
 
 type registryManifest struct {
-	Name     string `json:"name"`
-	Version  string `json:"version"`
-	Packages []struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Version     string `json:"version"`
+	Packages    []struct {
 		Identifier       string `json:"identifier"`
 		Version          string `json:"version"`
 		RegistryType     string `json:"registryType"`
@@ -46,6 +47,7 @@ type registryManifest struct {
 		EnvironmentVariables []struct {
 			Name       string `json:"name"`
 			IsRequired bool   `json:"isRequired"`
+			IsSecret   bool   `json:"isSecret"`
 		} `json:"environmentVariables"`
 		Transport struct {
 			Type string `json:"type"`
@@ -87,6 +89,9 @@ func TestMCPRegistryManifest(t *testing.T) {
 	if registry.Name != pkg.MCPName {
 		t.Fatalf("registry name = %q, npm mcpName = %q", registry.Name, pkg.MCPName)
 	}
+	if n := len([]rune(registry.Description)); n == 0 || n > 100 {
+		t.Fatalf("registry description has %d characters, want 1 to 100", n)
+	}
 	if registry.Version != pkg.Version {
 		t.Fatalf("registry version = %q, npm version = %q", registry.Version, pkg.Version)
 	}
@@ -108,14 +113,24 @@ func TestMCPRegistryManifest(t *testing.T) {
 		t.Fatalf("registry package arguments = %+v, want one positional serve", entry.PackageArguments)
 	}
 
-	hasBucket := false
+	// Neither variable is required: the token (or a stored login) selects
+	// hosted storage and names its space, the bucket selects S3. The token is
+	// a credential.
+	type envVar struct{ required, secret bool }
+	variables := map[string]envVar{}
 	for _, variable := range entry.EnvironmentVariables {
-		if variable.Name == "SLIVINGDOC_BUCKET" && variable.IsRequired {
-			hasBucket = true
+		if _, dup := variables[variable.Name]; dup {
+			t.Fatalf("registry declares %s twice", variable.Name)
 		}
+		variables[variable.Name] = envVar{variable.IsRequired, variable.IsSecret}
 	}
-	if !hasBucket {
-		t.Fatal("registry manifest does not require SLIVINGDOC_BUCKET")
+	token, hasToken := variables["SLIVINGDOC_TOKEN"]
+	if !hasToken || token.required || !token.secret {
+		t.Fatalf("registry SLIVINGDOC_TOKEN = %+v (declared %v), want declared, optional and secret", token, hasToken)
+	}
+	bucket, hasBucket := variables["SLIVINGDOC_BUCKET"]
+	if !hasBucket || bucket.required {
+		t.Fatalf("registry SLIVINGDOC_BUCKET = %+v (declared %v), want declared and optional", bucket, hasBucket)
 	}
 }
 
