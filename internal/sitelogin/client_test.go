@@ -667,18 +667,28 @@ func TestDefaultsNeedNoSeams(t *testing.T) {
 
 // TestReferenceSiteRefusesUnknownFields proves the reference site reads
 // request bodies as strictly as the real one: a field outside a route's
-// body, or one of another JSON type, is 400 invalid_request. The client
-// tests over it therefore prove the client sends nothing else.
+// body, a key spelled in another case, a null, a value of another JSON
+// type, or data after the object is 400 invalid_request. The client tests
+// over it therefore prove the client sends nothing else. A token poll
+// whose deviceCode is missing or unknown is a poll answer, expired_token.
 func TestReferenceSiteRefusesUnknownFields(t *testing.T) {
 	site := sitetest.Start(t)
 	site.Issued(testToken, endpoint)
 	site.SetSpaces(testToken, sitetest.Space{Name: "notes", Owner: "ada@example.test", Access: "write"})
-	for _, row := range []struct{ path, body string }{
-		{"/cli/v1/start", `{"access":"write","client":"laptop","space":"notes"}`},
-		{"/cli/v1/start", `{"access":"write","client":5}`},
-		{"/cli/v1/token", `{"deviceCode":"x","extra":1}`},
-		{"/cli/v1/space-token", `{"space":"notes","access":"write","extra":1}`},
-		{"/cli/v1/space-token", `{"space":"notes","access":"admin"}`},
+	for _, row := range []struct{ path, body, want string }{
+		{"/cli/v1/start", `{"access":"write","client":"laptop","space":"notes"}`, "invalid_request"},
+		{"/cli/v1/start", `{"access":"write","client":5}`, "invalid_request"},
+		{"/cli/v1/start", `{"Access":"write"}`, "invalid_request"},
+		{"/cli/v1/start", `{"access":"write"} junk`, "invalid_request"},
+		{"/cli/v1/start", `{"access":"write"}{}`, "invalid_request"},
+		{"/cli/v1/start", `[]`, "invalid_request"},
+		{"/cli/v1/token", `{"deviceCode":"x","extra":1}`, "invalid_request"},
+		{"/cli/v1/token", `{"DeviceCode":"x"}`, "invalid_request"},
+		{"/cli/v1/token", `{}`, "expired_token"},
+		{"/cli/v1/token", `{"deviceCode":"unknown"}`, "expired_token"},
+		{"/cli/v1/space-token", `{"space":"notes","access":"write","extra":1}`, "invalid_request"},
+		{"/cli/v1/space-token", `{"space":"notes","access":"admin"}`, "invalid_request"},
+		{"/cli/v1/space-token", `{"space":"notes","access":null}`, "invalid_request"},
 	} {
 		req, err := http.NewRequest(http.MethodPost, site.URL()+row.path, strings.NewReader(row.body))
 		if err != nil {
@@ -690,10 +700,13 @@ func TestReferenceSiteRefusesUnknownFields(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		data, _ := io.ReadAll(resp.Body)
+		data, err := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		if resp.StatusCode != http.StatusBadRequest || !strings.Contains(string(data), `"error":"invalid_request"`) {
-			t.Fatalf("POST %s %s = %d %s, want 400 invalid_request", row.path, row.body, resp.StatusCode, data)
+		if err != nil {
+			t.Fatalf("POST %s %s: read the answer: %v", row.path, row.body, err)
+		}
+		if resp.StatusCode != http.StatusBadRequest || !strings.Contains(string(data), `"error":"`+row.want+`"`) {
+			t.Fatalf("POST %s %s = %d %s, want 400 %s", row.path, row.body, resp.StatusCode, data, row.want)
 		}
 	}
 }

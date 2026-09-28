@@ -6,10 +6,14 @@
 package sitetest
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -75,9 +79,9 @@ type Script struct {
 	Stall    bool
 }
 
-// StartBody is one recorded start request. A field outside it, or of
-// another JSON type, is refused as invalid_request, like every body the
-// site reads.
+// StartBody is one recorded start request, decoded by decodeStrict: a
+// body with any other key, a key in another case, a null, a value of
+// another JSON type, or data after it is refused as invalid_request.
 type StartBody struct {
 	Access string `json:"access"`
 	Client string `json:"client"`
@@ -327,7 +331,7 @@ func (s *Site) Mints() []Minted {
 
 func (s *Site) start(w http.ResponseWriter, r *http.Request) {
 	var body StartBody
-	if err := decodeStrict(r, &body); err != nil || (body.Access != "write" && body.Access != "read") {
+	if err := decodeStrict(r, &body, "access", "client"); err != nil || (body.Access != "write" && body.Access != "read") {
 		writeError(w, http.StatusBadRequest, "invalid_request")
 		return
 	}
@@ -365,7 +369,7 @@ func (s *Site) token(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		DeviceCode string `json:"deviceCode"`
 	}
-	if err := decodeStrict(r, &body); err != nil || body.DeviceCode == "" {
+	if err := decodeStrict(r, &body, "deviceCode"); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request")
 		return
 	}
@@ -487,7 +491,7 @@ func (s *Site) mint(w http.ResponseWriter, r *http.Request) {
 		Space  string `json:"space"`
 		Access string `json:"access"`
 	}
-	if err := decodeStrict(r, &body); err != nil || body.Space == "" || (body.Access != "" && body.Access != "write" && body.Access != "read") {
+	if err := decodeStrict(r, &body, "space", "access"); err != nil || body.Space == "" || (body.Access != "" && body.Access != "write" && body.Access != "read") {
 		writeError(w, http.StatusBadRequest, "invalid_request")
 		return
 	}
@@ -617,13 +621,36 @@ func jsonOnly(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// decodeStrict decodes a request body as the site does: a field outside
-// v, or one of another JSON type, is an error, which each route answers
+// decodeStrict decodes a request body as the site does: one JSON object
+// whose keys are among names, spelled exactly (encoding/json alone would
+// match them ignoring case), none of them null, each of v's JSON type, and
+// nothing after it. Anything else is an error, which each route answers
 // with 400 invalid_request.
-func decodeStrict(r *http.Request, v any) error {
-	dec := json.NewDecoder(r.Body)
-	dec.DisallowUnknownFields()
-	return dec.Decode(v)
+func decodeStrict(r *http.Request, v any, names ...string) error {
+	data, err := io.ReadAll(r.Body)
+	if err != nil {
+		return err
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	var fields map[string]json.RawMessage
+	if err := dec.Decode(&fields); err != nil {
+		return err
+	}
+	if fields == nil {
+		return errors.New("the body is not an object")
+	}
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+		return errors.New("data after the object")
+	}
+	for name, value := range fields {
+		if !slices.Contains(names, name) {
+			return fmt.Errorf("unknown field %q", name)
+		}
+		if string(value) == "null" {
+			return fmt.Errorf("field %q is null", name)
+		}
+	}
+	return json.Unmarshal(data, v)
 }
 
 func writeError(w http.ResponseWriter, status int, code string) {
