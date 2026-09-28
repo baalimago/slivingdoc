@@ -3,6 +3,7 @@ package credentials
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -339,21 +340,26 @@ func TestLoadRefusesMalformedFiles(t *testing.T) {
 }
 
 // TestLoadRefusesAnotherVersion proves a file of any version but
-// FormatVersion is refused as unsupported, whatever it holds, with the fix
-// and the file named and no field of it echoed.
+// FormatVersion is refused as unsupported, whatever it holds, with the file
+// named, no field of it echoed, and the fix for its direction: an older
+// file is removed and the login made again, while a newer build's file,
+// which holds live keys, is kept and slivingdoc updated.
 func TestLoadRefusesAnotherVersion(t *testing.T) {
-	for _, data := range []string{
-		`{"version":1,"logins":[{"site":"https://www.slivingdoc.dev","token":"` + testToken + `"}]}`,
-		`{"version":3,"logins":[],"extra":"` + testToken + `"}`,
-		`{"version":0}`,
+	const older, newer = "remove %s and run 'slivingdoc login'", "a newer slivingdoc wrote it (%s); update slivingdoc, and keep the file"
+	for _, row := range []struct {
+		data, fix, not string
+	}{
+		{`{"version":1,"logins":[{"site":"https://www.slivingdoc.dev","token":"` + testToken + `"}]}`, older, "update slivingdoc"},
+		{`{"version":0}`, older, "update slivingdoc"},
+		{`{"version":3,"logins":[],"extra":"` + testToken + `"}`, newer, "remove "},
 	} {
 		f := testFile(t)
-		writeRaw(t, f, data)
+		writeRaw(t, f, row.data)
 		_, err := f.Load()
 		if !errors.Is(err, ErrUnsupportedVersion) || errors.Is(err, ErrMalformed) ||
-			!strings.Contains(err.Error(), "remove "+f.Path()+" and run 'slivingdoc login'") ||
+			!strings.Contains(err.Error(), fmt.Sprintf(row.fix, f.Path())) || strings.Contains(err.Error(), row.not) ||
 			!strings.Contains(err.Error(), "reads version 2 only") || strings.Contains(err.Error(), testToken) {
-			t.Fatalf("Load(%s) = %v, want ErrUnsupportedVersion naming the file and the fix, not the token", data, err)
+			t.Fatalf("Load(%s) = %v, want ErrUnsupportedVersion with %q, not %q, and not the token", row.data, err, row.fix, row.not)
 		}
 	}
 }

@@ -415,7 +415,8 @@ func chooseDefault(asked string, spaces []sitelogin.Space, prior string) string 
 }
 
 // report tells the person what the stored login changed besides itself:
-// the default space and the key it replaced, which is revoked only when the same account approved it.
+// the default space and the key it replaced, which is revoked only when
+// the same account approved it.
 func (l *Login) report(ctx context.Context, stored credentials.Login, spaces []sitelogin.Space, out storeOutcome) {
 	errOut := l.opts.errOut()
 	switch {

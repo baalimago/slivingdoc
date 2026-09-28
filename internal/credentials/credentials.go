@@ -57,8 +57,9 @@ var (
 	// ErrMalformed reports a credentials file this build cannot read.
 	ErrMalformed = errors.New("credentials: malformed credentials file")
 	// ErrUnsupportedVersion reports a credentials file of a version this
-	// build does not read. It is never rewritten in place: the person
-	// removes it and logs in again.
+	// build does not read. It is never rewritten: an older file is removed
+	// by the person, who logs in again; a newer build's file keeps its live
+	// keys, and slivingdoc is updated instead.
 	ErrUnsupportedVersion = errors.New("credentials: unsupported credentials file version")
 	// ErrNoLogin reports that no stored login matches the request.
 	ErrNoLogin = errors.New("credentials: no stored login")
@@ -396,8 +397,9 @@ func (f File) Load() (Set, error) {
 		return Set{}, fmt.Errorf("%w %s: larger than %d bytes", ErrMalformed, f.Path(), maxFileSize)
 	}
 	set, err := decode(data)
-	if errors.Is(err, ErrUnsupportedVersion) {
-		return Set{}, fmt.Errorf("%w; remove %s and run 'slivingdoc login'", err, f.Path())
+	var version *versionError
+	if errors.As(err, &version) {
+		return Set{}, version.withFix(f.Path())
 	}
 	if err != nil {
 		return Set{}, fmt.Errorf("%w %s: %w", ErrMalformed, f.Path(), err)
@@ -556,6 +558,27 @@ const (
 	fieldSpace         = "space"
 )
 
+// versionError is ErrUnsupportedVersion for a file of version got.
+type versionError struct {
+	got uint64
+}
+
+func (e *versionError) Error() string {
+	return fmt.Sprintf("%s: it is version %d, and this slivingdoc reads version %d only", ErrUnsupportedVersion, e.got, FormatVersion)
+}
+
+func (e *versionError) Unwrap() error { return ErrUnsupportedVersion }
+
+// withFix adds the fix for the file at path: a newer build's file holds
+// live keys, so it is kept and slivingdoc updated; an older one is
+// removed and the login made again.
+func (e *versionError) withFix(path string) error {
+	if e.got > FormatVersion {
+		return fmt.Errorf("%w; a newer slivingdoc wrote it (%s); update slivingdoc, and keep the file", e, path)
+	}
+	return fmt.Errorf("%w; remove %s and run 'slivingdoc login'", e, path)
+}
+
 func decode(data []byte) (Set, error) {
 	root, err := strictjson.Parse(data)
 	if err != nil {
@@ -569,7 +592,7 @@ func decode(data []byte) (Set, error) {
 		return Set{}, errors.New("missing numeric version")
 	}
 	if ver.Num != FormatVersion {
-		return Set{}, fmt.Errorf("%w: it is version %d, and this slivingdoc reads version %d only", ErrUnsupportedVersion, ver.Num, FormatVersion)
+		return Set{}, &versionError{got: ver.Num}
 	}
 	if err := root.RejectUnknown(fieldVersion, fieldLogins, fieldDefaultSpaces); err != nil {
 		return Set{}, err

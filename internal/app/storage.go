@@ -274,7 +274,10 @@ func resolveStorage(f *Flags, env map[string]string, in storageInputs) (storageS
 	}
 	logins, err := loadLogins(env, in.goos)
 	if err != nil {
-		return storageSelection{}, fmt.Errorf("%w; fix or remove it, or pass --storage s3", err)
+		if errors.Is(err, credentials.ErrUnsupportedVersion) {
+			return storageSelection{}, fmt.Errorf("%w, or pass --storage s3 to use S3", err)
+		}
+		return storageSelection{}, fmt.Errorf("%w; fix or remove the file, or pass --storage s3 to use S3", err)
 	}
 	login, err := pickLogin(logins, explicit)
 	switch {

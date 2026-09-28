@@ -475,22 +475,26 @@ func TestLoginRefusals(t *testing.T) {
 			t.Fatal("a refused login contacted the site")
 		}
 	})
-	t.Run("a credentials file of another version", func(t *testing.T) {
-		r := newLoginRig(t)
-		const other = `{"version":1,"logins":[]}`
-		r.writeFile(t, other)
-		for name, err := range map[string]error{"login": r.login(t), "logout": r.logout(t), "space": r.space(t)} {
-			if !errors.Is(err, credentials.ErrUnsupportedVersion) || !strings.Contains(err.Error(), "run 'slivingdoc login'") {
-				t.Fatalf("%s = %v, want ErrUnsupportedVersion with the fix", name, err)
+	for _, row := range []struct{ name, data, fix string }{
+		{"an older credentials file", `{"version":1,"logins":[]}`, "run 'slivingdoc login'"},
+		{"a newer build's credentials file", `{"version":3,"logins":[]}`, "update slivingdoc, and keep the file"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			r := newLoginRig(t)
+			r.writeFile(t, row.data)
+			for name, err := range map[string]error{"login": r.login(t), "logout": r.logout(t), "space": r.space(t)} {
+				if !errors.Is(err, credentials.ErrUnsupportedVersion) || !strings.Contains(err.Error(), row.fix) {
+					t.Fatalf("%s = %v, want ErrUnsupportedVersion with %q", name, err, row.fix)
+				}
 			}
-		}
-		if len(r.site.Starts()) != 0 || len(r.site.Revoked()) != 0 {
-			t.Fatal("a refused login contacted the site")
-		}
-		if got, err := os.ReadFile(filepath.Join(r.dir, credentials.FileName)); err != nil || string(got) != other {
-			t.Fatalf("credentials file = %q, %v; want it left as it was", got, err)
-		}
-	})
+			if len(r.site.Starts()) != 0 || len(r.site.Revoked()) != 0 {
+				t.Fatal("a refused login contacted the site")
+			}
+			if got, err := os.ReadFile(filepath.Join(r.dir, credentials.FileName)); err != nil || string(got) != row.data {
+				t.Fatalf("credentials file = %q, %v; want it left as it was", got, err)
+			}
+		})
+	}
 	t.Run("a directory other users can write", func(t *testing.T) {
 		if runtime.GOOS == "windows" {
 			t.Skip("Windows has no group or other permission bits")

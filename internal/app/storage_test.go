@@ -245,6 +245,7 @@ func TestResolveStorageRefusals(t *testing.T) {
 	awsHome := awsHomeDir(t)
 	malformed := writeRawLogins(t, []byte(`{"version":2,"logins":[{"key":"`+loginToken+`"}]}`))
 	unsupported := writeRawLogins(t, []byte(`{"version":1,"logins":[]}`))
+	newer := writeRawLogins(t, []byte(`{"version":3,"logins":[]}`))
 	empty := credentials.DirEnv + "=" + t.TempDir()
 	tests := []struct {
 		name string
@@ -298,13 +299,19 @@ func TestResolveStorageRefusals(t *testing.T) {
 			"a malformed credentials file",
 			[]string{malformed, "SLIVINGDOC_BUCKET=notes"},
 			nil,
-			[]string{"malformed credentials file", "--storage s3"},
+			[]string{"malformed credentials file", "; fix or remove the file, or pass --storage s3 to use S3"},
 		},
 		{
 			"a credentials file of another version",
 			[]string{unsupported, "SLIVINGDOC_BUCKET=notes"},
 			nil,
-			[]string{"unsupported credentials file version", "run 'slivingdoc login'", "--storage s3"},
+			[]string{"unsupported credentials file version", "run 'slivingdoc login', or pass --storage s3 to use S3"},
+		},
+		{
+			"a newer build's credentials file",
+			[]string{newer, "SLIVINGDOC_BUCKET=notes"},
+			nil,
+			[]string{"a newer slivingdoc wrote it", "update slivingdoc, and keep the file, or pass --storage s3 to use S3"},
 		},
 		{
 			"an unknown storage",

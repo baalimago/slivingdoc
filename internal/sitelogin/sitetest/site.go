@@ -75,8 +75,9 @@ type Script struct {
 	Stall    bool
 }
 
-// StartBody is one recorded start request. A field outside it is refused
-// as invalid_request.
+// StartBody is one recorded start request. A field outside it, or of
+// another JSON type, is refused as invalid_request, like every body the
+// site reads.
 type StartBody struct {
 	Access string `json:"access"`
 	Client string `json:"client"`
@@ -326,9 +327,7 @@ func (s *Site) Mints() []Minted {
 
 func (s *Site) start(w http.ResponseWriter, r *http.Request) {
 	var body StartBody
-	dec := json.NewDecoder(r.Body)
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&body); err != nil || (body.Access != "write" && body.Access != "read") {
+	if err := decodeStrict(r, &body); err != nil || (body.Access != "write" && body.Access != "read") {
 		writeError(w, http.StatusBadRequest, "invalid_request")
 		return
 	}
@@ -366,7 +365,7 @@ func (s *Site) token(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		DeviceCode string `json:"deviceCode"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.DeviceCode == "" {
+	if err := decodeStrict(r, &body); err != nil || body.DeviceCode == "" {
 		writeError(w, http.StatusBadRequest, "invalid_request")
 		return
 	}
@@ -488,7 +487,7 @@ func (s *Site) mint(w http.ResponseWriter, r *http.Request) {
 		Space  string `json:"space"`
 		Access string `json:"access"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Space == "" {
+	if err := decodeStrict(r, &body); err != nil || body.Space == "" || (body.Access != "" && body.Access != "write" && body.Access != "read") {
 		writeError(w, http.StatusBadRequest, "invalid_request")
 		return
 	}
@@ -616,6 +615,15 @@ func jsonOnly(next http.HandlerFunc) http.HandlerFunc {
 		r.Body = http.MaxBytesReader(w, r.Body, requestLimit)
 		next(w, r)
 	}
+}
+
+// decodeStrict decodes a request body as the site does: a field outside
+// v, or one of another JSON type, is an error, which each route answers
+// with 400 invalid_request.
+func decodeStrict(r *http.Request, v any) error {
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	return dec.Decode(v)
 }
 
 func writeError(w http.ResponseWriter, status int, code string) {

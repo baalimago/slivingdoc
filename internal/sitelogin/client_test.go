@@ -664,3 +664,36 @@ func TestDefaultsNeedNoSeams(t *testing.T) {
 		t.Fatal("default clock is zero")
 	}
 }
+
+// TestReferenceSiteRefusesUnknownFields proves the reference site reads
+// request bodies as strictly as the real one: a field outside a route's
+// body, or one of another JSON type, is 400 invalid_request. The client
+// tests over it therefore prove the client sends nothing else.
+func TestReferenceSiteRefusesUnknownFields(t *testing.T) {
+	site := sitetest.Start(t)
+	site.Issued(testToken, endpoint)
+	site.SetSpaces(testToken, sitetest.Space{Name: "notes", Owner: "ada@example.test", Access: "write"})
+	for _, row := range []struct{ path, body string }{
+		{"/cli/v1/start", `{"access":"write","client":"laptop","space":"notes"}`},
+		{"/cli/v1/start", `{"access":"write","client":5}`},
+		{"/cli/v1/token", `{"deviceCode":"x","extra":1}`},
+		{"/cli/v1/space-token", `{"space":"notes","access":"write","extra":1}`},
+		{"/cli/v1/space-token", `{"space":"notes","access":"admin"}`},
+	} {
+		req, err := http.NewRequest(http.MethodPost, site.URL()+row.path, strings.NewReader(row.body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+testToken)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest || !strings.Contains(string(data), `"error":"invalid_request"`) {
+			t.Fatalf("POST %s %s = %d %s, want 400 invalid_request", row.path, row.body, resp.StatusCode, data)
+		}
+	}
+}

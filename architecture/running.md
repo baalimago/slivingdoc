@@ -544,8 +544,10 @@ on macOS, `%AppData%\slivingdoc\` on Windows; `SLIVINGDOC_CONFIG_DIR`
 names another directory), mode 0600, with one login per storage endpoint
 and that endpoint's default space. Logging in again replaces the stored
 key. A credentials file of another format version is refused by every
-command, `login` included, which says to remove it and run
-`slivingdoc login`; nothing rewrites it in place. The file, and its
+command that reads it, `login` included, and nothing rewrites it: an
+older file says to remove it and run `slivingdoc login`; a newer
+slivingdoc's file says to update slivingdoc and keep the file, whose keys
+are still live. The file, and its
 directory, must belong to you and must not be accessible to other users:
 like ssh, slivingdoc refuses a symbolic link or anything but a regular
 file, a file or directory another user owns, a file group or other can
@@ -656,7 +658,9 @@ explicit `--endpoint` or `SLIVINGDOC_ENDPOINT` that differs means the login
 does not apply: S3 under `auto` (and then its default space is not used as
 the bucket), a refusal under `--storage hosted`. With logins for several
 endpoints, pass `--endpoint` to choose. A credentials file that cannot be read
-refuses startup; fix or remove it, or pass `--storage s3`.
+refuses startup with its fix (fix or remove the file, remove an older
+version and log in again, or update slivingdoc for a newer one), or pass
+`--storage s3`.
 [login.md](./login.md) has the details and its threat model.
 
 ## MCP host configuration
