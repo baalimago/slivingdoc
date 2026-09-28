@@ -45,9 +45,7 @@ staging and no branches.
 - **Plain files:** UTF-8 text in a directory, readable and editable with
   any editor; no database, no embeddings
 - **Two operations:** `notes_pull` and `notes_commit` over MCP, and the same
-  `pull` and `commit` from the command line
-- **For people too:** share files with colleagues from the terminal and
-  edit them in any editor; concurrent edits merge the same way
+  `pull` and `commit` from the command line, so people share the files too
 - **Your bucket or ours:** any S3-compatible bucket that supports
   conditional writes, or a hosted space at
   [slivingdoc.dev](https://slivingdoc.dev)
@@ -78,9 +76,8 @@ The free tier holds one space, 10 MB of notes and 250,000 requests a
 month; each extra 100 MB, 250,000 requests or space costs $1 a month
 ([pricing](https://slivingdoc.dev/pricing/)). The endpoint defaults to the
 hosted service, so the site's `--endpoint` flag is optional.
-[Hosted storage](#hosted-storage) below has the details.
 
-To share notes with colleagues from the command line:
+Or, from the command line, share notes with colleagues:
 
 ```sh
 export SLIVINGDOC_TOKEN=<your-api-token>
@@ -89,10 +86,12 @@ echo "hello from $(hostname)" > notes/hello.md
 npx -y slivingdoc commit notes -m "First note"
 ```
 
-Invite colleagues from your space's Members page on slivingdoc.dev, with
-read or read-and-write access. Each signs in, joins, and makes their own
-token for the space, then pulls into a new or empty folder. Everyone pulls
-the same notes, and those with write access commit to them.
+To bring in colleagues, make an invite link on your space's Members page
+at slivingdoc.dev, with Read or Read and write access. Each colleague opens
+the link, signs in, presses Join, makes their own token for the space, and
+pulls into a new or empty folder. Everyone pulls the same notes, and those
+with Read and write access commit to them. Their requests and storage count
+against your plan. [Hosted storage](#hosted-storage) below has the details.
 
 ### Self-hosted, on your own bucket
 
@@ -148,13 +147,19 @@ The token replaces the AWS settings and names the space; `--region` and
 
 ## How it works
 
-The website explains the rest:
+Each agent or person pulls the notebook into a plain directory, edits files
+with any tool, and commits. slivingdoc merges concurrent commits the way Git
+would, through a built-in libgit2, and returns `CONTENT_CONFLICT` with
+conflict markers in the file when edits overlap. The website has the
+details:
 [how pull and commit work](https://slivingdoc.dev/docs/concepts/how-it-works/),
 [using the CLI](https://slivingdoc.dev/docs/guides/cli/),
 [connecting an MCP host](https://slivingdoc.dev/docs/guides/mcp-hosts/),
+[the MCP tools](https://slivingdoc.dev/docs/reference/mcp-tools/),
+[resolving conflicts](https://slivingdoc.dev/docs/guides/conflicts/),
 [read-only and writable paths](https://slivingdoc.dev/docs/guides/path-policies/),
 and
-[sharing a directory between people and agents](https://slivingdoc.dev/docs/guides/shared-directory/).
+[sharing a directory with people](https://slivingdoc.dev/docs/guides/shared-directory/).
 [`architecture/`](architecture/README.md) holds the exact contract.
 
 ## Configuration
