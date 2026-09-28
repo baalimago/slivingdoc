@@ -400,6 +400,13 @@ func environ(env []string) map[string]string {
 	return m
 }
 
+// EnvLookup returns a getenv over env, the process environment as
+// KEY=value pairs, with environ's last-value-wins rule.
+func EnvLookup(env []string) func(string) string {
+	m := environ(env)
+	return func(name string) string { return m[name] }
+}
+
 // resolveString returns the effective string value: an explicitly set flag
 // wins over the environment, which wins over the default. An explicitly
 // empty flag does not fall back to the environment

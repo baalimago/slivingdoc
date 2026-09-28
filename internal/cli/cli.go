@@ -8,10 +8,7 @@ import (
 	"context"
 	"log/slog"
 	"os"
-	"strings"
-	"sync"
 
-	"github.com/baalimago/go_away_boilerplate/pkg/ancli"
 	"github.com/baalimago/go_away_boilerplate/pkg/cmd"
 
 	"github.com/baalimago/slivingdoc/cmd/commit"
@@ -21,6 +18,7 @@ import (
 	"github.com/baalimago/slivingdoc/cmd/version"
 	"github.com/baalimago/slivingdoc/internal/app"
 	"github.com/baalimago/slivingdoc/internal/git"
+	"github.com/baalimago/slivingdoc/internal/tui"
 )
 
 // Usage is the router help. The %v is the command description table.
@@ -47,7 +45,8 @@ Logging is configured by the environment; serve, pull, and commit also
 take --log-level and --log-timestamp, which override it:
   LOG_LEVEL   per-module levels, for example "cli=warn,mcp=debug,info".
               A bare level is the default; modules are cli, app, mcp, notebook.
-  NO_COLOR    any non-empty value disables the ANSI level colour.
+  NO_COLOR    any non-empty value disables colour: of log levels and
+              of the terminal output (marks, spinners, the home screen).
   DEBUG_PERF  capture CPU, heap, and execution-trace profiles across the
               whole command: 1 writes under the system temporary
               directory, any other value is the base directory itself.`
@@ -68,25 +67,19 @@ func Commands(engine git.Engine, opts app.ProcessOptions) map[string]cmd.Command
 	}
 }
 
-// consoleOnce configures the shared console state of the router exactly
-// once. ancli keeps its presentation in package variables, so repeated
-// writes are a data race between concurrently routed commands.
-var consoleOnce sync.Once
-
 // Run routes args to a command and returns the process exit code.
 func Run(ctx context.Context, args []string, engine git.Engine, opts app.ProcessOptions) int {
 	opts = withProcessEnv(opts)
 	environment := opts.Env
-	stderr := opts.Stderr
-	if stderr == nil {
-		stderr = os.Stderr
-	}
+	// Every writer of stderr, the logger included, shares one guard, so
+	// a log record never lands on the end of a progress line
+	// (architecture/tui.md).
+	guard := tui.NewGuard(opts.ErrOut())
+	opts.Stderr = guard
 
-	logger, levelErr := app.NewLogger(environment, stderr)
+	logger, levelErr := app.NewLogger(environment, guard)
 	slog.SetDefault(logger)
 	opts.Logger = logger
-
-	consoleOnce.Do(func() { setupConsole(environment) })
 
 	log := app.Module(logger, app.ModuleCLI)
 	if levelErr != nil {
@@ -98,7 +91,7 @@ func Run(ctx context.Context, args []string, engine git.Engine, opts app.Process
 	// native engine, the operation, and shutdown — because a slow pull is
 	// diagnosed end to end, not from the operation alone.
 	stopPerf := app.StartPerf(environment, log)
-	code := cmd.Run(ctx, args, Commands(engine, opts), Usage)
+	code := newRouter(Commands(engine, opts), opts).run(ctx, args)
 	stopPerf()
 	log.Debug("command finished", "exit", code)
 	return code
@@ -113,29 +106,4 @@ func withProcessEnv(opts app.ProcessOptions) app.ProcessOptions {
 		opts.Env = os.Environ()
 	}
 	return opts
-}
-
-// setupConsole makes the router's own diagnostics readable: one line each,
-// timestamped, and colored unless NO_COLOR asks otherwise.
-//
-// ancli routes through slog once SetupSlog runs, which is what supplies the
-// timestamp and the trailing newline; without it a startup refusal prints an
-// unterminated, unstamped line. Errors reach stderr and usage reaches
-// stdout, matching the documented split.
-func setupConsole(environment []string) {
-	ancli.UseColor = noColor(environment) == ""
-	ancli.Newline = true
-	ancli.SetupSlog()
-}
-
-// noColor reads NO_COLOR from the injected environment. Any non-empty value
-// disables color, which is the NO_COLOR convention. ancli's own default
-// only recognizes the literal "true".
-func noColor(environment []string) string {
-	for _, kv := range environment {
-		if name, value, ok := strings.Cut(kv, "="); ok && name == "NO_COLOR" {
-			return value
-		}
-	}
-	return ""
 }

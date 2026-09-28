@@ -14,6 +14,7 @@ import (
 
 	"github.com/baalimago/slivingdoc/internal/app"
 	"github.com/baalimago/slivingdoc/internal/git"
+	"github.com/baalimago/slivingdoc/internal/notebook"
 )
 
 type command struct {
@@ -85,7 +86,9 @@ func (c *command) Run(ctx context.Context) error {
 		return errors.New("commit: Setup must run before Run")
 	}
 	defer c.runtime.Close()
-	result, err := c.runtime.Commit(ctx, c.path, c.message)
+	result, err := c.runtime.WithProgress("Publishing", c.path, func() (notebook.Result, error) {
+		return c.runtime.Commit(ctx, c.path, c.message)
+	})
 	return app.Report(c.opts.Out(), result, err, c.path, c.opts.Env, c.runtime.ReadOnlyPaths(), c.runtime.WritablePaths())
 }
 

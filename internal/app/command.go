@@ -13,6 +13,7 @@ import (
 	"github.com/baalimago/slivingdoc/internal/mcp"
 	"github.com/baalimago/slivingdoc/internal/notebook"
 	"github.com/baalimago/slivingdoc/internal/pathutil"
+	"github.com/baalimago/slivingdoc/internal/tui"
 )
 
 // OperationPath extracts the optional positional notebook path of a pull or
@@ -154,7 +155,7 @@ func actionWording(action string) string {
 // router echoes it and exits nonzero — or the unchanged error when it is
 // not a domain error (cancellation).
 func Report(out io.Writer, result notebook.Result, err error, path string, env []string, readOnly, writable []string) error {
-	p := painter{on: colourEnabled(out, env)}
+	p := tui.Detect(out, EnvLookup(env))
 	if err == nil {
 		info := mcp.MapSuccess(result, path)
 		info.ReadOnly = readOnly
@@ -177,21 +178,21 @@ func Report(out io.Writer, result notebook.Result, err error, path string, env [
 // changed file with its insertion and deletion counts (a zero-count side
 // is omitted), the totals trailer, and the writable and read-only trailers
 // when those sets are non-empty.
-func writeSuccess(out io.Writer, info *mcp.SuccessInfo, p painter) {
+func writeSuccess(out io.Writer, info *mcp.SuccessInfo, p tui.Style) {
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s  %s  %s\n", p.green("OK"), p.cyan(fmt.Sprintf("generation %d", info.Generation)), info.Path)
+	fmt.Fprintf(&b, "%s%s  %s  %s\n", p.Mark(tui.Done), p.Good("OK"), p.Brand(fmt.Sprintf("generation %d", info.Generation)), info.Path)
 	for _, f := range info.Files {
 		counts := make([]string, 0, 2)
 		if f.Insertions > 0 {
-			counts = append(counts, p.green(fmt.Sprintf("+%d", f.Insertions)))
+			counts = append(counts, p.Good(fmt.Sprintf("+%d", f.Insertions)))
 		}
 		if f.Deletions > 0 {
-			counts = append(counts, p.red(fmt.Sprintf("-%d", f.Deletions)))
+			counts = append(counts, p.Bad(fmt.Sprintf("-%d", f.Deletions)))
 		}
 		fmt.Fprintf(&b, "  %s  %s\n", f.Path, strings.Join(counts, " "))
 	}
-	fmt.Fprintf(&b, "%d files changed, %d insertions(+), %d deletions(-)\n",
-		info.FilesChanged, info.Insertions, info.Deletions)
+	b.WriteString(p.Dim(fmt.Sprintf("%d files changed, %d insertions(+), %d deletions(-)",
+		info.FilesChanged, info.Insertions, info.Deletions)) + "\n")
 	writePathSets(&b, info.Writable, info.ReadOnly, p)
 	io.WriteString(out, b.String())
 }
@@ -200,13 +201,13 @@ func writeSuccess(out io.Writer, info *mcp.SuccessInfo, p painter) {
 // (architecture/product-contract.md, CLI report): status line, message, one
 // aligned line per file, then the next, retryable, recovery, writable, and
 // read-only trailers.
-func writeError(out io.Writer, te *mcp.ToolError, p painter) {
+func writeError(out io.Writer, te *mcp.ToolError, p tui.Style) {
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s%s%s\n", p.red(te.Code), statusSeparator, p.dim(te.Reason))
+	fmt.Fprintf(&b, "%s%s%s%s\n", p.Mark(tui.Failed), p.Bad(te.Code), statusSeparator, p.Dim(te.Reason))
 	fmt.Fprintf(&b, "%s\n", te.Message)
 	width := longestErrorFilePath(te.Files) + 2
 	for _, f := range te.Files {
-		fmt.Fprintf(&b, "  %s%s%s", p.yellow(f.Path), strings.Repeat(" ", width-utf8.RuneCountInString(f.Path)), p.dim(fileReasonWord(f.Reason)))
+		fmt.Fprintf(&b, "  %s%s%s", p.Warn(f.Path), strings.Repeat(" ", width-utf8.RuneCountInString(f.Path)), p.Dim(fileReasonWord(f.Reason)))
 		if len(f.Ranges) > 0 {
 			parts := make([]string, 0, len(f.Ranges))
 			for _, r := range f.Ranges {
@@ -216,11 +217,17 @@ func writeError(out io.Writer, te *mcp.ToolError, p painter) {
 		}
 		b.WriteByte('\n')
 	}
-	fmt.Fprintf(&b, "%s %s\n", p.cyan("next:"), nextStep(te))
-	fmt.Fprintf(&b, "retryable: %t\n", te.Retryable)
+	// On a terminal the next step leads with the arrow instead of its
+	// label; the plain report keeps "next:" for scripts.
+	next := "next: "
+	if p.Mode() == tui.Styled {
+		next = p.Mark(tui.Next)
+	}
+	fmt.Fprintf(&b, "%s%s\n", next, nextStep(te))
+	b.WriteString(p.Dim(fmt.Sprintf("retryable: %t", te.Retryable)) + "\n")
 	if rec := te.Recovery; rec != nil {
-		fmt.Fprintf(&b, "recovery: stage=%s remoteAccepted=%s resynchronized=%t\n",
-			rec.Stage, rec.RemoteAccepted, rec.Resynchronized)
+		b.WriteString(p.Dim(fmt.Sprintf("recovery: stage=%s remoteAccepted=%s resynchronized=%t",
+			rec.Stage, rec.RemoteAccepted, rec.Resynchronized)) + "\n")
 	}
 	writePathSets(&b, te.Writable, te.ReadOnly, p)
 	io.WriteString(out, b.String())
@@ -232,15 +239,15 @@ func writeError(out io.Writer, te *mcp.ToolError, p painter) {
 // non-empty sets may name the same region at different depths, so they are
 // followed by the rule that reconciles them
 // (architecture/product-contract.md, Read-only and writable paths).
-func writePathSets(b *strings.Builder, writable, readOnly []string, p painter) {
+func writePathSets(b *strings.Builder, writable, readOnly []string, p tui.Style) {
 	if len(writable) > 0 {
-		fmt.Fprintf(b, "%s %s\n", p.dim("writable:"), strings.Join(writable, notebook.ReadOnlyListSeparator))
+		fmt.Fprintf(b, "%s %s\n", p.Dim("writable:"), strings.Join(writable, notebook.ReadOnlyListSeparator))
 	}
 	if len(readOnly) > 0 {
-		fmt.Fprintf(b, "%s %s\n", p.dim("read-only:"), strings.Join(readOnly, notebook.ReadOnlyListSeparator))
+		fmt.Fprintf(b, "%s %s\n", p.Dim("read-only:"), strings.Join(readOnly, notebook.ReadOnlyListSeparator))
 	}
 	if len(writable) > 0 && len(readOnly) > 0 {
-		fmt.Fprintf(b, "%s %s\n", p.dim("path-rule:"), notebook.PathSetsNestRule)
+		fmt.Fprintf(b, "%s %s\n", p.Dim("path-rule:"), notebook.PathSetsNestRule)
 	}
 }
 

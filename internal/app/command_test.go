@@ -13,6 +13,7 @@ import (
 	"github.com/baalimago/slivingdoc/internal/git"
 	"github.com/baalimago/slivingdoc/internal/mcp"
 	"github.com/baalimago/slivingdoc/internal/notebook"
+	"github.com/baalimago/slivingdoc/internal/tui"
 )
 
 // parsedFlagSet mimics the command router: it binds the shared flags and
@@ -278,7 +279,7 @@ func TestReport(t *testing.T) {
 }
 
 // TestWriteSuccessColoured proves the success report's colour placement:
-// the OK token green, the generation summary cyan, insertions green,
+// a green check and OK token, the generation summary brand blue, insertions green,
 // deletions red, a zero-count side omitted, and the read-only trailer
 // label dim.
 func TestWriteSuccessColoured(t *testing.T) {
@@ -286,12 +287,12 @@ func TestWriteSuccessColoured(t *testing.T) {
 	var out bytes.Buffer
 	info := mcp.MapSuccess(successResult(), "/tmp/nb")
 	info.ReadOnly = []string{"docs"}
-	writeSuccess(&out, info, painter{on: true})
-	want := "\x1b[32mOK\x1b[0m  \x1b[36mgeneration 18\x1b[0m  /tmp/nb\n" +
+	writeSuccess(&out, info, tui.New(tui.Styled, tui.Basic))
+	want := "\x1b[32m✓\x1b[0m \x1b[32mOK\x1b[0m  \x1b[34mgeneration 18\x1b[0m  /tmp/nb\n" +
 		"  archive/old.md  \x1b[31m-3\x1b[0m\n" +
 		"  notes/a.md  \x1b[32m+1\x1b[0m \x1b[31m-1\x1b[0m\n" +
 		"  notes/c.md  \x1b[32m+2\x1b[0m\n" +
-		"3 files changed, 3 insertions(+), 4 deletions(-)\n" +
+		"\x1b[2m3 files changed, 3 insertions(+), 4 deletions(-)\x1b[0m\n" +
 		"\x1b[2mread-only:\x1b[0m docs\n"
 	if out.String() != want {
 		t.Fatalf("output = %q, want %q", out.String(), want)
@@ -303,7 +304,7 @@ func TestWriteSuccessColoured(t *testing.T) {
 func TestWriteSuccessEmptyStat(t *testing.T) {
 	t.Parallel()
 	var out bytes.Buffer
-	writeSuccess(&out, mcp.MapSuccess(notebook.Result{Generation: 7}, "/tmp/nb"), painter{})
+	writeSuccess(&out, mcp.MapSuccess(notebook.Result{Generation: 7}, "/tmp/nb"), tui.Style{})
 	want := "OK  generation 7  /tmp/nb\n" +
 		"0 files changed, 0 insertions(+), 0 deletions(-)\n"
 	if out.String() != want {
@@ -318,7 +319,7 @@ func TestWriteSuccessReadOnlyTrailer(t *testing.T) {
 	t.Run("empty set adds no trailer", func(t *testing.T) {
 		t.Parallel()
 		var out bytes.Buffer
-		writeSuccess(&out, mcp.MapSuccess(notebook.Result{Generation: 1}, "/tmp/nb"), painter{})
+		writeSuccess(&out, mcp.MapSuccess(notebook.Result{Generation: 1}, "/tmp/nb"), tui.Style{})
 		want := "OK  generation 1  /tmp/nb\n0 files changed, 0 insertions(+), 0 deletions(-)\n"
 		if out.String() != want {
 			t.Fatalf("output = %q, want %q", out.String(), want)
@@ -329,7 +330,7 @@ func TestWriteSuccessReadOnlyTrailer(t *testing.T) {
 		var out bytes.Buffer
 		info := mcp.MapSuccess(notebook.Result{Generation: 1}, "/tmp/nb")
 		info.ReadOnly = []string{"docs", "faq.md"}
-		writeSuccess(&out, info, painter{})
+		writeSuccess(&out, info, tui.Style{})
 		want := "OK  generation 1  /tmp/nb\n0 files changed, 0 insertions(+), 0 deletions(-)\nread-only: docs, faq.md\n"
 		if out.String() != want {
 			t.Fatalf("output = %q, want %q", out.String(), want)
@@ -353,14 +354,14 @@ func TestWriteErrorColoured(t *testing.T) {
 		ReadOnly: []string{"docs", "faq.md"},
 	}
 	var out bytes.Buffer
-	writeError(&out, te, painter{on: true})
-	want := "\x1b[31mRECOVERY_FAILURE\x1b[0m · \x1b[2mLOCAL_MUTATION_FAILED\x1b[0m\n" +
+	writeError(&out, te, tui.New(tui.Styled, tui.Basic))
+	want := "\x1b[31m✗\x1b[0m \x1b[31mRECOVERY_FAILURE\x1b[0m · \x1b[2mLOCAL_MUTATION_FAILED\x1b[0m\n" +
 		"unexpected failure after local mutation started; recovery ran\n" +
 		"  \x1b[33ma.md\x1b[0m      \x1b[2mconflict\x1b[0m  lines 1-5\n" +
 		"  \x1b[33mdir/b.md\x1b[0m  \x1b[2mpath conflict\x1b[0m\n" +
-		"\x1b[36mnext:\x1b[0m pull, then continue\n" +
-		"retryable: true\n" +
-		"recovery: stage=publish remoteAccepted=unknown resynchronized=true\n" +
+		"\x1b[34m→\x1b[0m pull, then continue\n" +
+		"\x1b[2mretryable: true\x1b[0m\n" +
+		"\x1b[2mrecovery: stage=publish remoteAccepted=unknown resynchronized=true\x1b[0m\n" +
 		"\x1b[2mread-only:\x1b[0m docs, faq.md\n"
 	if out.String() != want {
 		t.Fatalf("output = %q, want %q", out.String(), want)
@@ -379,7 +380,7 @@ func TestWriteErrorReadOnly(t *testing.T) {
 		ReadOnly: []string{"docs"},
 	}
 	var out bytes.Buffer
-	writeError(&out, te, painter{})
+	writeError(&out, te, tui.Style{})
 	want := "INVALID_REQUEST · READ_ONLY_PATH\n" +
 		"docs is read-only in this server. Your changes there were discarded and the files reset. " +
 		"Write outside the read-only paths, then commit again.\n" +
@@ -406,7 +407,7 @@ func TestWriteErrorAlignsPathColumn(t *testing.T) {
 		},
 	}
 	var out bytes.Buffer
-	writeError(&out, te, painter{})
+	writeError(&out, te, tui.Style{})
 	want := "CONTENT_CONFLICT · MERGE_CONFLICT\n" +
 		"Resolve the conflict blocks before notes_commit.\n" +
 		"  notes/today.md  conflict  lines 12-18, 40-42\n" +
@@ -434,7 +435,7 @@ func TestWriteErrorFirstPullRefusal(t *testing.T) {
 		},
 	}
 	var out bytes.Buffer
-	writeError(&out, te, painter{})
+	writeError(&out, te, tui.Style{})
 	want := "INVALID_REQUEST · DIRECTORY_NOT_EMPTY\n" +
 		"the first pull into this directory found files that are not in the notebook or differ from it; " +
 		"pull into an empty directory, or move those files away and pull again\n" +
@@ -527,7 +528,7 @@ func TestReportWritableTrailer(t *testing.T) {
 	t.Run("success renders writable before read-only", func(t *testing.T) {
 		t.Parallel()
 		var out bytes.Buffer
-		writeSuccess(&out, writableInfo([]string{"docs"}, []string{"notes"}), painter{})
+		writeSuccess(&out, writableInfo([]string{"docs"}, []string{"notes"}), tui.Style{})
 		if want := statusAndTotals + "writable: notes\nread-only: docs\npath-rule: longest match decides\n"; out.String() != want {
 			t.Fatalf("output = %q, want %q", out.String(), want)
 		}
@@ -536,7 +537,7 @@ func TestReportWritableTrailer(t *testing.T) {
 	t.Run("empty writable set adds no trailer", func(t *testing.T) {
 		t.Parallel()
 		var out bytes.Buffer
-		writeSuccess(&out, writableInfo(nil, nil), painter{})
+		writeSuccess(&out, writableInfo(nil, nil), tui.Style{})
 		if out.String() != statusAndTotals {
 			t.Fatalf("output = %q, want %q", out.String(), statusAndTotals)
 		}
@@ -571,9 +572,9 @@ func TestReportWritableTrailer(t *testing.T) {
 	t.Run("the trailer label is dim on a terminal", func(t *testing.T) {
 		t.Parallel()
 		var success bytes.Buffer
-		writeSuccess(&success, writableInfo(nil, []string{"notes"}), painter{on: true})
-		wantSuccess := "\x1b[32mOK\x1b[0m  \x1b[36mgeneration 1\x1b[0m  /tmp/nb\n" +
-			"0 files changed, 0 insertions(+), 0 deletions(-)\n" +
+		writeSuccess(&success, writableInfo(nil, []string{"notes"}), tui.New(tui.Styled, tui.Basic))
+		wantSuccess := "\x1b[32m✓\x1b[0m \x1b[32mOK\x1b[0m  \x1b[34mgeneration 1\x1b[0m  /tmp/nb\n" +
+			"\x1b[2m0 files changed, 0 insertions(+), 0 deletions(-)\x1b[0m\n" +
 			"\x1b[2mwritable:\x1b[0m notes\n"
 		if success.String() != wantSuccess {
 			t.Fatalf("coloured success = %q, want %q", success.String(), wantSuccess)
@@ -584,11 +585,11 @@ func TestReportWritableTrailer(t *testing.T) {
 			Message:  "Only notes is writable in this server.",
 			Files:    []mcp.ErrorFile{},
 			ReadOnly: []string{"docs"}, Writable: []string{"notes"},
-		}, painter{on: true})
-		wantError := "\x1b[31mINVALID_REQUEST\x1b[0m · \x1b[2mREAD_ONLY_PATH\x1b[0m\n" +
+		}, tui.New(tui.Styled, tui.Basic))
+		wantError := "\x1b[31m✗\x1b[0m \x1b[31mINVALID_REQUEST\x1b[0m · \x1b[2mREAD_ONLY_PATH\x1b[0m\n" +
 			"Only notes is writable in this server.\n" +
-			"\x1b[36mnext:\x1b[0m edit the files, then commit\n" +
-			"retryable: false\n" +
+			"\x1b[34m→\x1b[0m edit the files, then commit\n" +
+			"\x1b[2mretryable: false\x1b[0m\n" +
 			"\x1b[2mwritable:\x1b[0m notes\n" +
 			"\x1b[2mread-only:\x1b[0m docs\n" +
 			"\x1b[2mpath-rule:\x1b[0m longest match decides\n"

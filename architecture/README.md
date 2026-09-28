@@ -42,6 +42,9 @@ the code and fix the doc in the same change (see
 - **[cli.md](./cli.md)**: `main.go`, `cli.Run` and the `cmd/serve`,
   `pull`, `commit`, `login`, `logout`, `space`, `version` commands, `app.Setup` to `Runtime`, the
   shutdown path, the CLI report and colour, `DEBUG_PERF`.
+- **[tui.md](./tui.md)**: the terminal presentation shared by every
+  command (`internal/tui`): palette, marks, columns, the progress spinner,
+  the table picker, the home screen, and what stays plain for scripts.
 - **[login.md](./login.md)**: `slivingdoc login`, `space` and `logout`
   (the browser device flow and the account key, `internal/sitelogin`),
   the credentials file and default spaces (`internal/credentials`),

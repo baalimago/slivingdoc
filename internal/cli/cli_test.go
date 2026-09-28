@@ -9,20 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/baalimago/go_away_boilerplate/pkg/ancli"
-
 	"github.com/baalimago/slivingdoc/internal/app"
 	"github.com/baalimago/slivingdoc/internal/git"
 )
-
-// TestMain silences the router's own usage and error output. ancli writes to
-// the process stdout and stderr rather than to an injected writer, so these
-// unit tests assert exit codes and dependency effects; the process scenarios
-// in internal/integrationtest capture the real streams and assert the text.
-func TestMain(m *testing.M) {
-	ancli.Silent = true
-	os.Exit(m.Run())
-}
 
 // stubEngine records whether the native engine was ever opened. Opening it
 // is the first startup dependency, so "not opened" is the observable proof
