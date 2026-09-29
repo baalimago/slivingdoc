@@ -9,6 +9,7 @@ Read this when: changing the libgit2 pin or build flags, the Makefile, `ci.yml`,
 | File | Purpose |
 |------|---------|
 | `Makefile` | `libgit2` (stamp on `scripts/build-libgit2.sh`), `build`/`$(BIN)` (`CGO_ENABLED=1 go build -trimpath -ldflags '$(LDFLAGS)'`), `VERSION` + `VERSION_LDFLAG`, `STATIC=1`, `PKG_CONFIG_PATH`, `test`, `cover`, `npm-test`, `lint`, `fmt`, `release`, `qa`, `clean` |
+| `setup.sh` | Checksummed latest-release installer for Linux and macOS |
 | `scripts/build-libgit2.sh` | Download, SHA-256 verify, extract and CMake-build the pinned static libgit2 into `.build/libgit2` |
 | `internal/git2/native.go` | CGo directives: Linux points at `.build/libgit2` directly; darwin/windows use `pkg-config --static libgit2`; windows adds `-static-libgcc` |
 | `internal/git2/engine.go` | `PinnedVersion` (`"1.9.6"`); `Open` refuses any other linked libgit2 |
@@ -47,6 +48,10 @@ npx -y slivingdoc serve ...
         else download SHA256SUMS → parseSums → downloadToFile(<base>/v<ver>/<asset>) (hash while streaming)
              → compare → chmod → atomic rename into <cacheRoot>/_slivingdoc/<ver>/<os>/<arch>/<asset>
     → spawn.runChild(binary, argv.slice(2))                # stdio inherited, signals forwarded, exit status reproduced
+
+sh setup.sh
+  detect Linux/macOS target → query latest GitHub release
+    → download binary and SHA256SUMS → verify checksum → install as slivingdoc
 ```
 
 ## Behavior
@@ -75,6 +80,8 @@ npx -y slivingdoc serve ...
 **Dependency baselines.** The artifact must not need `libgit2.so`, `libgit2.dylib`, `git2.dll`, or a Git executable. Linux: the checker allows only libc, the loader, pthread, dl, rt, m and vdso (release artifacts are built fully static, so they list none). macOS: only `/usr/lib` and `/System/Library`. Windows: an allow-list of OS system DLLs (`kernel32`, `msvcrt`, `ucrtbase`, `api-ms-win-crt-*`, `ws2_32`, `advapi32`, `bcrypt`, and others; see the `allowed` pattern in the script); `git2.dll`, `libgit2.dll`, `libgcc_s_seh-1.dll`, `libwinpthread-1.dll` are rejected. The Windows checker finds `dumpbin` through `vswhere` and runs it with `MSYS2_ARG_CONV_EXCL='*'` so MSYS2 does not rewrite `/dependents`. The pipeline maps `darwin` to `check-deps-macos.sh`. `TestReleaseDependencyBaselines` drives every checker's `--check` mode in `make test`; the release jobs run the real checker on the real binary.
 
 **Checksums.** `SHA256SUMS`: one LF-terminated line per asset, lowercase 64-hex, two spaces, asset basename, sorted by name. `make-sha256sums.sh` writes it (the pipeline appends `dist/*`), `TestReleaseChecksumGrammar` pins it, and the launcher's `parseSums` rejects any other form.
+
+**Shell installer (`setup.sh`).** Supports Linux amd64, ARMv7 and arm64, plus macOS amd64 and arm64. It queries the latest GitHub release, selects the matching `slivingdoc-v<version>-<os>-<arch>` asset, downloads `SHA256SUMS`, and verifies the binary before installation. Non-root installs go to `$HOME/.local/bin`; root installs go to `/usr/local/bin`. `INSTALL_DIR` overrides the destination. Windows users can use the npm launcher or download the release asset directly; this POSIX shell installer does not install Windows binaries.
 
 **CI (`ci.yml`).** Runs on pushes to master, pull requests, and dispatch, with read-only default permissions (`readme-coverage` elevates to `contents: write`) and actions pinned by commit SHA. `qa`: setup Go, cache `.build/libgit2` keyed on the build script, `make libgit2`, `docker pull` the SeaweedFS image (so no timed test pays for the pull), `make lint`, `make test`. `npm`: setup Node, `make npm-test` (no install step; the launcher has zero dependencies). `readme-coverage` (master pushes only) calls the reusable `simple-go-pipeline` validate workflow to update the README coverage line. There is no separate integration job; the Docker-backed suites are part of `make test`.
 
