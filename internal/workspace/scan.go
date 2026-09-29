@@ -256,7 +256,7 @@ func (w *Workspace) collectVisible(ctx context.Context, dirRel, prefix string, o
 			return fmt.Errorf("workspace: collect: %w", err)
 		}
 		path := prefix + e.Name()
-		if w.ignore.Ignored(path) {
+		if w.ignore.Ignored(norm.NFC.String(path)) {
 			for dir := parentRel(path); dir != ""; dir = parentRel(dir) {
 				if out.keep == nil {
 					out.keep = map[string]bool{}

@@ -4,7 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"path"
+	"slices"
 	"strings"
+
+	"golang.org/x/text/unicode/norm"
 )
 
 // ErrInvalidIgnore reports an ignore pattern that cannot be matched.
@@ -26,7 +29,7 @@ var DefaultIgnore = []string{
 	"*.swp",
 	"*.swo",
 	".git",
-	".slivingdoc-tmp-*",
+	"*.slivingdoc-tmp-*",
 }
 
 // Ignore decides which notebook paths the workspace never reads, publishes
@@ -43,9 +46,12 @@ type Ignore struct {
 func NewIgnore(patterns []string) (Ignore, error) {
 	var ig Ignore
 	for _, raw := range patterns {
-		p := strings.Trim(strings.TrimSpace(raw), "/")
+		p := norm.NFC.String(strings.Trim(strings.TrimSpace(raw), "/"))
 		if p == "" {
 			return Ignore{}, fmt.Errorf("%w: %q is empty", ErrInvalidIgnore, raw)
+		}
+		if slices.ContainsFunc(strings.Split(p, "/"), func(seg string) bool { return seg == "." || seg == ".." || seg == "" }) {
+			return Ignore{}, fmt.Errorf("%w: %q has an empty, . or .. segment, which no notebook path has", ErrInvalidIgnore, raw)
 		}
 		if _, err := path.Match(p, ""); err != nil {
 			return Ignore{}, fmt.Errorf("%w: %q: %w", ErrInvalidIgnore, raw, err)

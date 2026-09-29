@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -142,11 +143,34 @@ func TestMapErrorDeniedStatus(t *testing.T) {
 		decoded := &smithyhttp.ResponseError{Response: resp, Err: &smithy.GenericAPIError{Code: "Forbidden", Message: "nope"}}
 		page := &smithyhttp.ResponseError{Response: resp, Err: &smithy.DeserializationError{Err: errors.New("bad json"), Snapshot: []byte("<html>Forbidden</html>")}}
 		for name, err := range map[string]error{"decoded": decoded, "html page": page} {
-			got := mapError("read", err)
+			got := mapError("get k", err)
 			var refusal *storage.Refusal
 			if !errors.Is(got, storage.ErrAccessDenied) || !errors.As(got, &refusal) || refusal.Message == "" {
 				t.Errorf("status %d %s: mapError = %v, want ErrAccessDenied carrying the service's words", status, name, got)
 			}
+		}
+	}
+}
+
+// TestMapErrorNotEveryRefusalIsAnAccessDenial proves the cases a retry or a
+// fix elsewhere resolves stay transport failures: a skewed clock, a status
+// refusal of a write whose outcome is unknown, and a credential lookup that
+// failed on the network.
+func TestMapErrorNotEveryRefusalIsAnAccessDenial(t *testing.T) {
+	resp := &smithyhttp.Response{Response: &http.Response{StatusCode: 403}}
+	skew := &smithyhttp.ResponseError{Response: resp, Err: &smithy.GenericAPIError{Code: "RequestTimeTooSkewed", Message: "clock"}}
+	proxy := &smithyhttp.ResponseError{Response: resp, Err: &smithy.GenericAPIError{Code: "Forbidden", Message: "proxy"}}
+	imds := fmt.Errorf("operation error S3: PutObject, failed to sign request: failed to retrieve credentials: %w", &net.DNSError{IsTimeout: true})
+	for name, tt := range map[string]struct {
+		op  string
+		err error
+	}{
+		"clock skew":         {"get k", skew},
+		"status on a write":  {"replace current", proxy},
+		"credential network": {"get k", imds},
+	} {
+		if got := mapError(tt.op, tt.err); !errors.Is(got, storage.ErrTransport) || errors.Is(got, storage.ErrAccessDenied) {
+			t.Errorf("%s: mapError = %v, want a plain transport failure", name, got)
 		}
 	}
 }

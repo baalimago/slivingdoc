@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"html"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -396,16 +397,16 @@ func mapError(op string, err error) error {
 		case "PreconditionFailed":
 			return fmt.Errorf("s3store: %s: %w", op, storage.ErrPreconditionFailed)
 		}
-		if accessDeniedCodes[api.ErrorCode()] || deniedStatus(err) {
+		if accessDeniedCodes[api.ErrorCode()] || (deniedStatus(err) && !notADenial[api.ErrorCode()] && isRead(op)) {
 			return accessDenied(op, api.ErrorCode(), api.ErrorMessage())
 		}
 		return fmt.Errorf("s3store: %s: %s: %w", op, apiDetail(api), storage.ErrTransport)
 	}
-	if isCredentialFailure(err) {
+	if isCredentialFailure(err) && !transientCause(err) {
 		return accessDenied(op, "credentials", errDetail(err))
 	}
 	if detail, ok := httpErrorDetail(err); ok {
-		if deniedStatus(err) {
+		if deniedStatus(err) && isRead(op) {
 			return accessDenied(op, "HTTP refusal", detail)
 		}
 		return fmt.Errorf("s3store: %s: %s: %w", op, detail, storage.ErrTransport)
@@ -425,6 +426,28 @@ var accessDeniedCodes = map[string]bool{
 	"NoSuchBucket":          true,
 	"SignatureDoesNotMatch": true,
 	"TokenRefreshRequired":  true,
+}
+
+// notADenial lists 401/403 codes that name a fixable clock or request
+// problem, not a refusal of the credentials.
+var notADenial = map[string]bool{"RequestTimeTooSkewed": true, "RequestExpired": true}
+
+// isRead reports an operation that changes nothing. A 401 or 403 with no
+// S3 code of its own could come from a proxy that forwarded a write, whose
+// outcome is then unknown, so only a read counts it as a refusal.
+func isRead(op string) bool {
+	return strings.HasPrefix(op, "get ") || strings.HasPrefix(op, "list ")
+}
+
+// transientCause reports a network or server failure under a credential
+// error: an unreachable metadata service is worth a retry, not a new key.
+func transientCause(err error) bool {
+	var netErr net.Error
+	if errors.As(err, &netErr) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var respErr *smithyhttp.ResponseError
+	return errors.As(err, &respErr) && (respErr.HTTPStatusCode() >= 500 || respErr.HTTPStatusCode() == http.StatusTooManyRequests)
 }
 
 // deniedStatus reports an HTTP 401 or 403 from a service whose error code

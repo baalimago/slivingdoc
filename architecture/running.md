@@ -837,14 +837,15 @@ result or exit code.
   published, and a stray binary, symlink, or special file refuses the whole
   pull or commit as `INVALID_REQUEST`/`INVALID_CONTENT` until it is deleted
   or ignored.
-- Ignored entries are never read, published or removed; a pull can still write a file the notebook already holds under an ignored name. The
+- Ignored entries are never read, published, written or removed. The
   built-in names are `.DS_Store`, `._*`, `.AppleDouble`, `.Spotlight-V100`,
   `.Trashes`, `.fseventsd`, `.TemporaryItems`, `Thumbs.db`, `desktop.ini`,
-  `*.swp`, `*.swo`, `.git` and `.slivingdoc-tmp-*`. `--ignore` (`SLIVINGDOC_IGNORE`) adds
+  `*.swp`, `*.swo`, `.git` and `*.slivingdoc-tmp-*`. `--ignore` (`SLIVINGDOC_IGNORE`) adds
   comma-separated patterns: a name such as `*.log` matches at any depth, a
   path such as `private/scratch` matches from the notebook directory and
   everything below it. A file the notebook already holds under an ignored
-  name stays as the notebook has it; local edits to it are not published.
+  name stays as the notebook has it and is not written here; local edits
+  to it are not published.
 - An MCP request `path` is optional; omitting it uses the server's notebook
   directory, which every result reports. When supplied it may begin with
   `~/`, which resolves against the current user's home directory. The

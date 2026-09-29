@@ -25,6 +25,7 @@ func TestIgnoreMatching(t *testing.T) {
 		{".git", true},
 		{"x.swp", true},
 		{".slivingdoc-tmp-0123abcd", true},
+		{"a.md.slivingdoc-tmp-0123abcd", true},
 		{"run.log", true},
 		{"a/b/run.log", true},
 		{"private/scratch", true},
@@ -48,7 +49,7 @@ func TestIgnoreMatching(t *testing.T) {
 }
 
 func TestNewIgnoreRefusesBadPatterns(t *testing.T) {
-	for _, pattern := range []string{"", "  ", "/", "[unclosed", "a/[b"} {
+	for _, pattern := range []string{"", "  ", "/", "[unclosed", "a/[b", "./private", "a/../b"} {
 		if _, err := NewIgnore([]string{pattern}); !errors.Is(err, ErrInvalidIgnore) {
 			t.Errorf("NewIgnore(%q) = %v, want ErrInvalidIgnore", pattern, err)
 		}
@@ -99,6 +100,9 @@ func TestSnapshotPinsIgnoredBaselineFiles(t *testing.T) {
 	if err := w.Accept(context.Background(), Baseline{RemoteGeneration: 1, Head: oidTest("c"), Tree: tree}); err != nil {
 		t.Fatalf("Accept() = %v", err)
 	}
+	if err := os.MkdirAll(filepath.Join(w.Path(), "dir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(w.Path(), "dir", ".DS_Store"), []byte("edited here"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -139,5 +143,69 @@ func TestAcceptKeepsIgnoredEntries(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(w.Path(), "gone", "x.md")); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("gone/x.md still present: %v", err)
+	}
+}
+
+func TestAcceptNeverWritesAnIgnoredTargetPath(t *testing.T) {
+	w := ignoreWorkspace(t)
+	if err := os.WriteFile(filepath.Join(w.Path(), ".DS_Store"), []byte("LOCAL"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tree := buildTree(t, w, map[string]string{"a.md": "a", ".DS_Store": "remote", "d/x.swp": "remote swap"})
+	if err := w.Accept(context.Background(), Baseline{RemoteGeneration: 1, Head: oidTest("c"), Tree: tree}); err != nil {
+		t.Fatalf("Accept() = %v", err)
+	}
+	if got := readFileBytes(t, filepath.Join(w.Path(), ".DS_Store")); string(got) != "LOCAL" {
+		t.Fatalf(".DS_Store = %q, want the local file untouched", got)
+	}
+	if _, err := os.Stat(filepath.Join(w.Path(), "d")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("d exists (%v): an ignored path created a directory", err)
+	}
+}
+
+func TestAcceptRefusesToReplaceADirectoryHoldingIgnoredFiles(t *testing.T) {
+	w := ignoreWorkspace(t)
+	first := buildTree(t, w, map[string]string{"d/x.md": "x"})
+	if err := w.Accept(context.Background(), Baseline{RemoteGeneration: 1, Head: oidTest("c"), Tree: first}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(w.Path(), "d", ".DS_Store"), []byte("finder"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	second := buildTree(t, w, map[string]string{"d": "now a file"})
+	err := w.Accept(context.Background(), Baseline{RemoteGeneration: 2, Head: oidTest("d"), Tree: second})
+	if !errors.Is(err, ErrIgnoredConflict) {
+		t.Fatalf("Accept() = %v, want ErrIgnoredConflict", err)
+	}
+	if w.RecoveryRequired() {
+		t.Fatal("a refusal before any change left the workspace needing recovery")
+	}
+	if got := readFileBytes(t, filepath.Join(w.Path(), "d", ".DS_Store")); string(got) != "finder" {
+		t.Fatalf("ignored file = %q, want it kept", got)
+	}
+}
+
+func TestIgnoreMatchesDecomposedNames(t *testing.T) {
+	ig, err := NewIgnore([]string{"café.txt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ig.Ignored("café.txt") {
+		t.Fatal("an NFD pattern must match the NFC path")
+	}
+	w := openWorkspace(t, func() Config {
+		c := testConfig(t, newFakeEngine(), "notes")
+		c.Ignore = ig
+		return c
+	}())
+	if err := os.WriteFile(filepath.Join(w.Path(), "café.txt"), []byte("nfd"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tree := buildTree(t, w, map[string]string{"a.md": "a"})
+	if err := w.Accept(context.Background(), Baseline{RemoteGeneration: 1, Head: oidTest("c"), Tree: tree}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(w.Path(), "café.txt")); err != nil {
+		t.Fatalf("ignored decomposed-name file was removed: %v", err)
 	}
 }
