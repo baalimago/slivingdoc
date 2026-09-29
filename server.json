@@ -2,7 +2,7 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.baalimago/slivingdoc",
   "title": "slivingdoc",
-  "description": "Shared notes for agents and people: pull, edit, commit. Git-style merges, no silent overwrites.",
+  "description": "Durable context for agents and people: shared notes with Git-style merges, no silent overwrites.",
   "repository": {
     "url": "https://github.com/baalimago/slivingdoc",
     "source": "github"
