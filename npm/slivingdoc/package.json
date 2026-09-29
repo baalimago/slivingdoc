@@ -30,6 +30,7 @@
   },
   "keywords": [
     "durable-context",
+    "agentic-durable-context",
     "agent-memory",
     "agents",
     "mcp",

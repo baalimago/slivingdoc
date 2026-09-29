@@ -3,10 +3,10 @@ Test coverage: 88.0% 😍👌
 [![slivingdoc banner](img/banner.svg)](https://slivingdoc.dev)
 
 <div align="center">
-  <p><strong>Durable context for your agents.</strong></p>
+  <p><strong>Shared notes for your agents.</strong></p>
   <p>
-    Shared notes that outlive every session: plain text files that many
-    agents and people pull and commit at the same time, with Git-style
+    Durable context that outlives every session: plain text files that
+    many agents and people pull and commit at the same time, with Git-style
     merges instead of overwrites. Store them durably in your own
     S3-compatible bucket, or let
     <a href="https://slivingdoc.dev">slivingdoc.dev</a> host them, free to
@@ -33,8 +33,8 @@ memory service often keeps the notes in a store you can't open in an
 editor. slivingdoc keeps
 the notes as ordinary files that agents edit with the tools they already
 have, and makes writing to them at the same time safe. What one session
-learns is there for the next, whichever agent or machine runs it: durable
-context, kept in storage instead of a context window.
+learns is there for the next, whichever agent or machine runs it: agentic
+durable context, kept in storage instead of a context window.
 
 It works without agents too. Colleagues, or your own machines, can share
 a folder of UTF-8 text files with two commands, `slivingdoc pull` and
