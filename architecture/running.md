@@ -9,7 +9,7 @@ Read this when: operating or deploying slivingdoc, writing an MCP host configura
 | File | Purpose |
 |------|---------|
 | `internal/cli/cli.go` | Command map and router `Usage` ([cli.md](./cli.md)) |
-| `cmd/serve/serve.go`, `cmd/pull/pull.go`, `cmd/commit/commit.go`, `cmd/login/login.go`, `cmd/version/version.go` | The commands and their help text |
+| `cmd/serve/serve.go`, `cmd/pull/pull.go`, `cmd/commit/commit.go`, `cmd/status/status.go`, `cmd/log/log.go`, `cmd/login/login.go`, `cmd/version/version.go` | The commands and their help text |
 | `internal/app/login.go`, `internal/app/space.go`, `internal/app/minted.go`, `internal/app/storage.go`, `internal/credentials/credentials.go` | `login`/`logout`/`space`, minted tokens, `--storage` selection, the credentials file ([login.md](./login.md)) |
 | `internal/app/config.go` | `FlagReference`, `HelpText`, precedence and validation ([config.md](./config.md)) |
 | `internal/app/command.go` | `Report`: the CLI result report |
@@ -40,10 +40,12 @@ flag.
 | `serve` (`s`)   | Serve the notebook over MCP stdio. This is the server.        |
 | `pull` (`p`)    | Write the current notebook into a directory and exit.         |
 | `commit` (`c`)  | Publish the changes at a directory (`-m <message>`) and exit. |
+| `status`        | Show what a directory changed locally, without changing it.   |
+| `log`           | List the recent publications of a notebook (`--limit <n>`).   |
 | `login`         | Log in to a hosted account through the browser.               |
 | `space`         | List the login's spaces, or set the default one (`space <n>`).|
 | `logout`        | Revoke the stored login key and its tokens, and remove it.    |
-| `version` (`v`) | Print `slivingdoc <semver>` and exit, touching nothing else.  |
+| `version` (`v`) | Print `slivingdoc <semver>` and exit, touching nothing else. `slivingdoc --version` does the same. |
 
 ## Direct use: pull and commit
 

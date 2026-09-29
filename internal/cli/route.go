@@ -48,6 +48,18 @@ func (r router) run(ctx context.Context, args []string) int {
 			r.usage()
 			return 0
 		}
+		if len(rest) == 1 && rest[0] == "--version" {
+			command, _ := r.lookup("version")
+			if command == nil {
+				r.fail(errors.New("--version: the version command is missing"))
+				return 1
+			}
+			if err := command.Run(ctx); err != nil {
+				r.fail(err)
+				return 1
+			}
+			return 0
+		}
 		if len(rest) > 0 {
 			r.fail(fmt.Errorf("give a command before %s", rest[0]))
 		}

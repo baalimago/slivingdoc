@@ -1,6 +1,6 @@
 # Notebook orchestration
 
-`internal/notebook` composes one workspace (L and P), the Git seam, and the object store into the two public operations. It owns the policy: when to read `current`, how to merge, when to publish, how to prove acceptance, when to recover, and when to checkpoint. It owns no filesystem layout (that is `internal/workspace`) and no native code (that is `internal/git2`). This doc answers "what is a `Notebook`, how is it configured, and where does each cross-cutting piece (remote read, result, metrics, failpoints, backoff, errors, logging) live".
+`internal/notebook` composes one workspace (L and P), the Git seam, and the object store into the two public operations, plus the local `Status` and `Log` views. It owns the policy: when to read `current`, how to merge, when to publish, how to prove acceptance, when to recover, and when to checkpoint. It owns no filesystem layout (that is `internal/workspace`) and no native code (that is `internal/git2`). This doc answers "what is a `Notebook`, how is it configured, and where does each cross-cutting piece (remote read, result, metrics, failpoints, backoff, errors, logging) live".
 
 Read this when: wiring a notebook, changing a default or range, adding a metric, failpoint or error reason, or finding the function behind a pull/commit step.
 
@@ -8,6 +8,7 @@ Read this when: wiring a notebook, changing a default or range, adding a metric,
 
 | File | Purpose |
 |------|---------|
+| `internal/notebook/status.go` | `Status`, `Log`, `Change`, `ChangeKind`, `LogEntry`, `History`, `changesBetween` |
 | `internal/notebook/notebook.go` | `Workspace` (consumer-owned interface), `Config`, `New`, `Notebook`, defaults and ranges, `ValidateMessage`, `holdWorkspace`, `entryRecovery`, `applyLocal`, `failAfterAccept`, `mapLocalError`, `rejectMarkers`, `materializeTree`, stage constants |
 | `internal/notebook/pull.go` | `Pull`, `pinProtected`. See [pull.md](./pull.md) |
 | `internal/notebook/commit.go` | `Commit`, `attemptPublication`, `buildProposal`, `publish`, `enforcePolicy`. See [commit.md](./commit.md) , `engineFailed` |
@@ -73,6 +74,10 @@ Notebook.Commit(ctx, message) → see commit.md
 - A referenced pack that returns `ErrNotFound` yields `errStaleManifest`: the reader rereads `current` and restarts only if the ETag changed; an unchanged manifest is `STORAGE_INTEGRITY`/`PACK_INVALID`. Restarts are bounded by `retryLimit`.
 - Pack bytes come from the byte cache when the file named by the SHA-256 has the right size and a fresh SHA-256 match (`cacheRead`; a mismatch deletes the entry). Otherwise they are downloaded, checked against descriptor size and SHA-256, and cached through temp file + rename (`cacheWrite`). A cache write failure is only a warning.
 - `prefetchPacks` runs up to 16 downloads ahead of the sequential importer; `next()` yields packs in manifest order and every participant honors cancellation.
+
+### Status and log (`status.go`)
+
+`Status(ctx)` holds the operation lock, then reports the accepted generation, the pulled marker and recovery-required mode; unless recovery is required it scans L (`Snapshot`, so ignored files are excluded and invalid content is refused as in pull) and compares it with the baseline tree into `Change` entries (`ChangeAdded`, `ChangeModified`, `ChangeDeleted`, sorted by path, with line counts from `git.DiffSnapshots`). `Log(ctx, limit)` walks the baseline head's first parents with `ReadCommit` and returns `LogEntry` messages, newest first; it stops with `History.More` at the limit or at a parent the shallow history no longer holds. A limit below 1 is `INVALID_REQUEST`/`MALFORMED_INPUT`. Neither reads the store.
 
 ### Result (`result.go`)
 

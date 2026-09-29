@@ -70,7 +70,7 @@ npx -y slivingdoc serve ...
 | darwin amd64, arm64 | `macos-15-intel`, `macos-15` | `make build BIN=... VERSION=...` |
 | windows amd64 | `windows-2025` | `make build BIN=... VERSION=...` |
 
-`netgo`/`osusergo` keep the static glibc ARMv7 build from loading NSS modules. The pipeline smoke test runs `./$TARGET_BINARY version` (the router has no `--version` flag; `./` is needed because bash does not search the working directory).
+`netgo`/`osusergo` keep the static glibc ARMv7 build from loading NSS modules. The pipeline smoke test runs `./$TARGET_BINARY version` (`--version` alone prints the same line, but the smoke test runs the `version` command; `./` is needed because bash does not search the working directory).
 
 **Dependency baselines.** The artifact must not need `libgit2.so`, `libgit2.dylib`, `git2.dll`, or a Git executable. Linux: the checker allows only libc, the loader, pthread, dl, rt, m and vdso (release artifacts are built fully static, so they list none). macOS: only `/usr/lib` and `/System/Library`. Windows: an allow-list of OS system DLLs (`kernel32`, `msvcrt`, `ucrtbase`, `api-ms-win-crt-*`, `ws2_32`, `advapi32`, `bcrypt`, and others; see the `allowed` pattern in the script); `git2.dll`, `libgit2.dll`, `libgcc_s_seh-1.dll`, `libwinpthread-1.dll` are rejected. The Windows checker finds `dumpbin` through `vswhere` and runs it with `MSYS2_ARG_CONV_EXCL='*'` so MSYS2 does not rewrite `/dependents`. The pipeline maps `darwin` to `check-deps-macos.sh`. `TestReleaseDependencyBaselines` drives every checker's `--check` mode in `make test`; the release jobs run the real checker on the real binary.
 

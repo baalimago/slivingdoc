@@ -138,6 +138,8 @@ slivingdoc/
 |   |-- serve/               serve|s: the MCP stdio server over internal/app
 |   |-- pull/                pull|p: one-shot notes_pull for humans
 |   |-- commit/              commit|c: one-shot notes_commit for humans
+|   |-- status/              status: local changes against the accepted state
+|   |-- log/                 log: recent accepted publications
 |   |-- login/               login, logout and space: browser device login,
 |   |                        stored account key, default space, revocation
 |   `-- version/             version|v: the exact "slivingdoc <semver>" line
@@ -198,6 +200,7 @@ slivingdoc/
     |   `-- gatewaytest/     test-only reference server of the hosted API
     |-- strictjson/          neutral strict JSON value tree (manifest and
     |                        state.json)
+    |-- scratch/             test-only: TMPDIR on a memory filesystem
     |-- tests3/              S3 backend container over the Docker Engine
     |                        API (currently SeaweedFS): one per test
     |                        process, or one leased container under
@@ -268,7 +271,7 @@ Checkpoint and cleanup (synchronous inside the triggering commit, best-effort)
 
 `main.go` is one call: `os.Exit(cli.Run(ctx, os.Args, git2.New(), opts))`.
 `internal/cli` holds the command map (`serve|s`, `pull|p`, `commit|c`,
-`login`, `logout`, `space`, `version|v`) and routes through its own `router` (`internal/cli/route.go`), over the `go_away_boilerplate/pkg/cmd` `Command` interface. Each `cmd/`
+`status`, `log`, `login`, `logout`, `space`, `version|v`) and routes through its own `router` (`internal/cli/route.go`), over the `go_away_boilerplate/pkg/cmd` `Command` interface. Each `cmd/`
 package implements `cmd.Command`. The router parses the selected command's
 flag set, then calls `Setup` and `Run`.
 
@@ -352,7 +355,7 @@ copy is the authoritative one. Behavior worth remembering:
   by both settings, which is a configuration error rather than a
   precedence rule.
 
-The `serve`, `pull`, and `commit` commands share every flag. The
+The `serve`, `pull`, `commit`, `status`, and `log` commands share every flag (`log` adds `--limit`). The
 subcommand comes first. `slivingdoc version` and `-h` on any command exit
 zero before loading dependencies.
 
@@ -371,7 +374,7 @@ only be resolved from a bound attribute.
 | `NO_COLOR`                 | Any non-empty value disables colour: log levels and the terminal output (architecture/tui.md).                                                                                                                     |
 | `DEBUG_PERF`               | Captures CPU, heap, and execution-trace profiles across the whole command (`internal/app/perf.go`); `1` writes under the system temporary directory, any other value is the base directory. See `architecture/running.md`. |
 
-The `--log-level` and `--log-timestamp` flags (shared by `serve`, `pull`,
+The `--log-level` and `--log-timestamp` flags (shared by `serve`, `pull`, `status`, `log`,
 and `commit`) override the environment once the flags resolve; `setup`
 rebuilds the process logger when either is configured. An invalid
 `--log-level` value refuses startup; a malformed `LOG_LEVEL` environment
@@ -424,8 +427,9 @@ demoted to DEBUG with empty-string attributes dropped (`sdkLogger` in
 architecture, and a change that touches one of them updates
 the matching doc under `architecture/` in the same commit:
 
-- MCP and the one-shot `pull`/`commit` subcommands are the only public
-  APIs, and both expose exactly the same two operations. The process never
+- The MCP tools and the one-shot `pull`/`commit` subcommands expose exactly
+  the same two operations; `status` and `log` are read-only human commands
+  with no MCP counterpart. The process never
   invokes Git and never imports `git2go`.
 - All CGo and libgit2 types stay inside `internal/git2`. All production AWS SDK use
   stays inside `internal/s3store`.

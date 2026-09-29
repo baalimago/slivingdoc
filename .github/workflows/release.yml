@@ -65,11 +65,10 @@ jobs:
       # names platforms the way Go does (darwin), while the repo's checkers
       # use the OS names (macos); the substitution maps the one difference.
       dependency-check-command: os="${TARGET_OS/darwin/macos}"; ./scripts/check-deps-"${os}".sh "${TARGET_BINARY}"
-      # The binary must start and report the injected version. The router has
-      # no --version flag: a dash-prefixed argument is a skipped flag and a
-      # bare invocation prints usage, so the smoke uses the version
-      # subcommand. The ./ prefix is required because bash does not search
-      # the working directory for executables.
+      # The binary must start and report the injected version. A bare
+      # invocation prints usage, so the smoke uses the version subcommand.
+      # The ./ prefix is required because bash does not search the working
+      # directory for executables.
       smoke-command: 'if [ "${TARGET_OS}" = linux ] && [ "${TARGET_ARCH}" = arm ]; then qemu-arm "./${TARGET_BINARY}" version; else ./"${TARGET_BINARY}" version; fi'
       # The strict SHA256SUMS grammar in architecture/build.md. The
       # pipeline appends `dist/*` to this command itself, so the input is

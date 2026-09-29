@@ -9,7 +9,7 @@ Read this when: you are new to the repo, you need to find which package owns a b
 1. Resolve concurrent file changes quickly.
 2. Store the current notebook durably in S3 (or the hosted storage API, which offers the same conditional-write semantics).
 
-The public API is exactly two operations, `notes_pull` and `notes_commit`, served over MCP stdio and mirrored as the one-shot `slivingdoc pull [path]` and `slivingdoc commit [path] -m <msg>` subcommands. There is no public Go package, SDK, or HTTP API: all Go packages are internal, and the supported interfaces are the MCP tools, the `pull` and `commit` subcommands, process flags, release artifacts, and the npm launcher. See [product-contract.md](./product-contract.md).
+The public API is exactly two operations, `notes_pull` and `notes_commit`, served over MCP stdio and mirrored as the one-shot `slivingdoc pull [path]` and `slivingdoc commit [path] -m <msg>` subcommands. There is no public Go package, SDK, or HTTP API: all Go packages are internal, and the supported interfaces are the MCP tools, the `pull` and `commit` subcommands (plus the read-only `status` and `log`, which have no MCP tool), process flags, release artifacts, and the npm launcher. See [product-contract.md](./product-contract.md).
 
 ## Scope
 
@@ -47,7 +47,7 @@ This reuses mature Git merge behavior without operating a Git server, a mounted 
 | File | Purpose |
 |------|---------|
 | `main.go` | `main()`: `cli.Run(ctx, os.Args, git2.New(), app.ProcessOptions{...})` |
-| `cmd/serve`, `cmd/pull`, `cmd/commit`, `cmd/login`, `cmd/version` | The subcommands over `internal/app` (`cmd/login` holds `login`, `logout` and `space`) |
+| `cmd/serve`, `cmd/pull`, `cmd/commit`, `cmd/status`, `cmd/log`, `cmd/login`, `cmd/version` | The subcommands over `internal/app` (`cmd/login` holds `login`, `logout` and `space`) |
 | `internal/app/service.go` | `Service`: maps a request path to one `workspace.Workspace` + `notebook.Notebook` pair (`notebookFor`) |
 | `internal/notebook/notebook.go` | `Notebook`, `Config`, `New`, recovery helpers; `Pull` is in `pull.go`, `Commit` in `commit.go` |
 | `internal/workspace/workspace.go` | `Workspace`, `Open`: L and P, the operation lock |
@@ -62,7 +62,7 @@ One line per `internal/` package.
 | Package | Owns |
 |---------|------|
 | `app` | Process body: flag/env resolution (`config.go`), storage selection (`storage.go`), login, logout and space (`login.go`, `space.go`), minted space tokens (`minted.go`), startup order (`app.go`), `Service` path-to-notebook map (`service.go`), CLI report rendering (`command.go`), logging, `DEBUG_PERF` profiling |
-| `cli` | The command map (`serve|s`, `pull|p`, `commit|c`, `login`, `logout`, `space`, `version|v`), usage text, `Run` and its `router` (help, the one-line error, the home screen) |
+| `cli` | The command map (`serve|s`, `pull|p`, `commit|c`, `status`, `log`, `login`, `logout`, `space`, `version|v`), usage text, `Run` and its `router` (help, the one-line error, the home screen) |
 | `tui` | The terminal presentation every command renders through: palette, status marks, columns, the progress spinner, the table picker; plain off a terminal. See [tui.md](./tui.md) |
 | `credentials` | The stored account logins of `slivingdoc login` and their default spaces: the strict, versioned `credentials.json` under the user configuration directory, written 0600 by temp file and rename. See [login.md](./login.md) |
 | `sitelogin` | Client of the site's CLI login routes (start, key polling, spaces, space-token minting, revoke) that validates every answer and never follows a redirect. See [login.md](./login.md) |
@@ -81,6 +81,7 @@ One line per `internal/` package.
 | `mcp` | stdio MCP server: two strict tool schemas, strict decoding, error/success envelopes, redaction, `mcpReqID` logging |
 | `strictjson` | Strict JSON value tree shared by the manifest and `state.json` (rejects unknown, duplicate, missing, null) |
 | `pathutil` | `ExpandHome` for `~/` request paths |
+| `scratch` | Test-only: `Use` moves a test binary's temporary directory onto a memory filesystem so fsync-heavy packages fit the 30 s gate. See [testing.md](./testing.md) |
 | `tests3` | S3 test backend (a SeaweedFS container, started through the Docker Engine API) for tests; `tests3/lease` owns the shared container |
 | `integrationtest` | Test-only black-box scenario suite: the behavioral contract of the whole server |
 

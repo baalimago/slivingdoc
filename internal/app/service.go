@@ -180,6 +180,25 @@ func (s *Service) Commit(ctx context.Context, path, message string) (notebook.Re
 	return nb.Commit(ctx, message)
 }
 
+// Status resolves path to its notebook and reports its local state.
+func (s *Service) Status(ctx context.Context, path string) (notebook.Status, error) {
+	nb, err := s.notebookFor(ctx, path)
+	if err != nil {
+		return notebook.Status{}, err
+	}
+	return nb.Status(ctx)
+}
+
+// Log resolves path to its notebook and returns up to limit recent
+// publications.
+func (s *Service) Log(ctx context.Context, path string, limit int) (notebook.History, error) {
+	nb, err := s.notebookFor(ctx, path)
+	if err != nil {
+		return notebook.History{}, err
+	}
+	return nb.Log(ctx, limit)
+}
+
 // notebookFor returns the notebook for the request path, opening its
 // workspace and notebook on first use. The open runs under the map lock so
 // concurrent first use of the same path cannot open two workspaces. The

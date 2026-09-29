@@ -20,7 +20,7 @@ type commandGroup struct {
 // commandGroups orders the home screen. TestCommandGroupsCoverTheMap
 // fails when a command is missing here.
 var commandGroups = []commandGroup{
-	{title: "Sync", commands: []string{"pull", "commit"}},
+	{title: "Sync", commands: []string{"pull", "commit", "status", "log"}},
 	{title: "Agents", commands: []string{"serve"}},
 	{title: "Account", commands: []string{"login", "space", "logout"}},
 	{title: "About", commands: []string{"version"}},

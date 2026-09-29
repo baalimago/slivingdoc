@@ -15,7 +15,7 @@ import (
 func (r *Runtime) WithProgress(verb, path string, op func() (notebook.Result, error)) (notebook.Result, error) {
 	s := tui.Detect(r.p.stderr, EnvLookup(r.p.env))
 	start := time.Now()
-	target := r.target()
+	target := r.Target()
 	sp := s.Spin(r.p.stderr, func() string {
 		return fmt.Sprintf("%s %s %s", verb, r.resolve(path), s.Dim(fmt.Sprintf("· %s · %.1fs", target, time.Since(start).Seconds())))
 	})
@@ -26,8 +26,8 @@ func (r *Runtime) WithProgress(verb, path string, op func() (notebook.Result, er
 	return result, err
 }
 
-// target names the store the notebook syncs with.
-func (r *Runtime) target() string {
+// Target names the store the process talks to, for example "space notes".
+func (r *Runtime) Target() string {
 	if r.cfg.hosted() {
 		return "space " + r.cfg.bucket
 	}
