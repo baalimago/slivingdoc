@@ -114,6 +114,7 @@ the code and fix the doc in the same change (see
   recovery, checkpoints, operational ownership.
 - **[decisions.md](./decisions.md)**: recorded architecture decisions,
   deferred work, and the invariants a change must not break.
+- **[editor-fixtures.md](./editor-fixtures.md)**: the test-only `internal/editorfixture` tool that generates real stores for the browser editor's TypeScript port and checks manifests and packs against this implementation.
 
 ## Reading order suggestions
 
@@ -134,4 +135,3 @@ the code and fix the doc in the same change (see
 slivingdoc.dev (the storage gateway, sign-in and billing) lives in
 [baalimago/slivingdoc-cloud](https://github.com/baalimago/slivingdoc-cloud),
 which has its own `architecture/README.md` index.
-- **[editor-fixtures.md](./editor-fixtures.md)**: the test-only `internal/editorfixture` tool that generates real stores for the browser editor's TypeScript port and checks manifests and packs against this implementation.
