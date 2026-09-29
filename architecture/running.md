@@ -198,8 +198,8 @@ shared by every workspace and every process on the machine:
 <user-cache-dir>/slivingdoc/pack-cache/<bucket>-<prefix>-<digest>/
 ```
 
-Every server addressing the same endpoint, region, bucket, and prefix computes the
-same directory from its own configuration, so agents share downloads with no
+Every server addressing the same endpoint, region, bucket, and prefix (and, in
+hosted mode, the same space id) computes the same directory from its own configuration, so agents share downloads with no
 coordination: the first cold pull populates the directory and later pulls by
 any agent read from it. Entries are keyed by SHA-256 and re-verified against
 the authoritative manifest on every read, so a corrupt or foreign entry is

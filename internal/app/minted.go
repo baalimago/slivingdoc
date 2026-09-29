@@ -39,16 +39,18 @@ type mintedTokens struct {
 	now    func() time.Time
 
 	// minting admits one mint at a time; a caller waiting for it gives up
-	// when its own context ends. mu guards token and renewAt only and is
-	// never held across a request.
+	// when its own context ends. mu guards token, renewAt, spaceID and
+	// replaced, and is never held across a request.
 	minting chan struct{}
 	mu      sync.Mutex
 	token   string
 	renewAt time.Time
-	// spaceID is the space id the first mint named; every later mint must
-	// name the same, or the name now reaches another space.
-	spaceID httpstore.SpaceID
-	bound   bool
+	// spaceID is the space id the mints have named; empty until one names
+	// an id. A later mint naming another id means the name now reaches
+	// another space, and replaced then holds the refusal every later call
+	// returns without asking the site again.
+	spaceID  httpstore.SpaceID
+	replaced error
 }
 
 var _ httpstore.RenewingSource = (*mintedTokens)(nil)
@@ -101,6 +103,9 @@ func (m *mintedTokens) current() heldToken {
 // or its renewal time has come. Concurrent callers wait for one mint, each
 // only as long as its own context allows.
 func (m *mintedTokens) Token(ctx context.Context) (string, error) {
+	if err := m.refusal(); err != nil {
+		return "", err
+	}
 	if held := m.current(); !held.none() {
 		return string(held), nil
 	}
@@ -167,25 +172,41 @@ func (m *mintedTokens) mint(ctx context.Context) (string, error) {
 	return m.token, nil
 }
 
-// bind ties the source to the space id of its first mint and refuses a
+// bind ties the source to the first space id a mint names and refuses a
 // later mint for another id: the login's space of that name was replaced
 // by another space, and this process's workspaces belong to the first
-// (architecture/login.md, Minted tokens).
+// (architecture/login.md, Minted tokens). A mint without an id, or the
+// first id after mints without one (a site that started naming ids while
+// the process ran), is accepted: the process keeps the key it started
+// with, as before ids existed. The refusal is kept, so later calls fail
+// without minting and revoking again.
 func (m *mintedTokens) bind(id httpstore.SpaceID) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if !m.bound {
-		m.spaceID, m.bound = id, true
+	switch {
+	case id == "":
+		return nil
+	case m.spaceID == "":
+		m.spaceID = id
+		return nil
+	case id != m.spaceID:
+		m.replaced = fmt.Errorf("app: the login's space %q is no longer the space this process started with; start it again: %w", m.space, storage.ErrAccessDenied)
+		return m.replaced
+	default:
 		return nil
 	}
-	if id != m.spaceID {
-		return fmt.Errorf("app: the login's space %q is no longer the space this process started with; start it again: %w", m.space, storage.ErrAccessDenied)
-	}
-	return nil
 }
 
-// boundSpace is the space id the first mint named; empty before it, or
-// from a site that names none.
+// refusal is the kept refusal of a replaced space, or nil.
+func (m *mintedTokens) refusal() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.replaced
+}
+
+// boundSpace is the space id the mints have named; empty before the first
+// mint, or from a site that names none. buildService reads it right after
+// the first mint, so it is the id the process's storage identity holds.
 func (m *mintedTokens) boundSpace() httpstore.SpaceID {
 	m.mu.Lock()
 	defer m.mu.Unlock()

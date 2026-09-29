@@ -142,6 +142,35 @@ func TestMintedTokensStayOnTheirFirstSpace(t *testing.T) {
 	if got := tokens.boundSpace(); got != "notes-first" {
 		t.Fatalf("boundSpace() = %q after the refusal, want the first id kept", got)
 	}
+	if _, again := tokens.Token(context.Background()); !errors.Is(again, storage.ErrAccessDenied) || len(site.Mints()) != 3 {
+		t.Fatalf("Token() after the refusal = %v after %d mints, want the kept refusal without another mint", again, len(site.Mints()))
+	}
+}
+
+// TestMintedTokensAcceptAnIDAfterNone proves a process started against a
+// site that names no space id keeps working when the site starts naming
+// one, and is bound to it from then on.
+func TestMintedTokensAcceptAnIDAfterNone(t *testing.T) {
+	site, tokens, _ := mintRig(t, credentials.AccessWrite)
+	site.OmitSpaceIDs(true)
+	tokens.Rejected(mustToken(t, tokens))
+	held := mustToken(t, tokens)
+	if got := tokens.boundSpace(); got != "" {
+		t.Fatalf("boundSpace() from a site without ids = %q, want none", got)
+	}
+	site.OmitSpaceIDs(false)
+	tokens.Rejected(held)
+	held = mustToken(t, tokens)
+	if got := tokens.boundSpace(); got != "notes" {
+		t.Fatalf("boundSpace() = %q, want the first id the site named", got)
+	}
+	replaced := notesSpace
+	replaced.ID = "notes-second"
+	site.SetSpaces(loginToken, replaced)
+	tokens.Rejected(held)
+	if _, err := tokens.Token(context.Background()); !errors.Is(err, storage.ErrAccessDenied) {
+		t.Fatalf("Token() for another id after the first = %v, want the refusal", err)
+	}
 }
 
 func TestMintedTokensMapTheSitesRefusals(t *testing.T) {

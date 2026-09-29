@@ -277,6 +277,7 @@ func (h *Harness) Identity() workspace.Identity {
 		Bucket:          h.cfg.Bucket,
 		Prefix:          h.cfg.Prefix,
 		ManifestVersion: workspace.ManifestVersion,
+		SpaceID:         h.cfg.SpaceID,
 	}
 }
 

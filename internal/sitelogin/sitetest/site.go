@@ -132,6 +132,7 @@ type Site struct {
 	revokeErr *refusal
 	mintErr   *refusal
 	mintBody  string
+	noIDs     bool
 	lifetime  time.Duration
 	minter    func(Minted)
 	suspended map[string]bool
@@ -317,6 +318,14 @@ func (s *Site) BreakMint(body string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.mintBody = body
+}
+
+// OmitSpaceIDs makes later mint answers name no space id, as a site that
+// predates space ids does, or names them again.
+func (s *Site) OmitSpaceIDs(omit bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.noIDs = omit
 }
 
 // SetMintLifetime sets how long later minted tokens live.
@@ -550,6 +559,10 @@ func (s *Site) mint(w http.ResponseWriter, r *http.Request) {
 	s.mints = append(s.mints, m)
 	minter, broken := s.minter, s.mintBody
 	s.mintBody = ""
+	answeredID := m.SpaceID
+	if s.noIDs {
+		answeredID = ""
+	}
 	s.mu.Unlock()
 	if minter != nil {
 		minter(m)
@@ -561,7 +574,7 @@ func (s *Site) mint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"token": m.Token, "space": m.Space, "spaceId": m.SpaceID, "access": m.Access,
+		"token": m.Token, "space": m.Space, "spaceId": answeredID, "access": m.Access,
 		"expiresAt": m.ExpiresAt.Format(time.RFC3339Nano), "endpoint": m.Endpoint, "owner": sp.Owner,
 	})
 }

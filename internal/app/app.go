@@ -442,9 +442,9 @@ func logStoreCheck(logger *slog.Logger, r storeCheckReport) {
 
 // resolveHostedSpace asks the hosted API which space the SLIVINGDOC_TOKEN
 // token reaches, and that space's id (architecture/hosted-mode.md). With no
-// bucket that space is used. A bucket that names another space is refused rather than either
-// one preferred, whether it came from --space or --bucket, SLIVINGDOC_SPACE
-// or SLIVINGDOC_BUCKET. A server that cannot answer keeps a given bucket,
+// bucket that space is used. A bucket that names another space is refused
+// rather than either one preferred, whether it came from --space or
+// --bucket, SLIVINGDOC_SPACE or SLIVINGDOC_BUCKET. A server that cannot answer keeps a given bucket,
 // whose access check then proves the token; without one it is a refusal.
 func resolveHostedSpace(ctx context.Context, cfg config) (config, error) {
 	info, err := httpstore.DescribeToken(ctx, httpstore.Config{

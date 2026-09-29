@@ -132,12 +132,13 @@ func (g *Gateway) Revoke(token string) {
 	delete(g.grants, token)
 }
 
-// DeleteSpace removes a space and everything it holds; its grants stay
-// and now answer 404 no_space, as for a space deleted on the gateway.
-func (g *Gateway) DeleteSpace(name string) {
+// DeleteSpace removes the space with id and everything it holds; its
+// grants stay and now answer 404 no_space, as for a space deleted on the
+// gateway.
+func (g *Gateway) DeleteSpace(id string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	delete(g.spaces, name)
+	delete(g.spaces, id)
 }
 
 // DisableTokenLookup makes GET /v1/token answer 404 no_endpoint, as a
@@ -148,11 +149,11 @@ func (g *Gateway) DisableTokenLookup() {
 	g.noTokenLookup = true
 }
 
-// SetQuota changes a space's quota in bytes.
-func (g *Gateway) SetQuota(name string, quota int64) {
+// SetQuota changes the quota in bytes of the space with id.
+func (g *Gateway) SetQuota(id string, quota int64) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	g.spaces[name].quota = quota
+	g.spaces[id].quota = quota
 }
 
 // SetPageSize bounds the keys of one list page.
@@ -187,12 +188,12 @@ func (g *Gateway) BeforeNextObject(method, key string, fn func()) {
 	g.hooks = append(g.hooks, hook{method: method, key: key, fn: fn})
 }
 
-// Stored returns the pack bytes a space holds.
-func (g *Gateway) Stored(name string) int64 {
+// Stored returns the pack bytes the space with id holds.
+func (g *Gateway) Stored(id string) int64 {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	var total int64
-	for _, n := range g.spaces[name].stored {
+	for _, n := range g.spaces[id].stored {
 		total += n
 	}
 	return total

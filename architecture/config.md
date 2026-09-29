@@ -17,7 +17,7 @@ Read this when: adding or changing a flag or environment variable, changing a de
 | `internal/storage/key.go` | `ValidatePrefix` (prefix grammar) |
 | `internal/git/policy.go`, `internal/git/readonly.go` | `NewPolicy`, `OverlapError`, `NormalizeEntries` (path-set validation) |
 | `internal/workspace/path.go` | `RootsOverlap` |
-| `internal/workspace/identity.go` | `Identity`, `DerivedKey`, `SharedCacheDirName` (consume the normalized endpoint, region, bucket, prefix) |
+| `internal/workspace/identity.go` | `Identity`, `DerivedKey`, `SharedCacheDirName` (consume the normalized endpoint, region, bucket, prefix, and a hosted space's server id) |
 | `internal/s3store/store.go` | `Config`, `Options`, `New` (credentials and addressing) |
 | `internal/httpstore/store.go` | `ValidateSpace`, `ValidateToken`, `IsLoopback` (hosted-mode checks), `Config`, `New` |
 | `internal/pathutil/home.go` | `ExpandHome` (a leading `~/` in roots and paths) |
