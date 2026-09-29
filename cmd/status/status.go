@@ -70,9 +70,11 @@ Usage:
   slivingdoc status [flags] [path]
 
 [path] is the notebook directory and defaults to the workspace root. Prints
-the accepted generation and one line per file that a commit would publish
-(added, modified or deleted, with its line counts). It changes nothing and
-reads no remote state; it opens the store only to check it, like pull. A
+the accepted generation and one line per file that differs from the accepted state
+(added, modified or deleted, with its line counts). Paths that
+--read-only-paths or --writable-paths protect are listed too, though a commit
+refuses them. It changes no file, creates the directory when it is missing
+like pull does, and reads no remote state; it opens the store only to check it, like pull. A
 directory that needs recovery says so instead of listing changes, and the
 next pull or commit repairs it.
 

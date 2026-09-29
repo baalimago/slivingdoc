@@ -9,7 +9,7 @@ Read this when: you are new to the repo, you need to find which package owns a b
 1. Resolve concurrent file changes quickly.
 2. Store the current notebook durably in S3 (or the hosted storage API, which offers the same conditional-write semantics).
 
-The public API is exactly two operations, `notes_pull` and `notes_commit`, served over MCP stdio and mirrored as the one-shot `slivingdoc pull [path]` and `slivingdoc commit [path] -m <msg>` subcommands. There is no public Go package, SDK, or HTTP API: all Go packages are internal, and the supported interfaces are the MCP tools, the `pull` and `commit` subcommands, process flags, release artifacts, and the npm launcher. See [product-contract.md](./product-contract.md).
+The public API is exactly two operations, `notes_pull` and `notes_commit`, served over MCP stdio and mirrored as the one-shot `slivingdoc pull [path]` and `slivingdoc commit [path] -m <msg>` subcommands. There is no public Go package, SDK, or HTTP API: all Go packages are internal, and the supported interfaces are the MCP tools, the `pull` and `commit` subcommands (plus the read-only `status` and `log`, which have no MCP tool), process flags, release artifacts, and the npm launcher. See [product-contract.md](./product-contract.md).
 
 ## Scope
 

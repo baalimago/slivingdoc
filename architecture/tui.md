@@ -1,6 +1,6 @@
 # Terminal presentation
 
-How slivingdoc looks to a person at a terminal, and how the same commands stay plain for scripts, pipes, CI and `NO_COLOR`. One package, `internal/tui`, holds the palette, the status marks, aligned columns, the progress spinner and the list picker; the router, the pull/commit report, `serve`, `login`, `space` and `logout` all render through it. It answers "why does this line look like this on my terminal, and what does a script see instead?"
+How slivingdoc looks to a person at a terminal, and how the same commands stay plain for scripts, pipes, CI and `NO_COLOR`. One package, `internal/tui`, holds the palette, the status marks, aligned columns, the progress spinner and the list picker; the router, the pull/commit/status/log reports, `serve`, `login`, `space` and `logout` all render through it. It answers "why does this line look like this on my terminal, and what does a script see instead?"
 
 Read this when: changing any line a command prints for a person, adding a command's output, adding a colour or a mark, touching the home screen, the help layout, the progress line, or a picker.
 
@@ -19,7 +19,7 @@ Read this when: changing any line a command prints for a person, adding a comman
 | `internal/app/present.go` | `ProcessOptions.errStyle`/`outStyle`/`styleOf` (the `Style` seam), `pickable`, `spacesTable`, `spaceRows`, `pickSpace`, `pickLogins`, `skipped`, `line` |
 | `internal/app/config.go` | `EnvLookup`: the `getenv` that `Detect` reads, over `ProcessOptions.Env` |
 | `internal/app/status.go` | `LoginStatus`, `StoredLogins` (the home screen's login lines, from the credentials file only) |
-| `internal/app/progress.go` | `Runtime.WithProgress` (the pull/commit progress line), `Runtime.target` |
+| `internal/app/progress.go` | `Runtime.WithProgress` (the pull/commit progress line), `Runtime.Target`; `statuslog.go`: `ReportStatus`, `ReportLog` render through the same style |
 | `internal/app/command.go` | `Report`, `writeSuccess`, `writeError`, `writePathSets` render through a `tui.Style` |
 | `internal/app/login.go` | `showApproval`, `countdown`, `approvedBy`, `loggedIn`, `Login.offerDefault`, `ProcessOptions.ErrOut`, the styled `Login.report` and `Logout.Run` lines |
 | `internal/app/space.go` | `Space.Run` (the picker), `Space.list` (the styled table or the plain `*` list) |

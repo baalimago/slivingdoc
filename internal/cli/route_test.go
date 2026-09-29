@@ -55,6 +55,7 @@ func TestRouterPlainSurface(t *testing.T) {
 			stderr: "error: serve: flag provided but not defined: -frob; run 'slivingdoc serve -h' for its flags\n",
 		},
 		{name: "--version", args: []string{"--version"}, code: 0, stdoutIs: "slivingdoc " + app.Version + "\n"},
+		{name: "--version beside another flag", args: []string{"--bogus", "--version"}, code: 1, usage: true, stderr: "error: give a command before --bogus\n"},
 		{name: "a shortcut", args: []string{"v"}, code: 0, stdoutIs: "slivingdoc " + app.Version + "\n"},
 		{name: "command help is the help text", args: []string{"logout", "-h"}, code: 0, stdoutIs: Commands(&stubEngine{}, app.ProcessOptions{})["logout"].Help()},
 		{name: "a refused setup is one line", args: []string{"logout", "extra"}, code: 1, stderr: "error: logout: unexpected argument \"extra\"\n"},

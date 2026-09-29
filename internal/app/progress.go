@@ -26,7 +26,6 @@ func (r *Runtime) WithProgress(verb, path string, op func() (notebook.Result, er
 	return result, err
 }
 
-// target names the store the notebook syncs with.
 // Target names the store the process talks to, for example "space notes".
 func (r *Runtime) Target() string {
 	if r.cfg.hosted() {

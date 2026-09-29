@@ -44,8 +44,8 @@ space' lists the login's spaces and 'slivingdoc space <name>' sets the
 default one; --storage auto|hosted|s3 chooses between a login and S3
 explicitly. 'slivingdoc logout' revokes the login.
 
-Logging is configured by the environment; serve, pull, and commit also
-take --log-level and --log-timestamp, which override it:
+Logging is configured by the environment; serve, pull, commit, status and log
+also take --log-level and --log-timestamp, which override it:
   LOG_LEVEL   per-module levels, for example "cli=warn,mcp=debug,info".
               A bare level is the default; modules are cli, app, mcp, notebook.
   NO_COLOR    any non-empty value disables colour: of log levels and

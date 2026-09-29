@@ -1,6 +1,6 @@
 # Notebook orchestration
 
-`internal/notebook` composes one workspace (L and P), the Git seam, and the object store into the two public operations. It owns the policy: when to read `current`, how to merge, when to publish, how to prove acceptance, when to recover, and when to checkpoint. It owns no filesystem layout (that is `internal/workspace`) and no native code (that is `internal/git2`). This doc answers "what is a `Notebook`, how is it configured, and where does each cross-cutting piece (remote read, result, metrics, failpoints, backoff, errors, logging) live".
+`internal/notebook` composes one workspace (L and P), the Git seam, and the object store into the two public operations, plus the local `Status` and `Log` views. It owns the policy: when to read `current`, how to merge, when to publish, how to prove acceptance, when to recover, and when to checkpoint. It owns no filesystem layout (that is `internal/workspace`) and no native code (that is `internal/git2`). This doc answers "what is a `Notebook`, how is it configured, and where does each cross-cutting piece (remote read, result, metrics, failpoints, backoff, errors, logging) live".
 
 Read this when: wiring a notebook, changing a default or range, adding a metric, failpoint or error reason, or finding the function behind a pull/commit step.
 
@@ -8,6 +8,7 @@ Read this when: wiring a notebook, changing a default or range, adding a metric,
 
 | File | Purpose |
 |------|---------|
+| `internal/notebook/status.go` | `Status`, `Log`, `Change`, `ChangeKind`, `LogEntry`, `History`, `changesBetween` |
 | `internal/notebook/notebook.go` | `Workspace` (consumer-owned interface), `Config`, `New`, `Notebook`, defaults and ranges, `ValidateMessage`, `holdWorkspace`, `entryRecovery`, `applyLocal`, `failAfterAccept`, `mapLocalError`, `rejectMarkers`, `materializeTree`, stage constants |
 | `internal/notebook/pull.go` | `Pull`, `pinProtected`. See [pull.md](./pull.md) |
 | `internal/notebook/commit.go` | `Commit`, `attemptPublication`, `buildProposal`, `publish`, `enforcePolicy`. See [commit.md](./commit.md) , `engineFailed` |

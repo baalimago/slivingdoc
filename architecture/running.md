@@ -9,7 +9,7 @@ Read this when: operating or deploying slivingdoc, writing an MCP host configura
 | File | Purpose |
 |------|---------|
 | `internal/cli/cli.go` | Command map and router `Usage` ([cli.md](./cli.md)) |
-| `cmd/serve/serve.go`, `cmd/pull/pull.go`, `cmd/commit/commit.go`, `cmd/login/login.go`, `cmd/version/version.go` | The commands and their help text |
+| `cmd/serve/serve.go`, `cmd/pull/pull.go`, `cmd/commit/commit.go`, `cmd/status/status.go`, `cmd/log/log.go`, `cmd/login/login.go`, `cmd/version/version.go` | The commands and their help text |
 | `internal/app/login.go`, `internal/app/space.go`, `internal/app/minted.go`, `internal/app/storage.go`, `internal/credentials/credentials.go` | `login`/`logout`/`space`, minted tokens, `--storage` selection, the credentials file ([login.md](./login.md)) |
 | `internal/app/config.go` | `FlagReference`, `HelpText`, precedence and validation ([config.md](./config.md)) |
 | `internal/app/command.go` | `Report`: the CLI result report |

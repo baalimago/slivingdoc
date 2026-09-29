@@ -25,7 +25,7 @@ Read this when: adding or changing a flag or environment variable, changing a de
 ## Flow
 
 ```text
-cmd/<serve|pull|commit>.Command: flags := app.NewFlags(); flags.Bind(fs)
+cmd/<serve|pull|commit|status|log>.Command: flags := app.NewFlags(); flags.Bind(fs)
 router parses fs
 app.Setup(engine, flags, opts) → setup(process)
   → loadConfig(p)                                   # parses p.args only when p.flags == nil

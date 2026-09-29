@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"unicode"
 
 	"github.com/baalimago/slivingdoc/internal/notebook"
 	"github.com/baalimago/slivingdoc/internal/tui"
@@ -67,6 +68,12 @@ func ReportLog(out io.Writer, h notebook.History, err error, path string, env []
 	fmt.Fprintf(&b, "%s%s\n", p.Mark(tui.Done), p.Brand(path))
 	for _, e := range h.Entries {
 		first, _, multi := strings.Cut(strings.TrimSpace(e.Message), "\n")
+		first = strings.Map(func(r rune) rune {
+			if unicode.IsControl(r) {
+				return ' '
+			}
+			return r
+		}, first)
 		if multi {
 			first += " …"
 		}

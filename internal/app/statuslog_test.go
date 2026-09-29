@@ -59,11 +59,11 @@ func TestReportLog(t *testing.T) {
 		t.Fatalf("empty log = %q, %v", out.String(), err)
 	}
 	out.Reset()
-	h := notebook.History{Entries: []notebook.LogEntry{{Message: "new\n\nbody"}, {Message: "old"}}, More: true}
+	h := notebook.History{Entries: []notebook.LogEntry{{Message: "new\n\nbody"}, {Message: "old\x1b[2J\rspoof"}}, More: true}
 	if err := ReportLog(&out, h, nil, "/n", nil); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"  new …\n", "  old\n", "raise --limit"} {
+	for _, want := range []string{"  new …\n", "  old [2J spoof\n", "raise --limit"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("log = %q, want %q", out.String(), want)
 		}

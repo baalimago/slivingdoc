@@ -354,7 +354,7 @@ copy is the authoritative one. Behavior worth remembering:
   by both settings, which is a configuration error rather than a
   precedence rule.
 
-The `serve`, `pull`, and `commit` commands share every flag. The
+The `serve`, `pull`, `commit`, `status`, and `log` commands share every flag (`log` adds `--limit`). The
 subcommand comes first. `slivingdoc version` and `-h` on any command exit
 zero before loading dependencies.
 
@@ -373,7 +373,7 @@ only be resolved from a bound attribute.
 | `NO_COLOR`                 | Any non-empty value disables colour: log levels and the terminal output (architecture/tui.md).                                                                                                                     |
 | `DEBUG_PERF`               | Captures CPU, heap, and execution-trace profiles across the whole command (`internal/app/perf.go`); `1` writes under the system temporary directory, any other value is the base directory. See `architecture/running.md`. |
 
-The `--log-level` and `--log-timestamp` flags (shared by `serve`, `pull`,
+The `--log-level` and `--log-timestamp` flags (shared by `serve`, `pull`, `status`, `log`,
 and `commit`) override the environment once the flags resolve; `setup`
 rebuilds the process logger when either is configured. An invalid
 `--log-level` value refuses startup; a malformed `LOG_LEVEL` environment
@@ -426,8 +426,9 @@ demoted to DEBUG with empty-string attributes dropped (`sdkLogger` in
 architecture, and a change that touches one of them updates
 the matching doc under `architecture/` in the same commit:
 
-- MCP and the one-shot `pull`/`commit` subcommands are the only public
-  APIs, and both expose exactly the same two operations. The process never
+- The MCP tools and the one-shot `pull`/`commit` subcommands expose exactly
+  the same two operations; `status` and `log` are read-only human commands
+  with no MCP counterpart. The process never
   invokes Git and never imports `git2go`.
 - All CGo and libgit2 types stay inside `internal/git2`. All production AWS SDK use
   stays inside `internal/s3store`.
