@@ -98,8 +98,8 @@ To bring in colleagues, make an invite link on your space's Members page
 at slivingdoc.dev, with Read or Read and write access. Each colleague opens
 the link, signs in, presses Join, makes their own token for the space (or
 runs `slivingdoc login`), and pulls into a new or empty folder. Everyone
-pulls the same notes, and those with Read and write access commit to them. Their requests and storage count
-against your plan. [Hosted storage](#hosted-storage) below has the details.
+pulls the same notes, and those with Read and write access commit to
+them. Their requests and storage count against your plan. [Hosted storage](#hosted-storage) below has the details.
 
 ### Self-hosted, on your own bucket
 
@@ -121,16 +121,10 @@ Connect an MCP host or use the CLI directly:
 }
 ```
 
-The bucket must exist, and credentials come from the normal AWS chain.
-No S3 account yet? [`examples/seaweedfs/`](examples/seaweedfs/) runs a local
-SeaweedFS container with a step-by-step walkthrough. You can also download
-a native binary directly from the
-[GitHub release](https://github.com/baalimago/slivingdoc/releases)
-(`slivingdoc-v<semver>-<os>-<arch>`) and run it in place.
-
-Supported platforms: Linux (amd64, 32-bit ARMv7, arm64), macOS (amd64,
-arm64), and Windows (amd64). The 32-bit Linux ARM artifact supports Raspberry
-Pi OS armhf.
+The bucket must already exist and support conditional writes, and
+credentials come from the standard AWS credential chain. No bucket yet?
+[`examples/seaweedfs/`](examples/seaweedfs/) walks you through running
+SeaweedFS locally in a container.
 
 ### Hosted storage
 
@@ -223,6 +217,16 @@ own S3 endpoint stays on S3. Add `--storage s3` (or `SLIVINGDOC_STORAGE=s3`)
 to keep an entry on S3 whatever is stored. A hosted entry that sets
 `SLIVINGDOC_TOKEN` next to `AWS_ENDPOINT_URL` or `AWS_ENDPOINT_URL_S3`, or
 passes `--endpoint` as a flag, now needs `--storage hosted`.
+
+### Install
+
+`npx -y slivingdoc` downloads the native binary for your platform on first
+run and verifies it. To skip Node, download the binary from the
+[latest release](https://github.com/baalimago/slivingdoc/releases)
+(`slivingdoc-v<semver>-<os>-<arch>`) and run it directly.
+
+It runs on Linux (amd64, arm64, and 32-bit ARMv7, which covers Raspberry
+Pi OS armhf), macOS (amd64, arm64) and Windows (amd64).
 
 ## How it works
 
