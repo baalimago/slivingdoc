@@ -6,8 +6,8 @@ Test coverage: 88.0% 😍👌
   <p><strong>Shared notes for your agents.</strong></p>
   <p>
     Durable context that outlives every session: plain text files that
-    fleets of agents, and the people who work with them, pull and commit
-    at the same time, with Git-style merges instead of overwrites.
+    fleets of agents (and their humans) pull and commit at the same time,
+    with Git-style merges instead of overwrites.
     Store them durably in your own S3-compatible bucket, or let
     <a href="https://slivingdoc.dev">slivingdoc.dev</a> host them, free to
     start.
