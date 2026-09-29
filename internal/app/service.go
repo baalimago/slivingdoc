@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"sync"
 	"time"
 
@@ -40,6 +41,9 @@ type ServiceConfig struct {
 	// every unmatched path (architecture/product-contract.md, Read-only and
 	// writable paths).
 	WritablePaths []string
+	// Ignore are the operator's ignore patterns, added to
+	// workspace.DefaultIgnore.
+	Ignore []string
 }
 
 // probeProofs locates the store compatibility proof of this configuration:
@@ -75,6 +79,7 @@ func (cfg config) serviceConfig() ServiceConfig {
 		RetainedCheckpoints: cfg.retainedCheckpoints,
 		ReadOnlyPaths:       cfg.readOnlyPaths,
 		WritablePaths:       cfg.writablePaths,
+		Ignore:              cfg.ignore,
 	}
 }
 
@@ -99,6 +104,7 @@ type Service struct {
 	cfg    ServiceConfig
 	hooks  *ServiceHooks
 	policy git.PathPolicy
+	ignore workspace.Ignore
 
 	mu     sync.Mutex // guards opened and closed
 	opened map[string]*openedNotebook
@@ -127,12 +133,17 @@ func NewService(engine git.Engine, store storage.ObjectStore, cfg ServiceConfig,
 	if err != nil {
 		return nil, fmt.Errorf("app: %w", err)
 	}
+	ignore, err := workspace.NewIgnore(append(slices.Clone(workspace.DefaultIgnore), cfg.Ignore...))
+	if err != nil {
+		return nil, fmt.Errorf("app: ignore: %w", err)
+	}
 	return &Service{
 		engine: engine,
 		store:  store,
 		cfg:    cfg,
 		hooks:  hooks,
 		policy: policy,
+		ignore: ignore,
 		opened: map[string]*openedNotebook{},
 	}, nil
 }
@@ -198,6 +209,7 @@ func (s *Service) notebookFor(ctx context.Context, path string) (*notebook.Noteb
 		Identity:      s.identity(),
 		Engine:        s.engine,
 		Failpoints:    wsFailpoints,
+		Ignore:        s.ignore,
 	})
 	if err != nil {
 		return nil, err

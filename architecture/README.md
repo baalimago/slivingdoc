@@ -112,6 +112,10 @@ the code and fix the doc in the same change (see
 - **[running.md](./running.md)**: the operator reference: commands,
   flags, credentials, MCP host setup, logging, notebook rules, conflict
   recovery, checkpoints, operational ownership.
+- **[compatibility.md](./compatibility.md)**: the promise from 1.0.0 on:
+  what stays stable (stored formats, tools, error tokens, command line),
+  what may change, and what an older slivingdoc does with a newer
+  notebook (`UPGRADE_REQUIRED`).
 - **[decisions.md](./decisions.md)**: recorded architecture decisions,
   deferred work, and the invariants a change must not break.
 
@@ -127,6 +131,8 @@ the code and fix the doc in the same change (see
 - Adding a flag or command: **config.md → cli.md → running.md**.
 - Changing what an agent sees: **product-contract.md → mcp-server.md →
   errors.md**.
+- Changing a stored format, a flag or an error token: **compatibility.md →
+  storage.md or config.md → errors.md**.
 - Debugging a failed build or release: **build.md → releasing.md**.
 
 ## The hosted service

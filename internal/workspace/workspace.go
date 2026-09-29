@@ -65,6 +65,9 @@ type Config struct {
 	Engine Engine
 	// Failpoints injects deterministic failures; nil disables injection.
 	Failpoints *Failpoints
+	// Ignore names the entries the workspace never reads, publishes
+	// or removes (architecture/workspace.md, Ignored paths).
+	Ignore Ignore
 }
 
 // Workspace is one managed visible path. All methods are safe for
@@ -84,6 +87,7 @@ type Workspace struct {
 	flock      *flock.Flock
 	state      state
 	failpoints *Failpoints
+	ignore     Ignore
 	closed     bool
 }
 
@@ -176,6 +180,7 @@ func Open(ctx context.Context, cfg Config) (*Workspace, error) {
 		flock:      fl,
 		sem:        make(chan struct{}, 1),
 		failpoints: cfg.Failpoints,
+		ignore:     cfg.Ignore,
 		state:      needsRecovery.state,
 	}
 	if needsRecovery.recovery {

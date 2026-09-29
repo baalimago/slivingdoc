@@ -33,6 +33,7 @@ var allReasons = []struct {
 	{CodeInvalidRequest, ReasonDirectoryNotEmpty, ActionFixInput},
 	{CodeInvalidRequest, ReasonInvalidContent, ActionEditFiles},
 	{CodeInvalidRequest, ReasonReadOnlyPath, ActionEditFiles},
+	{CodeInvalidRequest, ReasonIgnoredConflict, ActionEditFiles},
 	{CodeContentConflict, ReasonMergeConflict, ActionEditFiles},
 	{CodeContentConflict, ReasonUnresolvedMarkers, ActionEditFiles},
 	{CodeRemoteBusy, ReasonRetriesExhausted, ActionRetry},

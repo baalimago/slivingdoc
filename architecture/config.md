@@ -75,6 +75,7 @@ app.Setup(engine, flags, opts) → setup(process)
 | Retained checkpoints | `--retained-checkpoints` | `SLIVINGDOC_RETAINED_CHECKPOINTS` | 1 | 0..64 |
 | Read-only paths | `--read-only-paths` | `SLIVINGDOC_READ_ONLY_PATHS` | none | `resolvePolicy` |
 | Writable paths | `--writable-paths` | `SLIVINGDOC_WRITABLE_PATHS` | none | `resolvePolicy` |
+| Ignore patterns | `--ignore` | `SLIVINGDOC_IGNORE` | none, on top of `workspace.DefaultIgnore` | comma-separated (`splitPathEntries`); `workspace.NewIgnore` in `finish` |
 | Log level | `--log-level` | `LOG_LEVEL` | info | flag: `slogcolor.ParseLevels`, fatal; env: lenient |
 | Log timestamp | `--log-timestamp` | `SLIVINGDOC_LOG_TIMESTAMP` | `true` | `ParseBool` |
 

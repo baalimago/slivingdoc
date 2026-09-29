@@ -147,7 +147,8 @@ func TestScenarioIntegrityStartupProbeFailure(t *testing.T) {
 // TestScenarioIntegrityStartupProbeAuthReason proves the real S3 reason
 // behind a probe failure reaches the startup diagnostic, redacted of the
 // probe key and the secret: an authentication refusal names its server
-// error code instead of the blanket incompatible-store verdict.
+// error code and how to fix it instead of the blanket incompatible-store
+// verdict.
 func TestScenarioIntegrityStartupProbeAuthReason(t *testing.T) {
 	t.Parallel()
 	suite := tests3.Ensure(t)
@@ -167,8 +168,11 @@ func TestScenarioIntegrityStartupProbeAuthReason(t *testing.T) {
 	if strings.TrimSpace(stdout) != "" {
 		t.Fatalf("startup auth refusal wrote protocol stdout: %q", stdout)
 	}
-	if !strings.Contains(stderr, "INCOMPATIBLE_STORE") {
-		t.Fatalf("stderr = %q, want the INCOMPATIBLE_STORE category", stderr)
+	if strings.Contains(stderr, "INCOMPATIBLE_STORE") {
+		t.Fatalf("stderr = %q, a refused credential is not an incompatible store", stderr)
+	}
+	if !strings.Contains(stderr, "refused the credentials") || !strings.Contains(stderr, "--bucket") {
+		t.Fatalf("stderr = %q, want the credentials refusal with its fix", stderr)
 	}
 	if !strings.Contains(stderr, "InvalidAccessKeyId") {
 		t.Fatalf("stderr = %q, want the S3 InvalidAccessKeyId reason", stderr)

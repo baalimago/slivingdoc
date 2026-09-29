@@ -20,6 +20,26 @@ import (
 // collision.
 var ErrIntegrity = errors.New("storage: integrity failure")
 
+// ManifestVersion is the one manifest version this build reads and writes.
+const ManifestVersion = 1
+
+// ErrUpgradeRequired reports a manifest written by a newer slivingdoc than
+// this one: the notebook is intact, this build cannot read it. Nothing may
+// be written to it.
+var ErrUpgradeRequired = errors.New("storage: the notebook needs a newer slivingdoc")
+
+// UpgradeRequiredError carries the manifest version a newer slivingdoc
+// wrote. It matches ErrUpgradeRequired.
+type UpgradeRequiredError struct {
+	Version uint64
+}
+
+func (e *UpgradeRequiredError) Error() string {
+	return fmt.Sprintf("storage: decode manifest: manifest version %d is newer than the supported version %d: %v", e.Version, ManifestVersion, ErrUpgradeRequired)
+}
+
+func (e *UpgradeRequiredError) Unwrap() error { return ErrUpgradeRequired }
+
 // CurrentKey is the protocol key of the only authoritative state index
 // (architecture/storage.md). An absent current object is the implicit
 // empty-notebook state at generation 0.
@@ -89,7 +109,10 @@ func DecodeManifest(data []byte) (Manifest, error) {
 	if err != nil {
 		return Manifest{}, integrityErr(err)
 	}
-	if ver != 1 {
+	if ver > ManifestVersion {
+		return Manifest{}, &UpgradeRequiredError{Version: ver}
+	}
+	if ver != ManifestVersion {
 		return Manifest{}, fmt.Errorf("storage: decode manifest: unsupported version %d: %w", ver, ErrIntegrity)
 	}
 	m, err := decodeManifest(root)
@@ -153,7 +176,7 @@ func decodeManifest(root strictjson.Value) (Manifest, error) {
 		return Manifest{}, fmt.Errorf("storage: manifest: %w", err)
 	}
 	m := Manifest{}
-	m.Version = 1
+	m.Version = ManifestVersion
 	gen, err := requiredUint(root, "generation", "manifest")
 	if err != nil {
 		return Manifest{}, err

@@ -56,7 +56,7 @@ tools/call {path}
 
 **Lexical checks.** The escape check (`canonicalize`) and the root overlap checks (`RootsOverlap`) are lexical (`filepath.Clean`/`filepath.Rel`); they do not resolve symlinks. Operators must not alias roots through symlinks. The workspace root itself may be a symlink, since `os.OpenRoot` follows it.
 
-**Symlinks and special files.** `rejectSymlinkComponents` refuses a symlink in any existing component of the requested path. Scans use Lstat semantics, so a symlink is never followed and is rejected, as are devices, sockets and named pipes. Visible files are read and replaced through an `os.Root`, so replacement and cleanup do not follow links out of the root. Details are in [workspace.md](./workspace.md).
+**Symlinks and special files.** `rejectSymlinkComponents` refuses a symlink in any existing component of the requested path. Scans use Lstat semantics, so a symlink is never followed and is rejected (unless an ignore rule names it), as are devices, sockets and named pipes. Visible files are read and replaced through an `os.Root`, so replacement and cleanup do not follow links out of the root. Details are in [workspace.md](./workspace.md).
 
 **Notebook path rules.** Every notebook-relative path (files, and `--read-only-paths`/`--writable-paths` entries) passes `git.ValidatePath`: UTF-8 in NFC, relative slash segments, bounded length, no control or reserved characters, no trailing space or dot, no `.`, `..` or `.git` segment, no Windows device names. A malformed path-set entry refuses startup instead of silently protecting nothing.
 

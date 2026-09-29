@@ -1026,3 +1026,25 @@ func flagReferenceLine(t *testing.T, flag string) string {
 	t.Fatalf("FlagReference declares no %s line", flag)
 	return ""
 }
+
+// TestLoadConfigIgnore proves --ignore beats SLIVINGDOC_IGNORE, splits on
+// commas, and refuses a pattern that cannot match.
+func TestLoadConfigIgnore(t *testing.T) {
+	cfg, err := loadConfig(testProcess([]string{"SLIVINGDOC_BUCKET=b", "SLIVINGDOC_IGNORE=*.env"}))
+	if err != nil {
+		t.Fatalf("loadConfig() = %v", err)
+	}
+	if got := cfg.ignore; len(got) != 1 || got[0] != "*.env" {
+		t.Fatalf("ignore = %v, want the environment value", got)
+	}
+	cfg, err = loadConfig(testProcess([]string{"SLIVINGDOC_BUCKET=b", "SLIVINGDOC_IGNORE=*.env"}, "--ignore=*.log, private/scratch"))
+	if err != nil {
+		t.Fatalf("loadConfig() = %v", err)
+	}
+	if got := cfg.ignore; len(got) != 2 || got[0] != "*.log" || got[1] != "private/scratch" {
+		t.Fatalf("ignore = %v, want the flag's two patterns", got)
+	}
+	if _, err := loadConfig(testProcess([]string{"SLIVINGDOC_BUCKET=b"}, "--ignore=[oops")); err == nil {
+		t.Fatal("loadConfig() = nil, want a refusal of an unmatched bracket")
+	}
+}

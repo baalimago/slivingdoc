@@ -81,7 +81,7 @@ func (w *Workspace) scanLocked(ctx context.Context) (git.Snapshot, error) {
 	if err := w.scanWalk(ctx, w.rel, "", &files); err != nil {
 		return git.Snapshot{}, err
 	}
-	snap := git.Snapshot{Files: files}
+	snap := git.Snapshot{Files: w.pinIgnored(files)}
 	err := git.ValidateSnapshot(snap)
 	if err == nil {
 		// New local content also may not hold a file whose name folds to
@@ -100,6 +100,30 @@ func (w *Workspace) scanLocked(ctx context.Context) (git.Snapshot, error) {
 		return git.Snapshot{}, fmt.Errorf("workspace: scan: %w", err)
 	}
 	return snap, nil
+}
+
+// pinIgnored adds the baseline's ignored files to the scan, so a file the
+// notebook holds under an ignored name is neither published as changed nor
+// as deleted by this machine. The private repository is a cache that a pull
+// repairs after the scan, so a baseline it cannot read pins nothing.
+func (w *Workspace) pinIgnored(files []git.File) []git.File {
+	if !w.ignore.Configured() {
+		return files
+	}
+	base, err := w.state.baseline()
+	if err != nil || base.Tree == EmptyTreeID {
+		return files
+	}
+	snap, err := git.ReadSnapshot(w.repo, base.Tree)
+	if err != nil {
+		return files
+	}
+	for _, f := range snap.Files {
+		if w.ignore.Ignored(f.Path) {
+			files = append(files, f)
+		}
+	}
+	return files
 }
 
 func scanError(path string, err error) error {
@@ -123,12 +147,15 @@ func (w *Workspace) scanWalk(ctx context.Context, dirRel, prefix string, files *
 			return fmt.Errorf("workspace: scan: %w", err)
 		}
 		raw := e.Name()
+		norm := norm.NFC.String(raw)
+		path := prefix + norm
+		if w.ignore.Ignored(path) {
+			continue
+		}
 		if !utf8.ValidString(raw) {
 			rawPath := dirRel + "/" + raw
 			return scanError(rawPath, fmt.Errorf("workspace: scan %q: %w: name is not valid UTF-8", rawPath, ErrInvalidPath))
 		}
-		norm := norm.NFC.String(raw)
-		path := prefix + norm
 		if err := git.ValidatePath(path); err != nil {
 			rawPath := dirRel + "/" + raw
 			return scanError(path, fmt.Errorf("workspace: scan %q: %w: %w", rawPath, ErrInvalidPath, err))
@@ -207,12 +234,19 @@ func (w *Workspace) readVisibleFile(ctx context.Context, rawRel, path string) ([
 	return data, nil
 }
 
+// visibleEntries is what a materialization may touch: every file and
+// directory path relative to L that is not ignored, and the directories
+// that hold an ignored entry and so must stay.
+type visibleEntries struct {
+	files, dirs []string
+	keep        map[string]bool
+}
+
 // collectVisible walks the visible directory without opening anything and
-// returns every file path and directory path relative to the workspace
-// root, in slash form. It is used to remove obsolete entries during a
-// materialization; removing a symlink removes the link, never the target,
-// so no entry is opened.
-func (w *Workspace) collectVisible(ctx context.Context, dirRel, prefix string, files, dirs *[]string) error {
+// records every entry that is not ignored, in slash form relative to L. It
+// is used to remove obsolete entries during a materialization; removing a
+// symlink removes the link, never the target, so no entry is opened.
+func (w *Workspace) collectVisible(ctx context.Context, dirRel, prefix string, out *visibleEntries) error {
 	entries, err := w.readDir(dirRel)
 	if err != nil {
 		return fmt.Errorf("workspace: collect %q: %w", dirRel, err)
@@ -222,14 +256,23 @@ func (w *Workspace) collectVisible(ctx context.Context, dirRel, prefix string, f
 			return fmt.Errorf("workspace: collect: %w", err)
 		}
 		path := prefix + e.Name()
+		if w.ignore.Ignored(norm.NFC.String(path)) {
+			for dir := parentRel(path); dir != ""; dir = parentRel(dir) {
+				if out.keep == nil {
+					out.keep = map[string]bool{}
+				}
+				out.keep[dir] = true
+			}
+			continue
+		}
 		if e.IsDir() {
-			*dirs = append(*dirs, path)
-			if err := w.collectVisible(ctx, joinRel(dirRel, e.Name()), path+"/", files, dirs); err != nil {
+			out.dirs = append(out.dirs, path)
+			if err := w.collectVisible(ctx, joinRel(dirRel, e.Name()), path+"/", out); err != nil {
 				return err
 			}
 			continue
 		}
-		*files = append(*files, path)
+		out.files = append(out.files, path)
 	}
 	return nil
 }

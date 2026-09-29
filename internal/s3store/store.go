@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"html"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -376,12 +377,14 @@ func (s *Store) DeleteObjects(ctx context.Context, keys []string) error {
 
 // mapError converts an AWS SDK error into a semantic storage error:
 // NoSuchKey maps to ErrNotFound, PreconditionFailed maps to
-// ErrPreconditionFailed, and every other failure — including connection
-// errors, timeouts after request bytes were sent, access denials, and
-// server errors — maps to ErrTransport. A non-semantic failure keeps its
-// real reason in the text so the startup probe can surface it (for example
-// an S3 error code and message, or a credential-resolution refusal that
-// never reached the server) while the sentinel still classifies it.
+// ErrPreconditionFailed, a refusal of the credentials or of the bucket
+// (accessDeniedCodes, an HTTP 401 or 403, credentials the SDK could not
+// resolve) maps to ErrAccessDenied, and every other failure — including
+// connection errors, timeouts after request bytes were sent, and server
+// errors — maps to ErrTransport. A non-semantic failure keeps its real
+// reason in the text so the startup probe can surface it (for example an
+// S3 error code and message, or a credential-resolution refusal that never
+// reached the server) while the sentinel still classifies it.
 func mapError(op string, err error) error {
 	if err == nil {
 		return nil
@@ -394,12 +397,86 @@ func mapError(op string, err error) error {
 		case "PreconditionFailed":
 			return fmt.Errorf("s3store: %s: %w", op, storage.ErrPreconditionFailed)
 		}
+		if accessDeniedCodes[api.ErrorCode()] || (deniedStatus(err) && !notADenial[api.ErrorCode()] && isRead(op)) {
+			return accessDenied(op, api.ErrorCode(), api.ErrorMessage())
+		}
 		return fmt.Errorf("s3store: %s: %s: %w", op, apiDetail(api), storage.ErrTransport)
 	}
+	if isCredentialFailure(err) && !transientCause(err) {
+		return accessDenied(op, "credentials", errDetail(err))
+	}
 	if detail, ok := httpErrorDetail(err); ok {
+		if deniedStatus(err) && isRead(op) {
+			return accessDenied(op, "HTTP refusal", detail)
+		}
 		return fmt.Errorf("s3store: %s: %s: %w", op, detail, storage.ErrTransport)
 	}
 	return fmt.Errorf("s3store: %s: %s: %w", op, errDetail(err), storage.ErrTransport)
+}
+
+// accessDeniedCodes are the S3 error codes that mean the credentials or
+// the bucket refuse the caller, so a retry cannot help.
+var accessDeniedCodes = map[string]bool{
+	"AccessDenied":          true,
+	"AllAccessDisabled":     true,
+	"AccountProblem":        true,
+	"ExpiredToken":          true,
+	"InvalidAccessKeyId":    true,
+	"InvalidToken":          true,
+	"NoSuchBucket":          true,
+	"SignatureDoesNotMatch": true,
+	"TokenRefreshRequired":  true,
+}
+
+// notADenial lists 401/403 codes that name a fixable clock or request
+// problem, not a refusal of the credentials.
+var notADenial = map[string]bool{"RequestTimeTooSkewed": true, "RequestExpired": true}
+
+// isRead reports an operation that changes nothing. A 401 or 403 with no
+// S3 code of its own could come from a proxy that forwarded a write, whose
+// outcome is then unknown, so only a read counts it as a refusal.
+func isRead(op string) bool {
+	return strings.HasPrefix(op, "get ") || strings.HasPrefix(op, "list ")
+}
+
+// transientCause reports a network or server failure under a credential
+// error: an unreachable metadata service is worth a retry, not a new key.
+func transientCause(err error) bool {
+	var netErr net.Error
+	if errors.As(err, &netErr) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var respErr *smithyhttp.ResponseError
+	return errors.As(err, &respErr) && (respErr.HTTPStatusCode() >= 500 || respErr.HTTPStatusCode() == http.StatusTooManyRequests)
+}
+
+// deniedStatus reports an HTTP 401 or 403 from a service whose error code
+// is not one of the S3 names above.
+func deniedStatus(err error) bool {
+	var respErr *smithyhttp.ResponseError
+	if !errors.As(err, &respErr) {
+		return false
+	}
+	status := respErr.HTTPStatusCode()
+	return status == http.StatusUnauthorized || status == http.StatusForbidden
+}
+
+// isCredentialFailure reports the SDK's refusal to sign a request: no
+// credential provider produced credentials, so nothing reached the server.
+func isCredentialFailure(err error) bool {
+	text := err.Error()
+	return strings.Contains(text, "failed to retrieve credentials") || strings.Contains(text, "NoCredentialProviders")
+}
+
+// accessDenied builds the ErrAccessDenied refusal, carrying the S3 code and
+// the service's own one-line message so the caller can show the cause.
+func accessDenied(op, code, message string) error {
+	const maxRunes = 200
+	message = strings.Join(strings.Fields(message), " ")
+	if r := []rune(message); len(r) > maxRunes {
+		message = string(r[:maxRunes]) + "..."
+	}
+	return &storage.Refusal{Err: storage.ErrAccessDenied, Detail: "s3store: " + op + ": " + code, Message: message}
 }
 
 // apiDetail renders one non-semantic S3 API error as a single-line

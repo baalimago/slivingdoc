@@ -194,7 +194,7 @@ func retryable(code notebook.Code, reason notebook.Reason) bool {
 // cannot change.
 func permanentRefusal(reason notebook.Reason) bool {
 	switch reason {
-	case notebook.ReasonStorageFull, notebook.ReasonRequestLimit, notebook.ReasonAccessDenied, notebook.ReasonObjectTooLarge:
+	case notebook.ReasonStorageFull, notebook.ReasonRequestLimit, notebook.ReasonAccessDenied, notebook.ReasonObjectTooLarge, notebook.ReasonUpgradeRequired:
 		return true
 	default:
 		return false
