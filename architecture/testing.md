@@ -92,7 +92,8 @@ process scenario
 |---|---|
 | S3 | `storage.ObjectStore` with `storage/fake`; `app.ProcessOptions.StoreFactory` |
 | Hosted storage API | `gatewaytest` (a local `httptest` server); `httpstore.Config.Client`, `Retries`, `Backoff` |
-| Login site, spaces and minting, browser, poll timing, host name, the confirmation prompt, interrupts | `sitetest` (a local `httptest` server); `sitelogin.Config.Sleep`, `Now`, `Client`; `app.ProcessOptions.SiteClient`, `OpenBrowser`, `Sleep`, `Hostname`, `Terminal`, `Stdin`, `Signals` |
+| Login site, spaces and minting, browser, poll timing, host name, the confirmation prompt, the pickers, the styled rendering, interrupts | `sitetest` (a local `httptest` server); `sitelogin.Config.Sleep`, `Now`, `Client`; `app.ProcessOptions.SiteClient`, `OpenBrowser`, `Sleep`, `Hostname`, `Terminal`, `Stdin` (one byte per read, `iotest.OneByteReader`, when the prompt and a picker share it), `Style`, `Signals` |
+| Terminal output of the router, the report, pull's progress line and serve's ready line | a pseudo-terminal: `runCLITTY` (stdout only) and `runCLIOnTTY` with `stdoutAndStderr` (`internal/integrationtest/scenario_colour_linux_test.go`) |
 | Stored logins | `SLIVINGDOC_CONFIG_DIR` in the injected environment (`credentials.Locate` never reads the real process environment) |
 | Git behavior | `git.Engine` / `git.Repository` interfaces with fake repositories in `notebook` and `workspace` tests |
 | libgit2 | real component tests in temporary directories |

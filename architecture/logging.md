@@ -11,7 +11,7 @@ Read this when: adding log records, a new module, changing level parsing, timest
 | `internal/app/logging.go` | `ModuleCLI`, `ModuleApp`, `ModuleMCP`, `ModuleNotebook`; `logEnvLevel` (`LOG_LEVEL`), `logEnvNoColor` (`NO_COLOR`); `NewLogger`, `runtimeLogger`, `buildLogger`, `noTimeHandler`, `Module` |
 | `internal/app/config.go` | `--log-level`, `--log-timestamp`, `SLIVINGDOC_LOG_TIMESTAMP` resolution; `config.logLevel`, `logTimestamp`, `logConfigured` |
 | `internal/app/app.go` | `setup` rebuilds the logger when `cfg.logConfigured`; `Runtime.base` vs `Runtime.logger`; `Runtime.Serve` passes the `mcp` module logger; `Runtime.Pull`/`Commit` attach the `notebook` module logger |
-| `internal/cli/cli.go` | `Run`: builds the environment logger, `slog.SetDefault`, `opts.Logger`, the `cli` module records; `setupConsole` (ancli) |
+| `internal/cli/cli.go` | `Run`: builds the environment logger, `slog.SetDefault`, `opts.Logger`, the `cli` module records |
 | `internal/mcp/server.go` | `handler.requestLogger` (`mcpReqID`, `tool`), `tool call started`/`completed` records, `redactValues` on `cause` |
 | `internal/mcp/sdklog.go` | `sdkLogger`, `sdkLogHandler` (`Enabled`, `Handle`, `WithAttrs`, `WithGroup`), `emptyStringAttr` |
 | `internal/notebook/logger.go` | `WithLogger`, `LoggerFrom` (context-carried logger; discard fallback) |
@@ -44,7 +44,7 @@ Runtime.Pull/Commit (CLI) → notebook.WithLogger(ctx, Module(base, "notebook"))
 
 ## Behavior
 
-**Output.** Records are structured `key=value` text from `go_away_boilerplate/pkg/slogcolor` on stderr. Stdout never carries logs; it is the MCP protocol stream and command output. Router lines (setup and run failures, usage, command help) are not slogcolor records: `pkg/cmd.Run` prints them through ancli as timestamped `<status>: <msg>` lines, errors to `os.Stderr` and usage/help to `os.Stdout`, unaffected by `LOG_LEVEL` and `--log-timestamp`.
+**Output.** Records are structured `key=value` text from `go_away_boilerplate/pkg/slogcolor` on stderr. Stdout never carries logs; it is the MCP protocol stream and command output. Router lines (setup and run failures, usage, command help) are not slogcolor records: the router (`internal/cli/route.go`) prints them untimestamped, errors as one `error: <msg>` line to the injected stderr and usage/help to stdout, unaffected by `LOG_LEVEL` and `--log-timestamp` ([tui.md](./tui.md)).
 
 **Levels by module.** `LOG_LEVEL` uses the grammar `cli=warn,mcp=debug,info`: `module=level` sets one module and a bare level is the default. Levels are `debug`, `info`, `warn` (or `warning`), `error`, case-insensitive; a second default level or a repeated module is a parse error. `Module(logger, name)` binds `slogcolor.DefaultModuleKey`, which is what the handler uses to pick the level. Modules: `cli` (routing, exit, perf), `app` (startup, probe, shutdown), `mcp` (one pair of records per tool call), `notebook` (best-effort checkpoint, cleanup and pack-cache-write warnings from `checkpoint.go` and `remote.go`).
 
@@ -54,7 +54,7 @@ Runtime.Pull/Commit (CLI) → notebook.WithLogger(ctx, Module(base, "notebook"))
 
 **Timestamps.** `--log-timestamp=false` (or `SLIVINGDOC_LOG_TIMESTAMP=false`) wraps the handler in `noTimeHandler`, which zeroes each record's time so the text handler omits `time=`. For hosts that stamp lines themselves.
 
-**Colour.** Any non-empty `NO_COLOR` disables ANSI level colour. The same variable disables the CLI report colour ([cli.md](./cli.md)): `cli.Run` stores the resolved environment in `ProcessOptions.Env`, which the commands pass to `app.Report`.
+**Colour.** Any non-empty `NO_COLOR` disables ANSI level colour. The same variable makes every terminal presentation plain: the CLI report's colour and marks, the home screen, help headers, spinners and the styled login ([tui.md](./tui.md)); pickers still appear on a terminal. For the report, `cli.Run` stores the resolved environment in `ProcessOptions.Env`, which the commands pass to `app.Report`.
 
 **Request correlation.** Each tool call gets a 16-hex `mcpReqID` from `newRequestID`. `requestLogger` binds `mcpReqID` and `tool`, logs `tool call started` and `tool call completed` (`outcome`, `duration`, and on error `cause` via `redactValues`), and attaches the same logger to the context with `notebook.WithLogger`. Background efforts scheduled by that call log through `LoggerFrom(ctx)` and so share the ID. The same ID is the `diagnosticId` in the tool result, which is how an operator joins a caller report to the full cause.
 

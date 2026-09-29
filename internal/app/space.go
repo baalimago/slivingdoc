@@ -5,14 +5,17 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/baalimago/slivingdoc/internal/credentials"
 	"github.com/baalimago/slivingdoc/internal/httpstore"
 	"github.com/baalimago/slivingdoc/internal/mcp"
 	"github.com/baalimago/slivingdoc/internal/sitelogin"
+	"github.com/baalimago/slivingdoc/internal/tui"
 )
 
 // SpaceFlags are the space command's flags.
@@ -95,6 +98,17 @@ func (s *Space) Run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("space: list the spaces the login reaches: %s", mcp.Redact(err.Error()))
 	}
+	if s.name == "" && len(spaces) > 0 && s.opts.pickable() == OnTerminal {
+		name, err := s.opts.pickSpace(spaces, s.prior)
+		if skipped(err) {
+			io.WriteString(s.opts.ErrOut(), line(s.opts.errStyle(), tui.Next, "Nothing was changed", ""))
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("space: %w", err)
+		}
+		s.name = name
+	}
 	if s.name == "" {
 		s.list(spaces)
 		return nil
@@ -106,6 +120,11 @@ func (s *Space) Run(ctx context.Context) error {
 	if err := s.store(ctx); err != nil {
 		return err
 	}
+	if so := s.opts.outStyle(); so.Mode() == tui.Styled {
+		sp := spaces[i]
+		io.WriteString(s.opts.Out(), line(so, tui.Done, "Default space "+so.Bold(sp.Name), strings.TrimPrefix(describeSpace(sp), sp.Name+" ")))
+		return nil
+	}
 	fmt.Fprintf(s.opts.Out(), "The default space is now %s\n", describeSpace(spaces[i]))
 	return nil
 }
@@ -113,22 +132,26 @@ func (s *Space) Run(ctx context.Context) error {
 // list prints one line per space on stdout, the default marked with *,
 // and on stderr what to do when there is no usable default.
 func (s *Space) list(spaces []sitelogin.Space) {
-	errOut := s.opts.errOut()
-	for _, sp := range spaces {
-		mark := " "
-		if sp.Name == s.prior {
-			mark = "*"
+	errOut, es := s.opts.ErrOut(), s.opts.errStyle()
+	if so := s.opts.outStyle(); so.Mode() == tui.Styled && len(spaces) > 0 {
+		io.WriteString(s.opts.Out(), spacesTable(so, "", spaces, s.prior))
+	} else {
+		for _, sp := range spaces {
+			mark := " "
+			if sp.Name == s.prior {
+				mark = "*"
+			}
+			fmt.Fprintf(s.opts.Out(), "%s %s\n", mark, describeSpace(sp))
 		}
-		fmt.Fprintf(s.opts.Out(), "%s %s\n", mark, describeSpace(sp))
 	}
 	listed := slices.ContainsFunc(spaces, func(sp sitelogin.Space) bool { return sp.Name == s.prior })
 	switch {
 	case len(spaces) == 0:
-		fmt.Fprintf(errOut, "The login of %s reaches no space yet; create one on the site.\n", s.login.Account)
+		fmt.Fprintf(errOut, "%sThe login of %s reaches no space yet; create one on the site.\n", es.Mark(tui.Caution), s.login.Account)
 	case s.prior == "":
-		fmt.Fprintln(errOut, "No default space; run 'slivingdoc space <name>' to choose one.")
+		fmt.Fprintln(errOut, es.Mark(tui.Next)+"No default space; run 'slivingdoc space <name>' to choose one.")
 	case !listed:
-		fmt.Fprintf(errOut, "The default space %q is not among them; run 'slivingdoc space <name>' to choose another.\n", s.prior)
+		fmt.Fprintf(errOut, "%sThe default space %q is not among them; run 'slivingdoc space <name>' to choose another.\n", es.Mark(tui.Caution), s.prior)
 	}
 }
 

@@ -19,6 +19,7 @@ import (
 	"github.com/baalimago/slivingdoc/internal/credentials"
 	"github.com/baalimago/slivingdoc/internal/sitelogin"
 	"github.com/baalimago/slivingdoc/internal/sitelogin/sitetest"
+	"github.com/baalimago/slivingdoc/internal/tui"
 )
 
 // loginRig is one login, logout or space invocation's injected
@@ -37,6 +38,8 @@ type loginRig struct {
 	// doer, when set, sends the site requests instead of the default
 	// client.
 	doer sitelogin.Doer
+	// style, when set, renders the streams as a terminal would.
+	style func(io.Writer) tui.Style
 }
 
 func newLoginRig(t *testing.T) *loginRig {
@@ -75,6 +78,7 @@ func (r *loginRig) opts() ProcessOptions {
 		Hostname:   func() (string, error) { return "laptop", nil },
 		Terminal:   func() TerminalState { return r.terminal },
 		Stdin:      r.answer,
+		Style:      r.style,
 	}
 }
 
@@ -808,11 +812,15 @@ func TestLoginRefusesWhatItDidNotAskFor(t *testing.T) {
 
 func TestLoggedInNamesAnotherEndpointAndTheDefault(t *testing.T) {
 	l := credentials.Login{ID: credentials.ID{Endpoint: devEndpoint}, Access: credentials.AccessRead, Account: "a@x"}
-	if got, want := loggedIn(l, ""), `Logged in as a@x at `+devEndpoint+` (read only) with no expiry`; got != want {
+	if got, want := loggedIn(tui.Style{}, l, ""), `Logged in as a@x at `+devEndpoint+` (read only) with no expiry`+"\n"; got != want {
 		t.Fatalf("loggedIn() = %q, want %q", got, want)
 	}
-	if got, want := loggedIn(l, "notes"), `Logged in as a@x at `+devEndpoint+` (read only) with no expiry; default space "notes"`; got != want {
+	if got, want := loggedIn(tui.Style{}, l, "notes"), `Logged in as a@x at `+devEndpoint+` (read only) with no expiry; default space "notes"`+"\n"; got != want {
 		t.Fatalf("loggedIn() = %q, want %q", got, want)
+	}
+	styled := tui.New(tui.Styled, tui.Basic)
+	if got, want := loggedIn(styled, l, "notes"), "\x1b[32m✓\x1b[0m Logged in as \x1b[1ma@x\x1b[0m at "+devEndpoint+" \x1b[2m· read only · with no expiry · default space notes\x1b[0m\n"; got != want {
+		t.Fatalf("styled loggedIn() = %q, want %q", got, want)
 	}
 }
 
@@ -1192,5 +1200,28 @@ func TestLoginKeepsAStoredKeyWhenTheLockFails(t *testing.T) {
 	}
 	if !strings.Contains(r.out.String(), "Logged in as ada@example.test") {
 		t.Fatalf("stdout = %q, want the result line", r.out.String())
+	}
+}
+
+func TestLoginSkipsThePickerWhenTheLockFails(t *testing.T) {
+	r := newLoginRig(t)
+	picker := &revokedWhenRead{site: r.site}
+	r.terminal, r.answer = OnTerminal, io.MultiReader(typed("y\n"), picker)
+	r.site.SetSpaces(loginToken, notesSpace, teamSpace)
+	r.site.Next(approved(loginToken, "write", DefaultHostedEndpoint))
+	l := r.prepared(t)
+	l.unlock = func(lock *credentials.Lock) error {
+		if err := lock.Unlock(); err != nil {
+			return err
+		}
+		return errors.New("unlock failed")
+	}
+	// The picker's store would wait forever on the lock this process
+	// still holds, so a failed unlock must not reach it.
+	if err := l.Run(context.Background()); err == nil || !strings.Contains(err.Error(), "releasing the credentials lock failed") {
+		t.Fatalf("login with a failing unlock = %v", err)
+	}
+	if picker.answer != nil {
+		t.Fatal("the space picker ran after the unlock failed")
 	}
 }
