@@ -164,12 +164,17 @@ func TestMintedTokensAcceptAnIDAfterNone(t *testing.T) {
 	if got := tokens.boundSpace(); got != "notes" {
 		t.Fatalf("boundSpace() = %q, want the first id the site named", got)
 	}
-	replaced := notesSpace
-	replaced.ID = "notes-second"
-	site.SetSpaces(loginToken, replaced)
+	site.OmitSpaceIDs(true)
 	tokens.Rejected(held)
 	if _, err := tokens.Token(context.Background()); !errors.Is(err, storage.ErrAccessDenied) {
-		t.Fatalf("Token() for another id after the first = %v, want the refusal", err)
+		t.Fatalf("Token() without an id once bound = %v, want the refusal", err)
+	}
+	mints := site.Mints()
+	if revoked := site.Revoked(); len(revoked) != 1 || revoked[0] != mints[len(mints)-1].Token {
+		t.Fatalf("revoked = %v, want the refused token", revoked)
+	}
+	if got := tokens.boundSpace(); got != "notes" {
+		t.Fatalf("boundSpace() after the refusal = %q, want the bound id kept", got)
 	}
 }
 

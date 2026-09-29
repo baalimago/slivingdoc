@@ -559,10 +559,7 @@ func (s *Site) mint(w http.ResponseWriter, r *http.Request) {
 	s.mints = append(s.mints, m)
 	minter, broken := s.minter, s.mintBody
 	s.mintBody = ""
-	answeredID := m.SpaceID
-	if s.noIDs {
-		answeredID = ""
-	}
+	noIDs := s.noIDs
 	s.mu.Unlock()
 	if minter != nil {
 		minter(m)
@@ -573,10 +570,14 @@ func (s *Site) mint(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(broken))
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"token": m.Token, "space": m.Space, "spaceId": answeredID, "access": m.Access,
+	answer := map[string]any{
+		"token": m.Token, "space": m.Space, "spaceId": m.SpaceID, "access": m.Access,
 		"expiresAt": m.ExpiresAt.Format(time.RFC3339Nano), "endpoint": m.Endpoint, "owner": sp.Owner,
-	})
+	}
+	if noIDs {
+		delete(answer, "spaceId")
+	}
+	writeJSON(w, http.StatusOK, answer)
 }
 
 // newToken is a fresh token in the site's format.

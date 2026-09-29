@@ -115,7 +115,11 @@ func (m *mintedTokens) Token(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("app: wait for a token: %w: %w", ctx.Err(), storage.ErrTransport)
 	}
 	defer func() { <-m.minting }()
-	// Another caller may have minted while this one waited.
+	// Another caller may have minted, or been refused, while this one
+	// waited.
+	if err := m.refusal(); err != nil {
+		return "", err
+	}
 	if held := m.current(); !held.none() {
 		return string(held), nil
 	}
@@ -175,17 +179,16 @@ func (m *mintedTokens) mint(ctx context.Context) (string, error) {
 // bind ties the source to the first space id a mint names and refuses a
 // later mint for another id: the login's space of that name was replaced
 // by another space, and this process's workspaces belong to the first
-// (architecture/login.md, Minted tokens). A mint without an id, or the
-// first id after mints without one (a site that started naming ids while
-// the process ran), is accepted: the process keeps the key it started
-// with, as before ids existed. The refusal is kept, so later calls fail
-// without minting and revoking again.
+// (architecture/login.md, Minted tokens). Until a mint names an id, mints
+// without one are accepted, and so is the first id (a site that started
+// naming ids while the process ran): the process keeps the key it started
+// with, as before ids existed. Once bound, a mint without an id is refused
+// too, since it cannot show the space is still the same. The refusal is
+// kept, so later calls fail without minting and revoking again.
 func (m *mintedTokens) bind(id httpstore.SpaceID) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	switch {
-	case id == "":
-		return nil
 	case m.spaceID == "":
 		m.spaceID = id
 		return nil
