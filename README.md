@@ -37,7 +37,6 @@ Test coverage: 88.7% 😍👌
 
 The [docs](https://slivingdoc.dev/docs/) cover
 [how it works](https://slivingdoc.dev/docs/concepts/how-it-works/),
-,
 [the CLI](https://slivingdoc.dev/docs/guides/cli/) and
 [configuration](https://slivingdoc.dev/docs/reference/configuration/);
 `npx -y slivingdoc serve -h` prints every flag.
@@ -54,31 +53,29 @@ claude mcp add slivingdoc \
 ```
 
 Free for one space, 10 MB and 250,000 requests a month
-([pricing](https://slivingdoc.dev/pricing/)). See details at ([details](architecture/login.md)).
+([pricing](https://slivingdoc.dev/pricing/)).
 
 **Self-hosted.** Point it at an existing S3-compatible bucket that
-supports conditional writes. Credentials come from the standard AWS chain;
-the region is `--region` or `AWS_REGION` (default `us-east-1`):
+supports conditional writes.:
 
 ```sh
-AWS_REGION=eu-north-1 npx -y slivingdoc serve --bucket my-notes
+AWS_REGION=eu-north-1 AWS_ACCESS_KEY_ID=<key> AWS_SECRET_ACCESS_KEY=<key> npx -y slivingdoc serve --bucket my-notes
 ```
 
 No bucket yet? [`examples/seaweedfs/`](examples/seaweedfs/) runs one
 locally in a container, and [`terraform/`](terraform/) provisions one on AWS.
 
-### Trying it out
+### As stdio MCP client
 
 See [MCP hosts](https://slivingdoc.dev/docs/guides/mcp-hosts/) for how to configure the MCP
-server in your agentic coder. The same system applies in for example the [openai agent SDK](https://openai.github.io/openai-agents-python/mcp/).
+server in your agentic coder. The same system applies in the [openai agent SDK](https://openai.github.io/openai-agents-python/mcp/) (and any other LLM engine with MCP client support).
 
-Easiest way to try it out is via cli:
+### As CLI
+
+"Install" it via npx:
 
 ```sh
-npx -y slivingdoc login
-npx -y slivingdoc pull notes
-echo "hello from $(hostname)" > notes/hello.md
-npx -y slivingdoc commit notes -m "First note"
+npx -y slivingdoc version
 ```
 
 `npx` fetches and verifies the native binary on first run. You can also
@@ -89,6 +86,13 @@ curl -fsSL https://raw.githubusercontent.com/baalimago/slivingdoc/main/setup.sh 
 ```
 
 It installs into `$HOME/.local/bin` (or `/usr/local/bin` when run as root).
+
+```sh
+slivingdoc login
+slivingdoc pull notes
+echo "hello from $(hostname)" > notes/hello.md
+slivingdoc commit notes -m "First note"
+```
 
 ## Development
 
