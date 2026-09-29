@@ -29,8 +29,8 @@ var DefaultIgnore = []string{
 	".slivingdoc-tmp-*",
 }
 
-// Ignore decides which notebook paths the workspace never reads, publishes,
-// overwrites or removes. The zero value ignores nothing.
+// Ignore decides which notebook paths the workspace never reads, publishes
+// or removes. The zero value ignores nothing.
 type Ignore struct {
 	names   []string
 	anchors []string

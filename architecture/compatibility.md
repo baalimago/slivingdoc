@@ -31,10 +31,12 @@ any command → readRemote → read current → DecodeManifest
 
 ### The promise, from 1.0.0
 
+These are policy for 1.x, not descriptions of code that exists today (the code has one manifest version and no multi-version reader).
+
 Within 1.x, these do not change in a way that breaks a working setup:
 
 - **Stored data.** Manifest version 1, the pack key grammar and the pack format stay readable and writable by every 1.x. A notebook written by any 1.x is read by every later 1.x, and one 1.x can publish over another's history. The hosted API's `/v1` routes keep their meaning ([hosted-mode.md](./hosted-mode.md)).
-- **Local state.** `state.json` version 1 and `credentials.json` version 1 stay readable; a later format is migrated or rebuilt by the release that introduces it, never silently discarded (the private state is a cache of `current`, so it can be rebuilt; the login can be repeated).
+- **Local state.** `state.json` version 1 and `credentials.json` at `credentials.FormatVersion` stay readable. Today a `credentials.json` of another version is refused (`ErrUnsupportedVersion`) and the login is repeated; a change to either format ships with a migration or a rebuild, never a silent discard (the private state is a cache of `current`, so it can be rebuilt).
 - **The tools.** `notes_pull` and `notes_commit` keep their names, their parameters, and the meaning of every parameter and success field. Fields may be added; none is removed or repurposed.
 - **The tokens.** `code`, `reason`, `action`, every `files[].reason` and the `retryable` rule keep their meaning. Tokens may be added; agents should treat an unknown `reason` as its `code` and follow `action`. The message text may change ([product-contract.md](./product-contract.md)).
 - **The command line.** Command names and shortcuts, flag names, environment variable names, the exit codes (0 success, 1 failure) and the shape of the success line stay. A flag may be added; one is removed only in a major release, after a release that still accepts it.

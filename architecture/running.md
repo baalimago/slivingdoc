@@ -435,8 +435,8 @@ One consequence of the one-shot commands: `serve` resolves the chain
 once and holds the session, while every `pull` or `commit` invocation
 resolves it fresh. With short-lived STS or SSO credentials each
 invocation needs a currently valid session. An expired login surfaces
-as a redacted startup refusal (the compatibility probe fails), not a
-mid-operation error.
+as a redacted startup refusal (the compatibility probe fails, reported
+as a refused credential), not a mid-operation error.
 
 ## S3 requirements
 
@@ -466,11 +466,12 @@ probe below the configured prefix. The probe proves that the store
 enforces `If-None-Match: *` creation, `If-Match` replacement, and
 read-after-write behavior, the three conditional-write guarantees the
 publication protocol requires. A store that fails the probe is refused
-at startup with the `INCOMPATIBLE_STORE` category; when the failure is
-an operational error rather than a missing capability, the diagnostic
-names the underlying reason (for example the S3 `AccessDenied` or
-`InvalidAccessKeyId` error) while the probe key and any secret stay
-redacted. Bucket versioning is not required. The proof is recorded in
+at startup with the `INCOMPATIBLE_STORE` category. A probe the service
+refuses for its credentials or bucket (`AccessDenied`,
+`InvalidAccessKeyId`, `NoSuchBucket`, unresolved credentials) is not a
+missing capability: it is reported as `S3 storage refused the credentials
+or the bucket`, naming the service's reason, while the probe key and any
+secret stay redacted. Bucket versioning is not required. The proof is recorded in
 the shared pack cache and reused for 24 hours (see
 [the shared pack cache](#the-shared-pack-cache)), so only the first
 process of a store identity pays for the probe.
@@ -836,10 +837,10 @@ result or exit code.
   published, and a stray binary, symlink, or special file refuses the whole
   pull or commit as `INVALID_REQUEST`/`INVALID_CONTENT` until it is deleted
   or ignored.
-- Ignored entries are never read, published, overwritten or removed. The
+- Ignored entries are never read, published or removed; a pull can still write a file the notebook already holds under an ignored name. The
   built-in names are `.DS_Store`, `._*`, `.AppleDouble`, `.Spotlight-V100`,
   `.Trashes`, `.fseventsd`, `.TemporaryItems`, `Thumbs.db`, `desktop.ini`,
-  `*.swp`, `*.swo` and `.git`. `--ignore` (`SLIVINGDOC_IGNORE`) adds
+  `*.swp`, `*.swo`, `.git` and `.slivingdoc-tmp-*`. `--ignore` (`SLIVINGDOC_IGNORE`) adds
   comma-separated patterns: a name such as `*.log` matches at any depth, a
   path such as `private/scratch` matches from the notebook directory and
   everything below it. A file the notebook already holds under an ignored

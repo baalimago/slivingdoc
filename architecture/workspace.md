@@ -53,7 +53,7 @@ MarkPulled → withOpLock → write <P>/pulled via temp + rename
 
 ### Ignored paths
 
-`Config.Ignore` (an `Ignore`, built by `NewIgnore`) names entries the workspace treats as absent: the scan skips them before validating the name, the type or the content, so an ignored binary, symlink or unreadable name never refuses an operation; a materialization neither overwrites nor removes them. `app.Service` builds one set from `DefaultIgnore` plus the operator's `--ignore` patterns ([config.md](./config.md)); a workspace opened with the zero `Ignore` ignores nothing.
+`Config.Ignore` (an `Ignore`, built by `NewIgnore`) names entries the workspace treats as absent: the scan skips them before validating the name, the type or the content, so an ignored binary, symlink or unreadable name never refuses an operation; a materialization never removes them (a pull still writes a file the notebook holds under an ignored name). `app.Service` builds one set from `DefaultIgnore` plus the operator's `--ignore` patterns ([config.md](./config.md)); a workspace opened with the zero `Ignore` ignores nothing.
 
 - `DefaultIgnore` is the junk operating systems and editors scatter: `.DS_Store`, `._*`, `.AppleDouble`, `.Spotlight-V100`, `.Trashes`, `.fseventsd`, `.TemporaryItems`, `Thumbs.db`, `desktop.ini`, `*.swp`, `*.swo`, `.git`, and `.slivingdoc-tmp-*` (the workspace's own temporary names).
 - A pattern is `path.Match` syntax. Without a slash it matches an entry of that name at any depth; with a slash it is anchored at the notebook directory and matches that path and everything below it. An ignored directory is skipped whole. `NewIgnore` refuses an empty or malformed pattern with `ErrInvalidIgnore`.

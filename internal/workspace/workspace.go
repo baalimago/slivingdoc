@@ -65,8 +65,8 @@ type Config struct {
 	Engine Engine
 	// Failpoints injects deterministic failures; nil disables injection.
 	Failpoints *Failpoints
-	// Ignore names the entries the workspace never reads, publishes,
-	// overwrites or removes (architecture/workspace.md, Ignored paths).
+	// Ignore names the entries the workspace never reads, publishes
+	// or removes (architecture/workspace.md, Ignored paths).
 	Ignore Ignore
 }
 
