@@ -17,6 +17,7 @@ import (
 	"github.com/baalimago/slivingdoc/internal/git"
 	"github.com/baalimago/slivingdoc/internal/git2"
 	"github.com/baalimago/slivingdoc/internal/mcp"
+	"github.com/baalimago/slivingdoc/internal/scratch"
 	"github.com/baalimago/slivingdoc/internal/storage"
 	"github.com/baalimago/slivingdoc/internal/storage/fake"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -30,7 +31,13 @@ func TestMain(m *testing.M) {
 	if mode := os.Getenv("SLIVINGDOC_PROCESS_HELPER"); mode != "" {
 		os.Exit(helperMain(mode))
 	}
-	os.Exit(m.Run())
+	cleanup, err := scratch.Use()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "app: %v; using the default temporary directory\n", err)
+	}
+	code := m.Run()
+	cleanup()
+	os.Exit(code)
 }
 
 // helperMain runs the process body inside the spawned helper. The store

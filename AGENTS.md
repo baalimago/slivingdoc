@@ -200,6 +200,7 @@ slivingdoc/
     |   `-- gatewaytest/     test-only reference server of the hosted API
     |-- strictjson/          neutral strict JSON value tree (manifest and
     |                        state.json)
+    |-- scratch/             test-only: TMPDIR on a memory filesystem
     |-- tests3/              S3 backend container over the Docker Engine
     |                        API (currently SeaweedFS): one per test
     |                        process, or one leased container under

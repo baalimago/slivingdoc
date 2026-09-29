@@ -81,6 +81,7 @@ One line per `internal/` package.
 | `mcp` | stdio MCP server: two strict tool schemas, strict decoding, error/success envelopes, redaction, `mcpReqID` logging |
 | `strictjson` | Strict JSON value tree shared by the manifest and `state.json` (rejects unknown, duplicate, missing, null) |
 | `pathutil` | `ExpandHome` for `~/` request paths |
+| `scratch` | Test-only: `Use` moves a test binary's temporary directory onto a memory filesystem so fsync-heavy packages fit the 30 s gate. See [testing.md](./testing.md) |
 | `tests3` | S3 test backend (a SeaweedFS container, started through the Docker Engine API) for tests; `tests3/lease` owns the shared container |
 | `integrationtest` | Test-only black-box scenario suite: the behavioral contract of the whole server |
 

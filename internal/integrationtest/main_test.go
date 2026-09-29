@@ -19,6 +19,7 @@ import (
 	"github.com/baalimago/slivingdoc/internal/cli"
 	"github.com/baalimago/slivingdoc/internal/credentials"
 	"github.com/baalimago/slivingdoc/internal/git2"
+	"github.com/baalimago/slivingdoc/internal/scratch"
 	"github.com/baalimago/slivingdoc/internal/storage"
 	"github.com/baalimago/slivingdoc/internal/storage/fake"
 	"github.com/baalimago/slivingdoc/internal/tests3"
@@ -41,29 +42,16 @@ func TestMain(m *testing.M) {
 		fmt.Fprintf(os.Stderr, "s3 integration unavailable: %v\nDocker is required to run this suite; start the daemon and re-run.\n", err)
 		os.Exit(1)
 	}
-	// Every scenario and helper works in temporary directories. On a memory
-	// filesystem their fsyncs and the creation and removal of the private
-	// repositories cost no disk I/O; nothing a scenario asserts depends on
-	// the disk (architecture/testing.md, Scratch on a memory filesystem).
-	// An explicit TMPDIR wins, and without a fitting memory filesystem the
-	// suite keeps the default.
-	scratch := ""
-	if _, set := os.LookupEnv("TMPDIR"); !set {
-		dir, err := memoryScratch()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "integrationtest: %v; using the default temporary directory\n", err)
-		} else if err := os.Setenv("TMPDIR", dir); err != nil {
-			fmt.Fprintf(os.Stderr, "integrationtest: set TMPDIR: %v\n", err)
-			os.Exit(1)
-		} else {
-			scratch = dir
-		}
+	// Every scenario and helper works in temporary directories, kept in
+	// memory when the host allows (architecture/testing.md, Scratch on a
+	// memory filesystem).
+	cleanup, err := scratch.Use()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "integrationtest: %v; using the default temporary directory\n", err)
 	}
 	code := m.Run()
 	tests3.Terminate()
-	if scratch != "" {
-		_ = os.RemoveAll(scratch)
-	}
+	cleanup()
 	os.Exit(code)
 }
 
