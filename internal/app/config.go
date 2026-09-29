@@ -66,6 +66,9 @@ type config struct {
 	// and writable paths).
 	readOnlyPaths []string
 	writablePaths []string
+	// ignore are the operator's ignore patterns, on top of
+	// workspace.DefaultIgnore (architecture/workspace.md, Ignored paths).
+	ignore []string
 
 	// logLevel is the flag-over-environment level spec in the LOG_LEVEL
 	// grammar; empty means the Info default. logTimestamp controls the
@@ -122,6 +125,7 @@ type Flags struct {
 	retainedCheckpoints intFlag
 	readOnlyPaths       stringFlag
 	writablePaths       stringFlag
+	ignore              stringFlag
 	logLevel            stringFlag
 	logTimestamp        boolFlag
 }
@@ -147,6 +151,7 @@ func (f *Flags) Bind(fs *flag.FlagSet) {
 	fs.Var(&f.retainedCheckpoints, "retained-checkpoints", "retained previous checkpoint generations")
 	fs.Var(&f.readOnlyPaths, "read-only-paths", "notebook paths agents may read but never change")
 	fs.Var(&f.writablePaths, "writable-paths", "notebook paths agents may change; every other path is then read-only")
+	fs.Var(&f.ignore, "ignore", "extra file names or paths the notebook never reads, publishes or removes")
 	fs.Var(&f.logLevel, "log-level", "per-module log levels (LOG_LEVEL grammar)")
 	fs.Var(&f.logTimestamp, "log-timestamp", "include the time= field in log records")
 }
@@ -262,6 +267,7 @@ func (f *Flags) resolve(environment []string, cwd, cacheDir string, ephemeral bo
 	}
 	cfg.readOnlyPaths = splitPathEntries(resolveString(&f.readOnlyPaths, env["SLIVINGDOC_READ_ONLY_PATHS"], ""))
 	cfg.writablePaths = splitPathEntries(resolveString(&f.writablePaths, env["SLIVINGDOC_WRITABLE_PATHS"], ""))
+	cfg.ignore = splitPathEntries(resolveString(&f.ignore, env["SLIVINGDOC_IGNORE"], ""))
 	cfg.logLevel = resolveString(&f.logLevel, env[logEnvLevel], "")
 	if f.logLevel.set {
 		// An explicit flag value fails fast like every other flag; only the
@@ -342,6 +348,9 @@ func (cfg config) finish(cwd string) (config, error) {
 	// (architecture/product-contract.md, Read-only and writable paths).
 	cfg.readOnlyPaths = policy.ReadOnly()
 	cfg.writablePaths = policy.Writable()
+	if _, err := workspace.NewIgnore(cfg.ignore); err != nil {
+		return config{}, fmt.Errorf("--ignore: %w", err)
+	}
 	return cfg, nil
 }
 
@@ -687,6 +696,12 @@ const FlagReference = `  --storage string              storage backend: auto, ho
   --writable-paths string       comma-separated notebook paths agents may    SLIVINGDOC_WRITABLE_PATHS
                                 change; every other path is then read-only
                                 (default: none, every path is writable)
+  --ignore string               comma-separated file names or paths the      SLIVINGDOC_IGNORE
+                                notebook never reads, publishes or removes,
+                                on top of the built-in junk names such as
+                                .DS_Store; a name matches at any depth, a
+                                path with a slash from the notebook
+                                directory (default: none)
   --log-level string            per-module log levels, for example           LOG_LEVEL
                                 "cli=warn,mcp=debug,info"; a bare level
                                 is the default (default "info")

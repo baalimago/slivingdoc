@@ -155,6 +155,7 @@ makes the choice explicit ([Choosing the storage](#choosing-the-storage)).
 | Retained checkpoints              | `--retained-checkpoints` | `SLIVINGDOC_RETAINED_CHECKPOINTS` | `1` (0..64)                  |
 | Read-only paths                   | `--read-only-paths`      | `SLIVINGDOC_READ_ONLY_PATHS`      | empty (no read-only path)    |
 | Writable paths                    | `--writable-paths`       | `SLIVINGDOC_WRITABLE_PATHS`       | empty (no confinement)       |
+| Ignore patterns                   | `--ignore`               | `SLIVINGDOC_IGNORE`               | empty (built-in names only)  |
 | Log levels                        | `--log-level`            | `LOG_LEVEL`                       | `info`                       |
 | Log timestamps                    | `--log-timestamp`        | `SLIVINGDOC_LOG_TIMESTAMP`        | `true`                       |
 
@@ -522,7 +523,8 @@ working; deleting notes and committing again can compact the space),
 `REQUEST_LIMIT` (the monthly request allowance is used up; it resets on
 the first of the month, UTC), `RATE_LIMITED` (retryable), `ACCESS_DENIED`
 (a read-only token that commits, a revoked or ungranted token, a space
-that no longer exists, or an `--endpoint` that is not the storage API), and `OBJECT_TOO_LARGE`.
+that no longer exists, an `--endpoint` that is not the storage API, or,
+for S3, credentials or a bucket the service refuses), and `OBJECT_TOO_LARGE`.
 All but `RATE_LIMITED` are `retryable: false` and ask for the operator.
 The server's own explanation follows `The storage says:` in the message.
 [hosted-mode.md](./hosted-mode.md) has the details.
@@ -829,10 +831,19 @@ result or exit code.
 - Files must be valid UTF-8 text without the NUL character (U+0000).
   Empty files are valid. Bytes and line endings are preserved.
 - Symbolic links, devices, sockets, and named pipes are rejected.
-- There is no ignore file: every file under the notebook directory is
-  notebook state: a stray text file (such as an editor backup `foo~`) is
+- Every file under the notebook directory is notebook state unless it is
+  ignored: a stray text file (such as an editor backup `foo~`) is
   published, and a stray binary, symlink, or special file refuses the whole
-  pull or commit as `INVALID_REQUEST`/`INVALID_CONTENT` until it is deleted.
+  pull or commit as `INVALID_REQUEST`/`INVALID_CONTENT` until it is deleted
+  or ignored.
+- Ignored entries are never read, published, overwritten or removed. The
+  built-in names are `.DS_Store`, `._*`, `.AppleDouble`, `.Spotlight-V100`,
+  `.Trashes`, `.fseventsd`, `.TemporaryItems`, `Thumbs.db`, `desktop.ini`,
+  `*.swp`, `*.swo` and `.git`. `--ignore` (`SLIVINGDOC_IGNORE`) adds
+  comma-separated patterns: a name such as `*.log` matches at any depth, a
+  path such as `private/scratch` matches from the notebook directory and
+  everything below it. A file the notebook already holds under an ignored
+  name stays as the notebook has it; local edits to it are not published.
 - An MCP request `path` is optional; omitting it uses the server's notebook
   directory, which every result reports. When supplied it may begin with
   `~/`, which resolves against the current user's home directory. The

@@ -69,6 +69,8 @@ type HarnessConfig struct {
 	// WritablePaths configures the service's writable set; a non-empty set
 	// protects every unmatched path.
 	WritablePaths []string
+	// Ignore adds ignore patterns to the built-in defaults.
+	Ignore []string
 }
 
 // setting returns the pointed-to override, or def when the field is unset.
@@ -173,6 +175,7 @@ func NewHarness(t *testing.T, cfg HarnessConfig) *Harness {
 		RetainedCheckpoints: setting(cfg.RetainedCheckpts, notebook.DefaultRetainedCheckpoints),
 		ReadOnlyPaths:       cfg.ReadOnlyPaths,
 		WritablePaths:       cfg.WritablePaths,
+		Ignore:              cfg.Ignore,
 	}
 	hooks := cfg.Hooks
 	if hooks == nil {

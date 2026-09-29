@@ -76,7 +76,7 @@ One MCP text item plus the structured `SuccessInfo`:
 
 - `files[].path` is relative to the request path in normalized slash form; ranges are one-based, inclusive, ordered, and non-overlapping; a file without markers has `ranges: []`.
 - The text item repeats code, reason, message, detail, files, action, retryable, diagnosticId, recovery, and both path sets (writable, read-only, then `path-rule:` when both are set), so a client that drops structured content keeps the full safe diagnostic.
-- `retryable` is true only for `REMOTE_BUSY`, `STORAGE_FAILURE`, `RECOVERY_FAILURE` (`mcp.retryable`), and false for the store refusals a retry cannot change, `STORAGE_FULL`, `REQUEST_LIMIT`, `ACCESS_DENIED`, `OBJECT_TOO_LARGE`, under either `STORAGE_FAILURE` or `RECOVERY_FAILURE`.
+- `retryable` is true only for `REMOTE_BUSY`, `STORAGE_FAILURE`, `RECOVERY_FAILURE` (`mcp.retryable`), and false for the store refusals a retry cannot change, `STORAGE_FULL`, `REQUEST_LIMIT`, `ACCESS_DENIED`, `OBJECT_TOO_LARGE`, `UPGRADE_REQUIRED`, under either `STORAGE_FAILURE` or `RECOVERY_FAILURE`.
 - Message text may change between releases. `code`, `reason`, `action`, and every `files[].reason` may not.
 - No envelope field carries credentials, S3 keys, private paths, or Git IDs. Most messages are fixed strings; a few put a pack key or Git ID into the text (`internal/notebook/remote.go`), and `Redact`, applied to every message, masks `sld_` API tokens, pack and probe keys, 40/64-hex IDs, access keys and URL userinfo. Raw causes go only to the log, keyed by `diagnosticId`. A hosted store refusal is the only message that carries text written outside slivingdoc: it ends with the server's own sanitized line after `The storage says:` ([hosted-mode.md](./hosted-mode.md)).
 - An error that is not a `*notebook.Error` and not a workspace path error maps to retryable `STORAGE_FAILURE`/`INTERNAL`; context cancellation stays a protocol error (`MapError` returns `false`).
@@ -102,10 +102,11 @@ The notebook emits every pairing below except `MALFORMED_INPUT` and `PATH_OUTSID
 | `STORAGE_FAILURE` | `PUBLICATION_UNPROVEN` | CAS response lost; acceptance not provable | `PULL` |
 | `STORAGE_FAILURE` | `RATE_LIMITED` | The store is throttling the account | `RETRY` |
 | `STORAGE_FAILURE` | `STORAGE_FULL`, `REQUEST_LIMIT`, `ACCESS_DENIED`, `OBJECT_TOO_LARGE` | The store refused for an account reason; the refused request stored nothing (after a lost manifest-write response whose read-back was refused, acceptance is unknown); not retryable | `OPERATOR` |
+| `STORAGE_FAILURE` | `UPGRADE_REQUIRED` | The notebook was written by a newer slivingdoc; nothing was read or changed; not retryable ([compatibility.md](./compatibility.md)) | `OPERATOR` |
 | `STORAGE_INTEGRITY` | `MANIFEST_INVALID`, `PACK_INVALID`, `HISTORY_INVALID`, `ENGINE_FAILED` | Stored state untrusted, or engine failure | `OPERATOR` |
 | `RECOVERY_FAILURE` | `LOCAL_MUTATION_FAILED` | Failure after local mutation began, or (stage `entry`) the repair of an earlier one rewrote L instead of running the call | `PULL` if `resynchronized`, else `RETRY` |
 | `RECOVERY_FAILURE` | `RATE_LIMITED` | As above, and the store throttled the resynchronizing read (`resynchronized=false`) | `RETRY` |
-| `RECOVERY_FAILURE` | `STORAGE_FULL`, `REQUEST_LIMIT`, `ACCESS_DENIED`, `OBJECT_TOO_LARGE` | As above, and the store refused the resynchronizing read for an account reason (`resynchronized=false`); not retryable | `OPERATOR` |
+| `RECOVERY_FAILURE` | `STORAGE_FULL`, `REQUEST_LIMIT`, `ACCESS_DENIED`, `OBJECT_TOO_LARGE`, `UPGRADE_REQUIRED` | As above, and the store refused the resynchronizing read for an account reason (`resynchronized=false`); not retryable | `OPERATOR` |
 
 File reasons: `TEXT_CONFLICT` (marker ranges), `PATH_CONFLICT` (file versus directory, empty ranges), `UNRESOLVED_MARKERS` (ranges), `READ_ONLY` (empty), `INVALID_CONTENT` (empty), `NOT_IN_NOTEBOOK` and `DIFFERS_FROM_NOTEBOOK` (empty; a refused first pull). Action meanings: `FIX_INPUT` change the request; `EDIT_FILES` edit then commit; `PULL` pull then continue; `RETRY` repeat the call; `OPERATOR` a person must act.
 

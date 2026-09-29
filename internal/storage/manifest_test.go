@@ -321,7 +321,6 @@ func TestDecodeManifestRejectsInvalidJSON(t *testing.T) {
 		"overflow generation":      `{"version":1,"generation":18446744073709551616,"head":"` + oidString(0) + `","checkpoint":` + cp(0) + `,"increments":[],"retained":[]}`,
 		"missing version":          `{"generation":1,"head":"` + oidString(0) + `","checkpoint":` + cp(0) + `,"increments":[],"retained":[]}`,
 		"version zero":             `{"version":0,"generation":1,"head":"` + oidString(0) + `","checkpoint":` + cp(0) + `,"increments":[],"retained":[]}`,
-		"version two":              `{"version":2,"generation":1,"head":"` + oidString(0) + `","checkpoint":` + cp(0) + `,"increments":[],"retained":[]}`,
 		"missing generation":       `{"version":1,"head":"` + oidString(0) + `","checkpoint":` + cp(0) + `,"increments":[],"retained":[]}`,
 		"missing checkpoint":       `{"version":1,"generation":1,"head":"` + oidString(0) + `","increments":[],"retained":[]}`,
 		"missing increments":       `{"version":1,"generation":1,"head":"` + oidString(0) + `","checkpoint":` + cp(0) + `,"retained":[]}`,
@@ -393,6 +392,22 @@ func TestListIsNotUsedToDiscoverState(t *testing.T) {
 		}
 		if strings.Contains(string(src), "ListObjects(") && file != "store.go" {
 			t.Errorf("%s uses ListObjects to read state", file)
+		}
+	}
+}
+
+func TestDecodeManifestNewerVersionRequiresUpgrade(t *testing.T) {
+	_, err := DecodeManifest([]byte(`{"version":2,"anything":"else"}`))
+	var upgrade *UpgradeRequiredError
+	if !errors.Is(err, ErrUpgradeRequired) || !errors.As(err, &upgrade) || upgrade.Version != 2 {
+		t.Fatalf("DecodeManifest(v2) = %v, want an upgrade-required error for version 2", err)
+	}
+	if errors.Is(err, ErrIntegrity) {
+		t.Fatalf("DecodeManifest(v2) = %v, a newer manifest is not corruption", err)
+	}
+	for _, old := range []string{`{"version":0}`, `{"version":"1"}`} {
+		if _, err := DecodeManifest([]byte(old)); !errors.Is(err, ErrIntegrity) || errors.Is(err, ErrUpgradeRequired) {
+			t.Fatalf("DecodeManifest(%s) = %v, want plain integrity failure", old, err)
 		}
 	}
 }

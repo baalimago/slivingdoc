@@ -109,11 +109,14 @@ func TestMapError(t *testing.T) {
 		{"NoSuchKey", &smithy.GenericAPIError{Code: "NoSuchKey"}, storage.ErrNotFound, ""},
 		{"NotFound", &smithy.GenericAPIError{Code: "NotFound"}, storage.ErrNotFound, ""},
 		{"PreconditionFailed", &smithy.GenericAPIError{Code: "PreconditionFailed"}, storage.ErrPreconditionFailed, ""},
-		{"AccessDenied", &smithy.GenericAPIError{Code: "AccessDenied"}, storage.ErrTransport, "AccessDenied"},
-		{"auth code and message", &smithy.GenericAPIError{Code: "InvalidAccessKeyId", Message: "The access key does not exist"}, storage.ErrTransport, "InvalidAccessKeyId: The access key does not exist"},
+		{"AccessDenied", &smithy.GenericAPIError{Code: "AccessDenied", Message: "Access Denied"}, storage.ErrAccessDenied, "AccessDenied"},
+		{"auth code and message", &smithy.GenericAPIError{Code: "InvalidAccessKeyId", Message: "The access key does not exist"}, storage.ErrAccessDenied, "InvalidAccessKeyId"},
+		{"expired token", &smithy.GenericAPIError{Code: "ExpiredToken", Message: "The provided token has expired."}, storage.ErrAccessDenied, "ExpiredToken"},
+		{"signature", &smithy.GenericAPIError{Code: "SignatureDoesNotMatch"}, storage.ErrAccessDenied, "SignatureDoesNotMatch"},
+		{"missing bucket", &smithy.GenericAPIError{Code: "NoSuchBucket", Message: "The specified bucket does not exist"}, storage.ErrAccessDenied, "NoSuchBucket"},
 		{"InternalError", &smithy.GenericAPIError{Code: "InternalError"}, storage.ErrTransport, "InternalError"},
 		{"transport", errors.New("connection reset"), storage.ErrTransport, "connection reset"},
-		{"credential resolution", errors.New("operation error S3: PutObject, failed to sign request: failed to retrieve credentials"), storage.ErrTransport, "failed to retrieve credentials"},
+		{"credential resolution", errors.New("operation error S3: PutObject, failed to sign request: failed to retrieve credentials"), storage.ErrAccessDenied, "failed to retrieve credentials"},
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
@@ -128,6 +131,23 @@ func TestMapError(t *testing.T) {
 	}
 	if err := mapError("test", nil); err != nil {
 		t.Fatalf("mapError(nil) = %v, want nil", err)
+	}
+}
+
+// TestMapErrorDeniedStatus proves a 401 or 403 from a service that does not
+// speak S3 error codes is a refusal too, whether or not the body decodes.
+func TestMapErrorDeniedStatus(t *testing.T) {
+	for _, status := range []int{401, 403} {
+		resp := &smithyhttp.Response{Response: &http.Response{StatusCode: status}}
+		decoded := &smithyhttp.ResponseError{Response: resp, Err: &smithy.GenericAPIError{Code: "Forbidden", Message: "nope"}}
+		page := &smithyhttp.ResponseError{Response: resp, Err: &smithy.DeserializationError{Err: errors.New("bad json"), Snapshot: []byte("<html>Forbidden</html>")}}
+		for name, err := range map[string]error{"decoded": decoded, "html page": page} {
+			got := mapError("read", err)
+			var refusal *storage.Refusal
+			if !errors.Is(got, storage.ErrAccessDenied) || !errors.As(got, &refusal) || refusal.Message == "" {
+				t.Errorf("status %d %s: mapError = %v, want ErrAccessDenied carrying the service's words", status, name, got)
+			}
+		}
 	}
 }
 

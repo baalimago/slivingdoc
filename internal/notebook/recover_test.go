@@ -153,6 +153,7 @@ var recoveryRefusals = []struct {
 	{storage.ErrRequestLimit, ReasonRequestLimit, ActionOperator},
 	{storage.ErrRateLimited, ReasonRateLimited, ActionRetry},
 	{storage.ErrTooLarge, ReasonObjectTooLarge, ActionOperator},
+	{storage.ErrUpgradeRequired, ReasonUpgradeRequired, ActionOperator},
 }
 
 // assertRecoveryRefused checks a RECOVERY_FAILURE whose resynchronization

@@ -115,6 +115,7 @@ var actionWordings = map[string]string{
 // directory changed, not the request.
 var reasonNextSteps = map[string]string{
 	"DIRECTORY_NOT_EMPTY": "pull into an empty directory, or move those files away, then pull again",
+	"UPGRADE_REQUIRED":    "upgrade slivingdoc on this machine, then pull again",
 }
 
 // nextStep renders the next-step line of a domain error: the reason's own

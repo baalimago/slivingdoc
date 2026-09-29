@@ -183,10 +183,11 @@ func (w *Workspace) applyInPlace(ctx context.Context, stageDir string, target gi
 	for _, f := range target.Files {
 		targetFiles[f.Path] = true
 	}
-	var existingFiles, existingDirs []string
-	if err := w.collectVisible(ctx, w.rel, "", &existingFiles, &existingDirs); err != nil {
+	var existing visibleEntries
+	if err := w.collectVisible(ctx, w.rel, "", &existing); err != nil {
 		return err
 	}
+	existingFiles, existingDirs := existing.files, existing.dirs
 
 	// A directory where the target has a file, or a file where the target
 	// has a directory, must be cleared before the copy so MkdirAll and the
@@ -246,7 +247,7 @@ func (w *Workspace) applyInPlace(ctx context.Context, stageDir string, target gi
 	sorted := append([]string(nil), existingDirs...)
 	sort.Sort(sort.Reverse(sort.StringSlice(sorted)))
 	for _, p := range sorted {
-		if !targetDirs[p] {
+		if !targetDirs[p] && !existing.keep[p] {
 			if err := w.root.RemoveAll(joinRel(w.rel, p)); err != nil {
 				return fmt.Errorf("workspace: remove obsolete directory %q: %w: %w", p, ErrPartial, err)
 			}

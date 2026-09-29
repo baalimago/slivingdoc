@@ -81,6 +81,7 @@ const (
 	ReasonRateLimited         Reason = "RATE_LIMITED"
 	ReasonAccessDenied        Reason = "ACCESS_DENIED"
 	ReasonObjectTooLarge      Reason = "OBJECT_TOO_LARGE"
+	ReasonUpgradeRequired     Reason = "UPGRADE_REQUIRED"
 	ReasonManifestInvalid     Reason = "MANIFEST_INVALID"
 	ReasonPackInvalid         Reason = "PACK_INVALID"
 	ReasonHistoryInvalid      Reason = "HISTORY_INVALID"
@@ -149,6 +150,7 @@ var actionForPairing = map[codeReason]Action{
 	{CodeStorageFailure, ReasonRateLimited}:         ActionRetry,
 	{CodeStorageFailure, ReasonAccessDenied}:        ActionOperator,
 	{CodeStorageFailure, ReasonObjectTooLarge}:      ActionOperator,
+	{CodeStorageFailure, ReasonUpgradeRequired}:     ActionOperator,
 	{CodeStorageIntegrity, ReasonManifestInvalid}:   ActionOperator,
 	{CodeStorageIntegrity, ReasonPackInvalid}:       ActionOperator,
 	{CodeStorageIntegrity, ReasonHistoryInvalid}:    ActionOperator,
@@ -317,6 +319,24 @@ func storageSays(cause error) string {
 	return ""
 }
 
+// accessDeniedFix is the fix both refusal messages end on, for the hosted
+// service and for S3 alike. Retrying cannot help.
+const accessDeniedFix = "For slivingdoc.dev check SLIVINGDOC_TOKEN, or 'slivingdoc login', and --space; " +
+	"for S3 check the AWS credentials, --bucket and --endpoint"
+
+// upgradeFix is the fix of an UPGRADE_REQUIRED refusal.
+const upgradeFix = "Upgrade slivingdoc (npm install -g slivingdoc@latest, or https://github.com/baalimago/slivingdoc/releases) on this machine"
+
+// upgradeVersion names the manifest version a newer slivingdoc wrote, or
+// nothing when the cause does not carry it.
+func upgradeVersion(cause error) string {
+	var upgrade *storage.UpgradeRequiredError
+	if errors.As(cause, &upgrade) {
+		return fmt.Sprintf(" (notebook format %d, this build reads %d)", upgrade.Version, storage.ManifestVersion)
+	}
+	return ""
+}
+
 // recoveryRefusalMessages tell the caller why the store refused the read
 // that resynchronizes the notebook directory. Unlike storeRefusal's
 // messages they make no claim about publication: after an accepted CAS the
@@ -328,16 +348,17 @@ var recoveryRefusalMessages = map[Reason]string{
 		"request allowance for the month; its owner can raise the allowance (for slivingdoc.dev: upgrade at https://slivingdoc.dev) " +
 		"or wait until it resets on the first of the month (UTC), then pull",
 	ReasonRateLimited: "the storage is slowing down requests from this account, so the notebook directory could not be repaired yet; wait, then pull",
-	ReasonAccessDenied: "the storage refused the read that repairs the notebook directory: the token is missing, revoked, read-only, " +
-		"or not granted this space, the space does not exist, or --endpoint does not point at the storage API. " +
-		"Check SLIVINGDOC_TOKEN, --space and --endpoint, then pull",
+	ReasonAccessDenied: "the storage refused the read that repairs the notebook directory: the credentials are missing, expired, " +
+		"revoked or read-only, or do not reach this space or bucket, or the endpoint is wrong. " + accessDeniedFix + ", then pull",
 	ReasonObjectTooLarge: "the storage refused the read that repairs the notebook directory as larger than it serves; an operator must check the storage",
+	ReasonUpgradeRequired: "the notebook was written by a newer slivingdoc than this one reads, so the notebook directory could not be repaired; " +
+		upgradeFix + ", then pull",
 }
 
 // isRefusalReason reports whether reason is one storeRefusal produces.
 func isRefusalReason(reason Reason) bool {
 	switch reason {
-	case ReasonStorageFull, ReasonRequestLimit, ReasonRateLimited, ReasonAccessDenied, ReasonObjectTooLarge:
+	case ReasonStorageFull, ReasonRequestLimit, ReasonRateLimited, ReasonAccessDenied, ReasonObjectTooLarge, ReasonUpgradeRequired:
 		return true
 	default:
 		return false
@@ -360,9 +381,11 @@ func storeRefusal(cause error) (Reason, string, bool) {
 	case errors.Is(cause, storage.ErrRateLimited):
 		return ReasonRateLimited, "the storage is slowing down requests from this account; wait, then retry", true
 	case errors.Is(cause, storage.ErrAccessDenied):
-		return ReasonAccessDenied, "the storage refused the request: the token is missing, revoked, read-only, " +
-			"or not granted this space, the space does not exist, or --endpoint does not point at the storage API. " +
-			"Check SLIVINGDOC_TOKEN, --space and --endpoint", true
+		return ReasonAccessDenied, "the storage refused the request: the credentials are missing, expired, revoked or " +
+			"read-only, or do not reach this space or bucket, or the endpoint is wrong. " + accessDeniedFix, true
+	case errors.Is(cause, storage.ErrUpgradeRequired):
+		return ReasonUpgradeRequired, "the notebook was written by a newer slivingdoc than this one reads" +
+			upgradeVersion(cause) + "; nothing was read or changed. " + upgradeFix, true
 	case errors.Is(cause, storage.ErrTooLarge):
 		return ReasonObjectTooLarge, "the notebook data to upload is larger than the storage accepts in one object; " +
 			"nothing was published", true

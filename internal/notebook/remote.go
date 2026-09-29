@@ -98,7 +98,7 @@ func (n *Notebook) readRemoteMode(ctx context.Context, mode loadMode) (remoteSta
 		}
 		m, err := storage.DecodeManifest(data)
 		if err != nil {
-			return remoteState{}, storageIntegrity(ReasonManifestInvalid, err, "current is not a valid manifest")
+			return remoteState{}, manifestError(err)
 		}
 
 		st, err := n.loadRemote(ctx, m, etag, mode)
@@ -511,7 +511,7 @@ func (n *Notebook) lookupPublication(ctx context.Context, id storage.UUID) (bool
 	}
 	m, err := storage.DecodeManifest(data)
 	if err != nil {
-		return false, storageIntegrity(ReasonManifestInvalid, err, "current is not a valid manifest")
+		return false, manifestError(err)
 	}
 	if m.Checkpoint.Publication == id {
 		return true, nil
@@ -565,4 +565,13 @@ type recoveryReport struct {
 // public converts the internal report into the stable error shape.
 func (r recoveryReport) public() RecoveryReport {
 	return RecoveryReport{Stage: r.stage, RemoteAccepted: r.remoteAccepted, Resynchronized: r.resynchronized}
+}
+
+// manifestError classifies a manifest that would not decode: a newer
+// slivingdoc's is UPGRADE_REQUIRED, anything else is invalid.
+func manifestError(err error) error {
+	if errors.Is(err, storage.ErrUpgradeRequired) {
+		return storageFailure(ReasonManifestRead, err, "current was written by a newer slivingdoc")
+	}
+	return storageIntegrity(ReasonManifestInvalid, err, "current is not a valid manifest")
 }

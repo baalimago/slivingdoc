@@ -497,6 +497,10 @@ func checkStore(ctx context.Context, store storage.ObjectStore, cfg config) erro
 	checker, ok := store.(accessChecker)
 	if !ok {
 		if err := storage.Probe(ctx, store); err != nil {
+			if errors.Is(err, storage.ErrAccessDenied) {
+				return fmt.Errorf("app: S3 storage refused the credentials or the bucket: %s; check the AWS credentials, --bucket, --region and --endpoint",
+					mcp.Redact(err.Error()))
+			}
 			// The probe names its disposable protocol key; the startup
 			// diagnostic never echoes it.
 			return fmt.Errorf("app: INCOMPATIBLE_STORE: S3 compatibility probe failed: %s", mcp.Redact(err.Error()))
