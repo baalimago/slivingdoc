@@ -166,10 +166,10 @@ func TestMCPRegistryPublishWorkflow(t *testing.T) {
 		}
 	}
 	job := workflow[publishMCP:]
-	wait := strings.Index(job, "registry.npmjs.org")
-	publish := strings.Index(job, "mcp-publisher publish server.json")
-	if wait < 0 || publish < 0 || publish < wait {
-		t.Error("publish-mcp job does not wait for the npm version before publishing the card")
+	wait := strings.Index(job, "https://registry.npmjs.org/${package}/${version}")
+	validate := strings.Index(job, "mcp-publisher validate server.json")
+	if wait < 0 || validate < 0 || validate < wait {
+		t.Error("publish-mcp job does not wait for the npm version before validating the card")
 	}
 }
 

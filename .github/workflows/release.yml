@@ -149,19 +149,21 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
-      # npm publish returns before the new version is readable from
-      # registry.npmjs.org, and the Registry refuses the card while its
-      # read of <package>/<version> still misses. Poll that exact document,
-      # the one the Registry reads, until it answers with the tag's version
-      # and the expected mcpName, and give up after 15 minutes.
+      # The new version may not be readable from registry.npmjs.org yet
+      # when npm publish returns, and the Registry refuses the card while
+      # its read of <package>/<version> misses. Poll the same URL the
+      # Registry reads until it answers with the tag's version and the
+      # expected mcpName, and give up after 15 minutes. npm drops build
+      # metadata, so the version is the tag without any +suffix.
       - name: Wait for the npm launcher version to be public
         run: |
           package="$(node -p "require('./npm/slivingdoc/package.json').name")"
           mcp_name="$(node -p "require('./npm/slivingdoc/package.json').mcpName")"
           version="${GITHUB_REF_NAME#v}"
+          version="${version%%+*}"
           url="https://registry.npmjs.org/${package}/${version}"
           deadline=$(( SECONDS + 900 ))
-          until manifest="$(curl --fail --silent --show-error --location --max-time 20 "$url")" &&
+          until manifest="$(curl --fail --silent --show-error --location --max-time 20 --header 'Accept: application/json' "$url")" &&
             [[ "$(jq -r '.version' <<< "$manifest")" == "$version" ]] &&
             [[ "$(jq -r '.mcpName' <<< "$manifest")" == "$mcp_name" ]]; do
             if (( SECONDS >= deadline )); then
@@ -179,5 +181,19 @@ jobs:
         run: ./mcp-publisher validate server.json
       - name: Authenticate to the MCP Registry
         run: ./mcp-publisher login github-oidc
+      # The Registry's own npm read happens once per submission, from its
+      # own network, so it can still miss a version the poll above saw.
+      # Retry the submission a few times before failing.
       - name: Publish MCP Registry card
-        run: ./mcp-publisher publish server.json
+        run: |
+          for attempt in 1 2 3; do
+            if ./mcp-publisher publish server.json; then
+              exit 0
+            fi
+            if (( attempt < 3 )); then
+              echo "slivingdoc: MCP Registry publish attempt ${attempt} failed; retrying in 60s"
+              sleep 60
+            fi
+          done
+          echo "::error::MCP Registry publish failed after 3 attempts; re-run this job" >&2
+          exit 1
