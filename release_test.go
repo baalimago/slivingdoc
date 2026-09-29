@@ -155,6 +155,8 @@ func TestMCPRegistryPublishWorkflow(t *testing.T) {
 		"needs: [publish-npm]",
 		"if: github.ref_type == 'tag'",
 		"id-token: write",
+		"https://registry.npmjs.org/${package}/${version}",
+		"deadline=$(( SECONDS + 900 ))",
 		"mcp-publisher validate server.json",
 		"mcp-publisher login github-oidc",
 		"mcp-publisher publish server.json",
@@ -162,6 +164,12 @@ func TestMCPRegistryPublishWorkflow(t *testing.T) {
 		if !strings.Contains(workflow[publishMCP:], want) {
 			t.Errorf("publish-mcp job does not contain %q", want)
 		}
+	}
+	job := workflow[publishMCP:]
+	wait := strings.Index(job, "https://registry.npmjs.org/${package}/${version}")
+	validate := strings.Index(job, "mcp-publisher validate server.json")
+	if wait < 0 || validate < 0 || validate < wait {
+		t.Error("publish-mcp job does not wait for the npm version before validating the card")
 	}
 }
 

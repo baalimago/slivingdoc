@@ -108,7 +108,7 @@ the code and fix the doc in the same change (see
   CI, and the npm launcher.
 - **[releasing.md](./releasing.md)**: cutting a release: `make release`,
   `release.yml`, the GitHub release, npm and MCP Registry publication
-  order.
+  order, and the card's wait for the npm version.
 - **[running.md](./running.md)**: the operator reference: commands,
   flags, credentials, MCP host setup, logging, notebook rules, conflict
   recovery, checkpoints, operational ownership.

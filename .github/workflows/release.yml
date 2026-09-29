@@ -136,8 +136,8 @@ jobs:
 
   publish-mcp:
     # The Registry verifies the npm package's mcpName and version. Depend on
-    # publish-npm so this card can only be submitted once that exact package
-    # version is publicly available.
+    # publish-npm so this card is never submitted before that package version
+    # is published, then wait until npm serves it (see the first step).
     name: Publish MCP Registry card
     needs: [publish-npm]
     if: github.ref_type == 'tag'
@@ -149,6 +149,31 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      # The new version may not be readable from registry.npmjs.org yet
+      # when npm publish returns, and the Registry refuses the card while
+      # its read of <package>/<version> misses. Poll the same URL the
+      # Registry reads until it answers with the tag's version and the
+      # expected mcpName, and give up after 15 minutes. npm drops build
+      # metadata, so the version is the tag without any +suffix.
+      - name: Wait for the npm launcher version to be public
+        run: |
+          package="$(node -p "require('./npm/slivingdoc/package.json').name")"
+          mcp_name="$(node -p "require('./npm/slivingdoc/package.json').mcpName")"
+          version="${GITHUB_REF_NAME#v}"
+          version="${version%%+*}"
+          url="https://registry.npmjs.org/${package}/${version}"
+          deadline=$(( SECONDS + 900 ))
+          until manifest="$(curl --fail --silent --show-error --location --max-time 20 --header 'Accept: application/json' "$url")" &&
+            [[ "$(jq -r '.version' <<< "$manifest")" == "$version" ]] &&
+            [[ "$(jq -r '.mcpName' <<< "$manifest")" == "$mcp_name" ]]; do
+            if (( SECONDS >= deadline )); then
+              echo "::error::${package}@${version} with mcpName ${mcp_name} was not readable at ${url} within 15 minutes; re-run this job once it is" >&2
+              exit 1
+            fi
+            echo "slivingdoc: ${package}@${version} not yet public on npm; retrying in 30s"
+            sleep 30
+          done
+          echo "slivingdoc: ${package}@${version} is public on npm"
       - name: Install mcp-publisher
         run: |
           curl --fail --silent --show-error --location "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
@@ -156,5 +181,19 @@ jobs:
         run: ./mcp-publisher validate server.json
       - name: Authenticate to the MCP Registry
         run: ./mcp-publisher login github-oidc
+      # The Registry's own npm read happens once per submission, from its
+      # own network, so it can still miss a version the poll above saw.
+      # Retry the submission a few times before failing.
       - name: Publish MCP Registry card
-        run: ./mcp-publisher publish server.json
+        run: |
+          for attempt in 1 2 3; do
+            if ./mcp-publisher publish server.json; then
+              exit 0
+            fi
+            if (( attempt < 3 )); then
+              echo "slivingdoc: MCP Registry publish attempt ${attempt} failed; retrying in 60s"
+              sleep 60
+            fi
+          done
+          echo "::error::MCP Registry publish failed after 3 attempts; re-run this job" >&2
+          exit 1
