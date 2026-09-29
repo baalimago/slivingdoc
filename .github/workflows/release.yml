@@ -136,8 +136,8 @@ jobs:
 
   publish-mcp:
     # The Registry verifies the npm package's mcpName and version. Depend on
-    # publish-npm so this card can only be submitted once that exact package
-    # version is publicly available.
+    # publish-npm so this card is never submitted before that package version
+    # is published, then wait until npm serves it (see the first step).
     name: Publish MCP Registry card
     needs: [publish-npm]
     if: github.ref_type == 'tag'
@@ -149,6 +149,29 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      # npm publish returns before the new version is readable from
+      # registry.npmjs.org, and the Registry refuses the card while its
+      # read of <package>/<version> still misses. Poll that exact document,
+      # the one the Registry reads, until it answers with the tag's version
+      # and the expected mcpName, and give up after 15 minutes.
+      - name: Wait for the npm launcher version to be public
+        run: |
+          package="$(node -p "require('./npm/slivingdoc/package.json').name")"
+          mcp_name="$(node -p "require('./npm/slivingdoc/package.json').mcpName")"
+          version="${GITHUB_REF_NAME#v}"
+          url="https://registry.npmjs.org/${package}/${version}"
+          deadline=$(( SECONDS + 900 ))
+          until manifest="$(curl --fail --silent --show-error --location --max-time 20 "$url")" &&
+            [[ "$(jq -r '.version' <<< "$manifest")" == "$version" ]] &&
+            [[ "$(jq -r '.mcpName' <<< "$manifest")" == "$mcp_name" ]]; do
+            if (( SECONDS >= deadline )); then
+              echo "::error::${package}@${version} with mcpName ${mcp_name} was not readable at ${url} within 15 minutes; re-run this job once it is" >&2
+              exit 1
+            fi
+            echo "slivingdoc: ${package}@${version} not yet public on npm; retrying in 30s"
+            sleep 30
+          done
+          echo "slivingdoc: ${package}@${version} is public on npm"
       - name: Install mcp-publisher
         run: |
           curl --fail --silent --show-error --location "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
