@@ -21,7 +21,7 @@ Test coverage: 88.6% 😍👌
 </div>
 
 <p align="center">
-  <img src="img/demo.gif" width="800" alt="One terminal logs in with slivingdoc login, approves the code in the browser, pulls an empty notes folder, writes plan.md and commits it. An agent's terminal joins with a space token and pulls the plan. Both change different lines and commit without pulling, and both commits land. Then both change the same line: the agent commits first, and the second commit returns CONTENT_CONFLICT with both versions in the file.">
+  <img src="img/demo.gif" width="800" alt="Two panes: you on the command line, an agent calling notes_pull and notes_commit over MCP. You change one line of plan.md and the agent another; both commit without pulling first and both land, merged. Then both change the same line: the agent commits first, and your commit returns CONTENT_CONFLICT with both versions in the file."">
 </p>
 
 ## Get started
