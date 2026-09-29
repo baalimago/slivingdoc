@@ -41,6 +41,17 @@ type Space struct {
 	Name   string `json:"name"`
 	Owner  string `json:"owner"`
 	Access string `json:"access"`
+	// ID is the space's site id, which a mint answer carries and the
+	// space list does not; empty means the name.
+	ID string `json:"-"`
+}
+
+// id is the space's site id: its ID, or its name when it has none.
+func (sp Space) id() string {
+	if sp.ID != "" {
+		return sp.ID
+	}
+	return sp.Name
 }
 
 // Minted is one token the site minted from a key.
@@ -48,6 +59,7 @@ type Minted struct {
 	Key       string
 	Token     string
 	Space     string
+	SpaceID   string
 	Access    string
 	ExpiresAt time.Time
 	Endpoint  string
@@ -530,7 +542,7 @@ func (s *Site) mint(w http.ResponseWriter, r *http.Request) {
 		access = "read"
 	}
 	m := Minted{
-		Key: bearer, Token: newToken(), Space: sp.Name, Access: access,
+		Key: bearer, Token: newToken(), Space: sp.Name, SpaceID: sp.id(), Access: access,
 		ExpiresAt: time.Now().Add(s.lifetime).UTC(), Endpoint: k.endpoint,
 	}
 	k.children = append(k.children, m.Token)
@@ -549,7 +561,7 @@ func (s *Site) mint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"token": m.Token, "space": m.Space, "access": m.Access,
+		"token": m.Token, "space": m.Space, "spaceId": m.SpaceID, "access": m.Access,
 		"expiresAt": m.ExpiresAt.Format(time.RFC3339Nano), "endpoint": m.Endpoint, "owner": sp.Owner,
 	})
 }

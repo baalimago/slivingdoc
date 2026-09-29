@@ -40,6 +40,11 @@ type config struct {
 	login       *credentials.Login
 	tokens      httpstore.TokenSource
 	tokenOrigin tokenOrigin
+	// spaceID is the hosted server's id of the bucket's space, set by
+	// buildService; it joins the storage identity, so two accounts' spaces
+	// of one name never share private state (architecture/hosted-mode.md).
+	// Empty for S3 and for a server that names none.
+	spaceID httpstore.SpaceID
 	// bucketFrom says which setting named the bucket, in the spelling
 	// used: --bucket, --space, SLIVINGDOC_BUCKET, SLIVINGDOC_SPACE, the
 	// login's default space, the token's own space, or none,

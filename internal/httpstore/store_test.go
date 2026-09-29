@@ -867,8 +867,8 @@ func TestDescribeTokenNamesTheTokensSpace(t *testing.T) {
 		if err != nil {
 			t.Fatalf("DescribeToken(%s) = %v", row.token, err)
 		}
-		if info != (TokenInfo{Space: testSpace, Access: row.want}) {
-			t.Fatalf("DescribeToken(%s) = %+v, want space %q with %s access and no expiry", row.token, info, testSpace, row.want)
+		if info != (TokenInfo{Space: testSpace, SpaceID: testSpace, Access: row.want}) {
+			t.Fatalf("DescribeToken(%s) = %+v, want space %q with its id, %s access and no expiry", row.token, info, testSpace, row.want)
 		}
 	}
 }
@@ -913,6 +913,12 @@ func TestDescribeTokenAnswers(t *testing.T) {
 			name: "expiry", status: 200, body: `{"space":"notes","access":"read","expiresAt":"2026-12-26T12:00:00.000Z"}`,
 			info: TokenInfo{Space: "notes", Access: AccessRead, ExpiresAt: time.Date(2026, 12, 26, 12, 0, 0, 0, time.UTC)},
 		},
+		{
+			name: "space id", status: 200, body: `{"space":"notes","spaceId":"4f1c2a9e-0b7d-4e3a-9c51-2d8e6f0a1b3c","access":"write","expiresAt":null}`,
+			info: TokenInfo{Space: "notes", SpaceID: "4f1c2a9e-0b7d-4e3a-9c51-2d8e6f0a1b3c", Access: AccessWrite},
+		},
+		{name: "invalid space id", status: 200, body: `{"space":"notes","spaceId":"../x","access":"read","expiresAt":null}`, want: storage.ErrIncompatible},
+		{name: "long space id", status: 200, body: `{"space":"notes","spaceId":"` + strings.Repeat("a", 65) + `","access":"read","expiresAt":null}`, want: storage.ErrIncompatible},
 		{name: "invalid space", status: 200, body: `{"space":"../x","access":"read","expiresAt":null}`, want: storage.ErrIncompatible},
 		{name: "unknown access", status: 200, body: `{"space":"notes","access":"admin","expiresAt":null}`, want: storage.ErrIncompatible},
 		{name: "bad expiry", status: 200, body: `{"space":"notes","access":"read","expiresAt":"soon"}`, want: storage.ErrIncompatible},

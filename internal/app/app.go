@@ -388,7 +388,8 @@ func buildService(p process, cfg config) (*Service, config, storeCheckReport, er
 	switch {
 	case cfg.login != nil:
 		// The site checks the space when it mints, and the answer must
-		// name it (mintedTokens), so no GET /v1/token is needed.
+		// name it (mintedTokens), so no GET /v1/token is needed; the first
+		// mint also binds the process to the space's id.
 		tokens, err := newMintedTokens(*cfg.login, cfg.bucket, p.siteClient, p.now)
 		if err != nil {
 			return nil, config{}, storeCheckReport{}, fmt.Errorf("app: %s", mcp.Redact(err.Error()))
@@ -396,7 +397,7 @@ func buildService(p process, cfg config) (*Service, config, storeCheckReport, er
 		if _, err := tokens.Token(probeCtx); err != nil {
 			return nil, config{}, storeCheckReport{}, mintRefusal(err, cfg)
 		}
-		cfg.tokens = tokens
+		cfg.tokens, cfg.spaceID = tokens, tokens.boundSpace()
 	case cfg.hosted():
 		var err error
 		if cfg, err = resolveHostedSpace(probeCtx, cfg); err != nil {
@@ -440,8 +441,8 @@ func logStoreCheck(logger *slog.Logger, r storeCheckReport) {
 }
 
 // resolveHostedSpace asks the hosted API which space the SLIVINGDOC_TOKEN
-// token reaches (architecture/hosted-mode.md). With no bucket that space
-// is used. A bucket that names another space is refused rather than either
+// token reaches, and that space's id (architecture/hosted-mode.md). With no
+// bucket that space is used. A bucket that names another space is refused rather than either
 // one preferred, whether it came from --space or --bucket, SLIVINGDOC_SPACE
 // or SLIVINGDOC_BUCKET. A server that cannot answer keeps a given bucket,
 // whose access check then proves the token; without one it is a refusal.
@@ -459,11 +460,12 @@ func resolveHostedSpace(ctx context.Context, cfg config) (config, error) {
 	case err != nil:
 		return config{}, hostedCheckError(err, cfg)
 	case cfg.bucket == "":
-		cfg.bucket, cfg.bucketFrom = info.Space, bucketFromToken
+		cfg.bucket, cfg.bucketFrom, cfg.spaceID = info.Space, bucketFromToken, info.SpaceID
 		return cfg, nil
 	case cfg.bucket != info.Space:
 		return config{}, spaceMismatch(cfg, info.Space)
 	default:
+		cfg.spaceID = info.SpaceID
 		return cfg, nil
 	}
 }

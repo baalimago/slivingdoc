@@ -538,8 +538,11 @@ func (c *Client) Spaces(ctx context.Context, key string) ([]Space, error) {
 // Minted is a short-lived token of one space, traded for an account CLI
 // key. It is sent only to Endpoint and never stored.
 type Minted struct {
-	Token    string
-	Space    string
+	Token string
+	Space string
+	// SpaceID is the site's id of that space; empty from a site that names
+	// none.
+	SpaceID  httpstore.SpaceID
 	Access   credentials.Access
 	Expires  credentials.Expiry
 	Endpoint string
@@ -555,6 +558,7 @@ type mintBody struct {
 type mintAnswer struct {
 	Token     string  `json:"token"`
 	Space     string  `json:"space"`
+	SpaceID   string  `json:"spaceId"`
 	Access    string  `json:"access"`
 	ExpiresAt *string `json:"expiresAt"`
 	Endpoint  string  `json:"endpoint"`
@@ -585,6 +589,10 @@ func (c *Client) Mint(ctx context.Context, key, space string, access credentials
 	if ans.Space != space {
 		return Minted{}, reject("the token is for another space")
 	}
+	spaceID, err := httpstore.ParseSpaceID(ans.SpaceID)
+	if err != nil {
+		return Minted{}, reject("%w", err)
+	}
 	got, err := credentials.ParseAccess(ans.Access)
 	if err != nil {
 		return Minted{}, reject("%w", err)
@@ -602,7 +610,7 @@ func (c *Client) Mint(ctx context.Context, key, space string, access credentials
 	if err != nil {
 		return Minted{}, reject("%w", err)
 	}
-	return Minted{Token: ans.Token, Space: ans.Space, Access: got, Expires: expires, Endpoint: ans.Endpoint, Owner: ans.Owner}, nil
+	return Minted{Token: ans.Token, Space: ans.Space, SpaceID: spaceID, Access: got, Expires: expires, Endpoint: ans.Endpoint, Owner: ans.Owner}, nil
 }
 
 // Revoke withdraws a credential at the site: a key together with every

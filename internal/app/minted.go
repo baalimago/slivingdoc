@@ -45,6 +45,10 @@ type mintedTokens struct {
 	mu      sync.Mutex
 	token   string
 	renewAt time.Time
+	// spaceID is the space id the first mint named; every later mint must
+	// name the same, or the name now reaches another space.
+	spaceID httpstore.SpaceID
+	bound   bool
 }
 
 var _ httpstore.RenewingSource = (*mintedTokens)(nil)
@@ -152,11 +156,40 @@ func (m *mintedTokens) mint(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("app: the minted token expires %s, which is not after this machine's clock (%s); check the system clock: %w",
 			minted.Expires.Describe(), asked.UTC().Format(time.RFC3339), storage.ErrIncompatible)
 	}
+	if err := m.bind(minted.SpaceID); err != nil {
+		m.discard(ctx, minted.Token)
+		return "", err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.token = minted.Token
 	m.renewAt = asked.Add(lifetime * renewalNumerator / renewalDenominator)
 	return m.token, nil
+}
+
+// bind ties the source to the space id of its first mint and refuses a
+// later mint for another id: the login's space of that name was replaced
+// by another space, and this process's workspaces belong to the first
+// (architecture/login.md, Minted tokens).
+func (m *mintedTokens) bind(id httpstore.SpaceID) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.bound {
+		m.spaceID, m.bound = id, true
+		return nil
+	}
+	if id != m.spaceID {
+		return fmt.Errorf("app: the login's space %q is no longer the space this process started with; start it again: %w", m.space, storage.ErrAccessDenied)
+	}
+	return nil
+}
+
+// boundSpace is the space id the first mint named; empty before it, or
+// from a site that names none.
+func (m *mintedTokens) boundSpace() httpstore.SpaceID {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.spaceID
 }
 
 func (m *mintedTokens) discard(ctx context.Context, token string) {

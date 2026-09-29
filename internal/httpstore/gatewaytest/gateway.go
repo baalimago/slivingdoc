@@ -66,8 +66,13 @@ type space struct {
 	stored map[string]int64
 }
 
+// grant is one token's access: the space it reaches by id, and name, the
+// token holder's own name for it in routes and GET /v1/token. Names are
+// the holder's, so two accounts can each call a different space by one
+// name.
 type grant struct {
 	space    string
+	name     string
 	readOnly bool
 }
 
@@ -96,18 +101,27 @@ func Start(t testing.TB) *Gateway {
 // URL is the server base URL, without /v1.
 func (g *Gateway) URL() string { return g.srv.URL }
 
-// AddSpace creates an empty space with the given quota in bytes.
-func (g *Gateway) AddSpace(name string, quota int64) {
+// AddSpace creates an empty space with the given quota in bytes. id is
+// the space's server id, which Grant also uses as the token's name for it.
+func (g *Gateway) AddSpace(id string, quota int64) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	g.spaces[name] = &space{store: fake.New(""), quota: quota, stored: map[string]int64{}}
+	g.spaces[id] = &space{store: fake.New(""), quota: quota, stored: map[string]int64{}}
 }
 
-// Grant gives token access to space, read-only or read-write.
-func (g *Gateway) Grant(token, space string, readOnly bool) {
+// Grant gives token access to the space with id, under that id as its
+// name, read-only or read-write.
+func (g *Gateway) Grant(token, id string, readOnly bool) {
+	g.GrantAs(token, id, id, readOnly)
+}
+
+// GrantAs gives token access to the space with id under the holder's own
+// name for it, as the real gateway resolves a route's space by the
+// token's grant name: another account's space can share the name.
+func (g *Gateway) GrantAs(token, id, name string, readOnly bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	g.grants[token] = grant{space: space, readOnly: readOnly}
+	g.grants[token] = grant{space: id, name: name, readOnly: readOnly}
 }
 
 // Revoke withdraws token's grant, so every later request with it answers
@@ -342,13 +356,13 @@ func (g *Gateway) authorize(w http.ResponseWriter, r *http.Request, name string)
 		g.used[token]++
 	}
 	gr, known := g.grants[token]
-	sp, exists := g.spaces[name]
+	sp, exists := g.spaces[gr.space]
 	g.mu.Unlock()
 	if !ok || !known {
 		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return nil, grant{}, false
 	}
-	if !exists || gr.space != name {
+	if !exists || gr.name != name {
 		notFound(w, reasonNoSpace)
 		return nil, grant{}, false
 	}
@@ -390,7 +404,7 @@ func (g *Gateway) describeToken(w http.ResponseWriter, r *http.Request) {
 	if gr.readOnly {
 		access = "read"
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"space": gr.space, "access": access, "expiresAt": nil})
+	writeJSON(w, http.StatusOK, map[string]any{"space": gr.name, "spaceId": gr.space, "access": access, "expiresAt": nil})
 }
 
 // validListPrefix accepts [<notebook prefix>/]packs/..., the only

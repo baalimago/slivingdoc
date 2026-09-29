@@ -19,7 +19,10 @@ import (
 // scenarios and the integration harness build it directly; production
 // derives it from the resolved config through serviceConfig.
 type ServiceConfig struct {
-	Bucket              string
+	Bucket string
+	// SpaceID is the hosted server's id of Bucket's space, part of the
+	// storage identity; empty for S3 and for a server that names none.
+	SpaceID             string
 	Prefix              string
 	Region              string
 	Endpoint            string
@@ -59,6 +62,7 @@ func (cfg config) probeProofs(now func() time.Time) probeProofStore {
 func (cfg config) serviceConfig() ServiceConfig {
 	return ServiceConfig{
 		Bucket:              cfg.bucket,
+		SpaceID:             string(cfg.spaceID),
 		Prefix:              cfg.prefix,
 		Region:              cfg.region,
 		Endpoint:            cfg.endpoint,
@@ -222,7 +226,8 @@ func (s *Service) notebookFor(ctx context.Context, path string) (*notebook.Noteb
 
 // identity is the storage identity derived from the normalized
 // configuration (architecture/workspace.md and config.md): the endpoint,
-// region, bucket, prefix, and the manifest protocol version.
+// region, bucket, prefix, the manifest protocol version, and a hosted
+// space's server id.
 func (s *Service) identity() workspace.Identity { return s.cfg.identity() }
 
 func (c ServiceConfig) identity() workspace.Identity {
@@ -232,6 +237,7 @@ func (c ServiceConfig) identity() workspace.Identity {
 		Bucket:          c.Bucket,
 		Prefix:          c.Prefix,
 		ManifestVersion: workspace.ManifestVersion,
+		SpaceID:         c.SpaceID,
 	}
 }
 
