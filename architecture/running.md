@@ -78,6 +78,11 @@ OK  generation 18  /home/me/notes
 3 files changed, 3 insertions(+), 4 deletions(-)
 ```
 
+On a terminal a spinner on stderr shows the operation while it runs
+(`Pulling /home/me/notes · space notes · 1.2s`) and the report gains
+colour and marks ([tui.md](./tui.md)); a pipe gets exactly the text
+above.
+
 The diffstat answers "what is new to check out": `pull` reports the
 delta between the visible directory before the pull and the materialized
 result, and `commit` reports the increment the publication added over the
@@ -107,8 +112,11 @@ retryable: false
 
 Colour is presentation-only. The status tokens, the generation summary,
 the per-file counts, and the conflict paths are coloured only when stdout
-is a real terminal; piped or redirected output stays plain text. Any
-non-empty `NO_COLOR` disables the colour even on a terminal.
+is a real terminal, where the report also gains marks (✓ before `OK`, ✗
+before the code, `→` in place of `next:`) and the totals, `retryable:`
+and `recovery:` lines are dimmed ([tui.md](./tui.md)); piped or
+redirected output stays the plain text above. Any non-empty `NO_COLOR`
+disables the colour and the marks even on a terminal.
 
 A missing message, or more than one path, exits nonzero before any native
 or network dependency is touched.
@@ -541,6 +549,14 @@ The default space is "notes"; 'slivingdoc space <name>' changes it.
 Logged in as ada@example.com (read and write) until 2026-12-26 12:00 UTC; default space "notes"
 ```
 
+That is the plain form a script sees. On a terminal the same facts come
+styled ([tui.md](./tui.md)): a `◆ slivingdoc login` header, the page and
+the code as labelled rows, the warning in amber, a spinner counting down
+to the code's expiry instead of the waiting line, the spaces as a table
+with their owners, and a ✓ result line. When the login reaches several
+spaces and none becomes the default, a terminal then offers a picker:
+type the number of the default space, or `q` to choose later.
+
 The prompt goes to stderr and the result line to stdout. The page opens in
 a browser unless `--no-browser` is given or no browser starts (SSH,
 headless machines); then open it yourself, on any device. slivingdoc
@@ -607,7 +623,9 @@ The default space is now team (read only), owned by bob@example.com
 ```
 
 `slivingdoc space` lists the spaces the login reaches and marks the
-default with `*`. `slivingdoc space <name>` makes a listed space the
+default with `*`; when stdin, stdout and stderr are all a terminal it
+shows them as a numbered picker with the default marked instead, and the
+number you type becomes the default (`q` changes nothing). `slivingdoc space <name>` makes a listed space the
 default; a name the login does not reach changes nothing. With logins for
 several endpoints, `--endpoint` (or `SLIVINGDOC_ENDPOINT`) picks one.
 
@@ -621,7 +639,8 @@ the same endpoint: log out of that one first (`slivingdoc logout --site
 <site>`).
 
 `slivingdoc logout` revokes every stored key at the site that issued it
-(`--site` narrows it to one site's logins), which also revokes every token
+(`--site` narrows it to one site's logins; on a terminal with several
+logins and no `--site`, a picker asks which), which also revokes every token
 minted from it, and removes the login and its default space. A key the
 site reports as unknown (`401 invalid_token`) counts as revoked, and any
 other failure keeps the login so you can retry. If another `login` stored a
@@ -747,7 +766,8 @@ take `--log-level` and `--log-timestamp`, which override the environment
 once the flags resolve; the few records emitted before that point (command
 routing, a level-fallback warning) follow `LOG_LEVEL` and `NO_COLOR` and
 always carry `time=`. Router lines such as a startup refusal are printed
-separately, as timestamped `error: ...` lines. Records
+separately, as one untimestamped `error: ...` line (`✗ ...` on a
+terminal). Records
 are structured `key=value` text on stderr. Each record carries a
 timestamp (unless `--log-timestamp=false`), a level, and the module that
 emitted it.
@@ -755,8 +775,8 @@ emitted it.
 | Variable    | Effect                                              |
 | ----------- | --------------------------------------------------- |
 | `LOG_LEVEL` | Per-module levels. A bare level is the default.     |
-| `SLIVINGDOC_LOG_TIMESTAMP` | `false` removes the `time=` field, for hosts that stamp log lines themselves. Like `--log-timestamp`, it applies only once `serve`, `pull`, or `commit` resolves its configuration; router records (including those of `version`) always carry `time=`, and startup refusals, which the router prints through ancli, always start with an RFC3339 timestamp. |
-| `NO_COLOR`  | Any non-empty value disables ANSI colour of log levels and of the CLI report. |
+| `SLIVINGDOC_LOG_TIMESTAMP` | `false` removes the `time=` field, for hosts that stamp log lines themselves. Like `--log-timestamp`, it applies only once `serve`, `pull`, or `commit` resolves its configuration; router records (including those of `version`) always carry `time=`. Startup refusals are not log records: the router prints them as one untimestamped `error: <diagnostic>` line. |
+| `NO_COLOR`  | Any non-empty value disables colour: of log levels and of the styled terminal output (colours, marks, spinners, the home screen; [tui.md](./tui.md)). Pickers still appear on a terminal. |
 
 `LOG_LEVEL` takes a comma-separated list. `module=level` sets one
 module; a bare `level` sets the default for the rest:

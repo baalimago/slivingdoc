@@ -5,7 +5,7 @@
 `architecture/` holds one doc per command and subsystem: an overview, the
 product contract, pull, commit, conflicts, checkpoints, the notebook, the Git
 engine, the workspace, storage, the S3 store, hosted storage mode, login and
-storage selection, the CLI,
+storage selection, the CLI, the terminal presentation,
 the MCP server, configuration, errors, logging, security, guarantees,
 testing, build, releasing, running, and recorded decisions. Start at
 [architecture/README.md](architecture/README.md): it indexes every doc
@@ -134,7 +134,7 @@ hosted storage API.
 ```text
 slivingdoc/
 |-- main.go                  entry point: cli.Run over os.Args
-|-- cmd/                     the CLI commands (go_away_boilerplate/pkg/cmd)
+|-- cmd/                     the CLI commands (go_away_boilerplate/pkg/cmd Command)
 |   |-- serve/               serve|s: the MCP stdio server over internal/app
 |   |-- pull/                pull|p: one-shot notes_pull for humans
 |   |-- commit/              commit|c: one-shot notes_commit for humans
@@ -203,6 +203,8 @@ slivingdoc/
     |                        process, or one leased container under
     |                        `make test`
     |-- pathutil/            ExpandHome: ~ expansion for notebook paths and roots
+    |-- tui/                 terminal presentation: palette, marks, columns,
+    |                        progress spinner, table picker (plain off a TTY)
     |-- mcp/                 stdio MCP server: the two strict tool schemas,
     |                        strict decoding, self-contained safe error text,
     |                        the stable error envelope, and mcpReqID logging
@@ -266,7 +268,7 @@ Checkpoint and cleanup (synchronous inside the triggering commit, best-effort)
 
 `main.go` is one call: `os.Exit(cli.Run(ctx, os.Args, git2.New(), opts))`.
 `internal/cli` holds the command map (`serve|s`, `pull|p`, `commit|c`,
-`login`, `logout`, `space`, `version|v`) and routes through `go_away_boilerplate/pkg/cmd`. Each `cmd/`
+`login`, `logout`, `space`, `version|v`) and routes through its own `router` (`internal/cli/route.go`), over the `go_away_boilerplate/pkg/cmd` `Command` interface. Each `cmd/`
 package implements `cmd.Command`. The router parses the selected command's
 flag set, then calls `Setup` and `Run`.
 
@@ -366,7 +368,7 @@ only be resolved from a bound attribute.
 | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `LOG_LEVEL`                | Per-module levels, for example `cli=warn,mcp=debug,info`. A bare level is the default. A malformed value falls back to info and is reported, never fatal.                                                          |
 | `SLIVINGDOC_LOG_TIMESTAMP` | `false` removes the `time=` field, for hosts that stamp lines themselves.                                                                                                                                          |
-| `NO_COLOR`                 | Any non-empty value disables the ANSI level color.                                                                                                                                                                 |
+| `NO_COLOR`                 | Any non-empty value disables colour: log levels and the terminal output (architecture/tui.md).                                                                                                                     |
 | `DEBUG_PERF`               | Captures CPU, heap, and execution-trace profiles across the whole command (`internal/app/perf.go`); `1` writes under the system temporary directory, any other value is the base directory. See `architecture/running.md`. |
 
 The `--log-level` and `--log-timestamp` flags (shared by `serve`, `pull`,

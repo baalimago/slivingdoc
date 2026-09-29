@@ -119,8 +119,10 @@ would replace one another account approved is refused unless --force is
 given.
 
 The default space becomes --space, else the only space the login reaches,
-else the earlier default when the login still reaches it; otherwise run
-'slivingdoc space <name>'. Logging in again replaces the stored login and
+else the earlier default when the login still reaches it. Otherwise, when
+the login reaches several spaces and stdin and stderr are a terminal, a
+numbered list asks which space to make the default (q chooses later);
+without one, run 'slivingdoc space <name>'. Logging in again replaces the stored login and
 revokes the old key when the same account approved both. One login is
 stored per storage endpoint: log out of another site's login for the same
 endpoint first.
@@ -143,7 +145,9 @@ Usage:
 
 Revokes each stored login key at the site that issued it, which also
 revokes every token minted from it, and removes the login and its default
-space from the credentials file. A key the site no longer knows (401
+space from the credentials file. On a terminal with several stored logins
+and no --site, a numbered list asks which to log out of ("0,1" or the
+range "0:1" picks several; q keeps every login). A key the site no longer knows (401
 invalid_token) counts as revoked; a key whose revocation fails stays
 stored, so the logout can be repeated.
 
@@ -158,7 +162,9 @@ Usage:
   slivingdoc space [--endpoint <url>] <name>
 
 Without a name, lists the spaces the stored login reaches, one per line
-with its access and owner, and marks the default space with *. With a
+with its access and owner, and marks the default space with *; when
+stdin, stdout and stderr are all a terminal, the list is numbered and the
+number you type becomes the default space (q changes nothing). With a
 name, checks that the login reaches that space and stores it as the
 default, which serve, pull and commit use when neither --space nor
 SLIVINGDOC_SPACE is given. The login key goes only to the site that

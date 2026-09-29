@@ -36,8 +36,8 @@ MCP:  handler.resultFor(err) → mcp.MapError(err)
       decode failure → decodeFailureError → notebook message error keeps its tokens,
                                             else INVALID_REQUEST / MALFORMED_INPUT
 CLI:  app.Report(out, result, err, ...) → MapError → writeError → return errors.New(code)
-      → cmd.Run prints `failed to run: <CODE>` on stderr and exits 1
-Startup: Setup error → router prints `<time> error: failed to setup command: <err>` on stderr, exit 1, empty stdout
+      → the router prints `error: <CODE>` on stderr and exits 1
+Startup: Setup error → router prints `error: <err>` on stderr (`✗ <err>` on a terminal), exit 1, empty stdout
 ```
 
 ## Behavior
@@ -90,18 +90,19 @@ An unmapped pairing is a programming error: `actionFor` returns `RETRY` plus `er
 
 **Fallback.** Any non-domain, non-cancellation error maps to retryable `STORAGE_FAILURE`/`INTERNAL` with a fixed message, so an unexpected internal error never leaks text.
 
-**CLI exit codes.** The process exit code comes from `cli.Run`, which returns `pkg/cmd.Run`'s code: exactly 1 for any `Setup` or `Run` error.
+**CLI exit codes.** The process exit code comes from `cli.Run`, which returns `router.run`'s code (`internal/cli/route.go`): 0 on success and for help, exactly 1 for everything else, including any `Setup` or `Run` error.
 
 | Situation | Exit | Output |
 |---|---|---|
 | success, `version` | 0 | stdout |
-| `-h` before the first positional | 0 | `[command help]: ...` on stdout |
-| domain error from `pull`/`commit` | 1 | full report on stdout; `failed to run: <CODE>` on stderr |
-| non-domain error from `pull`/`commit` (cancellation) | 1 | `failed to run: <err>` on stderr |
-| `Setup` refusal (argument, config, engine, store, probe or hosted check) | 1 | one stderr line `<time> error: failed to setup command: <diagnostic>` (config, probe and hosted parts redacted), empty stdout |
-| flag parse error before the first positional | 1 | `unknown error: failed to parse flagset: ...` on stderr, command listing on stdout |
-| missing or unknown command | 1 | command listing on stdout; an unknown command also prints `'<name>' is not a valid argument` on stderr |
-| `serve` shutdown deadline expired | 1 | `failed to run: app: shutdown deadline expired` |
+| `-h` before the first positional | 0 | the command's help text on stdout |
+| `help`, `-h` or `--help` with no command | 0 | usage on stdout |
+| domain error from `pull`/`commit` | 1 | full report on stdout; `error: <CODE>` on stderr |
+| non-domain error from `pull`/`commit` (cancellation) | 1 | `error: <err>` on stderr |
+| `Setup` refusal (argument, config, engine, store, probe or hosted check) | 1 | one stderr line `error: <diagnostic>` (config, probe and hosted parts redacted), empty stdout |
+| flag parse error before the first positional | 1 | one stderr line `error: <command>: <flag error>; run 'slivingdoc <command> -h' for its flags` |
+| missing or unknown command | 1 | usage on stdout (the home screen on a terminal, for a missing command); an unknown command also prints `error: "<name>" is not a slivingdoc command` on stderr |
+| `serve` shutdown deadline expired | 1 | `error: app: shutdown deadline expired` |
 | `serve` client EOF or clean signal shutdown | 0 | none |
 
 ## Gotchas

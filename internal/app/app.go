@@ -29,6 +29,7 @@ import (
 	"github.com/baalimago/slivingdoc/internal/s3store"
 	"github.com/baalimago/slivingdoc/internal/sitelogin"
 	"github.com/baalimago/slivingdoc/internal/storage"
+	"github.com/baalimago/slivingdoc/internal/tui"
 )
 
 // Version is the slivingdoc release version. Release builds override it
@@ -93,9 +94,16 @@ type ProcessOptions struct {
 	// Hostname labels a login's token. Nil is os.Hostname.
 	Hostname func() (string, error)
 
-	// Stdin is where login reads the answer to its confirmation prompt.
-	// Nil is the process stdin.
+	// Stdin is where login reads the answer to its confirmation prompt,
+	// and where the space and logout pickers read theirs. Nil is the
+	// process stdin for the prompt and the controlling terminal for a
+	// picker (architecture/tui.md).
 	Stdin io.Reader
+
+	// Style chooses how login, space and logout render on a stream. Nil
+	// is tui.Detect: styled on a terminal without NO_COLOR, plain
+	// elsewhere; tests inject a styled one.
+	Style func(out io.Writer) tui.Style
 
 	// Terminal says whether a person can answer that prompt. Nil checks
 	// that the process stdin and stderr are both terminals.
@@ -250,6 +258,11 @@ func (r *Runtime) Serve(ctx context.Context) error {
 		"notebookRoot", r.cfg.workspaceRoot,
 		"ephemeral", r.cfg.sessionDir != "")
 	srv := mcp.NewServer(r.svc, Version, Module(r.base, ModuleMCP))
+	// A person who starts serve in a terminal sees that it is ready and
+	// where it syncs; an MCP host's stderr is not a terminal and gets
+	// nothing new (architecture/tui.md). Stdout stays the protocol's.
+	s := tui.Detect(r.p.stderr, EnvLookup(r.p.env))
+	io.WriteString(r.p.stderr, s.Header("serve", fmt.Sprintf("%s · %s · waiting for an MCP client on stdio", r.target(), r.cfg.workspaceRoot)))
 	return serve(ctx, r.p, srv, r.logger)
 }
 

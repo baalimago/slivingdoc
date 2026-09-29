@@ -153,7 +153,7 @@ When your account reaches one space, it becomes the default space.
 Otherwise choose one (or pass `--space` to `login`):
 
 ```sh
-slivingdoc space              # list the spaces; * marks the default
+slivingdoc space              # list the spaces (a picker on a terminal); * marks the default
 slivingdoc space my-space     # make my-space the default
 ```
 

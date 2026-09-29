@@ -21,6 +21,7 @@ import (
 	"github.com/baalimago/slivingdoc/internal/httpstore"
 	"github.com/baalimago/slivingdoc/internal/mcp"
 	"github.com/baalimago/slivingdoc/internal/sitelogin"
+	"github.com/baalimago/slivingdoc/internal/tui"
 )
 
 // SiteEnv names the site a login or logout talks to when --site is not
@@ -160,27 +161,35 @@ const (
 func (l *Login) Run(ctx context.Context) error {
 	ctx, stop := l.opts.interruptible(ctx)
 	defer stop()
-	errOut := l.opts.errOut()
+	errOut := l.opts.ErrOut()
+	es := l.opts.errStyle()
+	io.WriteString(errOut, es.Header("login", strings.TrimPrefix(l.client.Site(), "https://")))
 	if l.client.Site() != sitelogin.DefaultSite {
-		fmt.Fprintf(errOut, "Logging in through %s (from %s).\n", l.client.Site(), l.siteSource)
+		fmt.Fprintf(errOut, "%sLogging in through %s (from %s).\n", es.Mark(tui.Caution), l.client.Site(), l.siteSource)
 	}
 	approval, err := l.client.Start(ctx, sitelogin.StartRequest{Access: l.access, Client: l.hostname})
 	if err != nil {
 		return fmt.Errorf("login: %s", mcp.Redact(err.Error()))
 	}
 	if l.hostErr != nil {
-		fmt.Fprintf(errOut, "The host name is unknown (%s); the login is labelled \"CLI login\" without it.\n", mcp.Redact(l.hostErr.Error()))
+		fmt.Fprintf(errOut, "%sThe host name is unknown (%s); the login is labelled \"CLI login\" without it.\n", es.Mark(tui.Caution), mcp.Redact(l.hostErr.Error()))
 	}
-	fmt.Fprintf(errOut, "To log in, open this page and approve the code %s:\n  %s\n", approval.UserCode, approval.CompleteURI)
-	fmt.Fprintf(errOut, "(or open %s and enter the code)\n", approval.URI)
-	fmt.Fprintln(errOut, "Only approve it if you started this login in your own terminal.")
+	io.WriteString(errOut, showApproval(es, approval))
 	if l.browser {
 		if err := l.opts.openBrowser(approval.CompleteURI); err != nil {
-			fmt.Fprintf(errOut, "Could not open a browser (%s); open the page yourself.\n", mcp.Redact(err.Error()))
+			fmt.Fprintf(errOut, "%sCould not open a browser (%s); open the page yourself.\n", es.Mark(tui.Caution), mcp.Redact(err.Error()))
 		}
 	}
-	fmt.Fprintf(errOut, "Waiting for approval (the code expires at %s)...\n", approval.Deadline.UTC().Format("15:04:05 UTC"))
+	if es.Mode() != tui.Styled {
+		fmt.Fprintf(errOut, "Waiting for approval (the code expires at %s)...\n", approval.Deadline.UTC().Format("15:04:05 UTC"))
+	}
+	waiting := es.Spin(errOut, func() string {
+		return "Waiting for approval " + es.Dim("· the code expires in "+countdown(time.Until(approval.Deadline)))
+	})
 	issued, err := l.client.Wait(ctx, approval)
+	// The waiting line is decoration: a terminal that refuses it never
+	// changes the login.
+	_ = waiting.Stop()
 	var rejected *sitelogin.RejectedError
 	if errors.As(err, &rejected) {
 		return l.discard(ctx, rejected.Credential, fmt.Errorf("login: %s; nothing was stored", mcp.Redact(err.Error())))
@@ -200,7 +209,7 @@ func (l *Login) Run(ctx context.Context) error {
 		return l.discard(ctx, stored.Key, fmt.Errorf("login: %s approved a login that does not reach space %q (it reaches %s); nothing was stored",
 			stored.Account, l.space, spaceNames(spaces)))
 	}
-	fmt.Fprint(errOut, approvedBy(stored, spaces))
+	io.WriteString(errOut, approvedBy(es, stored, spaces))
 	agreed := notConfirmed
 	if l.force {
 		agreed = confirmed
@@ -217,8 +226,23 @@ func (l *Login) Run(ctx context.Context) error {
 	if err != nil {
 		return l.discard(ctx, stored.Key, err)
 	}
-	l.report(ctx, stored, spaces, outcome)
-	fmt.Fprintln(l.opts.Out(), loggedIn(stored, outcome.defaultSpace))
+	// The replaced key is revoked before the picker, while the first
+	// termination signal is still consumed by the login: an interrupt
+	// never skips the revocation (revocationContext).
+	l.revokeReplaced(ctx, stored, outcome.replaced)
+	// A failed unlock leaves this process holding the credentials lock,
+	// which the picker's store would wait on forever.
+	if outcome.defaultSpace == "" && len(spaces) > 1 && outcome.unlockErr == nil && ctx.Err() == nil && l.opts.terminal() == OnTerminal {
+		// The login is stored: from here a termination signal ends the
+		// process as it would without a login, instead of cancelling a
+		// context the picker's terminal read cannot see. The picker
+		// handles an interrupt itself, as a skip.
+		stop()
+		ctx = context.WithoutCancel(ctx)
+		outcome.defaultSpace = l.offerDefault(ctx, stored, spaces, outcome.priorDefault)
+	}
+	l.report(spaces, outcome)
+	io.WriteString(l.opts.Out(), loggedIn(l.opts.outStyle(), stored, outcome.defaultSpace))
 	if outcome.unlockErr != nil {
 		// The key is stored and usable. The lock is an flock, which the
 		// kernel releases when this process exits, so the next login,
@@ -254,8 +278,23 @@ func (l *Login) accept(issued sitelogin.Issued) (credentials.Login, error) {
 // approvedBy is what the person checks before a login is stored: whoever
 // submits a code first decides it, so this is how someone else's approval
 // shows, together with the spaces, and their owners, that it reaches.
-func approvedBy(l credentials.Login, spaces []sitelogin.Space) string {
+func approvedBy(s tui.Style, l credentials.Login, spaces []sitelogin.Space) string {
 	var b strings.Builder
+	if s.Mode() == tui.Styled {
+		fmt.Fprintf(&b, "\n  Approved by %s %s\n", s.Bold(l.Account), s.Dim("· "+l.Access.Describe()+" · "+l.Expires.Describe()))
+		b.WriteString(s.Columns("  ", nil, [][]tui.Cell{
+			{{Text: "Storage endpoint", Paint: s.Dim}, {Text: l.Endpoint}},
+			{{Text: "Site", Paint: s.Dim}, {Text: l.Site}},
+		}))
+		if len(spaces) == 0 {
+			b.WriteString("  " + s.Dim("Spaces") + "            none yet\n\n")
+			return b.String()
+		}
+		b.WriteByte('\n')
+		b.WriteString(spacesTable(s, "  ", spaces, ""))
+		b.WriteByte('\n')
+		return b.String()
+	}
 	fmt.Fprintf(&b, "Approved by %s (%s) %s.\n  Storage endpoint: %s\n  Site: %s\n", l.Account, l.Access.Describe(), l.Expires.Describe(), l.Endpoint, l.Site)
 	if len(spaces) == 0 {
 		b.WriteString("  Spaces: none yet\n")
@@ -268,14 +307,41 @@ func approvedBy(l credentials.Login, spaces []sitelogin.Space) string {
 	return b.String()
 }
 
+// showApproval is where to approve the code. Plain, it is the three lines
+// scripts have always read; styled, the page and the code stand out as
+// labelled rows. Both carry the warning to approve only a login you
+// started.
+func showApproval(s tui.Style, a sitelogin.Approval) string {
+	if s.Mode() != tui.Styled {
+		return fmt.Sprintf("To log in, open this page and approve the code %s:\n  %s\n(or open %s and enter the code)\n", a.UserCode, a.CompleteURI, a.URI) +
+			"Only approve it if you started this login in your own terminal.\n"
+	}
+	return "\n" + s.Columns("  ", nil, [][]tui.Cell{
+		{{Text: "Open", Paint: s.Dim}, {Text: a.CompleteURI, Paint: s.Brand}},
+		{{Text: "Code", Paint: s.Dim}, {Text: a.UserCode, Paint: s.Bold}},
+		{{Text: ""}, {Text: "or open " + a.URI + " and enter the code", Paint: s.Dim}},
+	}) + "\n  " + s.Mark(tui.Caution) + s.Warn("Only approve it if you started this login in your own terminal.") + "\n\n"
+}
+
+// countdown is the time left on the code as m:ss, 0:00 once it passed.
+func countdown(left time.Duration) string {
+	secs := max(int(left.Round(time.Second).Seconds()), 0)
+	return fmt.Sprintf("%d:%02d", secs/60, secs%60)
+}
+
 // describeSpace is one listed space: its name, access and owner, "a team"
 // when no person owns it.
 func describeSpace(s sitelogin.Space) string {
-	owner := s.Owner
-	if owner == "" {
-		owner = "a team"
+	return fmt.Sprintf("%s (%s), owned by %s", s.Name, s.Access.Describe(), ownerOf(s))
+}
+
+// ownerOf is the owner a space is listed with: its owner's email, or "a
+// team" when no person owns it.
+func ownerOf(s sitelogin.Space) string {
+	if s.Owner == "" {
+		return "a team"
 	}
-	return fmt.Sprintf("%s (%s), owned by %s", s.Name, s.Access.Describe(), owner)
+	return s.Owner
 }
 
 // spaceNames lists the space names for a refusal; "no space" for none.
@@ -293,7 +359,11 @@ func spaceNames(spaces []sitelogin.Space) string {
 // confirm asks the person at the terminal whether to store the login; only
 // y or yes, in any case, agrees.
 func (l *Login) confirm(ctx context.Context, errOut io.Writer) (consent, error) {
-	fmt.Fprint(errOut, "Store this login? [y/N] ")
+	prompt := "Store this login? [y/N] "
+	if l.opts.errStyle().Mode() == tui.Styled {
+		prompt = "  " + l.opts.errStyle().Bold(prompt)
+	}
+	fmt.Fprint(errOut, prompt)
 	type answer struct {
 		line string
 		err  error
@@ -414,38 +484,43 @@ func chooseDefault(asked string, spaces []sitelogin.Space, prior string) string 
 	}
 }
 
-// report tells the person what the stored login changed besides itself:
-// the default space and the key it replaced, which is revoked only when
-// the same account approved it.
-func (l *Login) report(ctx context.Context, stored credentials.Login, spaces []sitelogin.Space, out storeOutcome) {
-	errOut := l.opts.errOut()
+// report tells the person what the stored login did to the default space.
+func (l *Login) report(spaces []sitelogin.Space, out storeOutcome) {
+	errOut := l.opts.ErrOut()
+	es := l.opts.errStyle()
 	switch {
 	case out.defaultSpace != "" && out.priorDefault != "" && out.priorDefault != out.defaultSpace:
-		fmt.Fprintf(errOut, "The default space changed from %q to %q.\n", out.priorDefault, out.defaultSpace)
+		fmt.Fprintf(errOut, "%sThe default space changed from %q to %q.\n", es.Mark(tui.Done), out.priorDefault, out.defaultSpace)
 	case out.defaultSpace != "":
-		fmt.Fprintf(errOut, "The default space is %q; 'slivingdoc space <name>' changes it.\n", out.defaultSpace)
+		fmt.Fprintf(errOut, "%sThe default space is %q; 'slivingdoc space <name>' changes it.\n", es.Mark(tui.Done), out.defaultSpace)
 	case len(spaces) == 0:
-		fmt.Fprintln(errOut, "The login reaches no space yet; create one on the site, then run 'slivingdoc space <name>' to make it the default.")
+		fmt.Fprintln(errOut, es.Mark(tui.Caution)+"The login reaches no space yet; create one on the site, then run 'slivingdoc space <name>' to make it the default.")
 	default:
 		if out.priorDefault != "" {
-			fmt.Fprintf(errOut, "The default space %q is not among the login's spaces, so it was cleared.\n", out.priorDefault)
+			fmt.Fprintf(errOut, "%sThe default space %q is not among the login's spaces, so it was cleared.\n", es.Mark(tui.Caution), out.priorDefault)
 		}
-		fmt.Fprintln(errOut, "Run 'slivingdoc space <name>' to choose the default space, or pass --space to serve, pull and commit.")
+		fmt.Fprintln(errOut, es.Mark(tui.Next)+"Run 'slivingdoc space <name>' to choose the default space, or pass --space to serve, pull and commit.")
 	}
-	replaced := out.replaced
+}
+
+// revokeReplaced revokes the key the stored login replaced, only when the
+// same account approved it, and tells the person otherwise.
+func (l *Login) revokeReplaced(ctx context.Context, stored credentials.Login, replaced *credentials.Login) {
+	errOut := l.opts.ErrOut()
+	es := l.opts.errStyle()
 	if replaced == nil || replaced.Key == stored.Key {
 		return
 	}
 	if replaced.Account != stored.Account {
-		fmt.Fprintf(errOut, "The earlier login key for %s was approved by %s, not %s, so it was not revoked; revoke it on the Tokens page if it is no longer needed.\n",
-			mcp.Redact(replaced.Endpoint), replaced.Account, stored.Account)
+		fmt.Fprintf(errOut, "%sThe earlier login key for %s was approved by %s, not %s, so it was not revoked; revoke it on the Tokens page if it is no longer needed.\n",
+			es.Mark(tui.Caution), mcp.Redact(replaced.Endpoint), replaced.Account, stored.Account)
 		return
 	}
 	rctx, cancel := revocationContext(ctx)
 	defer cancel()
 	if err := revoke(rctx, *replaced, l.opts); err != nil {
-		fmt.Fprintf(errOut, "The earlier login key for %s could not be revoked (%s); revoke it on the Tokens page.\n",
-			mcp.Redact(replaced.Endpoint), mcp.Redact(err.Error()))
+		fmt.Fprintf(errOut, "%sThe earlier login key for %s could not be revoked (%s); revoke it on the Tokens page.\n",
+			es.Mark(tui.Caution), mcp.Redact(replaced.Endpoint), mcp.Redact(err.Error()))
 	}
 }
 
@@ -475,16 +550,46 @@ func (l *Login) discard(ctx context.Context, key string, cause error) error {
 // loggedIn is the login's result line. It names the approving account, the
 // endpoint when it is not the default, and the default space when there
 // is one.
-func loggedIn(l credentials.Login, defaultSpace string) string {
-	line := "Logged in as " + l.Account
+func loggedIn(s tui.Style, l credentials.Login, defaultSpace string) string {
+	where := ""
 	if l.Endpoint != DefaultHostedEndpoint {
-		line += " at " + l.Endpoint
+		where = " at " + l.Endpoint
 	}
-	line += fmt.Sprintf(" (%s) %s", l.Access.Describe(), l.Expires.Describe())
+	if s.Mode() == tui.Styled {
+		detail := l.Access.Describe() + " · " + l.Expires.Describe()
+		if defaultSpace != "" {
+			detail += " · default space " + defaultSpace
+		}
+		return line(s, tui.Done, "Logged in as "+s.Bold(l.Account)+where, detail)
+	}
+	text := "Logged in as " + l.Account + where + fmt.Sprintf(" (%s) %s", l.Access.Describe(), l.Expires.Describe())
 	if defaultSpace != "" {
-		line += fmt.Sprintf("; default space %q", defaultSpace)
+		text += fmt.Sprintf("; default space %q", defaultSpace)
 	}
-	return line
+	return text + "\n"
+}
+
+// offerDefault lets the person at the terminal pick the default space of
+// a login that has none, and returns it, or "" when they skipped it or it
+// could not be stored. The login itself is stored already, so a failure
+// here is told, not returned: the login stands and 'slivingdoc space'
+// can finish the choice.
+func (l *Login) offerDefault(ctx context.Context, stored credentials.Login, spaces []sitelogin.Space, prior string) string {
+	errOut, es := l.opts.ErrOut(), l.opts.errStyle()
+	name, err := l.opts.pickSpace(spaces, "")
+	if skipped(err) {
+		return ""
+	}
+	if err != nil {
+		fmt.Fprintf(errOut, "%sThe space picker failed (%s).\n", es.Mark(tui.Caution), mcp.Redact(err.Error()))
+		return ""
+	}
+	sp := &Space{opts: l.opts, file: l.file, login: stored, prior: prior, name: name}
+	if err := sp.store(ctx); err != nil {
+		fmt.Fprintf(errOut, "%sThe default space was not stored (%s).\n", es.Mark(tui.Caution), mcp.Redact(err.Error()))
+		return ""
+	}
+	return name
 }
 
 // Logout is a prepared logout: the logins to withdraw are chosen and the
@@ -493,6 +598,9 @@ type Logout struct {
 	opts   ProcessOptions
 	file   credentials.File
 	logins []credentials.Login
+	// siteChosen is whether --site or SLIVINGDOC_SITE chose the logins,
+	// so no picker asks again.
+	siteChosen bool
 }
 
 // PrepareLogout chooses the stored logins to withdraw: every one, or
@@ -528,7 +636,7 @@ func PrepareLogout(f *LogoutFlags, opts ProcessOptions) (*Logout, error) {
 		}
 		logins = kept
 	}
-	return &Logout{opts: opts, file: file, logins: logins}, nil
+	return &Logout{opts: opts, file: file, logins: logins, siteChosen: resolveString(&f.site, env[SiteEnv], "") != ""}, nil
 }
 
 // Run revokes each chosen key, and so every token minted from it, at the
@@ -537,6 +645,18 @@ func PrepareLogout(f *LogoutFlags, opts ProcessOptions) (*Logout, error) {
 // as revoked. A login whose revocation fails stays stored, so the logout
 // can be repeated.
 func (l *Logout) Run(ctx context.Context) error {
+	if len(l.logins) > 1 && !l.siteChosen && l.opts.terminal() == OnTerminal {
+		chosen, err := l.opts.pickLogins(l.logins)
+		if skipped(err) {
+			io.WriteString(l.opts.ErrOut(), line(l.opts.errStyle(), tui.Next, "Nothing was changed; every login stays stored", ""))
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("logout: %w", err)
+		}
+		l.logins = chosen
+	}
+	so := l.opts.outStyle()
 	var failed []error
 	var revoked []credentials.Login
 	for _, login := range l.logins {
@@ -553,10 +673,10 @@ func (l *Logout) Run(ctx context.Context) error {
 		}
 		for _, login := range revoked {
 			if slices.Contains(kept, login.ID) {
-				fmt.Fprintf(l.opts.Out(), "Revoked the login key of %s at %s; a newer login for it was kept\n", login.Account, mcp.Redact(login.Endpoint))
+				fmt.Fprintf(l.opts.Out(), "%sRevoked the login key of %s at %s; a newer login for it was kept\n", so.Mark(tui.Done), so.Bold(login.Account), mcp.Redact(login.Endpoint))
 				continue
 			}
-			fmt.Fprintf(l.opts.Out(), "Logged out of %s at %s; the login key and its tokens were revoked\n", login.Account, mcp.Redact(login.Endpoint))
+			fmt.Fprintf(l.opts.Out(), "%sLogged out of %s at %s; the login key and its tokens were revoked\n", so.Mark(tui.Done), so.Bold(login.Account), mcp.Redact(login.Endpoint))
 		}
 	}
 	if len(failed) > 0 {
@@ -649,9 +769,9 @@ func (o ProcessOptions) interruptible(ctx context.Context) (context.Context, con
 	return ctx, cancel
 }
 
-// errOut is the stream of a login's prompts: Stderr, or the process
+// ErrOut is the stream of prompts, progress and errors: Stderr, or the process
 // stderr when unset.
-func (o ProcessOptions) errOut() io.Writer {
+func (o ProcessOptions) ErrOut() io.Writer {
 	if o.Stderr != nil {
 		return o.Stderr
 	}
