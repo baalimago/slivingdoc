@@ -21,7 +21,7 @@ Test coverage: 88.7% 😍👌
 </div>
 
 <p align="center">
-  <img src="img/demo.gif" width="800" alt="Two agents pull the same notes and edit different sections of plan.md. The second commits without pulling the first one's change, and both commits succeed; a pull shows both edits. Then both add a different line in the same place, and the second commit returns CONTENT_CONFLICT with conflict markers in the file.">
+  <img src="img/demo.gif" width="800" alt="Two panes: you on the command line, an agent calling notes_pull and notes_commit over MCP. You change one line of plan.md and the agent another; both commit without pulling first and both land, merged. Then both change the same line: the agent commits first, and your commit returns CONTENT_CONFLICT with both versions in the file."">
 </p>
 
 ## Get started
