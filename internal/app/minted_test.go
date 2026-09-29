@@ -112,6 +112,72 @@ func TestMintedTokensOfAReadLoginAreRead(t *testing.T) {
 	}
 }
 
+// TestMintedTokensStayOnTheirFirstSpace proves a source is bound to the
+// space id of its first mint: a renewal the site answers for another space
+// of the same name is refused and its token revoked, so a running process
+// never writes its workspaces into a space that replaced theirs.
+func TestMintedTokensStayOnTheirFirstSpace(t *testing.T) {
+	site, tokens, _ := mintRig(t, credentials.AccessWrite)
+	replaced := notesSpace
+	replaced.ID = "notes-first"
+	site.SetSpaces(loginToken, replaced)
+	mustToken(t, tokens)
+	if got := tokens.boundSpace(); got != "notes-first" {
+		t.Fatalf("boundSpace() = %q, want the first mint's id", got)
+	}
+	tokens.Rejected(mustToken(t, tokens))
+	held := mustToken(t, tokens)
+
+	replaced.ID = "notes-second"
+	site.SetSpaces(loginToken, replaced)
+	tokens.Rejected(held)
+	_, err := tokens.Token(context.Background())
+	if !errors.Is(err, storage.ErrAccessDenied) || !strings.Contains(err.Error(), "no longer the space this process started with") {
+		t.Fatalf("Token() after the space was replaced = %v, want an access refusal", err)
+	}
+	mints := site.Mints()
+	if revoked := site.Revoked(); len(mints) != 3 || len(revoked) != 1 || revoked[0] != mints[2].Token {
+		t.Fatalf("revoked = %v after mints %+v, want the token of the other space", revoked, mints)
+	}
+	if got := tokens.boundSpace(); got != "notes-first" {
+		t.Fatalf("boundSpace() = %q after the refusal, want the first id kept", got)
+	}
+	if _, again := tokens.Token(context.Background()); !errors.Is(again, storage.ErrAccessDenied) || len(site.Mints()) != 3 {
+		t.Fatalf("Token() after the refusal = %v after %d mints, want the kept refusal without another mint", again, len(site.Mints()))
+	}
+}
+
+// TestMintedTokensAcceptAnIDAfterNone proves a process started against a
+// site that names no space id keeps working when the site starts naming
+// one, and is bound to it from then on.
+func TestMintedTokensAcceptAnIDAfterNone(t *testing.T) {
+	site, tokens, _ := mintRig(t, credentials.AccessWrite)
+	site.OmitSpaceIDs(true)
+	tokens.Rejected(mustToken(t, tokens))
+	held := mustToken(t, tokens)
+	if got := tokens.boundSpace(); got != "" {
+		t.Fatalf("boundSpace() from a site without ids = %q, want none", got)
+	}
+	site.OmitSpaceIDs(false)
+	tokens.Rejected(held)
+	held = mustToken(t, tokens)
+	if got := tokens.boundSpace(); got != "notes" {
+		t.Fatalf("boundSpace() = %q, want the first id the site named", got)
+	}
+	site.OmitSpaceIDs(true)
+	tokens.Rejected(held)
+	if _, err := tokens.Token(context.Background()); !errors.Is(err, storage.ErrAccessDenied) {
+		t.Fatalf("Token() without an id once bound = %v, want the refusal", err)
+	}
+	mints := site.Mints()
+	if revoked := site.Revoked(); len(revoked) != 1 || revoked[0] != mints[len(mints)-1].Token {
+		t.Fatalf("revoked = %v, want the refused token", revoked)
+	}
+	if got := tokens.boundSpace(); got != "notes" {
+		t.Fatalf("boundSpace() after the refusal = %q, want the bound id kept", got)
+	}
+}
+
 func TestMintedTokensMapTheSitesRefusals(t *testing.T) {
 	for _, row := range []struct {
 		name  string

@@ -125,8 +125,8 @@ func TestResolveHostedSpace(t *testing.T) {
 	}
 	for _, bucket := range []string{"", "notes"} {
 		cfg, err := resolve(bucket, hostedTestToken)
-		if err != nil || cfg.bucket != "notes" {
-			t.Fatalf("resolve(bucket %q) = %q, %v; want the token's space notes", bucket, cfg.bucket, err)
+		if err != nil || cfg.bucket != "notes" || cfg.spaceID != "notes" {
+			t.Fatalf("resolve(bucket %q) = %q (id %q), %v; want the token's space notes and its id", bucket, cfg.bucket, cfg.spaceID, err)
 		}
 	}
 	for _, row := range []struct {
@@ -145,8 +145,8 @@ func TestResolveHostedSpace(t *testing.T) {
 	}
 
 	g.DisableTokenLookup()
-	if cfg, err := resolve("notes", hostedTestToken); err != nil || cfg.bucket != "notes" {
-		t.Fatalf("resolve against an older server with --bucket = %q, %v; want --bucket kept", cfg.bucket, err)
+	if cfg, err := resolve("notes", hostedTestToken); err != nil || cfg.bucket != "notes" || cfg.spaceID != "" {
+		t.Fatalf("resolve against an older server with --bucket = %q (id %q), %v; want --bucket kept without an id", cfg.bucket, cfg.spaceID, err)
 	}
 	if _, err := resolve("", hostedTestToken); err == nil || !strings.Contains(err.Error(), "pass the space name as --space") {
 		t.Fatalf("resolve against an older server without --bucket = %v, want a refusal asking for --space", err)

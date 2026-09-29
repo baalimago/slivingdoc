@@ -36,7 +36,25 @@ const deleteBatch = 1000
 // errorBodyLimit bounds how much of an error response is read.
 const errorBodyLimit = 4 << 10
 
-var spaceRE = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
+var (
+	spaceRE   = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
+	spaceIDRE = regexp.MustCompile(`^[A-Za-z0-9-]{1,64}$`)
+)
+
+// SpaceID is the server's own id of a space: unlike its name, which is
+// unique only among one account's spaces, it names one space for good
+// (architecture/hosted-mode.md). The zero value is a server that names
+// none.
+type SpaceID string
+
+// ParseSpaceID accepts the id a server named: empty for none, else 1 to 64
+// ASCII letters, digits, or hyphens. Anything else is ErrIncompatible.
+func ParseSpaceID(id string) (SpaceID, error) {
+	if id != "" && !spaceIDRE.MatchString(id) {
+		return "", fmt.Errorf("httpstore: the server named no valid space id: %w", storage.ErrIncompatible)
+	}
+	return SpaceID(id), nil
+}
 
 // ErrInvalidSpace reports a space name outside the API grammar.
 var ErrInvalidSpace = errors.New("httpstore: invalid space name")
@@ -227,8 +245,11 @@ const (
 // TokenInfo is the server's description of a token: the one space it
 // reaches, under the token owner's own name for it.
 type TokenInfo struct {
-	Space  string
-	Access Access
+	Space string
+	// SpaceID is the server's id of that space; empty from a server that
+	// names none.
+	SpaceID SpaceID
+	Access  Access
 	// ExpiresAt is when the token stops working; zero for a token that
 	// never expires.
 	ExpiresAt time.Time
@@ -241,6 +262,7 @@ var ErrTokenLookupUnsupported = errors.New("httpstore: the server cannot name th
 // tokenBody is the GET /v1/token answer.
 type tokenBody struct {
 	Space     string  `json:"space"`
+	SpaceID   string  `json:"spaceId"`
 	Access    string  `json:"access"`
 	ExpiresAt *string `json:"expiresAt"`
 }
@@ -305,7 +327,11 @@ func (b tokenBody) info() (TokenInfo, error) {
 	if access != AccessRead && access != AccessWrite {
 		return TokenInfo{}, fmt.Errorf("httpstore: describe token: access %q is neither read nor write: %w", Sanitize(b.Access, 16), storage.ErrIncompatible)
 	}
-	info := TokenInfo{Space: b.Space, Access: access}
+	id, err := ParseSpaceID(b.SpaceID)
+	if err != nil {
+		return TokenInfo{}, fmt.Errorf("httpstore: describe token: %w", err)
+	}
+	info := TokenInfo{Space: b.Space, SpaceID: id, Access: access}
 	if b.ExpiresAt != nil {
 		at, err := time.Parse(time.RFC3339Nano, *b.ExpiresAt)
 		if err != nil {

@@ -39,7 +39,7 @@ func grantMints(site *sitetest.Site, gateways ...*gatewaytest.Gateway) {
 	site.OnMint(func(m sitetest.Minted) {
 		for _, g := range gateways {
 			if g.URL() == m.Endpoint {
-				g.Grant(m.Token, m.Space, m.Access == "read")
+				g.GrantAs(m.Token, m.SpaceID, m.Space, m.Access == "read")
 			}
 		}
 	})

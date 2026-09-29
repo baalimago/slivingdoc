@@ -111,7 +111,7 @@ func TestMint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Mint() = %v", err)
 	}
-	if got.Space != "notes" || got.Access != credentials.AccessWrite || got.Endpoint != endpoint || got.Owner != "ada@example.test" ||
+	if got.Space != "notes" || got.SpaceID != "notes" || got.Access != credentials.AccessWrite || got.Endpoint != endpoint || got.Owner != "ada@example.test" ||
 		got.Expires.Never() || got.Token == testToken || len(hooked) != 1 || hooked[0].Token != got.Token {
 		t.Fatalf("Mint() = %+v, want a write token of notes (hooked %+v)", got, hooked)
 	}
@@ -177,6 +177,7 @@ func TestMintRefusesAnswersOutsideTheContract(t *testing.T) {
 		{"plain http endpoint", "endpoint", "http://api.example.test", true},
 		{"owner not an email", "owner", strings.Repeat("a", 255), true},
 		{"bad expiry", "expiresAt", "soon", true},
+		{"bad space id", "spaceId", "../x", true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			body := map[string]string{}
