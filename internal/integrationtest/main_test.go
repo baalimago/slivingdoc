@@ -292,8 +292,8 @@ func overrideEnv(env, overrides []string) []string {
 // credentials-directory choice, or HOME (the helper gets an empty one), so a
 // spawned helper can
 // never observe the developer's cloud configuration. It also drops
-// NO_COLOR: terminal-colour scenarios model their own environment and must
-// not inherit a user's output preference.
+// NO_COLOR and COLORTERM: terminal-colour scenarios model their own
+// environment and must not inherit a user's output preferences.
 func sanitizedEnv() []string {
 	var out []string
 	for _, kv := range os.Environ() {
@@ -306,7 +306,7 @@ func sanitizedEnv() []string {
 			"SLIVINGDOC_PATH_STYLE", "SLIVINGDOC_BUCKET", "SLIVINGDOC_SPACE", "SLIVINGDOC_PREFIX",
 			"SLIVINGDOC_WORKSPACE_ROOT", "SLIVINGDOC_PRIVATE_ROOT",
 			"SLIVINGDOC_TOKEN", "SLIVINGDOC_ENDPOINT",
-			"SLIVINGDOC_STORAGE", "SLIVINGDOC_SITE", credentials.DirEnv, "NO_COLOR", "HOME":
+			"SLIVINGDOC_STORAGE", "SLIVINGDOC_SITE", credentials.DirEnv, "NO_COLOR", "COLORTERM", "HOME":
 			continue
 		}
 		if strings.HasPrefix(name, "AWS_CONTAINER_CREDENTIALS_") {

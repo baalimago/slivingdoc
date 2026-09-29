@@ -136,6 +136,9 @@ func TestHomeScreen(t *testing.T) {
 	t.Run("stored logins", func(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()
+		if err := os.Chmod(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
 		env := []string{"SLIVINGDOC_CONFIG_DIR=" + dir}
 		file, err := credentials.Locate(app.EnvLookup(env), runtime.GOOS)
 		if err != nil {
