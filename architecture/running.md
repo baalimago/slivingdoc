@@ -40,10 +40,12 @@ flag.
 | `serve` (`s`)   | Serve the notebook over MCP stdio. This is the server.        |
 | `pull` (`p`)    | Write the current notebook into a directory and exit.         |
 | `commit` (`c`)  | Publish the changes at a directory (`-m <message>`) and exit. |
+| `status`        | Show what a directory changed locally, without changing it.   |
+| `log`           | List the recent publications of a notebook (`--limit <n>`).   |
 | `login`         | Log in to a hosted account through the browser.               |
 | `space`         | List the login's spaces, or set the default one (`space <n>`).|
 | `logout`        | Revoke the stored login key and its tokens, and remove it.    |
-| `version` (`v`) | Print `slivingdoc <semver>` and exit, touching nothing else.  |
+| `version` (`v`) | Print `slivingdoc <semver>` and exit, touching nothing else. `slivingdoc --version` does the same. |
 
 ## Direct use: pull and commit
 

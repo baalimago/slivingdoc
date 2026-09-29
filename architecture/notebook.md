@@ -74,6 +74,10 @@ Notebook.Commit(ctx, message) → see commit.md
 - Pack bytes come from the byte cache when the file named by the SHA-256 has the right size and a fresh SHA-256 match (`cacheRead`; a mismatch deletes the entry). Otherwise they are downloaded, checked against descriptor size and SHA-256, and cached through temp file + rename (`cacheWrite`). A cache write failure is only a warning.
 - `prefetchPacks` runs up to 16 downloads ahead of the sequential importer; `next()` yields packs in manifest order and every participant honors cancellation.
 
+### Status and log (`status.go`)
+
+`Status(ctx)` holds the operation lock, then reports the accepted generation, the pulled marker and recovery-required mode; unless recovery is required it scans L (`Snapshot`, so ignored files are excluded and invalid content is refused as in pull) and compares it with the baseline tree into `Change` entries (`ChangeAdded`, `ChangeModified`, `ChangeDeleted`, sorted by path, with line counts from `git.DiffSnapshots`). `Log(ctx, limit)` walks the baseline head's first parents with `ReadCommit` and returns `LogEntry` messages, newest first; it stops with `History.More` at the limit or at a parent the shallow history no longer holds. A limit below 1 is `INVALID_REQUEST`/`MALFORMED_INPUT`. Neither reads the store.
+
 ### Result (`result.go`)
 
 `Result{Generation, Stat}` is valid only with a nil error; every error path returns the zero `Result`. `diffStat(base, result)` reads both trees and calls `git.DiffSnapshots`; it is computed before any local mutation or publication, so a read failure aborts with nothing changed (`STORAGE_INTEGRITY`/`ENGINE_FAILED`).

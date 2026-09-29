@@ -138,6 +138,8 @@ slivingdoc/
 |   |-- serve/               serve|s: the MCP stdio server over internal/app
 |   |-- pull/                pull|p: one-shot notes_pull for humans
 |   |-- commit/              commit|c: one-shot notes_commit for humans
+|   |-- status/              status: local changes against the accepted state
+|   |-- log/                 log: recent accepted publications
 |   |-- login/               login, logout and space: browser device login,
 |   |                        stored account key, default space, revocation
 |   `-- version/             version|v: the exact "slivingdoc <semver>" line
@@ -268,7 +270,7 @@ Checkpoint and cleanup (synchronous inside the triggering commit, best-effort)
 
 `main.go` is one call: `os.Exit(cli.Run(ctx, os.Args, git2.New(), opts))`.
 `internal/cli` holds the command map (`serve|s`, `pull|p`, `commit|c`,
-`login`, `logout`, `space`, `version|v`) and routes through its own `router` (`internal/cli/route.go`), over the `go_away_boilerplate/pkg/cmd` `Command` interface. Each `cmd/`
+`status`, `log`, `login`, `logout`, `space`, `version|v`) and routes through its own `router` (`internal/cli/route.go`), over the `go_away_boilerplate/pkg/cmd` `Command` interface. Each `cmd/`
 package implements `cmd.Command`. The router parses the selected command's
 flag set, then calls `Setup` and `Run`.
 

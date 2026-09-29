@@ -40,7 +40,7 @@ the code and fix the doc in the same change (see
   compaction (`planCheckpoint`, `compactManifest`), shallow history,
   retention (`--retained-checkpoints`), and generation-fenced cleanup.
 - **[cli.md](./cli.md)**: `main.go`, `cli.Run` and the `cmd/serve`,
-  `pull`, `commit`, `login`, `logout`, `space`, `version` commands, `app.Setup` to `Runtime`, the
+  `pull`, `commit`, `status`, `log`, `login`, `logout`, `space`, `version` commands, `app.Setup` to `Runtime`, the
   shutdown path, the CLI report and colour, `DEBUG_PERF`.
 - **[tui.md](./tui.md)**: the terminal presentation shared by every
   command (`internal/tui`): palette, marks, columns, the progress spinner,

@@ -1,0 +1,81 @@
+// Package status is the slivingdoc status command: what a notebook
+// directory holds compared with the last accepted state, without changing
+// anything.
+package status
+
+import (
+	"context"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+
+	"github.com/baalimago/slivingdoc/internal/app"
+	"github.com/baalimago/slivingdoc/internal/git"
+)
+
+type command struct {
+	engine  git.Engine
+	opts    app.ProcessOptions
+	flags   *app.Flags
+	flagset *flag.FlagSet
+	path    string
+	runtime *app.Runtime
+}
+
+// Command returns the status command over the given native engine and
+// process environment.
+func Command(engine git.Engine, opts app.ProcessOptions) *command {
+	fs := flag.NewFlagSet("status", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	flags := app.NewFlags()
+	flags.Bind(fs)
+	return &command{engine: engine, opts: opts, flags: flags, flagset: fs}
+}
+
+func (c *command) Flagset() *flag.FlagSet { return c.flagset }
+
+func (c *command) Describe() string { return "show what a notebook directory changed locally" }
+
+func (c *command) Help() string { return helpText }
+
+// Setup resolves the path argument, then the same startup as pull.
+func (c *command) Setup(context.Context) error {
+	path, err := app.OperationPath(c.flagset, c.opts.Cwd)
+	if err != nil {
+		return fmt.Errorf("status: %w", err)
+	}
+	c.path = path
+	runtime, err := app.Setup(c.engine, c.flags, c.opts)
+	if err != nil {
+		return err
+	}
+	c.runtime = runtime
+	return nil
+}
+
+// Run reports the local state once; a domain error returns its terse category.
+func (c *command) Run(ctx context.Context) error {
+	if c.runtime == nil {
+		return errors.New("status: Setup must run before Run")
+	}
+	defer c.runtime.Close()
+	st, err := c.runtime.Status(ctx, c.path)
+	return app.ReportStatus(c.opts.Out(), st, err, c.path, c.runtime.Target(), c.opts.Env, c.runtime.ReadOnlyPaths(), c.runtime.WritablePaths())
+}
+
+const helpText = `slivingdoc status - show what a notebook directory changed locally
+
+Usage:
+  slivingdoc status [flags] [path]
+
+[path] is the notebook directory and defaults to the workspace root. Prints
+the accepted generation and one line per file that a commit would publish
+(added, modified or deleted, with its line counts). It changes nothing and
+reads no remote state; it opens the store only to check it, like pull. A
+directory that needs recovery says so instead of listing changes, and the
+next pull or commit repairs it.
+
+Takes the same flags as pull.
+
+` + app.FlagReference

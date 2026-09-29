@@ -12,9 +12,11 @@ import (
 	"github.com/baalimago/go_away_boilerplate/pkg/cmd"
 
 	"github.com/baalimago/slivingdoc/cmd/commit"
+	logcmd "github.com/baalimago/slivingdoc/cmd/log"
 	"github.com/baalimago/slivingdoc/cmd/login"
 	"github.com/baalimago/slivingdoc/cmd/pull"
 	"github.com/baalimago/slivingdoc/cmd/serve"
+	"github.com/baalimago/slivingdoc/cmd/status"
 	"github.com/baalimago/slivingdoc/cmd/version"
 	"github.com/baalimago/slivingdoc/internal/app"
 	"github.com/baalimago/slivingdoc/internal/git"
@@ -33,7 +35,8 @@ Commands:
 Run 'slivingdoc serve -h' for the full flag and environment reference.
 
 Humans sync the shared directory directly with 'slivingdoc pull <path>'
-and 'slivingdoc commit <path> -m <message>'.
+and 'slivingdoc commit <path> -m <message>'; 'slivingdoc status' shows what
+changed locally and 'slivingdoc log' the recent publications.
 
 For hosted storage, 'slivingdoc login' logs in to your account through the
 browser, so serve, pull and commit need no SLIVINGDOC_TOKEN; 'slivingdoc
@@ -60,6 +63,8 @@ func Commands(engine git.Engine, opts app.ProcessOptions) map[string]cmd.Command
 		"serve|s":   serve.Command(engine, opts),
 		"pull|p":    pull.Command(engine, opts),
 		"commit|c":  commit.Command(engine, opts),
+		"status":    status.Command(engine, opts),
+		"log":       logcmd.Command(engine, opts),
 		"login":     login.Command(opts),
 		"logout":    login.LogoutCommand(opts),
 		"space":     login.SpaceCommand(opts),

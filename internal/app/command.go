@@ -164,6 +164,12 @@ func Report(out io.Writer, result notebook.Result, err error, path string, env [
 		writeSuccess(out, info, p)
 		return nil
 	}
+	return reportError(out, err, p, readOnly, writable)
+}
+
+// reportError renders a domain error and returns its terse category; an
+// error that is not a domain error is returned unchanged.
+func reportError(out io.Writer, err error, p tui.Style, readOnly, writable []string) error {
 	te, domain := mcp.MapError(err)
 	if !domain {
 		return err

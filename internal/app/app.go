@@ -262,7 +262,7 @@ func (r *Runtime) Serve(ctx context.Context) error {
 	// where it syncs; an MCP host's stderr is not a terminal and gets
 	// nothing new (architecture/tui.md). Stdout stays the protocol's.
 	s := tui.Detect(r.p.stderr, EnvLookup(r.p.env))
-	io.WriteString(r.p.stderr, s.Header("serve", fmt.Sprintf("%s · %s · waiting for an MCP client on stdio", r.target(), r.cfg.workspaceRoot)))
+	io.WriteString(r.p.stderr, s.Header("serve", fmt.Sprintf("%s · %s · waiting for an MCP client on stdio", r.Target(), r.cfg.workspaceRoot)))
 	return serve(ctx, r.p, srv, r.logger)
 }
 
@@ -276,6 +276,18 @@ func (r *Runtime) Pull(ctx context.Context, path string) (notebook.Result, error
 // returns the operation result. An empty path is the workspace root.
 func (r *Runtime) Commit(ctx context.Context, path, message string) (notebook.Result, error) {
 	return r.svc.Commit(notebook.WithLogger(ctx, Module(r.base, ModuleNotebook)), r.resolve(path), message)
+}
+
+// Status reports the local state of the notebook at path. An empty path is
+// the workspace root.
+func (r *Runtime) Status(ctx context.Context, path string) (notebook.Status, error) {
+	return r.svc.Status(notebook.WithLogger(ctx, Module(r.base, ModuleNotebook)), r.resolve(path))
+}
+
+// Log returns up to limit recent publications of the notebook at path. An
+// empty path is the workspace root.
+func (r *Runtime) Log(ctx context.Context, path string, limit int) (notebook.History, error) {
+	return r.svc.Log(notebook.WithLogger(ctx, Module(r.base, ModuleNotebook)), r.resolve(path), limit)
 }
 
 // ReadOnlyPaths returns the service's normalized, sorted read-only entries.

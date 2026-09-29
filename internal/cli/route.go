@@ -48,6 +48,14 @@ func (r router) run(ctx context.Context, args []string) int {
 			r.usage()
 			return 0
 		}
+		if slices.Contains(rest, "--version") {
+			command, _ := r.lookup("version")
+			if err := command.Run(ctx); err != nil {
+				r.fail(err)
+				return 1
+			}
+			return 0
+		}
 		if len(rest) > 0 {
 			r.fail(fmt.Errorf("give a command before %s", rest[0]))
 		}
