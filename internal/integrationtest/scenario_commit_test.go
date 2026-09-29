@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/baalimago/slivingdoc/internal/storage"
 )
@@ -12,7 +13,7 @@ import (
 // TestScenarioCommitFirstCommit proves the first publication: a root
 // commit, a state-complete checkpoint pack, If-None-Match creation, no
 // increment pack, and an independent pull that observes the files
-// (architecture section 11.1, L650).
+// (architecture/commit.md).
 func TestScenarioCommitFirstCommit(t *testing.T) {
 	t.Parallel()
 	h := newFakeHarness(t, HarnessConfig{})
@@ -53,7 +54,7 @@ func TestScenarioCommitFirstCommit(t *testing.T) {
 
 // TestScenarioCommitNormalCommit proves a normal publication: exactly one
 // incremental pack precedes the manifest CAS and no full checkpoint is
-// published for a single increment (architecture section 11.2, L712).
+// published for a single increment (architecture/commit.md).
 func TestScenarioCommitNormalCommit(t *testing.T) {
 	t.Parallel()
 	h := newFakeHarness(t, HarnessConfig{})
@@ -93,7 +94,7 @@ func TestScenarioCommitNormalCommit(t *testing.T) {
 
 // TestScenarioCommitNoChange proves that a commit whose local tree equals
 // the remote state synchronizes L and P without any publication ID, pack,
-// commit, or CAS request (architecture section 11.3, L733), and returns
+// commit, or CAS request (architecture/commit.md), and returns
 // the accepted generation with an empty success stat.
 func TestScenarioCommitNoChange(t *testing.T) {
 	t.Parallel()
@@ -121,8 +122,7 @@ func TestScenarioCommitNoChange(t *testing.T) {
 }
 
 // TestScenarioCommitWithoutPull proves that a commit on an unmanaged path
-// is refused as INVALID_REQUEST before any S3 access (architecture
-// section 11.1, L650).
+// is refused as INVALID_REQUEST before any S3 access (architecture/commit.md).
 func TestScenarioCommitWithoutPull(t *testing.T) {
 	t.Parallel()
 	h := newFakeHarness(t, HarnessConfig{})
@@ -142,7 +142,7 @@ func TestScenarioCommitWithoutPull(t *testing.T) {
 // TestScenarioCommitLRewriteAfterCommit proves that a conflict-free commit
 // rewrites L to the accepted merged tree: the caller's own edits survive and
 // the concurrent remote changes it never saw appear, so no stale bytes
-// outlive the acceptance (architecture section 11.1, L650).
+// outlive the acceptance (architecture/commit.md).
 //
 // B's L is genuinely stale at commit time: A advances the remote AFTER B
 // pulled, so the accepted merged tree is a strict superset of B's
@@ -186,7 +186,7 @@ func TestScenarioCommitLRewriteAfterCommit(t *testing.T) {
 // first publications on distinct paths produce one linear accepted state
 // carrying both changes: exactly one writer wins the create, the loser
 // merges and retries through the manifest CAS, and no update is lost
-// (architecture section 11.2, L712).
+// (architecture/commit.md).
 //
 // The race is made deterministic by a barrier rather than by timing: B's
 // conditional create of `current` blocks until A's publication is accepted,
@@ -241,8 +241,8 @@ func TestScenarioCommitTwoDisjointCommitsRace(t *testing.T) {
 // TestScenarioCommitTwoOverlappingCommitsRace proves that two concurrent
 // first publications of the same relative file with different content yield
 // exactly one OK and one CONTENT_CONFLICT naming the shared path: the
-// accepted state stays valid and no false success is reported (architecture
-// section 11.2, L712; section 12, L763).
+// accepted state stays valid and no false success is reported
+// (architecture/commit.md and conflicts.md).
 //
 // The loser is chosen by a barrier, not by scheduling: B parks on the
 // conditional create until A's publication is accepted, so B is always the
@@ -292,7 +292,7 @@ func TestScenarioCommitTwoOverlappingCommitsRace(t *testing.T) {
 // TestScenarioCommitCASLossRetry proves that one injected precondition
 // failure on the manifest CAS triggers a fresh proposal with a new
 // publication ID, generation, key, commit, and pack, and that the losing
-// pack is never republished (architecture section 11.3, L733).
+// pack is never republished (architecture/commit.md).
 func TestScenarioCommitCASLossRetry(t *testing.T) {
 	t.Parallel()
 	h := newFakeHarness(t, HarnessConfig{})
@@ -349,7 +349,7 @@ func TestScenarioCommitCASLossRetry(t *testing.T) {
 
 // TestScenarioCommitRetryExhaustion proves that a CAS losing every attempt
 // up to the configured bound returns REMOTE_BUSY, preserves the caller's
-// files, and never returns OK (architecture section 11.3, L733).
+// files, and never returns OK (architecture/commit.md).
 func TestScenarioCommitRetryExhaustion(t *testing.T) {
 	t.Parallel()
 	h := newFakeHarness(t, HarnessConfig{RetryLimit: new(2)})
@@ -380,7 +380,7 @@ func TestScenarioCommitRetryExhaustion(t *testing.T) {
 // TestScenarioCommitAmbiguousPackUpload proves that a pack upload whose
 // response is lost is resolved by reading the unique key back and proving
 // its bytes: the commit succeeds and never treats the pack alone as a
-// publication (architecture section 11.3, L733).
+// publication (architecture/commit.md).
 func TestScenarioCommitAmbiguousPackUpload(t *testing.T) {
 	t.Parallel()
 	h := newFakeHarness(t, HarnessConfig{})
@@ -441,8 +441,7 @@ func TestScenarioCommitAmbiguousPackUpload(t *testing.T) {
 
 // TestScenarioCommitAmbiguousCASIDFound proves that a manifest CAS whose
 // response is lost succeeds when the publication ID is found in an accepted
-// descriptor, without a duplicate logical change (architecture section
-// 11.3).
+// descriptor, without a duplicate logical change (architecture/commit.md).
 func TestScenarioCommitAmbiguousCASIDFound(t *testing.T) {
 	t.Parallel()
 	h := newFakeHarness(t, HarnessConfig{})
@@ -464,7 +463,7 @@ func TestScenarioCommitAmbiguousCASIDFound(t *testing.T) {
 // TestScenarioCommitUnprovableCAS proves that a landed manifest CAS whose
 // follow-up read fails returns STORAGE_FAILURE: the caller's files stay
 // preserved, P does not advance, and the proposal is never automatically
-// republished (architecture section 11.3, L733).
+// republished (architecture/commit.md).
 func TestScenarioCommitUnprovableCAS(t *testing.T) {
 	t.Parallel()
 	h := newFakeHarness(t, HarnessConfig{})
@@ -497,7 +496,8 @@ func TestScenarioCommitUnprovableCAS(t *testing.T) {
 }
 
 // TestScenarioCommitPublicationNotFound: a CAS that never lands and a
-// successful lookup that misses the ID is PUBLICATION_UNPROVEN (architecture section 11.3).
+// successful lookup that misses the ID is PUBLICATION_UNPROVEN
+// (architecture/commit.md).
 func TestScenarioCommitPublicationNotFound(t *testing.T) {
 	t.Parallel()
 	h := newFakeHarness(t, HarnessConfig{})
@@ -519,4 +519,46 @@ func TestScenarioCommitPublicationNotFound(t *testing.T) {
 	if m := h.Manifest(); m.Generation != 1 {
 		t.Fatalf("remote manifest generation = %d, want the unlanded proposal to leave 1", m.Generation)
 	}
+}
+
+// TestScenarioOperationsOnOnePathDoNotInterleave proves the operation lock
+// spans a whole notes_pull or notes_commit (architecture/workspace.md): a
+// commit parked at its manifest create still holds the path, so a pull of
+// the same path from another session starts none of its work — not even
+// its read of current — until the commit has returned.
+func TestScenarioOperationsOnOnePathDoNotInterleave(t *testing.T) {
+	t.Parallel()
+	h := newFakeHarness(t, HarnessConfig{})
+	path := h.Path("notes")
+	h.assertOK(t, h.Pull("a", path))
+	h.WriteFile(path+"/a.md", "A")
+
+	h.Faults().BlockNext(OpCreate, storage.CurrentKey)
+	commitCh := runCall(t, h, "a", toolCommit, path, "A")
+	h.eventually(t, settleTimeout, func() error {
+		if !h.Faults().Waiting(OpCreate, storage.CurrentKey) {
+			return fmt.Errorf("the commit has not reached the conditional create")
+		}
+		return nil
+	})
+	reads := h.Recorder().CountKey(OpGet, storage.CurrentKey)
+
+	pullCh := runCall(t, h, "b", toolPull, path, "")
+	time.Sleep(300 * time.Millisecond) // time for an unserialized pull to read current
+	if got := h.Recorder().CountKey(OpGet, storage.CurrentKey); got != reads {
+		t.Fatalf("reads of current while the commit held the path = %d, want %d: the pull interleaved", got, reads)
+	}
+	select {
+	case out := <-pullCh:
+		t.Fatalf("the pull returned while the commit held the path: %+v", out)
+	default:
+	}
+
+	h.Faults().Release(OpCreate, storage.CurrentKey)
+	h.awaitCall(t, commitCh, ToolCall{Tool: toolCommit, Path: path, Message: "A", Expect: CallExpectation{OK: true}})
+	h.awaitCall(t, pullCh, ToolCall{Tool: toolPull, Path: path, Expect: CallExpectation{OK: true}})
+	if got := h.ReadFile(path + "/a.md"); got != "A" {
+		t.Fatalf("a.md after both calls = %q, want the published content", got)
+	}
+	assertRemoteGeneration(t, h, path, 1)
 }

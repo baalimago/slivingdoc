@@ -18,7 +18,7 @@ import (
 )
 
 // The release scripts are the publication half of the contract: the
-// dependency baselines of architecture section 21, the strict SHA256SUMS
+// dependency baselines in architecture/build.md, the strict SHA256SUMS
 // grammar the npm launcher parses, and the immutable release-workflow
 // reference. They are POSIX shell, so these tests drive the real scripts
 // rather than reimplementing their rules.
@@ -28,9 +28,10 @@ import (
 const releaseTestVersion = "0.0.0-release-test"
 
 type registryManifest struct {
-	Name     string `json:"name"`
-	Version  string `json:"version"`
-	Packages []struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Version     string `json:"version"`
+	Packages    []struct {
 		Identifier       string `json:"identifier"`
 		Version          string `json:"version"`
 		RegistryType     string `json:"registryType"`
@@ -46,6 +47,7 @@ type registryManifest struct {
 		EnvironmentVariables []struct {
 			Name       string `json:"name"`
 			IsRequired bool   `json:"isRequired"`
+			IsSecret   bool   `json:"isSecret"`
 		} `json:"environmentVariables"`
 		Transport struct {
 			Type string `json:"type"`
@@ -87,6 +89,9 @@ func TestMCPRegistryManifest(t *testing.T) {
 	if registry.Name != pkg.MCPName {
 		t.Fatalf("registry name = %q, npm mcpName = %q", registry.Name, pkg.MCPName)
 	}
+	if n := len([]rune(registry.Description)); n == 0 || n > 100 {
+		t.Fatalf("registry description has %d characters, want 1 to 100", n)
+	}
 	if registry.Version != pkg.Version {
 		t.Fatalf("registry version = %q, npm version = %q", registry.Version, pkg.Version)
 	}
@@ -108,14 +113,24 @@ func TestMCPRegistryManifest(t *testing.T) {
 		t.Fatalf("registry package arguments = %+v, want one positional serve", entry.PackageArguments)
 	}
 
-	hasBucket := false
+	// Neither variable is required: the token (or a stored login) selects
+	// hosted storage and names its space, the bucket selects S3. The token is
+	// a credential.
+	type envVar struct{ required, secret bool }
+	variables := map[string]envVar{}
 	for _, variable := range entry.EnvironmentVariables {
-		if variable.Name == "SLIVINGDOC_BUCKET" && variable.IsRequired {
-			hasBucket = true
+		if _, dup := variables[variable.Name]; dup {
+			t.Fatalf("registry declares %s twice", variable.Name)
 		}
+		variables[variable.Name] = envVar{variable.IsRequired, variable.IsSecret}
 	}
-	if !hasBucket {
-		t.Fatal("registry manifest does not require SLIVINGDOC_BUCKET")
+	token, hasToken := variables["SLIVINGDOC_TOKEN"]
+	if !hasToken || token.required || !token.secret {
+		t.Fatalf("registry SLIVINGDOC_TOKEN = %+v (declared %v), want declared, optional and secret", token, hasToken)
+	}
+	bucket, hasBucket := variables["SLIVINGDOC_BUCKET"]
+	if !hasBucket || bucket.required {
+		t.Fatalf("registry SLIVINGDOC_BUCKET = %+v (declared %v), want declared and optional", bucket, hasBucket)
 	}
 }
 
@@ -140,6 +155,8 @@ func TestMCPRegistryPublishWorkflow(t *testing.T) {
 		"needs: [publish-npm]",
 		"if: github.ref_type == 'tag'",
 		"id-token: write",
+		"https://registry.npmjs.org/${package}/${version}",
+		"deadline=$(( SECONDS + 900 ))",
 		"mcp-publisher validate server.json",
 		"mcp-publisher login github-oidc",
 		"mcp-publisher publish server.json",
@@ -147,6 +164,12 @@ func TestMCPRegistryPublishWorkflow(t *testing.T) {
 		if !strings.Contains(workflow[publishMCP:], want) {
 			t.Errorf("publish-mcp job does not contain %q", want)
 		}
+	}
+	job := workflow[publishMCP:]
+	wait := strings.Index(job, "https://registry.npmjs.org/${package}/${version}")
+	validate := strings.Index(job, "mcp-publisher validate server.json")
+	if wait < 0 || validate < 0 || validate < wait {
+		t.Error("publish-mcp job does not wait for the npm version before validating the card")
 	}
 }
 
@@ -163,11 +186,23 @@ var slivingdocEnv = map[string]bool{
 	"AWS_SHARED_CREDENTIALS_FILE": true, "AWS_CONFIG_FILE": true,
 	"SLIVINGDOC_BUCKET": true, "SLIVINGDOC_PREFIX": true,
 	"SLIVINGDOC_WORKSPACE_ROOT": true, "SLIVINGDOC_PRIVATE_ROOT": true,
-	"SLIVINGDOC_PATH_STYLE": true, "SLIVINGDOC_SHARED_PACK_CACHE": true,
+	"SLIVINGDOC_PATH_STYLE":       true,
 	"SLIVINGDOC_COMMIT_RETRIES":   true,
 	"SLIVINGDOC_CHECKPOINT_PACKS": true, "SLIVINGDOC_RETAINED_CHECKPOINTS": true,
+	"SLIVINGDOC_READ_ONLY_PATHS": true, "SLIVINGDOC_WRITABLE_PATHS": true,
+	"SLIVINGDOC_LOG_TIMESTAMP": true,
+	// A token would point the released binary at the hosted API instead of
+	// refusing, which is the opposite of what these tests assert.
+	"SLIVINGDOC_TOKEN": true, "SLIVINGDOC_ENDPOINT": true, "SLIVINGDOC_STORAGE": true,
+	"SLIVINGDOC_SITE": true, "SLIVINGDOC_CONFIG_DIR": true, "SLIVINGDOC_SPACE": true,
 	"NO_COLOR": true, "LOG_LEVEL": true,
 }
+
+// releaseConfigDir is the credentials directory of every spawned binary:
+// an empty directory TestMain creates for this run and removes after it,
+// so a developer's own 'slivingdoc login' never reaches the release checks
+// (architecture/login.md).
+var releaseConfigDir string
 
 // sanitizedEnv is the ambient environment without any slivingdoc
 // configuration. Everything else is preserved, because the same spawner
@@ -182,7 +217,7 @@ func sanitizedEnv() []string {
 		}
 		out = append(out, kv)
 	}
-	return out
+	return append(out, "SLIVINGDOC_CONFIG_DIR="+releaseConfigDir)
 }
 
 // startAndWait runs name with args and collects its streams and exit code.
@@ -252,7 +287,7 @@ func runScript(t *testing.T, name string, args ...string) (stdout, stderr string
 }
 
 // TestReleaseDependencyBaselines proves each platform checker accepts
-// exactly the architecture section 21 baseline and rejects anything the
+// exactly the baseline in architecture/build.md and rejects anything the
 // pinned build must link statically or bundle — above all libgit2.
 func TestReleaseDependencyBaselines(t *testing.T) {
 	t.Parallel()
@@ -436,7 +471,7 @@ var releaseBinary = sync.OnceValues(func() (string, error) {
 
 // TestReleaseBinary proves the release build wiring: the version is injected
 // through the linker, and on Linux the resulting executable links only the
-// architecture section 21 baseline, so libgit2 is genuinely static.
+// baseline in architecture/build.md, so libgit2 is genuinely static.
 func TestReleaseBinary(t *testing.T) {
 	t.Parallel()
 	bin, err := releaseBinary()
@@ -526,7 +561,14 @@ func TestReleaseBinaryCommandSurface(t *testing.T) {
 }
 
 func TestMain(m *testing.M) {
+	dir, err := os.MkdirTemp("", "slivingdoc-release-config-")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "create the release credentials directory: %v\n", err)
+		os.Exit(1)
+	}
+	releaseConfigDir = dir
 	code := m.Run()
+	_ = os.RemoveAll(releaseConfigDir)
 	if releaseBinaryDir != "" {
 		_ = os.RemoveAll(releaseBinaryDir)
 	}

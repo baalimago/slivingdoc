@@ -12,18 +12,18 @@ import (
 	"github.com/baalimago/slivingdoc/internal/workspace"
 )
 
-// Stable error categories of the tool-error shape (architecture section 2
-// and the worklog error taxonomy). The text of an error can change; the
-// code and the structured conflict paths are stable. Notebook domain
-// errors carry their own notebook.Code; only the codes this package
-// generates itself are named here.
+// Stable error categories of the tool-error shape
+// (architecture/product-contract.md and the worklog error taxonomy). The
+// text of an error can change; the code and the structured conflict paths
+// are stable. Notebook domain errors carry their own notebook.Code; only
+// the codes this package generates itself are named here.
 const (
 	codeInvalidRequest = "INVALID_REQUEST"
 	codeStorageFailure = "STORAGE_FAILURE"
 )
 
 // Reason and action tokens for errors raised before a request reaches the
-// notebook (architecture section 2, Reason tokens by code).
+// notebook (architecture/product-contract.md, Reason and action tokens).
 const (
 	reasonMalformedInput  = "MALFORMED_INPUT"
 	reasonPathOutsideRoot = "PATH_OUTSIDE_ROOT"
@@ -35,7 +35,7 @@ const (
 
 // ToolError is the structured error object carried in the MCP tool result.
 // Code, reason, action, diagnostic ID, retryable, message, and files are always
-// present; detail and recovery are conditional (architecture section 2).
+// present; detail and recovery are conditional (architecture/product-contract.md).
 // Request paths are absolute; every files[].path is relative to the
 // request path and uses the normalized internal slash form.
 type ToolError struct {
@@ -125,7 +125,7 @@ func mapNotebookError(e *notebook.Error) *ToolError {
 		Code:      string(e.Code),
 		Reason:    string(e.Reason),
 		Action:    string(e.Action),
-		Retryable: retryable(e.Code),
+		Retryable: retryable(e.Code, e.Reason),
 		Message:   Redact(e.Message),
 		Files:     files,
 		ReadOnly:  []string{},
@@ -175,10 +175,26 @@ func redactValues(s string) string {
 	return strings.TrimSpace(absolutePathRE.ReplaceAllString(Redact(s), "${1}"+redacted))
 }
 
-// retryable reports whether a notebook error category permits a retry.
-func retryable(code notebook.Code) bool {
+// retryable reports whether a notebook error permits a retry. Storage and
+// recovery failures do, except when a store refusal that repeating cannot
+// change caused them: a full space, a used-up request allowance, denied
+// credentials, and an oversized object.
+func retryable(code notebook.Code, reason notebook.Reason) bool {
 	switch code {
-	case notebook.CodeRemoteBusy, notebook.CodeStorageFailure, notebook.CodeRecoveryFailure:
+	case notebook.CodeStorageFailure, notebook.CodeRecoveryFailure:
+		return !permanentRefusal(reason)
+	case notebook.CodeRemoteBusy:
+		return true
+	default:
+		return false
+	}
+}
+
+// permanentRefusal reports whether reason names a store refusal a retry
+// cannot change.
+func permanentRefusal(reason notebook.Reason) bool {
+	switch reason {
+	case notebook.ReasonStorageFull, notebook.ReasonRequestLimit, notebook.ReasonAccessDenied, notebook.ReasonObjectTooLarge, notebook.ReasonUpgradeRequired:
 		return true
 	default:
 		return false
@@ -222,18 +238,20 @@ func invalidRequest(cause error) *ToolError {
 	}
 }
 
-// Redaction patterns. The architecture (section 2) forbids credentials,
+// Redaction patterns. architecture/product-contract.md forbids credentials,
 // S3 keys, private paths, and Git IDs in any error text or data. The
 // notebook messages never contain credentials, but pack keys (for example
 // "packs/checkpoints/1-<uuid>.pack"), the probe key ("probe/<uuid>"), Git
 // object IDs (40 hex), the derived private-directory key (64 hex), and AWS
-// access key IDs (AKIA + 16) are scrubbed as defense in depth.
+// access key IDs (AKIA + 16), and hosted API tokens (sld_...) are scrubbed
+// as defense in depth.
 var (
 	packKeyRE      = regexp.MustCompile(`packs/(?:checkpoints|increments)/\d+-[0-9a-fA-F-]{36}\.pack`)
 	probeKeyRE     = regexp.MustCompile(`probe/[0-9a-fA-F-]{36}`)
 	gitIDRE        = regexp.MustCompile(`\b[0-9a-fA-F]{40}\b`)
 	derivedKeyRE   = regexp.MustCompile(`\b[0-9a-fA-F]{64}\b`)
 	accessKeyRE    = regexp.MustCompile(`\bAKIA[0-9A-Z]{16}\b`)
+	apiTokenRE     = regexp.MustCompile(`\bsld_[0-9A-Za-z_-]+`)
 	userInfoRE     = regexp.MustCompile(`://[^@/\s]+@`)
 	absolutePathRE = regexp.MustCompile(`(^|[\s"'(=])((?:[A-Za-z]:\\|/)[^\s:;,()"']*)`)
 )
@@ -244,6 +262,9 @@ const redacted = "[redacted]"
 // diagnostic text. The output keeps its structure but never leaks a
 // protected value.
 func Redact(s string) string {
+	// Tokens first: an earlier pattern matching inside a token would cut
+	// the token match short and leave its tail.
+	s = apiTokenRE.ReplaceAllString(s, redacted)
 	s = packKeyRE.ReplaceAllString(s, redacted)
 	s = probeKeyRE.ReplaceAllString(s, redacted)
 	s = gitIDRE.ReplaceAllString(s, redacted)

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -104,9 +105,10 @@ func TestPullRebasesLocalChanges(t *testing.T) {
 	}
 }
 
-// TestPullDownloadsOnlyMissingPacks proves the pack-byte cache: a pull
-// downloads only descriptors absent from the local cache, and a cache hit
-// needs no pack GET at all.
+// TestPullDownloadsOnlyMissingPacks proves the pack-byte cache and the
+// import skip: a reader's first pull downloads current plus the one pack it
+// lacks, and its next pull of the unchanged tail reads only current, since
+// the repository already holds the pack's objects.
 func TestPullDownloadsOnlyMissingPacks(t *testing.T) {
 	store := fake.New("")
 	ids := &testIDSource{}
@@ -115,22 +117,31 @@ func TestPullDownloadsOnlyMissingPacks(t *testing.T) {
 	writeLocal(t, w, map[string]string{"a.md": "v1"})
 	pullOK(t, nb)
 	commitOK(t, nb, "first")
+	reader, _, _ := newNotebook(t, nbConfig{store: store, ids: &testIDSource{n: readerIDBase}})
 
-	// First pull after the publication: current plus the checkpoint pack.
+	// First pull of a cold reader: current plus the checkpoint pack.
 	getsAfterCommit := store.Calls(fake.OpGet)
-	pullOK(t, nb)
+	pullOK(t, reader)
 	if got := store.Calls(fake.OpGet) - getsAfterCommit; got != 2 {
 		t.Fatalf("first pull GET calls = %d, want current + pack", got)
 	}
-	// Second pull: the cached pack is verified and no pack GET happens.
-	pullOK(t, nb)
+	// Second pull: the pack is already imported and no pack GET happens.
+	pullOK(t, reader)
 	if got := store.Calls(fake.OpGet) - getsAfterCommit; got != 3 {
 		t.Fatalf("second pull GET calls = %d, want only current", got)
+	}
+	// The publisher never needs its own pack: one GET, for current.
+	getsBefore := store.Calls(fake.OpGet)
+	pullOK(t, nb)
+	if got := store.Calls(fake.OpGet) - getsBefore; got != 1 {
+		t.Fatalf("publisher pull GET calls = %d, want only current", got)
 	}
 }
 
 // TestPullCacheCorruptionForcesFreshDownload proves a corrupt cache entry
-// is discarded and re-downloaded, never a false hit.
+// is discarded and re-downloaded, never a false hit: a cold reader whose
+// cache already holds wrong bytes under the pack's SHA-256 downloads the
+// pack and heals the entry.
 func TestPullCacheCorruptionForcesFreshDownload(t *testing.T) {
 	store := fake.New("")
 	ids := &testIDSource{}
@@ -139,17 +150,20 @@ func TestPullCacheCorruptionForcesFreshDownload(t *testing.T) {
 	writeLocal(t, w, map[string]string{"a.md": "v1"})
 	pullOK(t, nb)
 	commitOK(t, nb, "first")
-	pullOK(t, nb) // fills the cache
 	m := readManifest(t, store)
-	getsBefore := store.Calls(fake.OpGet)
-	cachePath := filepath.Join(w.CacheDir(), m.Checkpoint.SHA256.String())
+	reader, rw, _ := newNotebook(t, nbConfig{store: store, ids: &testIDSource{n: readerIDBase}})
+	cachePath := filepath.Join(rw.CacheDir(), m.Checkpoint.SHA256.String())
+	if err := os.MkdirAll(rw.CacheDir(), 0o700); err != nil {
+		t.Fatalf("create cache dir: %v", err)
+	}
 	if err := os.WriteFile(cachePath, []byte("corrupt cache bytes"), 0o600); err != nil {
 		t.Fatalf("corrupt cache: %v", err)
 	}
+	getsBefore := store.Calls(fake.OpGet)
 
-	pullOK(t, nb)
+	pullOK(t, reader)
 	if got := store.Calls(fake.OpGet) - getsBefore; got != 2 {
-		t.Fatalf("pull after cache corruption GET calls = %d, want a fresh download of current + pack", got)
+		t.Fatalf("pull over a corrupt cache entry GET calls = %d, want current + pack", got)
 	}
 	data, err := os.ReadFile(cachePath)
 	if err != nil {
@@ -219,9 +233,13 @@ func TestPullConflictWritesMarkersAndKeepsL(t *testing.T) {
 	a, aw, _ := newNotebook(t, nbConfig{store: store, ids: ids})
 	b, bw, _ := newNotebook(t, nbConfig{store: store, ids: ids})
 
-	writeLocal(t, aw, map[string]string{"a.md": "remote v1", "clean.md": "clean"})
+	writeLocal(t, aw, map[string]string{"a.md": "base v0"})
 	pullOK(t, a)
 	commitOK(t, a, "base")
+	pullOK(t, b) // B at gen 1; a first pull must start from a copy of the notebook
+
+	writeLocal(t, aw, map[string]string{"a.md": "remote v1", "clean.md": "clean"})
+	commitOK(t, a, "remote change")
 
 	writeLocal(t, bw, map[string]string{"a.md": "local v1", "local-only.md": "local only"})
 	res, err := b.Pull(context.Background())
@@ -249,18 +267,92 @@ func TestPullConflictWritesMarkersAndKeepsL(t *testing.T) {
 	if got["local-only.md"] != "local only" {
 		t.Fatalf("local-only.md = %q, want the local addition preserved", got["local-only.md"])
 	}
-	if gen := bw.Baseline().RemoteGeneration; gen != 1 {
-		t.Fatalf("baseline generation after conflict = %d, want the remote state 1", gen)
-	}
-	if !bw.Pulled() {
-		t.Fatal("a conflicting pull must initialize P")
+	if gen := bw.Baseline().RemoteGeneration; gen != 2 {
+		t.Fatalf("baseline generation after conflict = %d, want the remote state 2", gen)
 	}
 }
 
-// TestPullPackGetFailureLeavesBaselineUnchanged proves the pack GET
+// TestFileDirectoryConflictKeepsLocalSide proves a file-versus-directory
+// conflict leaves the local side in L in both directions, through both
+// operations: the local file when R made the path a directory, and every
+// file of the local directory when R made the path a file. The fake engine
+// stages the directory side's entries as libgit2 does (stage 0 below the
+// path), so only the local tree tells the sides apart.
+func TestFileDirectoryConflictKeepsLocalSide(t *testing.T) {
+	tests := []struct {
+		name   string
+		base   map[string]string
+		remote map[string]string
+		local  map[string]string
+		remove []string
+	}{
+		{
+			name:   "local directory remote file",
+			remote: map[string]string{"p": "remote file"},
+			local:  map[string]string{"p/q.md": "local q", "p/sub/r.md": "local r"},
+		},
+		{
+			name:   "local file remote directory",
+			remote: map[string]string{"p/q.md": "remote q"},
+			local:  map[string]string{"p": "local file"},
+		},
+		{
+			// The remote edit below p conflicts with the local deletion,
+			// but only the conflict at p is reported and L keeps the file.
+			name:   "local file replaces a directory the remote side changed",
+			base:   map[string]string{"p/q.md": "base q"},
+			remote: map[string]string{"p/q.md": "remote q"},
+			local:  map[string]string{"p": "local file"},
+			remove: []string{"p/q.md", "p"},
+		},
+	}
+	ops := []struct {
+		name string
+		run  func(nb *Notebook) error
+	}{
+		{name: "pull", run: func(nb *Notebook) error { return errOnly(nb.Pull(context.Background())) }},
+		{name: "commit", run: func(nb *Notebook) error { return errOnly(nb.Commit(context.Background(), "mine")) }},
+	}
+	for _, tt := range tests {
+		for _, op := range ops {
+			t.Run(tt.name+"/"+op.name, func(t *testing.T) {
+				store := fake.New("")
+				ids := &testIDSource{}
+				a, aw, _ := newNotebook(t, nbConfig{store: store, ids: ids})
+				b, bw, _ := newNotebook(t, nbConfig{store: store, ids: ids})
+
+				base := map[string]string{"base.md": "base"}
+				maps.Copy(base, tt.base)
+				writeLocal(t, aw, base)
+				pullOK(t, a)
+				commitOK(t, a, "base")
+				pullOK(t, b)
+
+				writeLocal(t, aw, tt.remote)
+				commitOK(t, a, "remote side")
+				for _, path := range tt.remove {
+					removeLocal(t, bw, path)
+				}
+				writeLocal(t, bw, tt.local)
+
+				ne := assertErrorCode(t, op.run(b), CodeContentConflict)
+				if len(ne.Files) != 1 || ne.Files[0].Path != "p" || ne.Files[0].Reason != FileReasonPathConflict {
+					t.Fatalf("conflict files = %+v, want one PATH_CONFLICT at p", ne.Files)
+				}
+				want := map[string]string{"base.md": "base"}
+				maps.Copy(want, tt.local)
+				if got := localSnapshot(t, bw); !reflect.DeepEqual(got, want) {
+					t.Fatalf("L after the conflict = %v, want the local side %v", got, want)
+				}
+			})
+		}
+	}
+}
+
+// TestPullPackGetFailureLeavesBaselineUnchanged proves the stale-manifest
 // failure path: a referenced pack that disappeared and a current that did
-// not move is a storage-integrity error, and the baseline and L stay
-// untouched.
+// not move is a storage-integrity error for a reader that needs the pack,
+// and the reader's baseline and L stay untouched.
 func TestPullPackGetFailureLeavesBaselineUnchanged(t *testing.T) {
 	store := fake.New("")
 	ids := &testIDSource{}
@@ -273,22 +365,25 @@ func TestPullPackGetFailureLeavesBaselineUnchanged(t *testing.T) {
 	if err := store.DeleteObjects(context.Background(), []string{m.Checkpoint.Key.String()}); err != nil {
 		t.Fatalf("DeleteObjects() = %v", err)
 	}
-	writeLocal(t, w, map[string]string{"local.md": "mine"})
-	baselineBefore := w.Baseline()
-	before := localSnapshot(t, w)
+	reader, rw, _ := newNotebook(t, nbConfig{store: store, ids: &testIDSource{n: readerIDBase}})
+	writeLocal(t, rw, map[string]string{"local.md": "mine"})
+	baselineBefore := rw.Baseline()
+	before := localSnapshot(t, rw)
 
-	assertErrorCode(t, errOnly(nb.Pull(context.Background())), CodeStorageIntegrity)
-	if got := localSnapshot(t, w); !reflect.DeepEqual(got, before) {
+	assertErrorCode(t, errOnly(reader.Pull(context.Background())), CodeStorageIntegrity)
+	if got := localSnapshot(t, rw); !reflect.DeepEqual(got, before) {
 		t.Fatalf("L changed by the failed pull: %v -> %v", before, got)
 	}
-	if got := w.Baseline(); got != baselineBefore {
+	if got := rw.Baseline(); got != baselineBefore {
 		t.Fatalf("baseline changed by the failed pull: %+v -> %+v", baselineBefore, got)
 	}
 }
 
 // TestPullCorruptPackRejected proves a pack whose bytes contradict its
 // descriptor checksum and size is refused before import, and corrupt remote
-// data never reaches visible files.
+// data never reaches visible files. The reader is a second workspace: the
+// publisher already holds every object it published, so it would never
+// need the pack again.
 func TestPullCorruptPackRejected(t *testing.T) {
 	store := fake.New("")
 	ids := &testIDSource{}
@@ -301,19 +396,20 @@ func TestPullCorruptPackRejected(t *testing.T) {
 	if err := store.PutObject(context.Background(), m.Checkpoint.Key.String(), strings.NewReader("garbage pack bytes"), storage.Metadata{}); err != nil {
 		t.Fatalf("corrupt pack: %v", err)
 	}
-	baselineBefore := w.Baseline()
+	reader, rw, _ := newNotebook(t, nbConfig{store: store, ids: &testIDSource{n: readerIDBase}})
+	baselineBefore := rw.Baseline()
 
-	assertErrorCode(t, errOnly(nb.Pull(context.Background())), CodeStorageIntegrity)
-	if got := w.Baseline(); got != baselineBefore {
+	assertErrorCode(t, errOnly(reader.Pull(context.Background())), CodeStorageIntegrity)
+	if got := rw.Baseline(); got != baselineBefore {
 		t.Fatalf("baseline changed by the corrupt pack: %+v -> %+v", baselineBefore, got)
 	}
-	if _, err := os.Stat(filepath.Join(w.Path(), "a.md")); err != nil {
-		t.Fatalf("visible file missing after failed pull: %v", err)
+	if _, err := os.Stat(filepath.Join(rw.Path(), "a.md")); err == nil {
+		t.Fatal("corrupt remote data reached the visible files")
 	}
 }
 
-// TestPullStalePackRestartSucceeds proves the stale-observation restart of
-// architecture section 10: a pack that disappeared during cleanup discards
+// TestPullStalePackRestartSucceeds proves the stale-observation restart in
+// architecture/pull.md: a pack that disappeared during cleanup discards
 // the observation; when current moved and the pack is back, the pull
 // restarts and succeeds.
 func TestPullStalePackRestartSucceeds(t *testing.T) {
@@ -433,7 +529,10 @@ func TestPullEntryRecoveryRunsBeforeWork(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() = %v", err)
 	}
-	pullOK(t, nb2)
+	// An edit made while P required recovery is discarded by the repair,
+	// so the recovering call reports it instead of returning OK.
+	writeLocal(t, reopened, map[string]string{"a.md": "edited while broken"})
+	assertEntryRecovered(t, errOnly(nb2.Pull(context.Background())))
 	if reopened.RecoveryRequired() {
 		t.Fatal("entry recovery did not clear the recovery flag")
 	}
@@ -442,6 +541,24 @@ func TestPullEntryRecoveryRunsBeforeWork(t *testing.T) {
 	}
 	if got := readLocal(t, reopened, "a.md"); got != "v1" {
 		t.Fatalf("L after entry recovery = %q, want the accepted content", got)
+	}
+	// The flag is clear, so the next call runs its own work.
+	pullOK(t, nb2)
+}
+
+// assertEntryRecovered asserts the RECOVERY_FAILURE of a successful entry
+// recovery: stage entry, remote acceptance unknown, resynchronized, PULL.
+func assertEntryRecovered(t *testing.T, err error) {
+	t.Helper()
+	ne := assertErrorCode(t, err, CodeRecoveryFailure)
+	if ne.Recovery == nil || ne.Recovery.Stage != stageEntry || ne.Recovery.RemoteAccepted != RemoteAcceptedUnknown || !ne.Recovery.Resynchronized {
+		t.Fatalf("recovery report = %+v, want entry / unknown / resynchronized=true", ne.Recovery)
+	}
+	if ne.Action != ActionPull {
+		t.Fatalf("action = %s, want PULL", ne.Action)
+	}
+	if !errors.Is(ne, errEntryRecovered) {
+		t.Fatalf("cause = %v, want errEntryRecovered", ne.Cause)
 	}
 }
 
@@ -621,5 +738,355 @@ func TestPullCleanPullBuildsNoExtraTree(t *testing.T) {
 	unconfigured := policyAccess(t, nil, nil, pull)
 	if configured.treeWrites != unconfigured.treeWrites {
 		t.Fatalf("configured pull wrote %d trees, want the unconfigured pull's %d", configured.treeWrites, unconfigured.treeWrites)
+	}
+}
+
+// TestPullFirstPullGuard proves the first-pull guard: against a non-empty
+// remote a first pull proceeds only when every visible file is already in
+// R with identical bytes, and otherwise refuses before any local change;
+// a later pull is never guarded.
+func TestPullFirstPullGuard(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		local    map[string]string
+		readOnly []string
+		writable []string
+		want     map[string]string // the L a passing pull leaves
+		files    []ErrorFile       // non-nil: the pull is refused naming these
+		message  string
+	}{
+		{name: "empty", local: map[string]string{}},
+		{name: "identical subset", local: map[string]string{"a.md": "alpha"}},
+		{
+			name: "unrelated file", local: map[string]string{"x.md": "mine"},
+			files:   []ErrorFile{{Path: "x.md", Reason: FileReasonNotInNotebook}},
+			message: "found files that are not in the notebook;",
+		},
+		{
+			name: "same path other bytes", local: map[string]string{"a.md": "ALPHA"},
+			files:   []ErrorFile{{Path: "a.md", Reason: FileReasonDiffersFromNotebook}},
+			message: "found files that differ from the notebook;",
+		},
+		{
+			name: "both kinds", local: map[string]string{"a.md": "ALPHA", "b.md": "beta", "x.md": "mine"},
+			files: []ErrorFile{
+				{Path: "a.md", Reason: FileReasonDiffersFromNotebook},
+				{Path: "x.md", Reason: FileReasonNotInNotebook},
+			},
+			message: "found files that are not in the notebook or differ from it;",
+		},
+		{
+			// A protected file R holds is restored from R, so it is not
+			// compared.
+			name: "protected file in the notebook with other bytes", readOnly: []string{"a.md"},
+			local: map[string]string{"a.md": "ALPHA"},
+		},
+		{
+			// A protected file R lacks would be deleted by the pull.
+			name: "protected file not in the notebook", readOnly: []string{"ro"},
+			local:   map[string]string{"a.md": "alpha", "ro/x.md": "local only"},
+			files:   []ErrorFile{{Path: "ro/x.md", Reason: FileReasonNotInNotebook}},
+			message: "found files that are not in the notebook;",
+		},
+		{
+			name: "file outside the writable set not in the notebook", writable: []string{"w"},
+			local:   map[string]string{"todo.md": "mine"},
+			files:   []ErrorFile{{Path: "todo.md", Reason: FileReasonNotInNotebook}},
+			message: "found files that are not in the notebook;",
+		},
+		{
+			name: "unprotected file inside the writable set", writable: []string{"w"},
+			local:   map[string]string{"w/x.md": "mine"},
+			files:   []ErrorFile{{Path: "w/x.md", Reason: FileReasonNotInNotebook}},
+			message: "found files that are not in the notebook;",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			store := fake.New("")
+			ids := &testIDSource{}
+			a, aw, _ := newNotebook(t, nbConfig{store: store, ids: ids})
+			writeLocal(t, aw, map[string]string{"a.md": "alpha", "b.md": "beta"})
+			pullOK(t, a)
+			commitOK(t, a, "seed")
+
+			b, bw, _ := newNotebook(t, nbConfig{store: store, ids: ids, readOnly: tt.readOnly, writable: tt.writable})
+			writeLocal(t, bw, tt.local)
+			res, err := b.Pull(context.Background())
+			if tt.files == nil {
+				if err != nil {
+					t.Fatalf("Pull() = %v", err)
+				}
+				if got := localSnapshot(t, bw); got["a.md"] != "alpha" || got["b.md"] != "beta" || len(got) != 2 {
+					t.Fatalf("L after the first pull = %v, want the notebook", got)
+				}
+				return
+			}
+			ne := assertErrorCode(t, err, CodeInvalidRequest)
+			assertZeroResult(t, res)
+			if ne.Reason != ReasonDirectoryNotEmpty || ne.Action != ActionFixInput {
+				t.Fatalf("reason/action = %s/%s, want DIRECTORY_NOT_EMPTY/FIX_INPUT", ne.Reason, ne.Action)
+			}
+			if !reflect.DeepEqual(ne.Files, tt.files) {
+				t.Fatalf("files = %+v, want %+v", ne.Files, tt.files)
+			}
+			if !strings.Contains(ne.Message, tt.message) {
+				t.Fatalf("message = %q, want it to contain %q", ne.Message, tt.message)
+			}
+			if bw.Pulled() || bw.Baseline().RemoteGeneration != 0 {
+				t.Fatal("a refused first pull changed P")
+			}
+			if got := localSnapshot(t, bw); !reflect.DeepEqual(got, tt.local) {
+				t.Fatalf("L after the refusal = %v, want %v untouched", got, tt.local)
+			}
+		})
+	}
+
+	t.Run("seeding an empty remote refuses a protected file", func(t *testing.T) {
+		b, bw, _ := newNotebook(t, nbConfig{store: fake.New(""), ids: &testIDSource{}, writable: []string{"notes"}})
+		local := map[string]string{"notes/a.md": "seed", "todo.md": "mine"}
+		writeLocal(t, bw, local)
+		ne := assertErrorCode(t, errOnly(b.Pull(context.Background())), CodeInvalidRequest)
+		if want := []ErrorFile{{Path: "todo.md", Reason: FileReasonNotInNotebook}}; ne.Reason != ReasonDirectoryNotEmpty || !reflect.DeepEqual(ne.Files, want) {
+			t.Fatalf("refusal = %s %+v, want DIRECTORY_NOT_EMPTY naming %+v", ne.Reason, ne.Files, want)
+		}
+		if got := localSnapshot(t, bw); !reflect.DeepEqual(got, local) {
+			t.Fatalf("L after the refusal = %v, want %v untouched", got, local)
+		}
+	})
+
+	t.Run("seeding an empty remote and later pulls are not guarded", func(t *testing.T) {
+		store := fake.New("")
+		ids := &testIDSource{}
+		a, aw, _ := newNotebook(t, nbConfig{store: store, ids: ids})
+		writeLocal(t, aw, map[string]string{"a.md": "alpha"})
+		pullOK(t, a) // the remote is empty: the directory seeds it
+		commitOK(t, a, "seed")
+		writeLocal(t, aw, map[string]string{"local.md": "not yet published"})
+		pullOK(t, a) // not a first pull: local additions merge as usual
+		if got := readLocal(t, aw, "local.md"); got != "not yet published" {
+			t.Fatalf("local.md after a later pull = %q, want it kept", got)
+		}
+	})
+}
+
+// TestPullRepairsValidationFailureByFullReimport proves the repair inside
+// loadRemote: when the head moved and an object below it has vanished from
+// the private repository, importing the one missing pack leaves validation
+// failing, so every pack is re-imported from verified bytes once and the
+// pull succeeds with the object restored. The reader has deleted the file
+// locally, so the scan never rewrites the blob from L.
+func TestPullRepairsValidationFailureByFullReimport(t *testing.T) {
+	store := fake.New("")
+	nb, w, _ := newNotebook(t, nbConfig{store: store, ids: &testIDSource{}})
+	writeLocal(t, w, map[string]string{"a.md": "v1"})
+	pullOK(t, nb)
+	commitOK(t, nb, "first")
+	reader, rw, _ := newNotebook(t, nbConfig{store: store, ids: &testIDSource{n: readerIDBase}})
+	pullOK(t, reader)
+
+	repo, ok := rw.Repo().(*fakeRepository)
+	if !ok {
+		t.Fatalf("reader repository is %T, want the fake", rw.Repo())
+	}
+	blob, err := repo.WriteBlob([]byte("v1"))
+	if err != nil {
+		t.Fatalf("WriteBlob() = %v", err)
+	}
+	removeLocal(t, rw, "a.md")
+	delete(repo.data.blobs, blob)
+	delete(repo.data.raw, blob)
+
+	writeLocal(t, w, map[string]string{"b.md": "v2"})
+	commitOK(t, nb, "second")
+	getsBefore := store.Calls(fake.OpGet)
+
+	pullOK(t, reader)
+	if present, err := repo.HasObject(blob); err != nil || !present {
+		t.Fatalf("blob after the repair: present=%v err=%v; want it re-imported", present, err)
+	}
+	if got, want := localSnapshot(t, rw), map[string]string{"b.md": "v2"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("L after the repair = %v, want %v", got, want)
+	}
+	// Only the new increment was downloaded; the checkpoint came from the
+	// reader's byte cache.
+	if got := store.Calls(fake.OpGet) - getsBefore; got != 2 {
+		t.Fatalf("GET calls = %d, want current + the new increment", got)
+	}
+}
+
+// TestPullRepairsAncestorLossBelowReusedHead proves the reuse path cannot
+// hide damage below the accepted head: with the checkpoint's head commit
+// gone from the reader's repository while the accepted head and its tree
+// survive, the next pull re-imports the checkpoint pack and the following
+// commit, whose export walks that history, succeeds. Without the presence
+// sweep every pull would report OK while every commit failed for good.
+func TestPullRepairsAncestorLossBelowReusedHead(t *testing.T) {
+	store := fake.New("")
+	nb, w, _ := newNotebook(t, nbConfig{store: store, ids: &testIDSource{}})
+	writeLocal(t, w, map[string]string{"a.md": "v1"})
+	pullOK(t, nb)
+	commitOK(t, nb, "first")
+	writeLocal(t, w, map[string]string{"b.md": "v2"})
+	commitOK(t, nb, "second")
+	reader, rw, _ := newNotebook(t, nbConfig{store: store, ids: &testIDSource{n: readerIDBase}})
+	pullOK(t, reader)
+
+	m := readManifest(t, store)
+	repo, ok := rw.Repo().(*fakeRepository)
+	if !ok {
+		t.Fatalf("reader repository is %T, want the fake", rw.Repo())
+	}
+	delete(repo.data.commits, m.Checkpoint.Head)
+	delete(repo.data.raw, m.Checkpoint.Head)
+
+	pullOK(t, reader)
+	if present, err := repo.HasObject(m.Checkpoint.Head); err != nil || !present {
+		t.Fatalf("checkpoint head after the pull: present=%v err=%v; want it re-imported", present, err)
+	}
+	writeLocal(t, rw, map[string]string{"c.md": "v3"})
+	commitOK(t, reader, "third")
+}
+
+// readerIDBase starts a second notebook's deterministic publication IDs
+// well past the writer's, so a reader that publishes can never reuse an ID
+// the manifest already binds to another commit.
+const readerIDBase = 1000
+
+// breakBlobRead makes one blob of the reader's repository present but
+// unreadable: HasObject answers from the raw map and still says yes, while
+// ReadBlob fails. It is the damage class a presence check cannot see, and
+// the one an engine reports for a corrupt object inside an intact pack.
+func breakBlobRead(t *testing.T, w *workspace.Workspace, content string) (*fakeRepository, git.OID) {
+	t.Helper()
+	repo, ok := w.Repo().(*fakeRepository)
+	if !ok {
+		t.Fatalf("repository is %T, want the fake", w.Repo())
+	}
+	blob, err := repo.WriteBlob([]byte(content))
+	if err != nil {
+		t.Fatalf("WriteBlob() = %v", err)
+	}
+	delete(repo.data.blobs, blob)
+	if present, err := repo.HasObject(blob); err != nil || !present {
+		t.Fatalf("broken blob presence = %v, %v; want it still present", present, err)
+	}
+	return repo, blob
+}
+
+// TestCommitRepairsUnreadableObject proves the repair covers an object the
+// store still lists but can no longer supply, which a presence check cannot
+// see: the history walk proves blobs by presence, so only the snapshot read
+// meets it. Deleting the file locally is what stops the scan from rewriting
+// the object, and the commit's change summary still reads the accepted tree
+// that holds it. Classifying that failure as content damage instead would
+// leave every later commit broken for good (architecture/pull.md).
+func TestCommitRepairsUnreadableObject(t *testing.T) {
+	store := fake.New("")
+	nb, w, _ := newNotebook(t, nbConfig{store: store, ids: &testIDSource{}})
+	writeLocal(t, w, map[string]string{"a.md": "v1", "b.md": "v2"})
+	pullOK(t, nb)
+	commitOK(t, nb, "first")
+	reader, rw, _ := newNotebook(t, nbConfig{store: store, ids: &testIDSource{n: readerIDBase}})
+	pullOK(t, reader)
+
+	repo, blob := breakBlobRead(t, rw, "v1")
+	removeLocal(t, rw, "a.md")
+
+	res := commitOK(t, reader, "drop a")
+	if res.Generation != 2 {
+		t.Fatalf("generation = %d, want 2", res.Generation)
+	}
+	if data, err := repo.ReadBlob(blob); err != nil || string(data) != "v1" {
+		t.Fatalf("blob after the commit = %q, %v; want it re-imported", data, err)
+	}
+	if got, want := localSnapshot(t, rw), map[string]string{"b.md": "v2"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("L after the commit = %v, want %v", got, want)
+	}
+}
+
+// TestCommitStrictRetryRepairsReusedState proves the commit retry. The
+// accepted-head fast path checks every descriptor head and reads the head
+// tree, so the damage it cannot see is an ancestor object no longer
+// reachable from the head tree — here the root tree of the first generation,
+// after the file it held was deleted. The export walks that history and
+// fails; the commit then reloads strictly once, which validates, repairs,
+// and publishes, without spending a CAS retry (architecture/pull.md).
+func TestCommitStrictRetryRepairsReusedState(t *testing.T) {
+	store := fake.New("")
+	nb, w, _ := newNotebook(t, nbConfig{store: store, ids: &testIDSource{}})
+	writeLocal(t, w, map[string]string{"a.md": "v1"})
+	pullOK(t, nb)
+	commitOK(t, nb, "first")
+	firstTree := readManifest(t, store).Checkpoint.Head
+
+	writeLocal(t, w, map[string]string{"b.md": "v2"}) // a.md is gone from L
+	commitOK(t, nb, "second")
+	reader, rw, _ := newNotebook(t, nbConfig{store: store, ids: &testIDSource{n: readerIDBase}})
+	pullOK(t, reader)
+
+	repo, ok := rw.Repo().(*fakeRepository)
+	if !ok {
+		t.Fatalf("repository is %T, want the fake", rw.Repo())
+	}
+	root, err := repo.ReadCommit(firstTree)
+	if err != nil {
+		t.Fatalf("ReadCommit(first) = %v", err)
+	}
+	// The first generation's tree is an ancestor object the head tree does
+	// not reach, so the fast path cannot see it go.
+	delete(repo.data.trees, root.Tree)
+	delete(repo.data.raw, root.Tree)
+
+	writeLocal(t, rw, map[string]string{"b.md": "v2", "c.md": "v3"})
+	res := commitOK(t, reader, "third")
+
+	if res.Generation != 3 {
+		t.Fatalf("generation = %d, want 3", res.Generation)
+	}
+	if present, err := repo.HasObject(root.Tree); err != nil || !present {
+		t.Fatalf("ancestor tree after the commit: present=%v err=%v; want it re-imported", present, err)
+	}
+	// One strict reload, not a CAS retry: exactly one increment per commit.
+	if m := readManifest(t, store); len(m.Increments) != 2 {
+		t.Fatalf("increments = %d, want one per publication", len(m.Increments))
+	}
+}
+
+// TestPullStrictRetryRepairsReusedState proves the pull retry, the mirror of
+// the commit one: the merge needs the accepted tree object itself, which the
+// scan cannot rewrite once the visible directory differs from it, so a tree
+// the store can no longer supply fails the merge. One strict reload
+// validates, re-imports and repairs, and the pull reports the accepted state
+// (architecture/pull.md).
+func TestPullStrictRetryRepairsReusedState(t *testing.T) {
+	store := fake.New("")
+	nb, w, _ := newNotebook(t, nbConfig{store: store, ids: &testIDSource{}})
+	writeLocal(t, w, map[string]string{"a.md": "v1", "b.md": "v2"})
+	pullOK(t, nb)
+	commitOK(t, nb, "first")
+	reader, rw, _ := newNotebook(t, nbConfig{store: store, ids: &testIDSource{n: readerIDBase}})
+	pullOK(t, reader)
+
+	repo, ok := rw.Repo().(*fakeRepository)
+	if !ok {
+		t.Fatalf("repository is %T, want the fake", rw.Repo())
+	}
+	head := rw.Baseline().Tree
+	delete(repo.data.trees, head)
+	if present, err := repo.HasObject(head); err != nil || !present {
+		t.Fatalf("broken tree presence = %v, %v; want it still present", present, err)
+	}
+	// L now differs from the accepted tree, so the scan rebuilds another
+	// tree and the merge has to read the accepted one.
+	removeLocal(t, rw, "a.md")
+
+	pullOK(t, reader)
+	if _, err := repo.ReadTree(head); err != nil {
+		t.Fatalf("accepted tree after the pull = %v; want it re-imported", err)
+	}
+	// The local deletion is an unpublished local change, so the merge keeps
+	// it: the repair restores the object, never the caller's edit.
+	if got, want := localSnapshot(t, rw), map[string]string{"b.md": "v2"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("L after the pull = %v, want %v", got, want)
 	}
 }

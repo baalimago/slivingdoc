@@ -1,12 +1,13 @@
 // Package strictjson implements the strict JSON value tree shared by the
-// versioned protocol records. Both the storage manifest (architecture
-// section 9.2) and the workspace private-state record (architecture section
-// 7.2) require rejection of unknown fields, duplicate field names, missing
-// required fields, and explicit null at every object level, with integer
-// fields decoded as unquoted uint64 values. The generic tree is built
-// before any protocol value is decoded, so duplicate-name rejection always
-// precedes value decoding. A package owns the semantic validation on top of
-// this tree; strictjson only guarantees the strict shape.
+// versioned protocol records. Both the storage manifest
+// (architecture/storage.md) and the workspace private-state record
+// (architecture/workspace.md) require rejection of unknown fields,
+// duplicate field names, missing required fields, and explicit null at
+// every object level, with integer fields decoded as unquoted uint64
+// values. The generic tree is built before any protocol value is decoded,
+// so duplicate-name rejection always precedes value decoding. A package
+// owns the semantic validation on top of this tree; strictjson only
+// guarantees the strict shape.
 package strictjson
 
 import (

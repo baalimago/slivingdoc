@@ -13,7 +13,7 @@ import (
 )
 
 // cleanupBatchSize is the maximum number of pack keys in one delete
-// request (architecture section 14). The notebook owns the batch boundary
+// request (architecture/checkpoints.md). The notebook owns the batch boundary
 // so it can reread current and rebuild the cleanup roots before every
 // batch.
 const cleanupBatchSize = 1000
@@ -31,7 +31,7 @@ type checkpointPlan struct {
 }
 
 // planCheckpoint selects the oldest threshold increments of the triggering
-// manifest as the stable prefix (architecture section 13.1). The caller
+// manifest as the stable prefix (architecture/checkpoints.md). The caller
 // only schedules a plan when the active tail has reached the threshold.
 func planCheckpoint(observed storage.Manifest, threshold int) checkpointPlan {
 	last := observed.Increments[threshold-1]
@@ -61,12 +61,13 @@ func (p checkpointPlan) prefixPresent(m storage.Manifest) bool {
 }
 
 // runCheckpoint performs one bounded checkpoint effort for the observed
-// manifest whose active tail reached the configured threshold (architecture
-// section 13). It is opportunistic: it selects an immutable accepted prefix,
-// builds and uploads a complete checkpoint pack, and replaces the prefix
-// with the checkpoint through normal ETag CAS while preserving every later
-// increment. Every failure is recorded in metrics and never changes the
-// result of the already accepted commit that scheduled the effort.
+// manifest whose active tail reached the configured threshold
+// (architecture/checkpoints.md). It is opportunistic: it selects an
+// immutable accepted prefix, builds and uploads a complete checkpoint pack,
+// and replaces the prefix with the checkpoint through normal ETag CAS while
+// preserving every later increment. Every failure is recorded in metrics
+// and never changes the result of the already accepted commit that
+// scheduled the effort.
 func (n *Notebook) runCheckpoint(ctx context.Context, observed storage.Manifest) {
 	start := n.now()
 	n.metrics.CheckpointRuns.Add(1)
@@ -152,7 +153,7 @@ func (n *Notebook) runCheckpoint(ctx context.Context, observed storage.Manifest)
 // acceptCheckpoint records one accepted compaction. The authoritative tail
 // after a successful compaction is the compacted manifest's tail: the
 // pre-checkpoint observation recorded by the triggering commit is stale
-// (architecture section 13.1). It also stores the checkpoint size and
+// (architecture/checkpoints.md). It also stores the checkpoint size and
 // duration metrics and runs the best-effort cleanup.
 func (n *Notebook) acceptCheckpoint(ctx context.Context, next storage.Manifest, pack git.Pack, start time.Time, cutoff uint64) {
 	n.recordTail(next)
@@ -163,7 +164,7 @@ func (n *Notebook) acceptCheckpoint(ctx context.Context, next storage.Manifest, 
 
 // failCheckpoint records one failed checkpoint effort in metrics and as a
 // warning. Checkpoint failure never changes the already accepted commit
-// result that scheduled the effort (architecture section 13.1).
+// result that scheduled the effort (architecture/checkpoints.md).
 func (n *Notebook) failCheckpoint(logger *slog.Logger, reason string, cause error) {
 	n.metrics.CheckpointFailures.Add(1)
 	logger.Warn("checkpoint failed", "reason", reason, "cause", cause.Error())
@@ -171,8 +172,9 @@ func (n *Notebook) failCheckpoint(logger *slog.Logger, reason string, cause erro
 
 // checkpointAccepted resolves a lost checkpoint CAS response: the effort
 // succeeded when the checkpoint ID appears in an active or retained
-// checkpoint descriptor of the authoritative manifest (architecture section
-// 11.3 applied to checkpoints).
+// checkpoint descriptor of the authoritative manifest
+// (architecture/checkpoints.md; the architecture/commit.md uncertain-response
+// rule applied to checkpoints).
 func (n *Notebook) checkpointAccepted(ctx context.Context, cpID storage.UUID) bool {
 	data, _, present, err := n.readCurrent(ctx)
 	if err != nil || !present {
@@ -197,7 +199,7 @@ func (n *Notebook) checkpointAccepted(ctx context.Context, cpID storage.UUID) bo
 // checkpoint replaces the selected prefix, every later increment is
 // preserved, the replaced checkpoint and compacted increments become the
 // newest retained generation, and the retained array is trimmed to the
-// configured count (architecture sections 13.3 and 14).
+// configured count (architecture/checkpoints.md).
 func (n *Notebook) compactManifest(latest storage.Manifest, plan checkpointPlan, cpID storage.UUID, key storage.Key, pack git.Pack) storage.Manifest {
 	next := latest
 	next.Generation = latest.Generation + 1
@@ -229,7 +231,7 @@ func (n *Notebook) compactManifest(latest storage.Manifest, plan checkpointPlan,
 }
 
 // cleanup performs the best-effort garbage collection after a successful
-// checkpoint CAS (architecture section 14). It lists only the checkpoint
+// checkpoint CAS (architecture/checkpoints.md). It lists only the checkpoint
 // and increment namespaces, parses candidate generations from valid keys
 // (malformed keys are ignored), considers only objects at or before the
 // successful checkpoint cutoff, and — before each delete batch — rereads
@@ -290,8 +292,8 @@ func (n *Notebook) cleanup(ctx context.Context, cutoff uint64) {
 
 // failCleanup records one cleanup failure in metrics and as a warning.
 // Cleanup is best-effort: a failure is retried on a later checkpoint
-// cleanup and never fails the commit that scheduled it (architecture
-// section 14).
+// cleanup and never fails the commit that scheduled it
+// (architecture/checkpoints.md).
 func (n *Notebook) failCleanup(logger *slog.Logger, reason string, cause error) {
 	n.metrics.CleanupErrors.Add(1)
 	logger.Warn("cleanup failed", "reason", reason, "cause", cause.Error())
@@ -329,7 +331,7 @@ func (n *Notebook) cleanupRoots(ctx context.Context) (map[string]struct{}, error
 
 // recordTail updates the tail metrics from one validated authoritative
 // manifest: the active increment count and the sum of active increment pack
-// sizes. Retained tails do not count (architecture section 13.1).
+// sizes. Retained tails do not count (architecture/checkpoints.md).
 func (n *Notebook) recordTail(m storage.Manifest) {
 	var size uint64
 	for _, inc := range m.Increments {

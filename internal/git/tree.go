@@ -86,7 +86,7 @@ func ReadSnapshot(repo Repository, tree OID) (Snapshot, error) {
 func walkTree(repo Repository, tree OID, prefix string, files *[]File) error {
 	entries, err := repo.ReadTree(tree)
 	if err != nil {
-		return fmt.Errorf("tree %s: %w", tree, err)
+		return unreadable(err, "tree %s", tree)
 	}
 	for _, e := range entries {
 		path := prefix + e.Name
@@ -98,7 +98,7 @@ func walkTree(repo Repository, tree OID, prefix string, files *[]File) error {
 		case ModeBlob:
 			data, err := repo.ReadBlob(e.ID)
 			if err != nil {
-				return fmt.Errorf("blob %q (%s): %w", path, e.ID, err)
+				return unreadable(err, "blob %q (%s)", path, e.ID)
 			}
 			*files = append(*files, File{Path: path, Data: data})
 		default:
@@ -116,6 +116,21 @@ func EmptyTree(repo Repository) (OID, error) {
 		return OID{}, fmt.Errorf("git: empty tree: %w", err)
 	}
 	return id, nil
+}
+
+// CheckUniqueNames refuses tree entries that repeat a name. A tree builder
+// replaces an entry on a repeated insert, so a file and a directory of one
+// name would silently lose one of them. Every Repository.WriteTree runs it,
+// the native boundary and the test fakes alike.
+func CheckUniqueNames(entries []TreeEntry) error {
+	seen := make(map[string]bool, len(entries))
+	for _, e := range entries {
+		if seen[e.Name] {
+			return fmt.Errorf("duplicate tree entry name %q", e.Name)
+		}
+		seen[e.Name] = true
+	}
+	return nil
 }
 
 // SortTreeEntries sorts entries in place into canonical Git tree order.

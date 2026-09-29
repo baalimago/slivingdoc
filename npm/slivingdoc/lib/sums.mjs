@@ -1,4 +1,4 @@
-// lib/sums.mjs — strict SHA256SUMS parsing (architecture section 21).
+// lib/sums.mjs — strict SHA256SUMS parsing (architecture/build.md).
 //
 // Grammar: one LF-terminated line per asset, lowercase 64-hex SHA-256, two
 // spaces, and the asset name. A malformed file is rejected outright: the

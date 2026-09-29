@@ -48,12 +48,14 @@ func TestLoadConfigDefaults(t *testing.T) {
 	}
 	want := config{
 		bucket:              "my-bucket",
+		bucketFrom:          bucketFromEnv,
 		prefix:              "slivingdoc",
 		region:              "us-east-1",
 		endpoint:            "",
 		pathStyle:           false,
 		workspaceRoot:       "/work",
 		privateRoot:         "/cache/slivingdoc",
+		packCacheRoot:       "/cache/slivingdoc/pack-cache",
 		commitRetries:       8,
 		checkpointPacks:     256,
 		retainedCheckpoints: 1,
@@ -396,6 +398,10 @@ func TestLoadConfigEndpointNormalization(t *testing.T) {
 		{name: "user information rejected", env: "http://user:pass@host:8333", want: "", valid: false},
 		{name: "query rejected", env: "http://host:8333?x=1", want: "", valid: false},
 		{name: "fragment rejected", env: "http://host:8333#f", want: "", valid: false},
+		{name: "empty query rejected", env: "http://host:8333/?", want: "", valid: false},
+		{name: "empty fragment rejected", env: "http://host:8333/#", want: "", valid: false},
+		{name: "every trailing slash removed", env: "http://host:8333//", want: "http://host:8333", valid: true},
+		{name: "unparsable normalized form rejected", env: "https://[fe80::1%25é]", want: "", valid: false},
 		{name: "relative rejected", env: "host:8333", want: "", valid: false},
 		{name: "ftp rejected", env: "ftp://host", want: "", valid: false},
 	}
@@ -445,10 +451,11 @@ func TestLoadConfigRootsBecomeAbsolute(t *testing.T) {
 	}
 }
 
-// TestLoadConfigSharedPackCache proves the shared pack-cache resolution:
-// off by default, enabled by the flag or the environment (flag wins), the
-// root below the user cache directory, and the refusals — no user cache
-// directory, an invalid boolean, and a root at or below the workspace root.
+// TestLoadConfigSharedPackCache proves the pack-cache resolution: the
+// shared root below the user cache directory is always on, a host without a
+// user cache directory or a workspace root above that directory keeps the
+// private per-workspace cache instead of refusing, and the retired flag and
+// variable are gone.
 func TestLoadConfigSharedPackCache(t *testing.T) {
 	base := "SLIVINGDOC_BUCKET=my-bucket"
 	sharedRoot := "/cache/slivingdoc/pack-cache"
@@ -457,47 +464,37 @@ func TestLoadConfigSharedPackCache(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadConfig() = %v", err)
 	}
-	if cfg.packCacheRoot != "" {
-		t.Fatalf("default packCacheRoot = %q, want the private per-workspace cache", cfg.packCacheRoot)
+	if cfg.packCacheRoot != sharedRoot || cfg.packCache != packCacheShared {
+		t.Fatalf("default packCacheRoot = %q (%d), want %q shared", cfg.packCacheRoot, cfg.packCache, sharedRoot)
 	}
 
-	cfg, err = loadConfig(testProcess([]string{base}, "--shared-pack-cache"))
-	if err != nil {
-		t.Fatalf("loadConfig(--shared-pack-cache) = %v", err)
-	}
-	if cfg.packCacheRoot != sharedRoot {
-		t.Fatalf("flag packCacheRoot = %q, want %q", cfg.packCacheRoot, sharedRoot)
-	}
-
-	cfg, err = loadConfig(testProcess([]string{base, "SLIVINGDOC_SHARED_PACK_CACHE=true"}))
-	if err != nil {
-		t.Fatalf("loadConfig(env) = %v", err)
-	}
-	if cfg.packCacheRoot != sharedRoot {
-		t.Fatalf("env packCacheRoot = %q, want %q", cfg.packCacheRoot, sharedRoot)
-	}
-
-	cfg, err = loadConfig(testProcess([]string{base, "SLIVINGDOC_SHARED_PACK_CACHE=true"}, "--shared-pack-cache=false"))
-	if err != nil {
-		t.Fatalf("loadConfig(flag over env) = %v", err)
-	}
-	if cfg.packCacheRoot != "" {
-		t.Fatalf("explicit false packCacheRoot = %q, want the private per-workspace cache", cfg.packCacheRoot)
-	}
-
-	if _, err := loadConfig(testProcess([]string{base, "SLIVINGDOC_SHARED_PACK_CACHE=banana"})); err == nil {
-		t.Fatal("loadConfig(invalid boolean) = nil, want an error")
-	}
-
-	p := testProcess([]string{base}, "--shared-pack-cache")
+	// Without a user cache directory the private-root default would also
+	// land under the cwd workspace root, so it is set explicitly here.
+	p := testProcess([]string{base}, "--private-root", "/elsewhere")
 	p.cacheDir = ""
-	if _, err := loadConfig(p); err == nil || !strings.Contains(err.Error(), "user cache directory") {
-		t.Fatalf("loadConfig(no cache dir) = %v, want the user-cache-directory refusal", err)
+	cfg, err = loadConfig(p)
+	if err != nil {
+		t.Fatalf("loadConfig(no cache dir) = %v, want the private-cache fallback", err)
+	}
+	if cfg.packCacheRoot != "" || cfg.packCache != packCacheNoUserDir {
+		t.Fatalf("no-cache-dir packCacheRoot = %q (%d), want the private per-workspace cache", cfg.packCacheRoot, cfg.packCache)
 	}
 
-	_, err = loadConfig(testProcess([]string{base}, "--shared-pack-cache", "--workspace-root", sharedRoot))
-	if err == nil || !strings.Contains(err.Error(), "pack cache root") {
-		t.Fatalf("loadConfig(overlap) = %v, want the overlapping pack-cache-root refusal", err)
+	cfg, err = loadConfig(testProcess([]string{base}, "--workspace-root", "/cache", "--private-root", "/elsewhere"))
+	if err != nil {
+		t.Fatalf("loadConfig(workspace above the cache) = %v, want the private-cache fallback", err)
+	}
+	if cfg.packCacheRoot != "" || cfg.packCache != packCacheBelowWorkspace {
+		t.Fatalf("overlap packCacheRoot = %q (%d), want the private per-workspace cache", cfg.packCacheRoot, cfg.packCache)
+	}
+
+	_, err = loadConfig(testProcess([]string{base}, "--shared-pack-cache"))
+	if err == nil || !strings.Contains(err.Error(), "not defined") {
+		t.Fatalf("loadConfig(--shared-pack-cache) = %v, want the unknown-flag error: the flag is retired", err)
+	}
+	cfg, err = loadConfig(testProcess([]string{base, "SLIVINGDOC_SHARED_PACK_CACHE=false"}))
+	if err != nil || cfg.packCacheRoot != sharedRoot {
+		t.Fatalf("loadConfig(retired variable) = %q, %v; want it ignored", cfg.packCacheRoot, err)
 	}
 }
 
@@ -509,7 +506,6 @@ func TestLoadConfigSharedPackCacheEphemeral(t *testing.T) {
 	session := t.TempDir()
 	cfg, err := loadConfig(ephemeralProcess(session, []string{
 		"SLIVINGDOC_BUCKET=my-bucket",
-		"SLIVINGDOC_SHARED_PACK_CACHE=true",
 	}))
 	if err != nil {
 		t.Fatalf("loadConfig() = %v", err)
@@ -582,7 +578,7 @@ func TestConfigErrorIsRedacted(t *testing.T) {
 }
 
 // TestLoadConfigReadOnlyPaths checks precedence, splitting, trimming, and
-// empty-piece rules (architecture section 17).
+// empty-piece rules (architecture/config.md).
 func TestLoadConfigReadOnlyPaths(t *testing.T) {
 	cases := []struct {
 		name string
@@ -728,7 +724,7 @@ func refusingProcess(env []string, args ...string) (process, *refusingEngine, *b
 
 // TestFlagsWritablePathsResolution checks the documented precedence of the
 // writable set: the flag beats the environment, which beats the empty
-// default (architecture section 17).
+// default (architecture/config.md).
 func TestFlagsWritablePathsResolution(t *testing.T) {
 	for _, tt := range []struct {
 		name string
@@ -893,7 +889,7 @@ func TestSetupRejectsCaseFoldedOverlap(t *testing.T) {
 // own setting: the entries compared are the ones written, so the refusal
 // does not depend on which unrelated ancestors sit beside them, and with
 // several overlaps the pair named is the first written read-only entry
-// (architecture section 2, Writable paths).
+// (architecture/product-contract.md, Read-only and writable paths).
 func TestSetupRefusesBeforeEngineAndProbe(t *testing.T) {
 	for _, tt := range []struct {
 		name        string
@@ -1029,4 +1025,26 @@ func flagReferenceLine(t *testing.T, flag string) string {
 	}
 	t.Fatalf("FlagReference declares no %s line", flag)
 	return ""
+}
+
+// TestLoadConfigIgnore proves --ignore beats SLIVINGDOC_IGNORE, splits on
+// commas, and refuses a pattern that cannot match.
+func TestLoadConfigIgnore(t *testing.T) {
+	cfg, err := loadConfig(testProcess([]string{"SLIVINGDOC_BUCKET=b", "SLIVINGDOC_IGNORE=*.env"}))
+	if err != nil {
+		t.Fatalf("loadConfig() = %v", err)
+	}
+	if got := cfg.ignore; len(got) != 1 || got[0] != "*.env" {
+		t.Fatalf("ignore = %v, want the environment value", got)
+	}
+	cfg, err = loadConfig(testProcess([]string{"SLIVINGDOC_BUCKET=b", "SLIVINGDOC_IGNORE=*.env"}, "--ignore=*.log, private/scratch"))
+	if err != nil {
+		t.Fatalf("loadConfig() = %v", err)
+	}
+	if got := cfg.ignore; len(got) != 2 || got[0] != "*.log" || got[1] != "private/scratch" {
+		t.Fatalf("ignore = %v, want the flag's two patterns", got)
+	}
+	if _, err := loadConfig(testProcess([]string{"SLIVINGDOC_BUCKET=b"}, "--ignore=[oops")); err == nil {
+		t.Fatal("loadConfig() = nil, want a refusal of an unmatched bracket")
+	}
 }

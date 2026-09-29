@@ -1,15 +1,48 @@
 # AGENTS.md — slivingdoc
 
+## Architecture docs
+
+`architecture/` holds one doc per command and subsystem: an overview, the
+product contract, pull, commit, conflicts, checkpoints, the notebook, the Git
+engine, the workspace, storage, the S3 store, hosted storage mode, login and
+storage selection, the CLI, the terminal presentation,
+the MCP server, configuration, errors, logging, security, guarantees,
+testing, build, releasing, running, and recorded decisions. Start at
+[architecture/README.md](architecture/README.md): it indexes every doc
+with a one-line summary and suggests a reading order per task. Open the
+doc for your concern before scanning the code; it lists the files and
+symbols to read.
+
+Keep them true. The docs are only useful if an agent can trust them
+without re-checking the code:
+
+- A change that alters behavior, a flow, a file's role, a public name, a
+  flag, an error code, an invariant, or a rule described in an
+  architecture doc updates that doc in the same commit.
+- A new command or subsystem gets a new `architecture/<concern>.md` in
+  the same shape (intro with "Read this when", Key files, Flow, Behavior,
+  Gotchas, Related) and a line in `architecture/README.md`. A removed or
+  renamed file or symbol is removed or renamed in every doc that cites
+  it.
+- Code comments cite a doc by path (`architecture/commit.md`), never by
+  section number or line.
+- Cite files and symbols, never line numbers. Describe only what the code
+  does; plans go in worklogs or issues.
+- If you find a doc that disagrees with the code, the code wins: fix the
+  doc in your change, or say so if you cannot.
+
 ## Architecture
 
 slivingdoc is a standalone MCP server that gives many agents one shared
-directory of UTF-8 text notes, stored durably in S3-compatible object storage.
-It uses Git data structures and merge behavior internally but never invokes a
-Git executable and never exposes a Git repository. The full contract is
-[`docs/slivingdoc-v1.md`](docs/slivingdoc-v1.md). Three states
+directory of UTF-8 text notes, stored durably in S3-compatible object storage
+or, when `SLIVINGDOC_TOKEN` is set or `slivingdoc login` stored an account
+login, in a space of the slivingdoc hosted storage API
+(architecture/hosted-mode.md, architecture/login.md). It uses Git data structures and merge behavior internally but never invokes a
+Git executable and never exposes a Git repository. The contract is split
+by concern under [`architecture/`](architecture/README.md). Three states
 shape every operation. **L** is the caller-controlled visible directory.
 **P** is the server-owned private state (repository, baseline, locks).
-**R** is the accepted remote state indexed by the S3 object `current`.
+**R** is the accepted remote state indexed by the stored object `current`.
 
 ```text
      MCP client (agent)              human shell
@@ -20,7 +53,7 @@ shape every operation. **L** is the caller-controlled visible directory.
 +----------------------------------------------+
 |  main.go -> internal/cli                     |
 |  command router: serve | pull | commit |     |
-|  version                                     |
+|  login | logout | space | version            |
 +----------------------+-----------------------+
                        |
                        v
@@ -50,6 +83,8 @@ shape every operation. **L** is the caller-controlled visible directory.
              |                 +----------------------------+
              |                 |  internal/s3store (AWS SDK)|
              |                 |  --> S3-compatible bucket  |
+             |                 |  or internal/httpstore     |
+             |                 |  --> hosted storage space  |
              |                 +----------------------------+
              v
 +--------------------------+
@@ -73,9 +108,11 @@ Runtime layout (implemented):
 ```text
 L  visible directory       caller path; UTF-8 text files only
 P  <private-root>/<key>/   state.json, operation.lock, repo/, staging/,
-                           backup/, pulled, pack-cache/ (--shared-pack-cache
-                           relocates pack-cache to one identity-keyed dir
-                           under <user-cache-dir>/slivingdoc/pack-cache/)
+                           pulled (pack bytes and the store proof live in
+                           one identity-keyed dir under
+                           <user-cache-dir>/slivingdoc/pack-cache/; pack-cache/
+                           stays in P when there is no user cache dir, or when
+                           that dir is at or below the workspace root)
 R  <bucket>/<prefix>/      current                manifest v1, strict; the only
                                                   accepted-state authority
                            packs/checkpoints/<gen>-<id>.pack   complete state
@@ -86,18 +123,25 @@ Supporting packages sit beside the main path. `internal/strictjson`
 supplies the strict JSON value tree shared by the manifest and
 `state.json`. `internal/storage/fake` and `internal/storage/contract`
 provide the deterministic object store and the one contract suite run
-against both the fake and the real S3 backend. `internal/tests3` starts
-the pinned S3-compatible testcontainers backend.
+against the fake, the real S3 backend, and the hosted adapter.
+`internal/tests3` starts the pinned S3-compatible backend container through
+a small Docker Engine API client;
+`internal/httpstore/gatewaytest` is the in-process reference server of the
+hosted storage API.
 
 ### Package Map
 
 ```text
 slivingdoc/
 |-- main.go                  entry point: cli.Run over os.Args
-|-- cmd/                     the CLI commands (go_away_boilerplate/pkg/cmd)
+|-- cmd/                     the CLI commands (go_away_boilerplate/pkg/cmd Command)
 |   |-- serve/               serve|s: the MCP stdio server over internal/app
 |   |-- pull/                pull|p: one-shot notes_pull for humans
 |   |-- commit/              commit|c: one-shot notes_commit for humans
+|   |-- status/              status: local changes against the accepted state
+|   |-- log/                 log: recent accepted publications
+|   |-- login/               login, logout and space: browser device login,
+|   |                        stored account key, default space, revocation
 |   `-- version/             version|v: the exact "slivingdoc <semver>" line
 |-- release_test.go          release layer: dependency baselines, checksum
 |                            grammar, release reference, built binary
@@ -110,8 +154,8 @@ slivingdoc/
 |                            verified download, cache, exec forwarding
 |-- .github/workflows/       ci.yml (qa, npm, readme-coverage caller);
 |                            release.yml (caller for the reusable pipeline)
-|-- docs/                    slivingdoc-v1.md (the accepted contract),
-|                            build.md, testing.md
+|-- architecture/            one doc per command and subsystem; index in
+|                            README.md (the accepted contract)
 |-- terraform/               reusable AWS module: bucket, IAM user, keys
 |-- examples/seaweedfs/      isolated local SeaweedFS walkthrough
 |-- examples/terraform/      debug configuration calling the module
@@ -142,13 +186,28 @@ slivingdoc/
     |                        UploadUnique
     |   |-- contract/        one contract suite for every ObjectStore
     |   `-- fake/            deterministic in-memory ObjectStore
-    |-- s3store/             the ONLY AWS SDK package: S3 adapter, prefix
+    |-- s3store/             the ONLY production AWS SDK package: S3 adapter, prefix
     |                        join, multipart upload, semantic error mapping
+    |-- credentials/         the stored logins: strict versioned
+    |                        credentials.json (0600, temp file + rename)
+    |-- sitelogin/           client of the site's CLI login routes (start,
+    |   |                    key polling, spaces, space-token minting, revoke)
+    |   `-- sitetest/        test-only reference site with scripted approvals
+    |-- httpstore/           hosted storage API adapter (SLIVINGDOC_TOKEN or a
+    |                        stored login):
+    |   |                    bearer token, space, status-to-semantic error
+    |   |                    mapping, access check instead of the probe
+    |   `-- gatewaytest/     test-only reference server of the hosted API
     |-- strictjson/          neutral strict JSON value tree (manifest and
     |                        state.json)
-    |-- tests3/              testcontainers S3 backend helper (currently
-    |                        SeaweedFS) (one container per `go test`
-    |                        invocation)
+    |-- scratch/             test-only: TMPDIR on a memory filesystem
+    |-- tests3/              S3 backend container over the Docker Engine
+    |                        API (currently SeaweedFS): one per test
+    |                        process, or one leased container under
+    |                        `make test`
+    |-- pathutil/            ExpandHome: ~ expansion for notebook paths and roots
+    |-- tui/                 terminal presentation: palette, marks, columns,
+    |                        progress spinner, table picker (plain off a TTY)
     |-- mcp/                 stdio MCP server: the two strict tool schemas,
     |                        strict decoding, self-contained safe error text,
     |                        the stable error envelope, and mcpReqID logging
@@ -203,7 +262,7 @@ Commit(ctx, message)
       accepted tail >= checkpointPacks
         --> runCheckpoint (best-effort; never fails the commit)
 
-Background efforts (same call path, best-effort)
+Checkpoint and cleanup (synchronous inside the triggering commit, best-effort)
   runCheckpoint: compact the stable accepted prefix --> CAS the new manifest
   cleanup: LIST --> delete only unreferenced objects at or before the cutoff
 ```
@@ -212,7 +271,7 @@ Background efforts (same call path, best-effort)
 
 `main.go` is one call: `os.Exit(cli.Run(ctx, os.Args, git2.New(), opts))`.
 `internal/cli` holds the command map (`serve|s`, `pull|p`, `commit|c`,
-`version|v`) and routes through `go_away_boilerplate/pkg/cmd`. Each `cmd/`
+`status`, `log`, `login`, `logout`, `space`, `version|v`) and routes through its own `router` (`internal/cli/route.go`), over the `go_away_boilerplate/pkg/cmd` `Command` interface. Each `cmd/`
 package implements `cmd.Command`. The router parses the selected command's
 flag set, then calls `Setup` and `Run`.
 
@@ -223,7 +282,7 @@ directory, and flags can follow the path. Both commands run the same
 startup refusal surface through `app.Setup` and call `Runtime.Pull` /
 `Runtime.Commit`. `app.Report` prints the candid result: the `OK` status
 line with the generation and the resolved notebook path on stdout, or the
-structured `mcp.ToolError.Report` text (category, retryable, files with
+structured error report from `app.Report`/`writeError` (code and reason, retryable, files with
 line ranges) with a nonzero exit. `commit` requires
 `-m`/`--message`.
 
@@ -240,11 +299,17 @@ line ranges) with a nonzero exit. `commit` requires
 3. **Open the native engine.** `git2.New().Open()` verifies that the linked
    libgit2 is exactly the pinned v1.9.6 and refuses any other ABI.
 4. **Build the object store.** The `StoreFactory` seam builds the
-   `internal/s3store` adapter; tests substitute the deterministic fake.
+   `internal/s3store` adapter, or the `internal/httpstore` adapter when
+   `SLIVINGDOC_TOKEN` or a stored login selects hosted mode (`--storage`,
+   architecture/login.md); tests substitute the deterministic fake.
 5. **Probe the store.** `storage.Probe` proves the endpoint honors
-   `If-None-Match`, `If-Match`, and read-after-write. A failure exits nonzero
-   with a redacted `INCOMPATIBLE_STORE` diagnostic **before** any transport
-   serves a request.
+   `If-None-Match`, `If-Match`, and read-after-write. A proof recorded by
+   the same version and store configuration within 24 hours
+   (`probe-ok.json` in the identity's shared pack-cache directory) stands
+   in for it, so only the first process of a store identity probes. A hosted store
+   runs its `CheckAccess` instead (server description plus a read-only space
+   check). A failure exits nonzero with a redacted diagnostic **before** any
+   transport serves a request.
 6. **Serve.** `mcp.NewServer` registers exactly `notes_pull` and
    `notes_commit` and runs over stdio. Stdout carries protocol messages only;
    logs go to stderr.
@@ -255,16 +320,42 @@ line ranges) with a nonzero exit. `commit` requires
 ### Key Flags
 
 Flags beat environment variables, which beat defaults. The full table
-lives in [`docs/running.md`](docs/running.md) and in the `helpText` of
+lives in [`architecture/running.md`](architecture/running.md) and in `HelpText` and
+`FlagReference` of
 `internal/app/config.go`, which `slivingdoc serve -h` prints — that code
-copy is the authoritative one. Behavior worth remembering: `--bucket` is
-required, `--private-root` must not be at or below the workspace root,
-`--commit-retries` exhaustion is `REMOTE_BUSY`, and an invalid
-`--read-only-paths` or `--writable-paths` entry refuses startup before any
-native or S3 dependency loads — as does a path named by both settings,
-which is a configuration error rather than a precedence rule.
+copy is the authoritative one. Behavior worth remembering:
 
-The `serve`, `pull`, and `commit` commands share every flag. The
+- `--space` and `SLIVINGDOC_SPACE` are the hosted names of `--bucket` and
+  `SLIVINGDOC_BUCKET`: one setting, and both spellings with different
+  values are refused.
+- `--bucket` is required for S3. In hosted mode it is optional. A
+  `SLIVINGDOC_TOKEN` reaches one space, which `httpstore.DescribeToken`
+  reads from `GET /v1/token` (`app.resolveHostedSpace`); a space that is
+  given must equal it or startup is refused. On a server without
+  `GET /v1/token`, a given space is kept, and with none startup is
+  refused.
+- A stored login is an account key, sent only to the site that issued
+  it. `serve`, `pull` and `commit` mint one-hour tokens for one space at
+  that site and keep them in memory only; `serve` renews them. The space
+  is `--space`, then `SLIVINGDOC_SPACE`, then the default stored by
+  `slivingdoc space <name>`; with none, startup is refused. A minted token
+  is only sent to the login's endpoint.
+- The token comes from `SLIVINGDOC_TOKEN` or a stored login only, never a
+  flag. An environment token never reads `credentials.json`.
+- In `--storage auto`, an environment token beside `--endpoint`,
+  `AWS_ENDPOINT_URL` or `AWS_ENDPOINT_URL_S3` is refused. A stored login
+  wins over S3 when the space is the stored default, or when an explicit
+  space comes with no S3 setting at all; an explicit space plus any S3
+  setting is refused as ambiguous. architecture/login.md has the exact
+  table.
+- `--private-root` must not be at or below the workspace root.
+- `--commit-retries` exhaustion is `REMOTE_BUSY`.
+- An invalid `--read-only-paths` or `--writable-paths` entry refuses
+  startup before any native or S3 dependency loads, as does a path named
+  by both settings, which is a configuration error rather than a
+  precedence rule.
+
+The `serve`, `pull`, `commit`, `status`, and `log` commands share every flag (`log` adds `--limit`). The
 subcommand comes first. `slivingdoc version` and `-h` on any command exit
 zero before loading dependencies.
 
@@ -280,10 +371,10 @@ only be resolved from a bound attribute.
 | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `LOG_LEVEL`                | Per-module levels, for example `cli=warn,mcp=debug,info`. A bare level is the default. A malformed value falls back to info and is reported, never fatal.                                                          |
 | `SLIVINGDOC_LOG_TIMESTAMP` | `false` removes the `time=` field, for hosts that stamp lines themselves.                                                                                                                                          |
-| `NO_COLOR`                 | Any non-empty value disables the ANSI level color.                                                                                                                                                                 |
-| `DEBUG_PERF`               | Captures CPU, heap, and execution-trace profiles across the whole command (`internal/app/perf.go`); `1` writes under the system temporary directory, any other value is the base directory. See `docs/running.md`. |
+| `NO_COLOR`                 | Any non-empty value disables colour: log levels and the terminal output (architecture/tui.md).                                                                                                                     |
+| `DEBUG_PERF`               | Captures CPU, heap, and execution-trace profiles across the whole command (`internal/app/perf.go`); `1` writes under the system temporary directory, any other value is the base directory. See `architecture/running.md`. |
 
-The `--log-level` and `--log-timestamp` flags (shared by `serve`, `pull`,
+The `--log-level` and `--log-timestamp` flags (shared by `serve`, `pull`, `status`, `log`,
 and `commit`) override the environment once the flags resolve; `setup`
 rebuilds the process logger when either is configured. An invalid
 `--log-level` value refuses startup; a malformed `LOG_LEVEL` environment
@@ -334,12 +425,13 @@ demoted to DEBUG with empty-string attributes dropped (`sdkLogger` in
 
 **Invariants that a change must not break.** These come from the accepted
 architecture, and a change that touches one of them updates
-`docs/slivingdoc-v1.md` in the same commit:
+the matching doc under `architecture/` in the same commit:
 
-- MCP and the one-shot `pull`/`commit` subcommands are the only public
-  APIs, and both expose exactly the same two operations. The process never
+- The MCP tools and the one-shot `pull`/`commit` subcommands expose exactly
+  the same two operations; `status` and `log` are read-only human commands
+  with no MCP counterpart. The process never
   invokes Git and never imports `git2go`.
-- All CGo and libgit2 types stay inside `internal/git2`. All AWS SDK use
+- All CGo and libgit2 types stay inside `internal/git2`. All production AWS SDK use
   stays inside `internal/s3store`.
 - `current` is the only accepted-state authority. State is never inferred
   from object names, and `LIST` is a cleanup tool, not a read path.
@@ -352,7 +444,7 @@ architecture, and a change that touches one of them updates
   and no special files.
 - Commit rejects a complete conflict-marker block, so no accepted state can
   contain an unresolved conflict.
-- Checkpoint and cleanup are best-effort background efforts. They must not
+- Checkpoint and cleanup are best-effort (synchronous inside the triggering commit). They must not
   change the result of the commit that scheduled them.
 - A failure after local mutation began returns `RECOVERY_FAILURE`, attempts
   an authoritative resync, and never returns `OK` for that call.
@@ -386,8 +478,14 @@ object and candid text item. An engine failure may carry a `detail`
 chosen from a closed set of named causes; raw cause text never crosses the
 tool boundary and is logged against the same ID instead.
 An unrecognized internal error maps to retryable `STORAGE_FAILURE` rather
-than leaking. Caller-facing text must never contain a credential, an S3
-key, a private path, a Git object ID, or Git vocabulary.
+than leaking. Two deliberate exceptions come from hosted storage
+(architecture/hosted-mode.md): `STORAGE_FAILURE` is not retryable for the
+account refusals a retry cannot change, and the hosted server's own
+message, sanitized and redacted, is appended to their message and to the
+retryable upload refusal of a renewed stored-login token. That text
+is untrusted server output in agent-facing results. Caller-facing text
+must never contain a credential, an S3 key, a private path, a Git object ID,
+or Git vocabulary.
 
 ## Duplication policy
 
@@ -465,5 +563,5 @@ capability the host cannot provide, and it must name that capability.
 `make test` fails below the 70 % floor. `make cover` opens the profile from
 the last run.
 
-[`docs/testing.md`](docs/testing.md) records the test layers, the
+[`architecture/testing.md`](architecture/testing.md) records the test layers, the
 concurrency and timeout rationale, and the coverage measurement details.

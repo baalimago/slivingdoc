@@ -16,7 +16,7 @@ import (
 // fixtureManifest builds a valid manifest that exercises every descriptor
 // shape: an active checkpoint with a two-increment tail and one retained
 // generation whose tail ends in the publication ID the active checkpoint
-// copied (the allowed cross-chain repetition of architecture section 9.2).
+// copied (the allowed cross-chain repetition in architecture/storage.md).
 func fixtureManifest() Manifest {
 	h := oid
 	cp0, cp1 := uuidv7(1), uuidv7(2)
@@ -150,6 +150,33 @@ func TestManifestRoundTripEmptyTails(t *testing.T) {
 	}
 	if len(back.Increments) != 0 || len(back.Retained) != 0 {
 		t.Fatal("decoded empty tails are not empty")
+	}
+}
+
+// TestManifestRoundTripNilRetainedTail proves that a retained generation
+// whose chain is its checkpoint alone, built with a nil increment tail,
+// encodes as [] and decodes again, and that the caller's value is left
+// unchanged.
+func TestManifestRoundTripNilRetainedTail(t *testing.T) {
+	m := fixtureManifest()
+	m.Retained[0].Increments = nil
+	m.Retained[0].Head = m.Retained[0].Checkpoint.Head
+	data, err := EncodeManifest(m)
+	if err != nil {
+		t.Fatalf("EncodeManifest() = %v", err)
+	}
+	if bytes.Contains(data, []byte("null")) {
+		t.Fatalf("a nil retained tail must encode as [], got %s", data)
+	}
+	if m.Retained[0].Increments != nil {
+		t.Fatal("EncodeManifest modified the caller's retained tail")
+	}
+	back, err := DecodeManifest(data)
+	if err != nil {
+		t.Fatalf("DecodeManifest() = %v", err)
+	}
+	if len(back.Retained) != 1 || len(back.Retained[0].Increments) != 0 {
+		t.Fatalf("decoded retained = %+v, want one generation with an empty tail", back.Retained)
 	}
 }
 
@@ -294,7 +321,6 @@ func TestDecodeManifestRejectsInvalidJSON(t *testing.T) {
 		"overflow generation":      `{"version":1,"generation":18446744073709551616,"head":"` + oidString(0) + `","checkpoint":` + cp(0) + `,"increments":[],"retained":[]}`,
 		"missing version":          `{"generation":1,"head":"` + oidString(0) + `","checkpoint":` + cp(0) + `,"increments":[],"retained":[]}`,
 		"version zero":             `{"version":0,"generation":1,"head":"` + oidString(0) + `","checkpoint":` + cp(0) + `,"increments":[],"retained":[]}`,
-		"version two":              `{"version":2,"generation":1,"head":"` + oidString(0) + `","checkpoint":` + cp(0) + `,"increments":[],"retained":[]}`,
 		"missing generation":       `{"version":1,"head":"` + oidString(0) + `","checkpoint":` + cp(0) + `,"increments":[],"retained":[]}`,
 		"missing checkpoint":       `{"version":1,"generation":1,"head":"` + oidString(0) + `","increments":[],"retained":[]}`,
 		"missing increments":       `{"version":1,"generation":1,"head":"` + oidString(0) + `","checkpoint":` + cp(0) + `,"retained":[]}`,
@@ -366,6 +392,22 @@ func TestListIsNotUsedToDiscoverState(t *testing.T) {
 		}
 		if strings.Contains(string(src), "ListObjects(") && file != "store.go" {
 			t.Errorf("%s uses ListObjects to read state", file)
+		}
+	}
+}
+
+func TestDecodeManifestNewerVersionRequiresUpgrade(t *testing.T) {
+	_, err := DecodeManifest([]byte(`{"version":2,"anything":"else"}`))
+	var upgrade *UpgradeRequiredError
+	if !errors.Is(err, ErrUpgradeRequired) || !errors.As(err, &upgrade) || upgrade.Version != 2 {
+		t.Fatalf("DecodeManifest(v2) = %v, want an upgrade-required error for version 2", err)
+	}
+	if errors.Is(err, ErrIntegrity) {
+		t.Fatalf("DecodeManifest(v2) = %v, a newer manifest is not corruption", err)
+	}
+	for _, old := range []string{`{"version":0}`, `{"version":"1"}`} {
+		if _, err := DecodeManifest([]byte(old)); !errors.Is(err, ErrIntegrity) || errors.Is(err, ErrUpgradeRequired) {
+			t.Fatalf("DecodeManifest(%s) = %v, want plain integrity failure", old, err)
 		}
 	}
 }

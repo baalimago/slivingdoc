@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -51,6 +52,10 @@ func (w *Workspace) applyLocked(ctx context.Context, targetTree git.OID, newBase
 	snap, err := git.ReadSnapshot(w.repo, targetTree)
 	if err != nil {
 		return fmt.Errorf("workspace: read target tree: %w", err)
+	}
+	snap = w.withoutIgnored(snap)
+	if err := w.refuseIgnoredConflict(ctx, snap); err != nil {
+		return err
 	}
 	stageDir := filepath.Join(w.privDir, stagingDirName)
 	backupDir := filepath.Join(w.privDir, backupDirName)
@@ -183,10 +188,11 @@ func (w *Workspace) applyInPlace(ctx context.Context, stageDir string, target gi
 	for _, f := range target.Files {
 		targetFiles[f.Path] = true
 	}
-	var existingFiles, existingDirs []string
-	if err := w.collectVisible(ctx, w.rel, "", &existingFiles, &existingDirs); err != nil {
+	var existing visibleEntries
+	if err := w.collectVisible(ctx, w.rel, "", &existing); err != nil {
 		return err
 	}
+	existingFiles, existingDirs := existing.files, existing.dirs
 
 	// A directory where the target has a file, or a file where the target
 	// has a directory, must be cleared before the copy so MkdirAll and the
@@ -246,7 +252,7 @@ func (w *Workspace) applyInPlace(ctx context.Context, stageDir string, target gi
 	sorted := append([]string(nil), existingDirs...)
 	sort.Sort(sort.Reverse(sort.StringSlice(sorted)))
 	for _, p := range sorted {
-		if !targetDirs[p] {
+		if !targetDirs[p] && !existing.keep[p] {
 			if err := w.root.RemoveAll(joinRel(w.rel, p)); err != nil {
 				return fmt.Errorf("workspace: remove obsolete directory %q: %w: %w", p, ErrPartial, err)
 			}
@@ -290,4 +296,52 @@ func tempSuffix() string {
 		return ".slivingdoc-tmp"
 	}
 	return ".slivingdoc-tmp-" + hex.EncodeToString(b[:])
+}
+
+// ErrIgnoredConflict reports a target path that would need the place of a
+// directory holding ignored files: the notebook wants a file where the
+// visible directory keeps ignored entries.
+var ErrIgnoredConflict = errors.New("workspace: ignored files are in the way")
+
+// IgnoredConflictError names the target file that cannot take the place of
+// a directory holding ignored entries. It matches ErrIgnoredConflict.
+type IgnoredConflictError struct{ Path string }
+
+func (e *IgnoredConflictError) Error() string {
+	return fmt.Sprintf("%s: %q must become a file, but the directory holds ignored files; move them away", ErrIgnoredConflict, e.Path)
+}
+
+func (e *IgnoredConflictError) Is(target error) bool { return target == ErrIgnoredConflict }
+
+// withoutIgnored drops the files this machine ignores from a target: a
+// materialization neither writes nor removes an ignored path.
+func (w *Workspace) withoutIgnored(target git.Snapshot) git.Snapshot {
+	if !w.ignore.Configured() {
+		return target
+	}
+	kept := make([]git.File, 0, len(target.Files))
+	for _, f := range target.Files {
+		if !w.ignore.Ignored(f.Path) {
+			kept = append(kept, f)
+		}
+	}
+	return git.Snapshot{Files: kept}
+}
+
+// refuseIgnoredConflict fails before anything is mutated when a target file
+// belongs where a visible directory holds ignored entries.
+func (w *Workspace) refuseIgnoredConflict(ctx context.Context, target git.Snapshot) error {
+	if !w.ignore.Configured() {
+		return nil
+	}
+	var existing visibleEntries
+	if err := w.collectVisible(ctx, w.rel, "", &existing); err != nil {
+		return err
+	}
+	for _, f := range target.Files {
+		if existing.keep[f.Path] {
+			return &IgnoredConflictError{Path: f.Path}
+		}
+	}
+	return nil
 }

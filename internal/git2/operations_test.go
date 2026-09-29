@@ -142,6 +142,27 @@ func TestWriteTreeRejectsUnsupportedModes(t *testing.T) {
 	}
 }
 
+// TestWriteTreeRefusesDuplicateNames proves the boundary refuses a repeated
+// entry name instead of letting the tree builder replace the first entry: a
+// file and a directory of one name must never silently lose the file.
+func TestWriteTreeRefusesDuplicateNames(t *testing.T) {
+	repo := newTestRepo(t)
+	blob, err := repo.WriteBlob([]byte("x"))
+	if err != nil {
+		t.Fatalf("WriteBlob() = %v", err)
+	}
+	sub, err := repo.WriteTree([]git.TreeEntry{{Name: "q.md", Mode: git.ModeBlob, ID: blob}})
+	if err != nil {
+		t.Fatalf("WriteTree(sub) = %v", err)
+	}
+	if _, err := repo.WriteTree([]git.TreeEntry{
+		{Name: "p", Mode: git.ModeBlob, ID: blob},
+		{Name: "p", Mode: git.ModeTree, ID: sub},
+	}); err == nil {
+		t.Fatal("WriteTree(file and directory named p) = nil, want duplicate-name error")
+	}
+}
+
 func TestSnapshotRoundTripByteForByte(t *testing.T) {
 	repo := newTestRepo(t)
 	orig := map[string]string{
@@ -405,6 +426,83 @@ func TestMergeFileDirectoryConflict(t *testing.T) {
 		if c.Content != nil || len(c.Ranges) != 0 {
 			t.Fatalf("file/directory conflict %q must carry no markers, got %q", c.Path, c.Content)
 		}
+	}
+}
+
+// TestMaterializeFileDirectoryConflictKeepsLocalSide proves, against the
+// real libgit2 index shape, that a file-versus-directory conflict
+// materializes the local side in both directions: every file of a local
+// directory the remote side made a file, and the local file the remote side
+// made a directory. The remote side is omitted at and below the path, and
+// the result builds back into exactly the local tree.
+func TestMaterializeFileDirectoryConflictKeepsLocalSide(t *testing.T) {
+	tests := []struct {
+		name   string
+		base   map[string]string
+		local  map[string]string
+		remote map[string]string
+	}{
+		{
+			name:   "local directory remote file, both added",
+			base:   map[string]string{"keep.md": "kept"},
+			local:  map[string]string{"keep.md": "kept", "p/q.txt": "local q", "p/sub/r.txt": "local r"},
+			remote: map[string]string{"keep.md": "kept", "p": "remote file"},
+		},
+		{
+			name:   "local directory replaces a file the remote side changed",
+			base:   map[string]string{"p": "base file"},
+			local:  map[string]string{"p/q.txt": "local q"},
+			remote: map[string]string{"p": "remote file"},
+		},
+		{
+			// Local replaced the directory with a file; remote edited a
+			// file inside it. The edit is reported by the conflict at p
+			// alone: its markers cannot sit beside the local file.
+			name:   "local file replaces a directory the remote side changed",
+			base:   map[string]string{"p/q.txt": "base q"},
+			local:  map[string]string{"p": "local file"},
+			remote: map[string]string{"p/q.txt": "remote q"},
+		},
+		{
+			name:   "local file remote directory, both added",
+			base:   map[string]string{"keep.md": "kept"},
+			local:  map[string]string{"keep.md": "kept", "p": "local file"},
+			remote: map[string]string{"keep.md": "kept", "p/q.txt": "remote q"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := newTestRepo(t)
+			base := buildSnapshotTree(t, repo, tt.base)
+			local := buildSnapshotTree(t, repo, tt.local)
+			remote := buildSnapshotTree(t, repo, tt.remote)
+
+			res, err := git.Merge(repo, base, local, remote)
+			if err != nil {
+				t.Fatalf("Merge() = %v", err)
+			}
+			if len(res.Conflicts) != 1 || res.Conflicts[0].Path != "p" || res.Conflicts[0].Content != nil {
+				t.Fatalf("Merge() conflicts = %+v, want one file/directory conflict at p", res.Conflicts)
+			}
+			snap, err := git.MaterializeTree(repo, res, local)
+			if err != nil {
+				t.Fatalf("MaterializeTree() = %v", err)
+			}
+			got := make(map[string]string, len(snap.Files))
+			for _, f := range snap.Files {
+				got[f.Path] = string(f.Data)
+			}
+			if !reflect.DeepEqual(got, tt.local) {
+				t.Fatalf("MaterializeTree() = %v, want the local side %v", got, tt.local)
+			}
+			tree, err := git.BuildTree(repo, snap)
+			if err != nil {
+				t.Fatalf("BuildTree(materialized) = %v", err)
+			}
+			if tree != local {
+				t.Fatalf("materialized tree = %s, want the local tree %s", tree, local)
+			}
+		})
 	}
 }
 

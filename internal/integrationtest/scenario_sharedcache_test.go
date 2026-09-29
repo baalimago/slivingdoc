@@ -3,11 +3,12 @@ package integrationtest
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
 // TestScenarioSharedPackCacheReuse proves the shared pack cache
-// (architecture section 8.3): the first cold puller populates the
+// (architecture/pull.md and config.md): the first cold puller populates the
 // identity-selected shared directory, and a second cold puller with its own
 // workspace and private state imports the same state with zero pack
 // downloads. Only verified pack bytes are shared; every harness keeps its
@@ -57,18 +58,18 @@ func TestScenarioSharedPackCacheReuse(t *testing.T) {
 // only an optimization: with a cache root that cannot be created (a path
 // below a regular file, standing in for a read-only mount or a permission
 // wall), every pull still succeeds, the degradation is observable as a
-// warning, and the packs are simply downloaded each time.
+// warning, and each new workspace simply downloads the packs it lacks.
 func TestScenarioSharedPackCacheUnwritable(t *testing.T) {
 	t.Parallel()
 	blocker := filepath.Join(t.TempDir(), "blocker")
 	if err := os.WriteFile(blocker, []byte("not a directory"), 0o644); err != nil {
 		t.Fatalf("write blocker file: %v", err)
 	}
+	cacheRoot := filepath.Join(blocker, "pack-cache")
 	a := newFakeHarness(t, HarnessConfig{})
-	b := newSharedHarness(t, a.Raw(), a.cfg.Prefix, HarnessConfig{
-		PackCacheRoot: filepath.Join(blocker, "pack-cache"),
-	})
-	pathA, pathB := a.Path("notes"), b.Path("notes")
+	b := newSharedHarness(t, a.Raw(), a.cfg.Prefix, HarnessConfig{PackCacheRoot: cacheRoot})
+	c := newSharedHarness(t, a.Raw(), a.cfg.Prefix, HarnessConfig{PackCacheRoot: cacheRoot})
+	pathA, pathB, pathC := a.Path("notes"), b.Path("notes"), c.Path("notes")
 
 	commitFirst(t, a, pathA, "a.md", "alpha", "c1")
 	packKey := a.Manifest().Checkpoint.Key.String()
@@ -79,25 +80,30 @@ func TestScenarioSharedPackCacheUnwritable(t *testing.T) {
 		Logs: &LogExpectations{WarnContains: []string{"pack cache write failed"}},
 	})
 
-	// Every pull re-downloads: the cache never becomes a hit, and never
-	// becomes a failure.
-	b.assertOK(t, b.Pull("", pathB))
-	if got := b.Recorder().CountKey(OpGet, packKey); got != 2 {
-		t.Fatalf("pack gets with an unwritable cache = %d, want one per pull", got)
+	// The cache never becomes a hit, and never becomes a failure: the next
+	// workspace downloads the same pack again and warns again.
+	c.assertOK(t, c.Pull("", pathC))
+	if got := c.Recorder().CountKey(OpGet, packKey); got != 1 {
+		t.Fatalf("pack gets of a second workspace with an unwritable cache = %d, want 1", got)
 	}
+	c.assertExpectations(t, Expectations{
+		Logs: &LogExpectations{WarnContains: []string{"pack cache write failed"}},
+	})
 }
 
 // TestScenarioSharedPackCacheCorruption proves that a corrupt shared entry
-// is never a false hit across agents: the next pull discards it,
-// re-downloads the verified bytes, and heals the shared directory for
-// every other agent (architecture section 8.3).
+// is never a false hit across agents: the next agent that needs the pack
+// discards it, re-downloads the verified bytes, and heals the shared
+// directory for every other agent (architecture/pull.md and config.md). An
+// agent whose repository already holds the pack never consults the entry.
 func TestScenarioSharedPackCacheCorruption(t *testing.T) {
 	t.Parallel()
 	cacheRoot := t.TempDir()
 	a := newFakeHarness(t, HarnessConfig{})
 	b := newSharedHarness(t, a.Raw(), a.cfg.Prefix, HarnessConfig{PackCacheRoot: cacheRoot})
 	c := newSharedHarness(t, a.Raw(), a.cfg.Prefix, HarnessConfig{PackCacheRoot: cacheRoot})
-	pathA, pathB, pathC := a.Path("notes"), b.Path("notes"), c.Path("notes")
+	d := newSharedHarness(t, a.Raw(), a.cfg.Prefix, HarnessConfig{PackCacheRoot: cacheRoot})
+	pathA, pathB, pathC, pathD := a.Path("notes"), b.Path("notes"), c.Path("notes"), d.Path("notes")
 
 	commitFirst(t, a, pathA, "a.md", "alpha", "c1")
 	m := a.Manifest()
@@ -107,12 +113,17 @@ func TestScenarioSharedPackCacheCorruption(t *testing.T) {
 	cacheFile := filepath.Join(b.SharedPackCacheDir(t), m.Checkpoint.SHA256.String())
 	b.WriteFile(cacheFile, "corrupt shared entry")
 
-	// B discards the corrupt entry, re-downloads, and heals the shared file.
+	// B holds the objects and needs nothing; C is cold, discards the corrupt
+	// entry, re-downloads, and heals the shared file.
 	b.assertOK(t, b.Pull("", pathB))
-	if got := b.Recorder().CountKey(OpGet, packKey); got != 2 {
+	if got := b.Recorder().CountKeyPrefix(OpGet, "packs/"); got != 1 {
+		t.Fatalf("pack gets of the agent holding the objects = %d, want only its first cold pull", got)
+	}
+	c.assertOK(t, c.Pull("", pathC))
+	if got := c.Recorder().CountKey(OpGet, packKey); got != 1 {
 		t.Fatalf("pack gets after shared corruption = %d, want the re-download", got)
 	}
-	wantBytes, err := b.ReadObject(packKey)
+	wantBytes, err := c.ReadObject(packKey)
 	if err != nil {
 		t.Fatalf("read pack through the raw store: %v", err)
 	}
@@ -125,9 +136,45 @@ func TestScenarioSharedPackCacheCorruption(t *testing.T) {
 	}
 
 	// The healed entry serves the next agent without a download.
-	c.assertOK(t, c.Pull("", pathC))
-	if got := c.Recorder().CountKeyPrefix(OpGet, "packs/"); got != 0 {
+	d.assertOK(t, d.Pull("", pathD))
+	if got := d.Recorder().CountKeyPrefix(OpGet, "packs/"); got != 0 {
 		t.Fatalf("pack gets after the healed shared cache = %d, want 0", got)
 	}
-	assertVisibleFiles(t, c, pathC, map[string]string{"a.md": "alpha"})
+	assertVisibleFiles(t, d, pathD, map[string]string{"a.md": "alpha"})
+}
+
+// TestScenarioSharedPackCacheReusesStoreProof proves the shared cache also
+// carries the store compatibility proof (architecture/storage.md): the
+// first one-shot process probes the store and records the proof below the
+// identity-selected shared directory, a later process of the same identity
+// starts without probing and says so, and a process with another user cache
+// directory probes again. The proof is observable only through the process
+// boundary, because the probe lives in the process body.
+func TestScenarioSharedPackCacheReusesStoreProof(t *testing.T) {
+	t.Parallel()
+	cacheDir := t.TempDir()
+	env, root := cliRoots(t)
+	env = append(env, helperCacheEnv+"="+cacheDir, "NO_COLOR=1", "LOG_LEVEL=app=debug,info")
+	notes := filepath.Join(root, "notes")
+	const probed, reused = "store compatibility probed", "store compatibility proof reused"
+
+	code, _, stderr := runCLI(t, "fake", env, "pull", notes)
+	if code != 0 || !strings.Contains(stderr, probed) || strings.Contains(stderr, reused) {
+		t.Fatalf("first pull = exit %d, want 0 and a probe record; stderr: %s", code, stderr)
+	}
+	proofs, err := filepath.Glob(filepath.Join(cacheDir, "slivingdoc", "pack-cache", "*", "probe-ok.json"))
+	if err != nil || len(proofs) != 1 {
+		t.Fatalf("proof records below the shared cache = %v, %v; want exactly one", proofs, err)
+	}
+
+	code, _, stderr = runCLI(t, "fake", env, "pull", notes)
+	if code != 0 || !strings.Contains(stderr, reused) || strings.Contains(stderr, probed) {
+		t.Fatalf("second pull = exit %d, want 0 and the reused proof; stderr: %s", code, stderr)
+	}
+
+	other := append(append([]string(nil), env...), helperCacheEnv+"="+t.TempDir())
+	code, _, stderr = runCLI(t, "fake", other, "pull", notes)
+	if code != 0 || !strings.Contains(stderr, probed) || strings.Contains(stderr, reused) {
+		t.Fatalf("pull with another cache directory = exit %d, want 0 and a probe; stderr: %s", code, stderr)
+	}
 }

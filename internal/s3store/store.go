@@ -11,9 +11,10 @@ import (
 	"fmt"
 	"html"
 	"io"
+	"net"
 	"net/http"
-	"strconv"
 	"strings"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
@@ -29,6 +30,10 @@ const (
 	defaultMultipartThreshold = 64 << 20 // single PUT below 64 MiB
 	defaultMultipartPartSize  = 16 << 20 // 16 MiB parts
 	minMultipartPartSize      = 5 << 20  // S3 minimum part size except the last
+
+	// abortTimeout bounds the best-effort multipart abort, which runs on a
+	// context detached from the caller's cancellation.
+	abortTimeout = 10 * time.Second
 )
 
 // Options tunes the upload strategy and addressing of a Store. The zero
@@ -141,6 +146,13 @@ func New(ctx context.Context, cfg Config, opts ...Options) (*Store, error) {
 		return nil, fmt.Errorf("s3store: load AWS configuration: %w", err)
 	}
 	client := s3.NewFromConfig(awsCfg, func(o *s3.Options) {
+		if cfg.Endpoint != "" {
+			// Set again on the client: AWS_IGNORE_CONFIGURED_ENDPOINT_URLS
+			// or a profile's ignore_configured_endpoint_urls makes the
+			// configuration load drop WithBaseEndpoint, which would send
+			// every request to AWS instead (architecture/config.md).
+			o.BaseEndpoint = aws.String(cfg.Endpoint)
+		}
 		if cfg.Endpoint != "" || options.ForcePathStyle {
 			// S3-compatible endpoints (SeaweedFS and similar) resolve
 			// bucket names only in path style; --path-style requests the
@@ -163,7 +175,7 @@ func (s *Store) ReadObject(ctx context.Context, key string) (io.ReadCloser, stor
 	if err != nil {
 		return nil, storage.ObjectInfo{}, mapError("get "+key, err)
 	}
-	meta, err := decodeMeta(out.Metadata)
+	meta, err := storage.ParseMetadata(out.Metadata)
 	if err != nil {
 		out.Body.Close()
 		return nil, storage.ObjectInfo{}, fmt.Errorf("s3store: get %s: %w: %w", key, storage.ErrIntegrity, err)
@@ -193,7 +205,7 @@ func (s *Store) putSingle(ctx context.Context, key string, r io.Reader, meta sto
 		Body:          r,
 		ContentLength: aws.Int64(int64(meta.Size)),
 		ContentType:   aws.String("application/octet-stream"),
-		Metadata:      encodeMeta(meta),
+		Metadata:      meta.Fields(),
 	})
 	if err != nil {
 		return mapError("put "+key, err)
@@ -202,20 +214,25 @@ func (s *Store) putSingle(ctx context.Context, key string, r io.Reader, meta sto
 }
 
 // putMultipart uploads a large pack in parts and aborts the multipart
-// upload on any failure, so a failed upload leaves no incomplete state.
+// upload on any failure after its creation, including a failed completion.
+// The abort is best-effort and runs on a short context detached from ctx,
+// so a cancelled request still releases its parts
+// (architecture/s3store.md).
 func (s *Store) putMultipart(ctx context.Context, key string, r io.Reader, meta storage.Metadata, partSize int64) error {
 	full := s.fullKey(key)
 	up, err := s.client.CreateMultipartUpload(ctx, &s3.CreateMultipartUploadInput{
 		Bucket:      aws.String(s.bucket),
 		Key:         aws.String(full),
 		ContentType: aws.String("application/octet-stream"),
-		Metadata:    encodeMeta(meta),
+		Metadata:    meta.Fields(),
 	})
 	if err != nil {
 		return mapError("multipart create "+key, err)
 	}
 	abort := func() {
-		_, _ = s.client.AbortMultipartUpload(ctx, &s3.AbortMultipartUploadInput{
+		actx, cancel := context.WithTimeout(context.WithoutCancel(ctx), abortTimeout)
+		defer cancel()
+		_, _ = s.client.AbortMultipartUpload(actx, &s3.AbortMultipartUploadInput{
 			Bucket:   aws.String(s.bucket),
 			Key:      aws.String(full),
 			UploadId: up.UploadId,
@@ -260,6 +277,7 @@ func (s *Store) putMultipart(ctx context.Context, key string, r io.Reader, meta 
 		UploadId:        up.UploadId,
 		MultipartUpload: &types.CompletedMultipartUpload{Parts: parts},
 	}); err != nil {
+		abort()
 		return mapError("multipart complete "+key, err)
 	}
 	return nil
@@ -359,12 +377,14 @@ func (s *Store) DeleteObjects(ctx context.Context, keys []string) error {
 
 // mapError converts an AWS SDK error into a semantic storage error:
 // NoSuchKey maps to ErrNotFound, PreconditionFailed maps to
-// ErrPreconditionFailed, and every other failure — including connection
-// errors, timeouts after request bytes were sent, access denials, and
-// server errors — maps to ErrTransport. A non-semantic failure keeps its
-// real reason in the text so the startup probe can surface it (for example
-// an S3 error code and message, or a credential-resolution refusal that
-// never reached the server) while the sentinel still classifies it.
+// ErrPreconditionFailed, a refusal of the credentials or of the bucket
+// (accessDeniedCodes, an HTTP 401 or 403, credentials the SDK could not
+// resolve) maps to ErrAccessDenied, and every other failure — including
+// connection errors, timeouts after request bytes were sent, and server
+// errors — maps to ErrTransport. A non-semantic failure keeps its real
+// reason in the text so the startup probe can surface it (for example an
+// S3 error code and message, or a credential-resolution refusal that never
+// reached the server) while the sentinel still classifies it.
 func mapError(op string, err error) error {
 	if err == nil {
 		return nil
@@ -377,12 +397,86 @@ func mapError(op string, err error) error {
 		case "PreconditionFailed":
 			return fmt.Errorf("s3store: %s: %w", op, storage.ErrPreconditionFailed)
 		}
+		if accessDeniedCodes[api.ErrorCode()] || (deniedStatus(err) && !notADenial[api.ErrorCode()] && isRead(op)) {
+			return accessDenied(op, api.ErrorCode(), api.ErrorMessage())
+		}
 		return fmt.Errorf("s3store: %s: %s: %w", op, apiDetail(api), storage.ErrTransport)
 	}
+	if isCredentialFailure(err) && !transientCause(err) {
+		return accessDenied(op, "credentials", errDetail(err))
+	}
 	if detail, ok := httpErrorDetail(err); ok {
+		if deniedStatus(err) && isRead(op) {
+			return accessDenied(op, "HTTP refusal", detail)
+		}
 		return fmt.Errorf("s3store: %s: %s: %w", op, detail, storage.ErrTransport)
 	}
 	return fmt.Errorf("s3store: %s: %s: %w", op, errDetail(err), storage.ErrTransport)
+}
+
+// accessDeniedCodes are the S3 error codes that mean the credentials or
+// the bucket refuse the caller, so a retry cannot help.
+var accessDeniedCodes = map[string]bool{
+	"AccessDenied":          true,
+	"AllAccessDisabled":     true,
+	"AccountProblem":        true,
+	"ExpiredToken":          true,
+	"InvalidAccessKeyId":    true,
+	"InvalidToken":          true,
+	"NoSuchBucket":          true,
+	"SignatureDoesNotMatch": true,
+	"TokenRefreshRequired":  true,
+}
+
+// notADenial lists 401/403 codes that name a fixable clock or request
+// problem, not a refusal of the credentials.
+var notADenial = map[string]bool{"RequestTimeTooSkewed": true, "RequestExpired": true}
+
+// isRead reports an operation that changes nothing. A 401 or 403 with no
+// S3 code of its own could come from a proxy that forwarded a write, whose
+// outcome is then unknown, so only a read counts it as a refusal.
+func isRead(op string) bool {
+	return strings.HasPrefix(op, "get ") || strings.HasPrefix(op, "list ")
+}
+
+// transientCause reports a network or server failure under a credential
+// error: an unreachable metadata service is worth a retry, not a new key.
+func transientCause(err error) bool {
+	var netErr net.Error
+	if errors.As(err, &netErr) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var respErr *smithyhttp.ResponseError
+	return errors.As(err, &respErr) && (respErr.HTTPStatusCode() >= 500 || respErr.HTTPStatusCode() == http.StatusTooManyRequests)
+}
+
+// deniedStatus reports an HTTP 401 or 403 from a service whose error code
+// is not one of the S3 names above.
+func deniedStatus(err error) bool {
+	var respErr *smithyhttp.ResponseError
+	if !errors.As(err, &respErr) {
+		return false
+	}
+	status := respErr.HTTPStatusCode()
+	return status == http.StatusUnauthorized || status == http.StatusForbidden
+}
+
+// isCredentialFailure reports the SDK's refusal to sign a request: no
+// credential provider produced credentials, so nothing reached the server.
+func isCredentialFailure(err error) bool {
+	text := err.Error()
+	return strings.Contains(text, "failed to retrieve credentials") || strings.Contains(text, "NoCredentialProviders")
+}
+
+// accessDenied builds the ErrAccessDenied refusal, carrying the S3 code and
+// the service's own one-line message so the caller can show the cause.
+func accessDenied(op, code, message string) error {
+	const maxRunes = 200
+	message = strings.Join(strings.Fields(message), " ")
+	if r := []rune(message); len(r) > maxRunes {
+		message = string(r[:maxRunes]) + "..."
+	}
+	return &storage.Refusal{Err: storage.ErrAccessDenied, Detail: "s3store: " + op + ": " + code, Message: message}
 }
 
 // apiDetail renders one non-semantic S3 API error as a single-line
@@ -461,60 +555,4 @@ func stripTags(b []byte) []byte {
 		}
 	}
 	return out
-}
-
-// Metadata header names (architecture section 9.1). The AWS SDK exposes
-// user metadata without the x-amz-meta- prefix, in lowercase.
-const (
-	metaSHA256     = "slivingdoc-sha256"
-	metaSize       = "slivingdoc-size"
-	metaKind       = "slivingdoc-kind"
-	metaGeneration = "slivingdoc-generation"
-)
-
-func encodeMeta(meta storage.Metadata) map[string]string {
-	return map[string]string{
-		metaSHA256:     meta.SHA256.String(),
-		metaSize:       strconv.FormatUint(meta.Size, 10),
-		metaKind:       string(meta.Kind),
-		metaGeneration: strconv.FormatUint(meta.Generation, 10),
-	}
-}
-
-// decodeMeta decodes the slivingdoc metadata headers. Absent headers leave
-// the zero metadata; present-but-malformed headers are an integrity error
-// because the object claims to be a protocol pack it cannot describe.
-func decodeMeta(md map[string]string) (storage.Metadata, error) {
-	var meta storage.Metadata
-	if len(md) == 0 {
-		return meta, nil
-	}
-	if v, ok := md[metaSHA256]; ok {
-		h, err := storage.ParseSHA256(v)
-		if err != nil {
-			return meta, fmt.Errorf("s3store: metadata %s: %w", metaSHA256, err)
-		}
-		meta.SHA256 = h
-	}
-	if v, ok := md[metaSize]; ok {
-		n, err := strconv.ParseUint(v, 10, 64)
-		if err != nil {
-			return meta, fmt.Errorf("s3store: metadata %s: %w", metaSize, err)
-		}
-		meta.Size = n
-	}
-	if v, ok := md[metaKind]; ok {
-		if !storage.PackKind(v).Valid() {
-			return meta, fmt.Errorf("s3store: metadata %s: invalid kind %q", metaKind, v)
-		}
-		meta.Kind = storage.PackKind(v)
-	}
-	if v, ok := md[metaGeneration]; ok {
-		n, err := strconv.ParseUint(v, 10, 64)
-		if err != nil {
-			return meta, fmt.Errorf("s3store: metadata %s: %w", metaGeneration, err)
-		}
-		meta.Generation = n
-	}
-	return meta, nil
 }

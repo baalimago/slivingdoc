@@ -2,7 +2,7 @@
 # check-deps-macos.sh — verify a macOS binary depends only on the baseline.
 #
 # The slivingdoc release executable must contain libgit2 and every non-system
-# dependency. The architecture section 21 baseline allows macOS libraries in
+# dependency. The baseline in architecture/build.md allows macOS libraries in
 # /usr/lib and /System/Library only. Anything else — most importantly
 # libgit2.dylib — fails the check.
 #
@@ -11,7 +11,7 @@
 #   check-deps-macos.sh --check <dep...>  check an explicit dependency list
 set -euo pipefail
 
-# The baseline matches the architecture section 21 list. libgit2.dylib,
+# The baseline matches the list in architecture/build.md. libgit2.dylib,
 # @rpath entries, and Homebrew paths are deliberately absent: the pinned
 # build links libgit2 statically.
 allowed='^(/usr/lib/|/System/Library/)'

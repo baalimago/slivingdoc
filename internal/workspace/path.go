@@ -8,11 +8,12 @@ import (
 )
 
 // ErrInvalidPath reports a requested visible path that is not an absolute
-// path at or below the workspace root (architecture sections 7.3 and 18.2).
+// path at or below the workspace root (architecture/workspace.md and
+// security.md).
 var ErrInvalidPath = errors.New("workspace: invalid path")
 
 // PathEscapeError reports a requested visible path that is not below the
-// workspace root (architecture sections 7.3 and 18.2). Root is the
+// workspace root (architecture/workspace.md and security.md). Root is the
 // caller-visible workspace root; Path is the rejected request. Caller text
 // must name Root without echoing Path, because the rejected path can be a
 // guess at private state.
@@ -51,7 +52,7 @@ func canonicalize(root, path string) (canonical, rel string, err error) {
 }
 
 // RootsOverlap reports whether the private root is at or below the
-// workspace root. The architecture (section 17) forbids that overlap:
+// workspace root. architecture/config.md forbids that overlap:
 // otherwise P lives inside a visible directory and its contents become
 // notebook state.
 func RootsOverlap(privateRoot, workspaceRoot string) bool {

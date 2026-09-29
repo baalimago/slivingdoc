@@ -5,23 +5,13 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
-
-	"github.com/baalimago/go_away_boilerplate/pkg/ancli"
 
 	"github.com/baalimago/slivingdoc/internal/app"
 	"github.com/baalimago/slivingdoc/internal/git"
 )
-
-// TestMain silences the router's own usage and error output. ancli writes to
-// the process stdout and stderr rather than to an injected writer, so these
-// unit tests assert exit codes and dependency effects; the process scenarios
-// in internal/integrationtest capture the real streams and assert the text.
-func TestMain(m *testing.M) {
-	ancli.Silent = true
-	os.Exit(m.Run())
-}
 
 // stubEngine records whether the native engine was ever opened. Opening it
 // is the first startup dependency, so "not opened" is the observable proof
@@ -139,6 +129,39 @@ func TestServeHelpExitsCleanly(t *testing.T) {
 	}
 }
 
+// TestLoginCommandsTouchNothingEarly proves -h on login, logout and space
+// exits zero before the credentials file is located, and that a stray
+// argument or a missing login is a refusal that writes no credentials
+// file.
+func TestLoginCommandsTouchNothingEarly(t *testing.T) {
+	t.Parallel()
+	dir := filepath.Join(t.TempDir(), "cfg")
+	env := []string{"SLIVINGDOC_CONFIG_DIR=" + dir, "SLIVINGDOC_SITE=https://site.invalid"}
+	for _, row := range []struct {
+		args []string
+		want int
+	}{
+		{[]string{"login", "-h"}, 0},
+		{[]string{"logout", "-h"}, 0},
+		{[]string{"login", "extra"}, 1},
+		{[]string{"logout", "extra"}, 1},
+		{[]string{"logout"}, 1},
+		{[]string{"logout", "--bucket", "notes"}, 1},
+		{[]string{"login", "--bucket", "Bad_Space"}, 1},
+		{[]string{"space", "-h"}, 0},
+		{[]string{"space"}, 1},
+		{[]string{"space", "notes"}, 1},
+		{[]string{"space", "notes", "extra"}, 1},
+	} {
+		if code, _ := run(t, &stubEngine{}, env, row.args...); code != row.want {
+			t.Fatalf("%v = exit %d, want %d", row.args, code, row.want)
+		}
+	}
+	if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the credentials directory exists after refusals: %v", err)
+	}
+}
+
 // TestDebugPerfCapturesTheCommand proves the DEBUG_PERF surface on the
 // router: one invocation with an explicit base directory writes exactly
 // one run directory holding the CPU profile, the heap profile, and the
@@ -180,8 +203,8 @@ func TestDebugPerfCapturesTheCommand(t *testing.T) {
 func TestCommandsCoverTheDocumentedSurface(t *testing.T) {
 	t.Parallel()
 	commands := Commands(&stubEngine{}, app.ProcessOptions{})
-	if len(commands) != 4 {
-		t.Fatalf("commands = %d, want serve, pull, commit, and version only", len(commands))
+	if len(commands) != 9 {
+		t.Fatalf("commands = %d, want serve, pull, commit, status, log, login, logout, space, and version only", len(commands))
 	}
 	for name, command := range commands {
 		if command.Flagset() == nil {
@@ -194,9 +217,25 @@ func TestCommandsCoverTheDocumentedSurface(t *testing.T) {
 			t.Fatalf("%s: empty help", name)
 		}
 	}
-	for _, want := range []string{"serve|s", "pull|p", "commit|c", "version|v"} {
+	for _, want := range []string{"serve|s", "pull|p", "commit|c", "status", "log", "login", "logout", "space", "version|v"} {
 		if _, ok := commands[want]; !ok {
 			t.Fatalf("command %q is missing; its shortcut is part of the CLI surface", want)
 		}
+	}
+}
+
+// TestRunPassesTheProcessEnvironment proves that options without an
+// environment — what main passes — reach the commands with the process
+// environment, so NO_COLOR set in the shell disables the report colour
+// (architecture/cli.md).
+func TestRunPassesTheProcessEnvironment(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	got := withProcessEnv(app.ProcessOptions{})
+	if !slices.Contains(got.Env, "NO_COLOR=1") {
+		t.Fatalf("resolved Env lacks NO_COLOR=1: %v", got.Env)
+	}
+	injected := []string{"NO_COLOR="}
+	if got := withProcessEnv(app.ProcessOptions{Env: injected}); len(got.Env) != 1 || got.Env[0] != "NO_COLOR=" {
+		t.Fatalf("an injected Env was replaced: %v", got.Env)
 	}
 }

@@ -12,10 +12,10 @@ type BackoffWaiter interface {
 	Wait(ctx context.Context, attempt int) error
 }
 
-// exponentialBackoff is the bounded full-jitter backoff of architecture
-// section 11.2: the wait ceiling doubles each retry from base up to max,
-// and each wait is uniform in [0, ceiling), so a zero wait is possible and
-// valid.
+// exponentialBackoff is the bounded full-jitter backoff in
+// architecture/commit.md: the wait ceiling doubles each retry from base up
+// to max, and each wait is uniform in [0, ceiling), so a zero wait is
+// possible and valid.
 type exponentialBackoff struct {
 	base time.Duration
 	max  time.Duration

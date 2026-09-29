@@ -9,15 +9,17 @@ import (
 )
 
 // ManifestVersion is the protocol manifest version that is part of the
-// notebook storage identity (architecture section 9.2). The identity binds
+// notebook storage identity (architecture/storage.md). The identity binds
 // one private directory to one visible path and one remote notebook; a
 // different manifest protocol is a different remote.
 const ManifestVersion = 1
 
-// Identity is the notebook storage identity (architecture section 7.2):
+// Identity is the notebook storage identity (architecture/config.md and
+// workspace.md):
 // the normalized S3 endpoint, region, bucket, prefix, and manifest version
-// the notebook is bound to. The endpoint must already be in the normalized
-// configuration form (architecture section 17): lowercased scheme and host,
+// the notebook is bound to, plus a hosted space's server id when the
+// server names one. The endpoint must already be in the normalized
+// configuration form (architecture/config.md): lowercased scheme and host,
 // no trailing slash, no user information. Configuration owns that
 // normalization; DerivedKey consumes it as given.
 type Identity struct {
@@ -28,11 +30,17 @@ type Identity struct {
 	// ManifestVersion is the storage manifest protocol version. The
 	// workspace constant ManifestVersion is the only supported value.
 	ManifestVersion int
+	// SpaceID is the hosted server's id of the space named by Bucket. A
+	// space name is unique within one account only, so two accounts'
+	// spaces of one name differ here alone (architecture/hosted-mode.md).
+	// Empty for S3 and for a server that names no id, which keeps their
+	// keys as they were.
+	SpaceID string
 }
 
 // DerivedKey returns the private-directory key: the lowercase hexadecimal
 // SHA-256 of a length-prefixed encoding of the canonical visible path and
-// the storage identity (architecture section 7.2). Every component carries
+// the storage identity (architecture/workspace.md). Every component carries
 // its own length prefix, so no concatenation of inputs can collide under
 // ambiguous separators. The digest does not expose the caller's path.
 func DerivedKey(canonicalPath string, id Identity) string {
@@ -95,7 +103,9 @@ func writeLengthPrefixed(h hash.Hash, s string) {
 }
 
 // writeIdentity writes every storage-identity component to the digest in
-// the canonical order shared by DerivedKey and SharedCacheDirName.
+// the canonical order shared by DerivedKey and SharedCacheDirName. The
+// space id comes last and only when set, so an identity without one hashes
+// exactly as before the id existed.
 func writeIdentity(h hash.Hash, id Identity) {
 	writeLengthPrefixed(h, id.Endpoint)
 	writeLengthPrefixed(h, id.Region)
@@ -104,4 +114,7 @@ func writeIdentity(h hash.Hash, id Identity) {
 	var versionBuf [8]byte
 	binary.BigEndian.PutUint64(versionBuf[:], uint64(id.ManifestVersion))
 	h.Write(versionBuf[:])
+	if id.SpaceID != "" {
+		writeLengthPrefixed(h, id.SpaceID)
+	}
 }

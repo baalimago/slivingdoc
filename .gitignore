@@ -13,3 +13,6 @@ node_modules/
 *.tfstate
 *.tfstate.*
 crash.log
+
+# Per-user Claude Code settings (.claude is a symlink to .agents)
+.agents/settings.local.json

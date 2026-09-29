@@ -13,9 +13,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/baalimago/slivingdoc/internal/credentials"
 	"github.com/baalimago/slivingdoc/internal/git"
 	"github.com/baalimago/slivingdoc/internal/git2"
 	"github.com/baalimago/slivingdoc/internal/mcp"
+	"github.com/baalimago/slivingdoc/internal/scratch"
 	"github.com/baalimago/slivingdoc/internal/storage"
 	"github.com/baalimago/slivingdoc/internal/storage/fake"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -29,7 +31,13 @@ func TestMain(m *testing.M) {
 	if mode := os.Getenv("SLIVINGDOC_PROCESS_HELPER"); mode != "" {
 		os.Exit(helperMain(mode))
 	}
-	os.Exit(m.Run())
+	cleanup, err := scratch.Use()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "app: %v; using the default temporary directory\n", err)
+	}
+	code := m.Run()
+	cleanup()
+	os.Exit(code)
 }
 
 // helperMain runs the process body inside the spawned helper. The store
@@ -37,10 +45,13 @@ func TestMain(m *testing.M) {
 // failing fake for the startup-refusal modes.
 func helperMain(mode string) int {
 	p := process{
-		args:     os.Args[1:],
-		env:      os.Environ(),
-		cwd:      mustGetwd(),
-		cacheDir: filepath.Join(os.TempDir(), "slivingdoc-cache"),
+		args: os.Args[1:],
+		env:  os.Environ(),
+		cwd:  mustGetwd(),
+		// Per helper: a shared fixed directory would carry a recorded store
+		// proof from one helper into the next and let a refusal test start
+		// serving instead.
+		cacheDir: os.Getenv("SLIVINGDOC_PROCESS_HELPER_CACHE"),
 		stdout:   os.Stdout,
 		stderr:   os.Stderr,
 		signals:  make(chan os.Signal, 1), // the helper never receives OS signals
@@ -113,12 +124,16 @@ func spawnHelper(t *testing.T, mode string) *helperProc {
 	if err != nil {
 		t.Fatalf("stdout pipe: %v", err)
 	}
-	env := append(os.Environ(),
+	// A developer's stored login or storage choice never reaches the
+	// helper (architecture/login.md).
+	env := helperEnv(os.Environ(),
 		"SLIVINGDOC_PROCESS_HELPER="+mode,
+		"SLIVINGDOC_PROCESS_HELPER_CACHE="+t.TempDir(),
 		"SLIVINGDOC_BUCKET=process-bucket",
 		"SLIVINGDOC_PREFIX=process-prefix",
 		"SLIVINGDOC_WORKSPACE_ROOT="+workspaceRoot,
 		"SLIVINGDOC_PRIVATE_ROOT="+privateRoot,
+		credentials.DirEnv+"="+t.TempDir(),
 	)
 	proc, err := os.StartProcess(os.Args[0], []string{os.Args[0]}, &os.ProcAttr{
 		Env:   env,
@@ -359,4 +374,23 @@ func assertProtocolOnlyStdout(t *testing.T, data []byte) {
 	if line == 0 {
 		t.Fatal("stdout carries no protocol messages")
 	}
+}
+
+// helperEnv drops the variables that choose the store, the token or the
+// site, and every name overrides sets, then appends overrides, so the
+// child sees each name once and which duplicate wins never matters.
+func helperEnv(env []string, overrides ...string) []string {
+	drop := map[string]bool{"SLIVINGDOC_STORAGE": true, SiteEnv: true, "SLIVINGDOC_TOKEN": true, "SLIVINGDOC_ENDPOINT": true}
+	for _, kv := range overrides {
+		name, _, _ := strings.Cut(kv, "=")
+		drop[name] = true
+	}
+	var out []string
+	for _, kv := range env {
+		name, _, _ := strings.Cut(kv, "=")
+		if !drop[name] {
+			out = append(out, kv)
+		}
+	}
+	return append(out, overrides...)
 }

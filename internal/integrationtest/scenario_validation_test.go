@@ -18,7 +18,7 @@ import (
 
 // TestScenarioToolListing proves the acceptance criterion that the tool
 // listing advertises exactly the two public tools and no third tool,
-// prompt, or resource (architecture section 2, L26).
+// prompt, or resource (architecture/product-contract.md).
 func TestScenarioToolListing(t *testing.T) {
 	t.Parallel()
 	h := newFakeHarness(t, HarnessConfig{})
@@ -41,9 +41,10 @@ func TestScenarioToolListing(t *testing.T) {
 }
 
 // TestScenarioStrictSchema proves that every invalid input shape maps to
-// the INVALID_REQUEST envelope before any Git or S3 work (architecture
-// section 2, L26). Structural decode failures carry MALFORMED_INPUT; the
-// message rows carry the notebook.ValidateMessage reason.
+// the INVALID_REQUEST envelope before any Git or S3 work
+// (architecture/product-contract.md). Structural decode failures carry
+// MALFORMED_INPUT; the message rows carry the notebook.ValidateMessage
+// reason.
 //
 // The path is pulled first, so it is a managed notebook for the rest of the
 // test. Without that, every notes_commit row is also a
@@ -101,8 +102,7 @@ func TestScenarioStrictSchema(t *testing.T) {
 // TestScenarioContentRules proves the notebook content rule through the
 // public API: the visible directory can hold valid UTF-8 text without
 // U+0000 only, and a file that breaks the rule is refused as
-// INVALID_REQUEST without publishing anything (architecture section 7.1,
-// L188).
+// INVALID_REQUEST without publishing anything (architecture/workspace.md).
 //
 // This is where the UTF-8 contract is observable. A malformed byte in a
 // REQUEST cannot be tested through MCP at all: JSON transport coerces
@@ -219,7 +219,7 @@ func TestScenarioContentRules(t *testing.T) {
 // TestScenarioResultShape proves the success envelope of both tools: one
 // text item carrying the resolved notebook path plus a structured
 // SuccessInfo, with no commit ID, pack key, or internal value anywhere in
-// the result (architecture section 2, L26).
+// the result (architecture/product-contract.md).
 func TestScenarioResultShape(t *testing.T) {
 	t.Parallel()
 	h := newFakeHarness(t, HarnessConfig{})
@@ -340,5 +340,29 @@ func TestScenarioMCPReqIDScoping(t *testing.T) {
 	}, res)
 	if got := h3.Logs().DistinctReqIDs(); len(got) != 3 {
 		t.Fatalf("harness 3 distinct request ids = %v, want the three calls", got)
+	}
+}
+
+// TestScenarioAbsentOrNullArguments proves that a call whose arguments
+// member is absent or null is the empty argument object
+// (architecture/mcp-server.md): notes_pull pulls the notebook root, and
+// notes_commit is refused only for its missing message.
+func TestScenarioAbsentOrNullArguments(t *testing.T) {
+	t.Parallel()
+	for name, args := range map[string]any{"absent": nil, "null": json.RawMessage("null")} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			h := newFakeHarness(t, HarnessConfig{})
+			root := h.Path("")
+			res := callWithArgs(t, h, "", toolPull, args)
+			h.assertEnvelope(t, ToolCall{Tool: toolPull, Path: root, Expect: CallExpectation{OK: true}}, res)
+			assertPulledMarker(t, h, root)
+
+			res = callWithArgs(t, h, "", toolCommit, args)
+			h.assertEnvelope(t, ToolCall{
+				Tool: toolCommit, Path: root,
+				Expect: CallExpectation{ErrorCode: "INVALID_REQUEST", Reason: "MALFORMED_INPUT", Action: "FIX_INPUT"},
+			}, res)
+		})
 	}
 }

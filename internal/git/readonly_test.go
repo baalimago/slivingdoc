@@ -6,7 +6,8 @@ import (
 )
 
 // TestNormalizeReadOnly checks trimming, collapsing, sorting, and refusal of
-// invalid entries (architecture section 2, Read-only paths).
+// invalid entries (architecture/product-contract.md, Read-only and writable
+// paths).
 func TestNormalizeReadOnly(t *testing.T) {
 	cases := []struct {
 		name    string

@@ -32,6 +32,19 @@ func TestDerivedKeyDeterministic(t *testing.T) {
 	}
 }
 
+// TestIdentityWithoutSpaceIDKeepsItsKey pins the keys of an identity
+// without a space id to the values they had before the id existed, so
+// every S3 workspace, and every hosted one on a server that names no id,
+// keeps its private state and shared cache.
+func TestIdentityWithoutSpaceIDKeepsItsKey(t *testing.T) {
+	if got := DerivedKey("/workspace/notes", testIdentity()); got != "16b12c6ca4b1709b3d05d027fe8d121e23f7aa6b7973e24572c9ab6d50fd84cb" {
+		t.Fatalf("DerivedKey() = %q, want the key it had before space ids", got)
+	}
+	if got := SharedCacheDirName(testIdentity()); got != "notes-slivingdoc-0d102f32ab88f00a" {
+		t.Fatalf("SharedCacheDirName() = %q, want the name it had before space ids", got)
+	}
+}
+
 func TestDerivedKeyDistinguishesInputs(t *testing.T) {
 	base := testIdentity()
 	cases := map[string]Identity{
@@ -41,6 +54,7 @@ func TestDerivedKeyDistinguishesInputs(t *testing.T) {
 		"prefix":    {Endpoint: base.Endpoint, Region: base.Region, Bucket: base.Bucket, Prefix: "other", ManifestVersion: base.ManifestVersion},
 		"version":   {Endpoint: base.Endpoint, Region: base.Region, Bucket: base.Bucket, Prefix: base.Prefix, ManifestVersion: 2},
 		"no bucket": {Endpoint: base.Endpoint, Region: base.Region, Prefix: base.Prefix, ManifestVersion: base.ManifestVersion},
+		"space id":  {Endpoint: base.Endpoint, Region: base.Region, Bucket: base.Bucket, Prefix: base.Prefix, ManifestVersion: base.ManifestVersion, SpaceID: "space-one"},
 	}
 	want := DerivedKey("/workspace/notes", base)
 	for name, id := range cases {
@@ -95,6 +109,7 @@ func TestSharedCacheDirNameDistinguishesIdentities(t *testing.T) {
 		"bucket":   {Endpoint: base.Endpoint, Region: base.Region, Bucket: "other", Prefix: base.Prefix, ManifestVersion: base.ManifestVersion},
 		"prefix":   {Endpoint: base.Endpoint, Region: base.Region, Bucket: base.Bucket, Prefix: "other", ManifestVersion: base.ManifestVersion},
 		"version":  {Endpoint: base.Endpoint, Region: base.Region, Bucket: base.Bucket, Prefix: base.Prefix, ManifestVersion: 2},
+		"space id": {Endpoint: base.Endpoint, Region: base.Region, Bucket: base.Bucket, Prefix: base.Prefix, ManifestVersion: base.ManifestVersion, SpaceID: "space-one"},
 	}
 	want := SharedCacheDirName(base)
 	for name, id := range cases {

@@ -1,9 +1,9 @@
 // Package mcp exposes the notebook service as the two-tool MCP server over
-// stdio (architecture sections 2, 17, and 18). It owns the strict tool
-// schemas, the strict input decoding, the transport, and the mapping of the
-// stable error taxonomy to the structured tool-error shape. The package
-// consumes the narrow Service interface, so in-memory tests need no S3,
-// Docker, or native Git engine.
+// stdio (architecture/mcp-server.md, product-contract.md, and security.md). It
+// owns the strict tool schemas, the strict input decoding, the transport,
+// and the mapping of the stable error taxonomy to the structured tool-error
+// shape. The package consumes the narrow Service interface, so in-memory
+// tests need no S3, Docker, or native Git engine.
 package mcp
 
 import (
@@ -21,7 +21,7 @@ import (
 	"github.com/baalimago/slivingdoc/internal/notebook"
 )
 
-// Tool names (architecture section 2). Exactly these two tools are
+// Tool names (architecture/product-contract.md). Exactly these two tools are
 // registered; no other tool, prompt, or resource exists.
 const (
 	toolPull   = "notes_pull"
@@ -190,9 +190,9 @@ func (h *handler) resultFor(err error, diagnosticID string) (*sdk.CallToolResult
 }
 
 // successResult is the success envelope: one text item and the structured
-// SuccessInfo object (architecture section 2). The text item is often the
-// only part a client forwards to its model, so it names the directory and
-// the configured path sets.
+// SuccessInfo object (architecture/product-contract.md). The text item is
+// often the only part a client forwards to its model, so it names the
+// directory and the configured path sets.
 func (h *handler) successResult(result notebook.Result, path string) *sdk.CallToolResult {
 	info := MapSuccess(result, path)
 	info.ReadOnly = h.svc.ReadOnlyPaths()
@@ -203,9 +203,10 @@ func (h *handler) successResult(result notebook.Result, path string) *sdk.CallTo
 	}
 }
 
-// successText is the success text item (architecture section 2, Read-only
-// paths). It names the actionable list: the writable set first, because a
-// non-empty one is the frame the read-only entries are exceptions inside.
+// successText is the success text item (architecture/product-contract.md,
+// Read-only and writable paths). It names the actionable list: the writable
+// set first, because a non-empty one is the frame the read-only entries are
+// exceptions inside.
 func successText(path string, entries, writable []string) string {
 	parts := make([]string, 0, 2)
 	if len(writable) > 0 {
@@ -330,7 +331,7 @@ func errorText(te *ToolError) string {
 }
 
 // Tool descriptions tell the caller to edit UTF-8 text files between pull
-// and commit (architecture section 2).
+// and commit (architecture/product-contract.md).
 const (
 	pullDescription = "Write the current notebook into the notebook directory " +
 		"and record the accepted state. Omit path or pass an empty string to use the server's notebook " +

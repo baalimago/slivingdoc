@@ -12,7 +12,7 @@ import (
 // TestScenarioConfigPrecedence observes configuration precedence through
 // the public process: a request below a flag-selected root succeeds even
 // when the environment selects another root, and an environment-selected
-// root succeeds when there is no flag (architecture section 17, L1040).
+// root succeeds when there is no flag (architecture/config.md).
 func TestScenarioConfigPrecedence(t *testing.T) {
 	t.Parallel()
 	t.Run("flag wins over environment", func(t *testing.T) {
@@ -90,11 +90,11 @@ func TestScenarioConfigPrecedence(t *testing.T) {
 // TestScenarioConfigInvalidAndEarlyExit proves invalid configuration is a
 // redacted one-line startup failure, while the version command and the
 // serve help exit before the incompatible-store probe can refuse the
-// process (architecture section 17, L1040).
+// process (architecture/config.md).
 func TestScenarioConfigInvalidAndEarlyExit(t *testing.T) {
 	t.Parallel()
 	// The redaction is only observable when the diagnostic echoes the
-	// offending value. Every endpoint rule of architecture section 17, L1040,
+	// offending value. Every endpoint rule in architecture/config.md
 	// reports a constant string (see normalizeEndpoint), so none of them can
 	// prove it; the prefix validator quotes the rejected prefix, so a
 	// credential-shaped prefix reaches the redactor. Both the AWS access key
@@ -112,7 +112,7 @@ func TestScenarioConfigInvalidAndEarlyExit(t *testing.T) {
 		}
 	})
 
-	// Architecture section 17, L1040: a custom endpoint carries no user
+	// Per architecture/config.md, a custom endpoint carries no user
 	// information. This proves the refusal itself; its diagnostic is a
 	// constant string, so it says nothing about the redaction.
 	t.Run("endpoint user information is refused", func(t *testing.T) {
@@ -198,7 +198,7 @@ func TestScenarioConfigInvalidAndEarlyExit(t *testing.T) {
 }
 
 // assertOneRedactedDiagnostic proves a startup refusal is the documented
-// shape (architecture section 17, L1040): exit nonzero, an empty stdout, and
+// shape (architecture/cli.md): exit nonzero, an empty stdout, and
 // exactly one redacted diagnostic line on stderr. forbidden names values
 // that must never reach the diagnostic.
 func assertOneRedactedDiagnostic(t *testing.T, code int, stdout, stderr string, forbidden ...string) {

@@ -13,9 +13,9 @@ import (
 )
 
 // exerciseOptionalPathSecurity extends the compatible stdio transport
-// process with the filesystem attack surface (architecture section 18.2,
-// L1131). The parent only arranges host fixtures; every observation enters
-// through notes_pull and its MCP error envelope.
+// process with the filesystem attack surface (architecture/security.md).
+// The parent only arranges host fixtures; every observation enters through
+// notes_pull and its MCP error envelope.
 //
 // Each fixture lives in its own directory, so a rejection is attributable
 // to exactly one rule: a symlinked path component, a special file inside
@@ -107,3 +107,6 @@ func assertSpecialDirUntouched(t *testing.T, dir string) {
 		t.Fatalf("valid note = %q (err %v), want the untouched fixture", data, err)
 	}
 }
+
+// mkfifo plants a FIFO at path, for the credentials file scenarios.
+func mkfifo(path string) error { return unix.Mkfifo(path, 0o600) }

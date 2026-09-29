@@ -1,164 +1,110 @@
-Test coverage: 84.6% 😍👌
+Test coverage: 88.7% 😍👌
 
 [![slivingdoc banner](img/banner.svg)](https://slivingdoc.dev)
 
 <div align="center">
-  <p>Distributed durable notebook built for high scale agents.</p>
+  <p><strong>Shared notes for your agents.</strong></p>
+  <p>
+    Durable context that outlives every session: plain text files that
+    fleets of agents (and their humans) pull and commit at the same time,
+    with Git-style merges instead of overwrites.
+    Store them durably in your own S3-compatible bucket, or let
+    <a href="https://slivingdoc.dev">slivingdoc.dev</a> host them, free to
+    start.
+  </p>
+  <p>
+    <a href="https://slivingdoc.dev">Website</a> ·
+    <a href="https://slivingdoc.dev/docs/">Docs</a> ·
+    <a href="https://slivingdoc.dev/pricing/">Pricing</a> ·
+    <a href="architecture/README.md">Architecture</a>
+  </p>
 </div>
 
-## Features
-
-- **Gitlike semantics:** `slivingdoc` uses terminology we (and agents) all know, designed for ease of use
-- **Automatic conflict resolution:** commit without fear, trust that all conflicts must be resolved before being accepted
-- **High speed processing:** the solution is quite simple conceptually, allowing for very high scale and parallelism
-- **Plug-and-play:** setup the bucket, point at it, and start syncing notes!
-
-[`docs/slivingdoc-v1.md`](docs/slivingdoc-v1.md) is the full accepted
-contract behind these guarantees.
+<p align="center">
+  <img src="img/demo.gif" width="800" alt="Two panes: you on the command line, an agent calling notes_pull and notes_commit over MCP. You change one line of plan.md and the agent another; both commit without pulling first and both land, merged. Then both change the same line: the agent commits first, and your commit returns CONTENT_CONFLICT with both versions in the file."">
+</p>
 
 ## Get started
 
-Add it to your agentic harness:
+**Hosted.** Sign in at [slivingdoc.dev](https://slivingdoc.dev) with GitHub
+or Google, create a token, and add the server to your agent:
 
-```json
-{
-  "mcpServers": {
-    "slivingdoc": {
-      "command": "npx",
-      "args": ["-y", "slivingdoc", "serve", "--bucket", "my-notes"],
-      "env": {
-        "AWS_ACCESS_KEY_ID": "<your-access-key-id>",
-        "AWS_SECRET_ACCESS_KEY": "<your-secret-access-key>",
-        "AWS_REGION": "us-east-1"
-      }
-    }
-  }
-}
+```sh
+claude mcp add slivingdoc \
+  --env SLIVINGDOC_TOKEN=<your-api-token> \
+  -- npx -y slivingdoc serve
 ```
 
-The bucket must exist, and credentials come from the normal AWS chain.
-No S3 account yet? [`examples/seaweedfs/`](examples/seaweedfs/) runs a local
-SeaweedFS container with a step-by-step walkthrough. You can also download
-a native binary directly from the
-[GitHub release](https://github.com/baalimago/slivingdoc/releases)
-(`slivingdoc-v<semver>-<os>-<arch>`) and run it in place.
+Free for one space, 10 MB and 250,000 requests a month
+([pricing](https://slivingdoc.dev/pricing/)). Invite colleagues from your
+space's Members page. On your own machine, `npx -y slivingdoc login`
+replaces the token: pick a default space with `npx -y slivingdoc space <name>` if
+you have several, and `npx -y slivingdoc serve` needs no token at all
+([details](architecture/login.md)).
 
-Supported platforms: Linux (amd64, 32-bit ARMv7, arm64), macOS (amd64,
-arm64), and Windows (amd64). The 32-bit Linux ARM artifact supports Raspberry
-Pi OS armhf.
+**Self-hosted.** Point it at an existing S3-compatible bucket that
+supports conditional writes. Credentials come from the standard AWS chain;
+the region is `--region` or `AWS_REGION` (default `us-east-1`):
 
-## How it works
-
-The server exposes two MCP tools over stdio:
-
-| Tool           | Inputs                       | Success result |
-| -------------- | ---------------------------- | -------------- |
-| `notes_pull`   | `path` (optional)            | `OK`           |
-| `notes_commit` | `message`, `path` (optional) | `OK`           |
-
-No path needed. Each server takes its own private notebook directory and
-tells the agent where it is, in the server instructions and in every tool
-result, so nothing has to be configured or coordinated between agents. Pass
-`--workspace-root` instead when you want a fixed directory that humans and
-agents share, and `path` then addresses any directory below it.
-
-`notes_pull` writes the current notebook into your directory.
-`notes_commit` publishes your changes and incorporates concurrent
-non-conflicting changes. Between calls there is no protocol at all —
-agents edit the files with the tools they already have, and humans can
-write in the same directory with any editor. The next commit carries
-their changes too.
-
-Humans can also drive both operations directly, without an MCP host. The
-path is optional and defaults to the working directory; a relative path
-resolves against it:
-
-```text
-slivingdoc pull notes
-# edit UTF-8 text files under notes/
-slivingdoc commit notes -m "meeting summary"
+```sh
+AWS_REGION=eu-north-1 npx -y slivingdoc serve --bucket my-notes
 ```
 
-Success prints the unified result report: the `OK` status, the accepted
-remote generation, per-file insertion and deletion counts, a totals
-trailer, and a `read-only: <entries>` trailer when the process has a
-configured read-only set. A domain error exits nonzero and prints a
-candid report: the status line (the error code, a middle dot, and the
-`reason` token), the message, every affected file with its reason and
-line ranges, a `next:` line naming the caller's next step, the retryable
-verdict, and the same read-only trailer when configured. Colour appears
-only on a real terminal and is disabled by any non-empty `NO_COLOR`.
-MCP errors provide the same essential fields in their text item, including a
-diagnostic ID for server-log correlation. An engine failure adds a plain-language
-detail when the engine could name the cause; otherwise the cause stays in the
-server log, which the diagnostic ID points at.
+No bucket yet? [`examples/seaweedfs/`](examples/seaweedfs/) runs one
+locally in a container, and [`terraform/`](terraform/) provisions one on AWS.
 
-Pass `--read-only-paths docs,faq.md` (or `SLIVINGDOC_READ_ONLY_PATHS`) to
-let a fleet of agents read those notebook paths but never change them: a
-commit that touches one is refused and the files are reset, while a human
-process started without the flag keeps full write access.
+**Without an agent.** Share a folder with colleagues, like a simpler Git
+with no repository, staging or branches. Everyone uses the same space (or
+bucket) and pulls into a new or empty folder first:
 
-### The git part
+```sh
+export SLIVINGDOC_TOKEN=<your-api-token>   # or --bucket, or a login
+npx -y slivingdoc pull notes
+echo "hello from $(hostname)" > notes/hello.md
+npx -y slivingdoc commit notes -m "First note"
+```
 
-Letting all agents write at once would work, but they would get overrun by race conditions.
-So `slivingdoc` has built-in git via [libgit2](https://github.com/libgit2/libgit2) which effectively
-does:
+`npx` fetches and verifies the native binary on first run. You can also
+download it from the [latest release](https://github.com/baalimago/slivingdoc/releases)
+for Linux (amd64, arm64, ARMv7), macOS (amd64, arm64) or Windows (amd64).
 
-1. `git pull`
-1. (potential conflict resolution locally)
-1. `git add .`
-1. `git commit -m "<agent message>"`
-1. `git push`
-1. (potential conflict resolution locally)
+## Features
 
-All of these git operations are handled locally within a private mirror of the notes directory
-leaving a "streamlined" git sequence. This works due to two compromises, firstly that the local
-notes directory is prone to be changed on `notes_pull`, precedence goes to the remote state, leaving
-conflict markers. Secondly, the system only works for text (clean UTF-8).
+- **Agentic durable context:** what one session learns is there for the
+  next, whichever agent or machine runs it
+- **Merge-safe concurrent writes:** non-conflicting changes merge;
+  overlapping edits return a conflict instead of being overwritten
+- **Plain files:** UTF-8 text in a directory, editable with any tool; no
+  database, no embeddings
+- **Two operations:** `notes_pull` and `notes_commit` over MCP, and the
+  same `pull` and `commit` on the command line
+- **Your bucket or ours:** any S3-compatible bucket, or a hosted space you
+  can share with invite links
+- **Read-only and writable paths:** keep shared instructions out of an
+  agent's reach, or confine each agent to its own directory
+- **One binary:** Git merge semantics through a statically linked libgit2;
+  no Git executable, no daemon
 
-## Configuration
-
-`serve`, `pull`, and `commit` read the same flags and environment
-variables. `--bucket` is required. The most common flags:
-
-| Flag               | Environment                 | Default             |
-| ------------------ | --------------------------- | ------------------- |
-| `--bucket`         | `SLIVINGDOC_BUCKET`         | — (required)        |
-| `--workspace-root` | `SLIVINGDOC_WORKSPACE_ROOT` | temporary dir[^1]   |
-| `--endpoint`       | `AWS_ENDPOINT_URL_S3`       | AWS resolution      |
-| `--region`         | `AWS_REGION`                | `us-east-1`         |
-
-[^1]: `serve` with no configured root takes a per-process temporary
-    notebook directory and removes it at shutdown; the notes themselves live
-    in the bucket. `pull` and `commit` default to the working directory.
-
-`slivingdoc serve -h` prints the full reference, and
-[`docs/running.md`](docs/running.md) covers everything an operator
-needs: all flags, the exact S3 permissions, logging (`LOG_LEVEL` on
-stderr), the notebook rules, conflict recovery, and checkpoint
-retention. The Terraform module in [`terraform/`](terraform/)
-provisions a bucket and a least-privilege IAM user for one notebook.
+The [docs](https://slivingdoc.dev/docs/) cover
+[how it works](https://slivingdoc.dev/docs/concepts/how-it-works/),
+[MCP hosts](https://slivingdoc.dev/docs/guides/mcp-hosts/),
+[the CLI](https://slivingdoc.dev/docs/guides/cli/) and
+[configuration](https://slivingdoc.dev/docs/reference/configuration/);
+`npx -y slivingdoc serve -h` prints every flag.
 
 ## Development
 
-- [`AGENTS.md`](AGENTS.md) — the developer and agent guide: package
-  map, operation flows, conventions, and the QA gates.
-- [`docs/slivingdoc-v1.md`](docs/slivingdoc-v1.md) — the accepted
-  architecture contract.
-- [`docs/build.md`](docs/build.md) — the native build, from pinned
-  libgit2 source to dependency inspection.
-- [`docs/testing.md`](docs/testing.md) — the test commands, the test
-  layers, and the no-live-AWS rule.
-- [`docs/releasing.md`](docs/releasing.md) — release artifacts, npm
-  trusted publishing, and `make release`.
+[`AGENTS.md`](AGENTS.md) is the developer guide and
+[`architecture/`](architecture/README.md) holds the contract, one concern
+per file.
 
 ```bash
-make qa #lint plus the full Go and npm test suites
+make qa # lint plus the full Go and npm test suites
 ```
 
 ## License
 
-MIT — see [LICENSE](LICENSE). Third-party notices for the statically
-linked libgit2 are in [NOTICE](NOTICE).
+MIT, see [LICENSE](LICENSE). Third-party notices for the statically linked
+libgit2 are in [NOTICE](NOTICE).
 
 <sub>Not affiliated with Paris Hilton.</sub>

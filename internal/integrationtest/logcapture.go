@@ -13,9 +13,9 @@ import (
 // The harness logger is the only logger of one harness's server, so records
 // are inherently scoped: a parallel harness with its own capture can never
 // observe another harness's records. The app's tool-call records carry the
-// mcpReqID attribute (architecture section 2, L26), and every record of one
-// call shares the same mcpReqID, so the capture proves correlation and
-// scoping.
+// mcpReqID attribute (architecture/logging.md), and every record
+// of one call shares the same mcpReqID, so the capture proves correlation
+// and scoping.
 type LogCapture struct {
 	mu      sync.Mutex
 	records []Record

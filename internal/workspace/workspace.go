@@ -1,6 +1,6 @@
 // Package workspace implements managed caller directories: path policy,
 // deterministic private state, visible-file snapshots, and local operation
-// serialization (architecture sections 7 and 18.2).
+// serialization (architecture/workspace.md and security.md).
 //
 // A Workspace binds one canonical visible path L to one notebook storage
 // identity and one private repository directory P under the private root.
@@ -31,7 +31,7 @@ import (
 )
 
 // lockRetryInterval is the retry interval for the local operation lock
-// (architecture section 7.2): wait until the request context ends.
+// (architecture/workspace.md): wait until the request context ends.
 const lockRetryInterval = 50 * time.Millisecond
 
 // Engine is the workspace's narrow view of the native Git engine: it
@@ -45,7 +45,7 @@ type Engine interface {
 
 // Config binds one workspace. WorkspaceRoot, Path, and PrivateRoot must be
 // absolute; Path must stay at or below WorkspaceRoot, and PrivateRoot must
-// not be at or below WorkspaceRoot (architecture section 17).
+// not be at or below WorkspaceRoot (architecture/config.md).
 type Config struct {
 	// WorkspaceRoot is the absolute configured workspace root.
 	WorkspaceRoot string
@@ -65,6 +65,9 @@ type Config struct {
 	Engine Engine
 	// Failpoints injects deterministic failures; nil disables injection.
 	Failpoints *Failpoints
+	// Ignore names the entries the workspace never reads, publishes
+	// or removes (architecture/workspace.md, Ignored paths).
+	Ignore Ignore
 }
 
 // Workspace is one managed visible path. All methods are safe for
@@ -84,6 +87,7 @@ type Workspace struct {
 	flock      *flock.Flock
 	state      state
 	failpoints *Failpoints
+	ignore     Ignore
 	closed     bool
 }
 
@@ -148,7 +152,7 @@ func Open(ctx context.Context, cfg Config) (*Workspace, error) {
 
 	// Create P and its records under the local operation lock so two
 	// server processes cannot initialize the same private directory at
-	// once (architecture section 7.2).
+	// once (architecture/workspace.md).
 	fl := flock.New(filepath.Join(privDir, operationLockName))
 	locked, err := fl.TryLockContext(ctx, lockRetryInterval)
 	if err != nil {
@@ -176,6 +180,7 @@ func Open(ctx context.Context, cfg Config) (*Workspace, error) {
 		flock:      fl,
 		sem:        make(chan struct{}, 1),
 		failpoints: cfg.Failpoints,
+		ignore:     cfg.Ignore,
 		state:      needsRecovery.state,
 	}
 	if needsRecovery.recovery {
@@ -259,8 +264,37 @@ func openPrivateState(engine Engine, privDir, derivedKey string) (git.Repository
 	out.state = st
 	if st.Identity != derivedKey || tmpPresent {
 		out.recovery = true
+		return r, out, nil
+	}
+	if out.recovery && !st.RecoveryRequired {
+		// A rebuilt repository no longer holds the recorded baseline. The
+		// record is otherwise sound, so the requirement is made durable
+		// there: every process rereads state.json when it takes the lock
+		// (refreshState), and only the record can tell it.
+		st.RecoveryRequired = true
+		st, err = persistState(privDir, derivedKey, st)
+		if err != nil {
+			r.Close()
+			return nil, openStateOut{}, err
+		}
+		out.state = st
 	}
 	return r, out, nil
+}
+
+// loadDurableState rereads state.json for a workspace that already holds
+// the operation lock. recovery reports every anomaly Open would treat as
+// one: a missing or undecodable record, a foreign identity, a leftover
+// temporary record, or the durable flag itself. An unreadable record
+// returns ok false and no state.
+func loadDurableState(privDir, derivedKey string) (st state, ok, recovery bool) {
+	_, tmpErr := os.Stat(filepath.Join(privDir, stateTmpName))
+	st, err := readStateFile(privDir)
+	if err != nil {
+		return state{}, false, true
+	}
+	recovery = st.RecoveryRequired || st.Identity != derivedKey || !errors.Is(tmpErr, fs.ErrNotExist)
+	return st, true, recovery
 }
 
 // rejectSymlinkComponents rejects an existing symlink in any component of
@@ -391,7 +425,7 @@ func (w *Workspace) Diff(ctx context.Context) (Diff, error) {
 
 // Replace rewrites the visible directory to the target tree without
 // changing the accepted baseline. It is the conflict materialization path:
-// a semantic conflict intentionally rewrites L (architecture section 7.3).
+// a semantic conflict intentionally rewrites L (architecture/workspace.md).
 func (w *Workspace) Replace(ctx context.Context, tree git.OID) error {
 	return w.withOpLock(ctx, false, func() error {
 		return w.applyLocked(ctx, tree, nil)
@@ -410,8 +444,9 @@ func (w *Workspace) Accept(ctx context.Context, baseline Baseline) error {
 // Materialize rewrites the visible directory to the target tree and durably
 // records the baseline as the accepted state in one failure-atomic
 // operation. It is the conflict and pull path: L must show the merged
-// result while P records the remote state the merge observed (architecture
-// sections 10 and 12), which the two trees can express only together.
+// result while P records the remote state the merge observed
+// (architecture/pull.md and conflicts.md), which the two trees can express
+// only together.
 func (w *Workspace) Materialize(ctx context.Context, baseline Baseline, tree git.OID) error {
 	return w.withOpLock(ctx, false, func() error {
 		return w.applyLocked(ctx, tree, &baseline)
@@ -432,7 +467,7 @@ func (w *Workspace) CacheDir() string {
 }
 
 // Pulled reports whether a successful or conflicting pull has initialized P
-// for this workspace (architecture section 11.1). The durable marker is
+// for this workspace (architecture/commit.md). The durable marker is
 // notebook policy, not state schema: a fresh workspace and a pulled-empty
 // workspace produce identical state records, so commit's baseline check
 // uses the marker instead.
@@ -490,18 +525,95 @@ func (w *Workspace) Recover(ctx context.Context, baseline Baseline) error {
 	})
 }
 
-// withOpLock serializes one visible path in-process (the semaphore, which
-// honors the request context) and across server processes (the advisory
-// lock file in P), waiting until the request context ends. The OS releases
-// the advisory lock when a process exits; no PID or stale-lock recovery is
-// stored (architecture section 7.2). Normal operations refuse while the
-// workspace requires recovery; allowRecovery is true only for Recover.
-func (w *Workspace) withOpLock(ctx context.Context, allowRecovery bool, fn func() error) error {
+// heldLockKey marks a context whose caller holds the operation lock of
+// one workspace (Hold). The key carries the workspace, so holds on several
+// workspaces nest in one context without replacing each other.
+type heldLockKey struct{ w *Workspace }
+
+// Hold acquires the operation lock for a whole notebook operation and
+// returns a context that carries it, with the release function. Every
+// workspace call made with that context runs under the held lock instead
+// of acquiring it again, so a pull or commit is one critical section for
+// its visible path, in-process and across processes
+// (architecture/workspace.md). A context that already holds this
+// workspace's lock is returned unchanged with a no-op release. Hold does
+// not refuse a workspace that requires recovery: the recovery itself runs
+// under the held lock.
+func (w *Workspace) Hold(ctx context.Context) (context.Context, func(), error) {
+	if w.holds(ctx) {
+		return ctx, func() {}, nil
+	}
+	release, err := w.acquire(ctx)
+	if err != nil {
+		return ctx, func() {}, err
+	}
+	return context.WithValue(ctx, heldLockKey{w: w}, true), release, nil
+}
+
+func (w *Workspace) holds(ctx context.Context) bool {
+	held, _ := ctx.Value(heldLockKey{w: w}).(bool)
+	return held
+}
+
+// acquire takes the in-process semaphore, which honors the request context,
+// then the advisory lock file in P, waiting until the request context
+// ends. The OS releases the advisory lock when a process exits; no PID or
+// stale-lock recovery is stored (architecture/workspace.md).
+func (w *Workspace) acquire(ctx context.Context) (func(), error) {
 	select {
 	case w.sem <- struct{}{}:
-		defer func() { <-w.sem }()
 	case <-ctx.Done():
-		return fmt.Errorf("workspace: operation lock: %w", ctx.Err())
+		return nil, fmt.Errorf("workspace: operation lock: %w", ctx.Err())
+	}
+	w.mu.Lock()
+	closed := w.closed
+	w.mu.Unlock()
+	if closed {
+		<-w.sem
+		return nil, errors.New("workspace: closed")
+	}
+	locked, err := w.flock.TryLockContext(ctx, lockRetryInterval)
+	if err == nil && !locked {
+		err = ctx.Err()
+	}
+	if err != nil {
+		<-w.sem
+		return nil, fmt.Errorf("workspace: operation lock: %w", err)
+	}
+	w.refreshState()
+	return func() {
+		_ = w.flock.Unlock()
+		<-w.sem
+	}, nil
+}
+
+// refreshState replaces the in-memory record with state.json once the
+// operation lock is held. Another process sharing P may have advanced the
+// baseline or set or cleared the recovery flag while it held the lock, so
+// the copy read at Open or by this process's last operation is stale
+// (architecture/workspace.md). An unreadable record keeps the last known
+// baseline and requires recovery, which rewrites the record.
+func (w *Workspace) refreshState() {
+	st, ok, recovery := loadDurableState(w.privDir, w.derivedKey)
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if ok {
+		w.state = st
+	}
+	w.state.RecoveryRequired = recovery
+}
+
+// withOpLock runs fn under the operation lock: the lock ctx already holds
+// (Hold), or one acquired for this call alone. Normal operations refuse
+// while the workspace requires recovery; allowRecovery is true only for
+// Recover.
+func (w *Workspace) withOpLock(ctx context.Context, allowRecovery bool, fn func() error) error {
+	if !w.holds(ctx) {
+		release, err := w.acquire(ctx)
+		if err != nil {
+			return err
+		}
+		defer release()
 	}
 
 	w.mu.Lock()
@@ -514,14 +626,5 @@ func (w *Workspace) withOpLock(ctx context.Context, allowRecovery bool, fn func(
 	if !allowRecovery && recovery {
 		return ErrRecoveryRequired
 	}
-
-	locked, err := w.flock.TryLockContext(ctx, lockRetryInterval)
-	if err != nil {
-		return fmt.Errorf("workspace: operation lock: %w", err)
-	}
-	if !locked {
-		return fmt.Errorf("workspace: operation lock: %w", ctx.Err())
-	}
-	defer w.flock.Unlock()
 	return fn()
 }

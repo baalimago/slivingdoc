@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# make-sha256sums.sh — emit the architecture section 21 SHA256SUMS file.
+# make-sha256sums.sh — emit the SHA256SUMS file of architecture/build.md.
 #
 # The release grammar is strict: one LF-terminated line per asset, lowercase
 # 64-hex SHA-256, two spaces, and the asset name; lines sorted by asset name.

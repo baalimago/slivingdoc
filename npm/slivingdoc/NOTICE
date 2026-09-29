@@ -16,5 +16,5 @@ libgit2 v1.9.6
 libgit2 is Copyright (C) the libgit2 contributors. It is used under the
 GPL v2 linking exception, which permits linking the compiled library into
 the executable and distributing the combined work. The build procedure in
-the repository (docs/build.md) rebuilds the pinned release from
+the repository (architecture/build.md) rebuilds the pinned release from
 verified source.

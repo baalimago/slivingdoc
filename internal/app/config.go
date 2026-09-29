@@ -8,41 +8,67 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/baalimago/go_away_boilerplate/pkg/slogcolor"
 
+	"github.com/baalimago/slivingdoc/internal/credentials"
 	"github.com/baalimago/slivingdoc/internal/git"
+	"github.com/baalimago/slivingdoc/internal/httpstore"
 	"github.com/baalimago/slivingdoc/internal/notebook"
 	"github.com/baalimago/slivingdoc/internal/pathutil"
 	"github.com/baalimago/slivingdoc/internal/storage"
 	"github.com/baalimago/slivingdoc/internal/workspace"
 )
 
-// config is the fully resolved process configuration (architecture section
-// 17). Flags override environment variables, which override defaults; the
-// endpoint is normalized and both roots are absolute and disjoint before
-// any engine or S3 work.
+// config is the fully resolved process configuration
+// (architecture/config.md). Flags override environment variables, which
+// override defaults; the endpoint is normalized and both roots are absolute
+// and disjoint before any engine or S3 work.
 type config struct {
-	bucket              string
-	prefix              string
-	region              string
-	endpoint            string
+	bucket   string
+	prefix   string
+	region   string
+	endpoint string
+	token    string
+	// login is the stored login whose key mints the space tokens, when
+	// that is what made the process hosted; tokens is the source minting
+	// them, set by buildService before the store is built.
+	login       *credentials.Login
+	tokens      httpstore.TokenSource
+	tokenOrigin tokenOrigin
+	// spaceID is the hosted server's id of the bucket's space, set by
+	// buildService; it joins the storage identity, so two accounts' spaces
+	// of one name never share private state (architecture/hosted-mode.md).
+	// Empty for S3 and for a server that names none.
+	spaceID httpstore.SpaceID
+	// bucketFrom says which setting named the bucket, in the spelling
+	// used: --bucket, --space, SLIVINGDOC_BUCKET, SLIVINGDOC_SPACE, the
+	// login's default space, the token's own space, or none,
+	// so a space mismatch or a refused token names the right fix.
+	bucketFrom          bucketSource
 	pathStyle           bool
 	workspaceRoot       string
 	privateRoot         string
 	packCacheRoot       string
+	packCache           packCacheMode
 	commitRetries       int
 	checkpointPacks     int
 	retainedCheckpoints int
 
-	// readOnlyPaths are the read-only entries (architecture section 17),
+	// readOnlyPaths are the read-only entries (architecture/config.md),
 	// normalized by finish. writablePaths are the writable entries,
 	// normalized by the same step; a non-empty writable set makes every
-	// unmatched path read-only (architecture section 2, Read-only paths).
+	// unmatched path read-only (architecture/product-contract.md, Read-only
+	// and writable paths).
 	readOnlyPaths []string
 	writablePaths []string
+	// ignore are the operator's ignore patterns, on top of
+	// workspace.DefaultIgnore (architecture/workspace.md, Ignored paths).
+	ignore []string
 
 	// logLevel is the flag-over-environment level spec in the LOG_LEVEL
 	// grammar; empty means the Info default. logTimestamp controls the
@@ -54,28 +80,52 @@ type config struct {
 	logConfigured bool
 
 	// sessionDir is the process-owned parent of both roots when neither is
-	// configured (architecture section 17). It is removed at shutdown; the
+	// configured (architecture/config.md). It is removed at shutdown; the
 	// notebook itself lives in S3.
 	sessionDir string
 }
 
-// Flags are the serve-command flags (architecture section 17). Binding and
+// packCacheMode records why packCacheRoot is empty when it is: the shared
+// pack cache is always on unless the host gives no user cache directory or
+// that directory lies below the workspace root (architecture/config.md).
+type packCacheMode uint8
+
+const (
+	packCacheShared packCacheMode = iota
+	packCacheNoUserDir
+	packCacheBelowWorkspace
+)
+
+// hosted reports whether the process uses the hosted storage API:
+// SLIVINGDOC_TOKEN or a stored login selects it (resolveStorage). With the
+// token the bucket may name the space, and when empty the space is the
+// token's own, resolved at startup (resolveHostedSpace); with a login the
+// space is always named.
+func (cfg config) hosted() bool { return cfg.token != "" || cfg.login != nil }
+
+// DefaultHostedEndpoint is the hosted storage API used when a token is set
+// and no endpoint is configured.
+const DefaultHostedEndpoint = "https://api.slivingdoc.dev"
+
+// Flags are the serve-command flags (architecture/config.md). Binding and
 // resolution are separate so the command router can parse the flag set
 // before the process body resolves it against the environment.
 type Flags struct {
+	storage             stringFlag
 	bucket              stringFlag
+	space               stringFlag
 	prefix              stringFlag
 	region              stringFlag
 	endpoint            stringFlag
 	workspaceRoot       stringFlag
 	privateRoot         stringFlag
 	pathStyle           boolFlag
-	sharedPackCache     boolFlag
 	commitRetries       intFlag
 	checkpointPacks     intFlag
 	retainedCheckpoints intFlag
 	readOnlyPaths       stringFlag
 	writablePaths       stringFlag
+	ignore              stringFlag
 	logLevel            stringFlag
 	logTimestamp        boolFlag
 }
@@ -87,24 +137,26 @@ func NewFlags() *Flags { return &Flags{} }
 // definition of the command line; loadConfig and the serve command both
 // resolve the same holder.
 func (f *Flags) Bind(fs *flag.FlagSet) {
-	fs.Var(&f.bucket, "bucket", "S3 bucket (required)")
+	fs.Var(&f.storage, "storage", "storage backend: auto, hosted, or s3")
+	fs.Var(&f.bucket, "bucket", "S3 bucket; the same setting as --space")
+	fs.Var(&f.space, "space", "hosted space, the hosted name of --bucket (default: with SLIVINGDOC_TOKEN the token's own, else the login's default space)")
 	fs.Var(&f.prefix, "prefix", "S3 object prefix")
 	fs.Var(&f.region, "region", "S3 region")
 	fs.Var(&f.endpoint, "endpoint", "S3-compatible endpoint URL")
 	fs.Var(&f.pathStyle, "path-style", "force S3 path-style addressing")
 	fs.Var(&f.workspaceRoot, "workspace-root", "visible workspace root")
 	fs.Var(&f.privateRoot, "private-root", "private state root")
-	fs.Var(&f.sharedPackCache, "shared-pack-cache", "share downloaded pack bytes between workspaces of one notebook")
 	fs.Var(&f.commitRetries, "commit-retries", "CAS retries after the first attempt")
 	fs.Var(&f.checkpointPacks, "checkpoint-packs", "active tail length that schedules a checkpoint")
 	fs.Var(&f.retainedCheckpoints, "retained-checkpoints", "retained previous checkpoint generations")
 	fs.Var(&f.readOnlyPaths, "read-only-paths", "notebook paths agents may read but never change")
 	fs.Var(&f.writablePaths, "writable-paths", "notebook paths agents may change; every other path is then read-only")
+	fs.Var(&f.ignore, "ignore", "extra file names or paths the notebook never reads, publishes or removes")
 	fs.Var(&f.logLevel, "log-level", "per-module log levels (LOG_LEVEL grammar)")
 	fs.Var(&f.logTimestamp, "log-timestamp", "include the time= field in log records")
 }
 
-// The documented numeric bounds and defaults (architecture section 17).
+// The documented numeric bounds and defaults (architecture/config.md).
 // The ranges come from the notebook package, which owns them, so the flag
 // validation and the notebook validation cannot drift.
 const (
@@ -116,7 +168,7 @@ const (
 )
 
 // loadConfig resolves one validated configuration for the process
-// (architecture section 17). The flags are already parsed when the command
+// (architecture/config.md). The flags are already parsed when the command
 // router owns the command line; otherwise p.args is parsed here. Any parse
 // or validation failure returns a diagnostic that never echoes credentials
 // or private values.
@@ -148,11 +200,25 @@ func (f *Flags) resolve(environment []string, cwd, cacheDir string, ephemeral bo
 		}
 	}()
 	env := environ(environment)
+	sel, err := resolveStorage(f, env, storageInputs{goos: runtime.GOOS, now: time.Now()})
+	if err != nil {
+		return config{}, err
+	}
 	cfg := config{
-		bucket:   resolveString(&f.bucket, env["SLIVINGDOC_BUCKET"], ""),
-		prefix:   resolveString(&f.prefix, env["SLIVINGDOC_PREFIX"], "slivingdoc"),
-		region:   resolveString(&f.region, env["AWS_REGION"], "us-east-1"),
-		endpoint: resolveString(&f.endpoint, env["AWS_ENDPOINT_URL_S3"], ""),
+		bucket:      sel.bucket,
+		prefix:      resolveString(&f.prefix, env["SLIVINGDOC_PREFIX"], "slivingdoc"),
+		token:       sel.token,
+		login:       sel.login,
+		tokenOrigin: sel.origin,
+		bucketFrom:  sel.bucketFrom,
+	}
+	if sel.hosted() {
+		// The AWS variables describe an S3 account, not the hosted API, so
+		// they never redirect a token.
+		cfg.endpoint = sel.endpoint
+	} else {
+		cfg.region = resolveString(&f.region, env["AWS_REGION"], "us-east-1")
+		cfg.endpoint = resolveString(&f.endpoint, env["AWS_ENDPOINT_URL_S3"], "")
 	}
 	wsRoot, wsSet := resolveRoot(&f.workspaceRoot, env["SLIVINGDOC_WORKSPACE_ROOT"])
 	privRoot, privSet := resolveRoot(&f.privateRoot, env["SLIVINGDOC_PRIVATE_ROOT"])
@@ -179,18 +245,15 @@ func (f *Flags) resolve(environment []string, cwd, cacheDir string, ephemeral bo
 			cfg.privateRoot = privRoot
 		}
 	}
-	var err error
 	if cfg.pathStyle, err = resolveBool(&f.pathStyle, env["SLIVINGDOC_PATH_STYLE"], false); err != nil {
 		return config{}, err
 	}
-	sharedPackCache, err := resolveBool(&f.sharedPackCache, env["SLIVINGDOC_SHARED_PACK_CACHE"], false)
-	if err != nil {
-		return config{}, err
-	}
-	if sharedPackCache {
-		if cacheDir == "" {
-			return config{}, errors.New("shared pack cache requires a user cache directory")
-		}
+	// The shared pack cache is always on when the host has a user cache
+	// directory; without one, every workspace keeps its private cache
+	// (architecture/config.md).
+	if cacheDir == "" {
+		cfg.packCache = packCacheNoUserDir
+	} else {
 		cfg.packCacheRoot = filepath.Join(cacheDir, "slivingdoc", "pack-cache")
 	}
 	if cfg.commitRetries, err = resolveInt(&f.commitRetries, env["SLIVINGDOC_COMMIT_RETRIES"], defaultCommitRetries); err != nil {
@@ -204,6 +267,7 @@ func (f *Flags) resolve(environment []string, cwd, cacheDir string, ephemeral bo
 	}
 	cfg.readOnlyPaths = splitPathEntries(resolveString(&f.readOnlyPaths, env["SLIVINGDOC_READ_ONLY_PATHS"], ""))
 	cfg.writablePaths = splitPathEntries(resolveString(&f.writablePaths, env["SLIVINGDOC_WRITABLE_PATHS"], ""))
+	cfg.ignore = splitPathEntries(resolveString(&f.ignore, env["SLIVINGDOC_IGNORE"], ""))
 	cfg.logLevel = resolveString(&f.logLevel, env[logEnvLevel], "")
 	if f.logLevel.set {
 		// An explicit flag value fails fast like every other flag; only the
@@ -219,25 +283,30 @@ func (f *Flags) resolve(environment []string, cwd, cacheDir string, ephemeral bo
 	return cfg.finish(cwd)
 }
 
-// finish validates the resolved configuration: required bucket, valid
+// finish validates the resolved configuration: required bucket (optional
+// in hosted mode), valid
 // prefix, normalized endpoint, absolute and disjoint roots, and the
 // numeric bounds. The endpoint and roots normalize before any engine or S3
 // work; diagnostics never echo credentials or private values.
 func (cfg config) finish(cwd string) (config, error) {
-	if cfg.bucket == "" {
-		return config{}, errors.New("bucket is required")
+	if cfg.bucket == "" && !cfg.hosted() {
+		return config{}, errors.New("bucket is required (pass --bucket for S3, or --space or 'slivingdoc login' for hosted storage)")
 	}
 	if err := storage.ValidatePrefix(cfg.prefix); err != nil {
 		return config{}, err
-	}
-	if cfg.region == "" {
-		return config{}, errors.New("region is required")
 	}
 	endpoint, err := normalizeEndpoint(cfg.endpoint)
 	if err != nil {
 		return config{}, err
 	}
 	cfg.endpoint = endpoint
+	if cfg.hosted() {
+		if err := validateHosted(cfg); err != nil {
+			return config{}, err
+		}
+	} else if cfg.region == "" {
+		return config{}, errors.New("region is required")
+	}
 
 	if cfg.workspaceRoot, err = absolute(cwd, cfg.workspaceRoot); err != nil {
 		return config{}, fmt.Errorf("workspace root: %w", err)
@@ -252,8 +321,11 @@ func (cfg config) finish(cwd string) (config, error) {
 		if cfg.packCacheRoot, err = absolute(cwd, cfg.packCacheRoot); err != nil {
 			return config{}, fmt.Errorf("pack cache root: %w", err)
 		}
+		// A cache below the visible directory would become notebook content,
+		// so such a workspace keeps its private cache instead.
 		if workspace.RootsOverlap(cfg.packCacheRoot, cfg.workspaceRoot) {
-			return config{}, errors.New("pack cache root must not be at or below the workspace root")
+			cfg.packCacheRoot = ""
+			cfg.packCache = packCacheBelowWorkspace
 		}
 	}
 
@@ -273,16 +345,20 @@ func (cfg config) finish(cwd string) (config, error) {
 	// The resolved fields carry the normalized entries, which the service
 	// and the notebook each build a policy from again; the normalization
 	// keeps what resolution needs, so every rebuild answers alike
-	// (architecture section 2, Writable paths).
+	// (architecture/product-contract.md, Read-only and writable paths).
 	cfg.readOnlyPaths = policy.ReadOnly()
 	cfg.writablePaths = policy.Writable()
+	if _, err := workspace.NewIgnore(cfg.ignore); err != nil {
+		return config{}, fmt.Errorf("--ignore: %w", err)
+	}
 	return cfg, nil
 }
 
 // resolvePolicy normalizes both entry sets and composes them into the
-// process path policy (architecture section 2, Read-only paths). Each side
-// is named by its own setting, so an operator reading the refusal knows
-// which value to edit, and a path named by both names both.
+// process path policy (architecture/product-contract.md, Read-only and
+// writable paths). Each side is named by its own setting, so an operator
+// reading the refusal knows which value to edit, and a path named by both
+// names both.
 func resolvePolicy(readOnly, writable []string) (git.PathPolicy, error) {
 	if _, err := git.NormalizeEntries(readOnly); err != nil {
 		return git.PathPolicy{}, fmt.Errorf("read-only paths: %w", err)
@@ -300,6 +376,32 @@ func resolvePolicy(readOnly, writable []string) (git.PathPolicy, error) {
 	return policy, nil
 }
 
+// validateHosted checks the hosted-mode settings: the space (--space or
+// --bucket), when given, is a valid space name, SLIVINGDOC_TOKEN can
+// travel in a header, and a token only ever travels over HTTPS, except to
+// a loopback test server. A stored login's key was checked when the file
+// was read. No diagnostic echoes the token.
+func validateHosted(cfg config) error {
+	if cfg.bucket != "" {
+		if err := httpstore.ValidateSpace(cfg.bucket); err != nil {
+			return fmt.Errorf("bucket names the hosted space: %w", err)
+		}
+	}
+	if cfg.login == nil {
+		if err := httpstore.ValidateToken(cfg.token); err != nil {
+			return errors.New("SLIVINGDOC_TOKEN must be printable characters without white space")
+		}
+	}
+	u, err := url.Parse(cfg.endpoint)
+	if err != nil {
+		return errors.New("endpoint is not a valid URL")
+	}
+	if u.Scheme != "https" && !httpstore.IsLoopback(u.Hostname()) {
+		return errors.New("the hosted endpoint must use https so the token is never sent in clear text")
+	}
+	return nil
+}
+
 // environ maps the process environment to a lookup table. The last value
 // of a duplicated variable wins, matching the operating system.
 func environ(env []string) map[string]string {
@@ -312,10 +414,17 @@ func environ(env []string) map[string]string {
 	return m
 }
 
+// EnvLookup returns a getenv over env, the process environment as
+// KEY=value pairs, with environ's last-value-wins rule.
+func EnvLookup(env []string) func(string) string {
+	m := environ(env)
+	return func(name string) string { return m[name] }
+}
+
 // resolveString returns the effective string value: an explicitly set flag
 // wins over the environment, which wins over the default. An explicitly
-// empty flag does not fall back to the environment (architecture section
-// 17); an empty environment value is treated as unset.
+// empty flag does not fall back to the environment
+// (architecture/config.md); an empty environment value is treated as unset.
 func resolveString(f *stringFlag, env, def string) string {
 	if f.set {
 		return f.value
@@ -436,7 +545,7 @@ func absolute(cwd, root string) (string, error) {
 }
 
 // normalizeEndpoint validates and normalizes a custom endpoint
-// (architecture section 17): an absolute http or https URL without user
+// (architecture/config.md): an absolute http or https URL without user
 // information, query, or fragment. The scheme and host are lowercased, a
 // trailing slash is removed, and a non-root path is preserved. The empty
 // endpoint stays empty for normal AWS resolution.
@@ -454,19 +563,22 @@ func normalizeEndpoint(raw string) (string, error) {
 	if u.Host == "" || u.User != nil {
 		return "", errors.New("endpoint must be an absolute http or https URL without user information")
 	}
-	if u.RawQuery != "" || u.Fragment != "" {
+	if u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || strings.HasSuffix(raw, "#") {
 		return "", errors.New("endpoint must not contain a query or fragment")
 	}
 	u.Scheme = strings.ToLower(u.Scheme)
 	u.Host = strings.ToLower(u.Host)
-	u.Path = strings.TrimSuffix(u.Path, "/")
+	u.Path = strings.TrimRight(u.Path, "/")
 	u.RawPath = ""
-	return u.String(), nil
+	out := u.String()
+	if _, err := url.Parse(out); err != nil {
+		return "", errors.New("endpoint is not a valid URL")
+	}
+	return out, nil
 }
 
 // stringFlag records whether the flag was explicitly set, so an explicitly
-// empty value does not fall back to the environment (architecture section
-// 17).
+// empty value does not fall back to the environment (architecture/config.md).
 type stringFlag struct {
 	value string
 	set   bool
@@ -500,7 +612,7 @@ func (f *boolFlag) Set(s string) error {
 func (f *boolFlag) IsBoolFlag() bool { return true }
 
 // intFlag accepts unsigned decimal values only: integer configuration
-// never carries a sign (architecture section 17).
+// never carries a sign (architecture/config.md).
 type intFlag struct {
 	value int
 	set   bool
@@ -532,23 +644,47 @@ func parseUnsigned(s string) (int, error) {
 }
 
 // FlagReference documents every shared configuration flag, its environment
-// variable, and its default (architecture section 17). serve, pull, and
+// variable, and its default (architecture/config.md). serve, pull, and
 // commit embed it in their help output.
-const FlagReference = `  --bucket string               S3 bucket (required)                         SLIVINGDOC_BUCKET
-  --prefix string               S3 object prefix (default "slivingdoc")      SLIVINGDOC_PREFIX
-  --region string               S3 region (default "us-east-1")              AWS_REGION
+const FlagReference = `  --storage string              storage backend: auto, hosted, or s3         SLIVINGDOC_STORAGE
+                                (default "auto": SLIVINGDOC_TOKEN, else a
+                                stored login, selects hosted storage;
+                                otherwise S3; a login beside a named
+                                bucket plus S3 settings, or the token plus
+                                an S3 endpoint, is refused as ambiguous)
+  --bucket string               S3 bucket (required for S3); the same        SLIVINGDOC_BUCKET
+                                setting as --space
+  --space string                hosted space, the hosted name of --bucket    SLIVINGDOC_SPACE
+                                (default: with SLIVINGDOC_TOKEN the token's
+                                own space, else the login's default space
+                                that 'slivingdoc space <name>' sets; a token
+                                for another space is refused; --bucket and
+                                --space, or the two variables, with
+                                different values are refused)
+  --prefix string               object prefix in the bucket or hosted space  SLIVINGDOC_PREFIX
+                                (default "slivingdoc")
+  --region string               S3 region (default "us-east-1"; unused       AWS_REGION
+                                with a token)
   --endpoint string             S3-compatible endpoint URL (empty for AWS)   AWS_ENDPOINT_URL_S3
-  --path-style                  force S3 path-style addressing               SLIVINGDOC_PATH_STYLE
+                                or, in hosted mode, the hosted storage API   SLIVINGDOC_ENDPOINT
+                                URL (default "https://api.slivingdoc.dev",
+                                or the endpoint of the stored login; with
+                                several logins it chooses one, and a
+                                different one means no login applies)
+  (environment only)            hosted storage API token; setting it         SLIVINGDOC_TOKEN
+                                stores the notebook in the one hosted
+                                space the token reaches; it wins over a
+                                stored login and is ignored with --storage s3
+  (environment only)            directory of the credentials.json that       SLIVINGDOC_CONFIG_DIR
+                                'slivingdoc login' writes (default
+                                <user-config-dir>/slivingdoc)
+  --path-style                  force S3 path-style addressing (S3 only)     SLIVINGDOC_PATH_STYLE
   --workspace-root string       visible workspace root (serve default: a     SLIVINGDOC_WORKSPACE_ROOT
                                 per-process temporary directory; pull and
                                 commit default to the working directory)
   --private-root string         private state root (default: beside the      SLIVINGDOC_PRIVATE_ROOT
                                 temporary workspace root, else
                                 <user-cache-dir>/slivingdoc)
-  --shared-pack-cache           share downloaded pack bytes between          SLIVINGDOC_SHARED_PACK_CACHE
-                                workspaces of one notebook under
-                                <user-cache-dir>/slivingdoc/pack-cache
-                                (default false)
   --commit-retries int          CAS retries after the first attempt          SLIVINGDOC_COMMIT_RETRIES
                                 (default 8, range 0..100)
   --checkpoint-packs int        active tail length that schedules one        SLIVINGDOC_CHECKPOINT_PACKS
@@ -560,6 +696,12 @@ const FlagReference = `  --bucket string               S3 bucket (required)     
   --writable-paths string       comma-separated notebook paths agents may    SLIVINGDOC_WRITABLE_PATHS
                                 change; every other path is then read-only
                                 (default: none, every path is writable)
+  --ignore string               comma-separated file names or paths the      SLIVINGDOC_IGNORE
+                                notebook never reads, publishes or removes,
+                                on top of the built-in junk names such as
+                                .DS_Store; a name matches at any depth, a
+                                path with a slash from the notebook
+                                directory (default: none)
   --log-level string            per-module log levels, for example           LOG_LEVEL
                                 "cli=warn,mcp=debug,info"; a bare level
                                 is the default (default "info")
@@ -568,7 +710,7 @@ const FlagReference = `  --bucket string               S3 bucket (required)     
                                 stamps log lines itself)
 `
 
-// HelpText is the serve-command help (architecture section 17).
+// HelpText is the serve-command help (architecture/config.md).
 const HelpText = `slivingdoc serve - shared UTF-8 text notebook over MCP stdio
 
 Usage:

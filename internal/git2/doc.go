@@ -9,6 +9,6 @@
 // starts and then fails every operation.
 //
 // The pinned libgit2 release and its source checksum are recorded in
-// PinnedVersion and scripts/build-libgit2.sh. See docs/build.md for
-// the build procedure and NOTICE for the license notice.
+// PinnedVersion and scripts/build-libgit2.sh. See architecture/build.md
+// for the build procedure and NOTICE for the license notice.
 package git2

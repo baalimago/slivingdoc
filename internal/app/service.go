@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
+	"slices"
 	"sync"
+	"time"
 
 	"github.com/baalimago/slivingdoc/internal/git"
 	"github.com/baalimago/slivingdoc/internal/notebook"
@@ -13,11 +16,14 @@ import (
 )
 
 // ServiceConfig is the validated service configuration the app resolves
-// from flags and the environment (architecture section 17). Process
+// from flags and the environment (architecture/config.md). Process
 // scenarios and the integration harness build it directly; production
 // derives it from the resolved config through serviceConfig.
 type ServiceConfig struct {
-	Bucket              string
+	Bucket string
+	// SpaceID is the hosted server's id of Bucket's space, part of the
+	// storage identity; empty for S3 and for a server that names none.
+	SpaceID             string
 	Prefix              string
 	Region              string
 	Endpoint            string
@@ -28,12 +34,31 @@ type ServiceConfig struct {
 	CommitRetries       int
 	CheckpointPacks     int
 	RetainedCheckpoints int
-	// ReadOnlyPaths are the read-only entries (architecture section 2,
-	// Read-only paths).
+	// ReadOnlyPaths are the read-only entries
+	// (architecture/product-contract.md, Read-only and writable paths).
 	ReadOnlyPaths []string
 	// WritablePaths are the writable entries; a non-empty set protects
-	// every unmatched path (architecture section 2, Read-only paths).
+	// every unmatched path (architecture/product-contract.md, Read-only and
+	// writable paths).
 	WritablePaths []string
+	// Ignore are the operator's ignore patterns, added to
+	// workspace.DefaultIgnore.
+	Ignore []string
+}
+
+// probeProofs locates the store compatibility proof of this configuration:
+// below the identity's shared pack-cache directory, or disabled when the
+// process has no shared cache (architecture/storage.md).
+func (cfg config) probeProofs(now func() time.Time) probeProofStore {
+	if cfg.packCacheRoot == "" {
+		return probeProofStore{}
+	}
+	return probeProofStore{
+		dir:     filepath.Join(cfg.packCacheRoot, workspace.SharedCacheDirName(cfg.serviceConfig().identity())),
+		version: Version,
+		store:   probedStore{cfg.endpoint, cfg.region, cfg.bucket, cfg.prefix, cfg.pathStyle},
+		now:     now,
+	}
 }
 
 // serviceConfig converts the resolved process configuration into the
@@ -41,6 +66,7 @@ type ServiceConfig struct {
 func (cfg config) serviceConfig() ServiceConfig {
 	return ServiceConfig{
 		Bucket:              cfg.bucket,
+		SpaceID:             string(cfg.spaceID),
 		Prefix:              cfg.prefix,
 		Region:              cfg.region,
 		Endpoint:            cfg.endpoint,
@@ -53,6 +79,7 @@ func (cfg config) serviceConfig() ServiceConfig {
 		RetainedCheckpoints: cfg.retainedCheckpoints,
 		ReadOnlyPaths:       cfg.readOnlyPaths,
 		WritablePaths:       cfg.writablePaths,
+		Ignore:              cfg.ignore,
 	}
 }
 
@@ -70,13 +97,14 @@ type ServiceHooks struct {
 // Service is the MCP service view: one requested visible path resolves to
 // one workspace and notebook, opened lazily on first use and kept open
 // until Close. Calls for one path serialize on that workspace's operation
-// lock; distinct paths operate independently (architecture section 7.2).
+// lock; distinct paths operate independently (architecture/workspace.md).
 type Service struct {
 	engine git.Engine
 	store  storage.ObjectStore
 	cfg    ServiceConfig
 	hooks  *ServiceHooks
 	policy git.PathPolicy
+	ignore workspace.Ignore
 
 	mu     sync.Mutex // guards opened and closed
 	opened map[string]*openedNotebook
@@ -105,19 +133,24 @@ func NewService(engine git.Engine, store storage.ObjectStore, cfg ServiceConfig,
 	if err != nil {
 		return nil, fmt.Errorf("app: %w", err)
 	}
+	ignore, err := workspace.NewIgnore(append(slices.Clone(workspace.DefaultIgnore), cfg.Ignore...))
+	if err != nil {
+		return nil, fmt.Errorf("app: ignore: %w", err)
+	}
 	return &Service{
 		engine: engine,
 		store:  store,
 		cfg:    cfg,
 		hooks:  hooks,
 		policy: policy,
+		ignore: ignore,
 		opened: map[string]*openedNotebook{},
 	}, nil
 }
 
 // Root is the notebook directory an omitted request path resolves to: the
 // configured workspace root, or the process-owned temporary notebook
-// directory when no root was configured (architecture section 17).
+// directory when no root was configured (architecture/config.md).
 func (s *Service) Root() string { return s.cfg.WorkspaceRoot }
 
 // ReadOnlyPaths returns the normalized, sorted read-only entries; never nil.
@@ -147,10 +180,32 @@ func (s *Service) Commit(ctx context.Context, path, message string) (notebook.Re
 	return nb.Commit(ctx, message)
 }
 
+// Status resolves path to its notebook and reports its local state.
+func (s *Service) Status(ctx context.Context, path string) (notebook.Status, error) {
+	nb, err := s.notebookFor(ctx, path)
+	if err != nil {
+		return notebook.Status{}, err
+	}
+	return nb.Status(ctx)
+}
+
+// Log resolves path to its notebook and returns up to limit recent
+// publications.
+func (s *Service) Log(ctx context.Context, path string, limit int) (notebook.History, error) {
+	nb, err := s.notebookFor(ctx, path)
+	if err != nil {
+		return notebook.History{}, err
+	}
+	return nb.Log(ctx, limit)
+}
+
 // notebookFor returns the notebook for the request path, opening its
 // workspace and notebook on first use. The open runs under the map lock so
-// concurrent first use of the same path cannot open two workspaces.
+// concurrent first use of the same path cannot open two workspaces. The
+// map key is the cleaned path, so spellings of one directory such as
+// /ws/a and /ws/a/ share one workspace and its operation lock.
 func (s *Service) notebookFor(ctx context.Context, path string) (*notebook.Notebook, error) {
+	path = filepath.Clean(path)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
@@ -173,14 +228,15 @@ func (s *Service) notebookFor(ctx context.Context, path string) (*notebook.Noteb
 		Identity:      s.identity(),
 		Engine:        s.engine,
 		Failpoints:    wsFailpoints,
+		Ignore:        s.ignore,
 	})
 	if err != nil {
 		return nil, err
 	}
 	// The notebook builds its own policy from the entry sets: each layer
 	// validates what it is configured with, and the normalized entries
-	// resolve exactly as the written ones do (architecture section 2,
-	// Writable paths).
+	// resolve exactly as the written ones do
+	// (architecture/product-contract.md, Read-only and writable paths).
 	nb, err := notebook.New(notebook.Config{
 		Workspace:           ws,
 		Store:               s.store,
@@ -200,15 +256,19 @@ func (s *Service) notebookFor(ctx context.Context, path string) (*notebook.Noteb
 }
 
 // identity is the storage identity derived from the normalized
-// configuration (architecture sections 7.2 and 17): the endpoint, region,
-// bucket, prefix, and the manifest protocol version.
-func (s *Service) identity() workspace.Identity {
+// configuration (architecture/workspace.md and config.md): the endpoint,
+// region, bucket, prefix, the manifest protocol version, and a hosted
+// space's server id.
+func (s *Service) identity() workspace.Identity { return s.cfg.identity() }
+
+func (c ServiceConfig) identity() workspace.Identity {
 	return workspace.Identity{
-		Endpoint:        s.cfg.Endpoint,
-		Region:          s.cfg.Region,
-		Bucket:          s.cfg.Bucket,
-		Prefix:          s.cfg.Prefix,
+		Endpoint:        c.Endpoint,
+		Region:          c.Region,
+		Bucket:          c.Bucket,
+		Prefix:          c.Prefix,
 		ManifestVersion: workspace.ManifestVersion,
+		SpaceID:         c.SpaceID,
 	}
 }
 

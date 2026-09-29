@@ -17,7 +17,7 @@ import (
 
 // The writable set inverts the default: everything the operator did not
 // declare writable is protected, and the two sets compose by longest match
-// (architecture section 2, Read-only paths).
+// (architecture/product-contract.md, Read-only and writable paths).
 
 // writableRefusal is the refusal text of a policy whose writable set is the
 // given entries: it names where the agent may write, not the protected
@@ -256,7 +256,8 @@ func TestScenarioWritableComposedReadOnlyBelowWritableRefused(t *testing.T) {
 // entries of the other. Resolution answers from the entries the operator
 // wrote, so the innermost entry decides its own region whichever set holds
 // it, and a broader entry added to a set never silences a narrower entry of
-// that same set (architecture section 2, Writable paths).
+// that same set (architecture/product-contract.md, Read-only and writable
+// paths).
 
 // TestScenarioWritableThreeLevelCommitRefusesNestedProtected: read-only
 // notes, a writable agent directory inside it, a read-only directory inside
@@ -685,8 +686,8 @@ func TestScenarioWritableUnconfiguredCommitAndPullUnchanged(t *testing.T) {
 
 // The flag surface of the writable set: --writable-paths resolves through
 // the shared flag set of serve, pull, and commit, and a path named by both
-// settings refuses startup before any dependency loads (architecture
-// section 17).
+// settings refuses startup before any dependency loads
+// (architecture/config.md).
 
 // TestCommandsShareWritablePathsFlag: the flag joins the shared flag set,
 // so no command rejects it as unknown.
@@ -860,8 +861,9 @@ func TestScenarioWritableFlagExplicitEmptyIgnoresEnvironment(t *testing.T) {
 }
 
 // The advertisement scenarios below prove the writable set reaches every
-// surface an agent or an operator reads (architecture section 2, Read-only
-// paths). Each one runs against the real engine over the fake store.
+// surface an agent or an operator reads (architecture/product-contract.md,
+// Read-only and writable paths). Each one runs against the real engine over
+// the fake store.
 
 // wantWritableInstructions and wantWritableDescription are the sentences a
 // process configured with the single writable entry "notes" adds to its

@@ -3,12 +3,14 @@ package notebook
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"sync"
 	"testing"
 
 	"github.com/baalimago/slivingdoc/internal/s3store"
+	"github.com/baalimago/slivingdoc/internal/scratch"
 	"github.com/baalimago/slivingdoc/internal/storage"
 	"github.com/baalimago/slivingdoc/internal/tests3"
 	"github.com/baalimago/slivingdoc/internal/workspace"
@@ -25,8 +27,13 @@ import (
 // TestMain terminates the shared S3-compatible container after the whole
 // suite.
 func TestMain(m *testing.M) {
+	cleanup, err := scratch.Use()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "notebook: %v; using the default temporary directory\n", err)
+	}
 	code := m.Run()
 	tests3.Terminate()
+	cleanup()
 	os.Exit(code)
 }
 

@@ -2,18 +2,23 @@ package notebook
 
 import (
 	"errors"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/baalimago/slivingdoc/internal/git"
+	"github.com/baalimago/slivingdoc/internal/storage"
 	"github.com/baalimago/slivingdoc/internal/workspace"
 )
 
-// allReasons lists every Reason token under its owning code (architecture section 2).
+// allReasons lists every Reason token under its owning code
+// (architecture/product-contract.md).
 var allReasons = []struct {
 	code   Code
 	reason Reason
@@ -25,8 +30,10 @@ var allReasons = []struct {
 	{CodeInvalidRequest, ReasonMessageTooLong, ActionFixInput},
 	{CodeInvalidRequest, ReasonMessageInvalid, ActionFixInput},
 	{CodeInvalidRequest, ReasonPullRequired, ActionPull},
+	{CodeInvalidRequest, ReasonDirectoryNotEmpty, ActionFixInput},
 	{CodeInvalidRequest, ReasonInvalidContent, ActionEditFiles},
 	{CodeInvalidRequest, ReasonReadOnlyPath, ActionEditFiles},
+	{CodeInvalidRequest, ReasonIgnoredConflict, ActionEditFiles},
 	{CodeContentConflict, ReasonMergeConflict, ActionEditFiles},
 	{CodeContentConflict, ReasonUnresolvedMarkers, ActionEditFiles},
 	{CodeRemoteBusy, ReasonRetriesExhausted, ActionRetry},
@@ -37,6 +44,11 @@ var allReasons = []struct {
 	{CodeStorageFailure, ReasonManifestWrite, ActionRetry},
 	{CodeStorageFailure, ReasonLocalState, ActionRetry},
 	{CodeStorageFailure, ReasonInternal, ActionRetry},
+	{CodeStorageFailure, ReasonStorageFull, ActionOperator},
+	{CodeStorageFailure, ReasonRequestLimit, ActionOperator},
+	{CodeStorageFailure, ReasonRateLimited, ActionRetry},
+	{CodeStorageFailure, ReasonAccessDenied, ActionOperator},
+	{CodeStorageFailure, ReasonObjectTooLarge, ActionOperator},
 	{CodeStorageIntegrity, ReasonManifestInvalid, ActionOperator},
 	{CodeStorageIntegrity, ReasonPackInvalid, ActionOperator},
 	{CodeStorageIntegrity, ReasonHistoryInvalid, ActionOperator},
@@ -104,6 +116,65 @@ func TestActionForRecoveryReport(t *testing.T) {
 	}
 }
 
+// TestActionForRecoveryRefusal checks that a RECOVERY_FAILURE carrying a
+// store refusal's reason takes the refusal's action, whatever the report.
+func TestActionForRecoveryRefusal(t *testing.T) {
+	for _, tt := range recoveryRefusals {
+		t.Run(string(tt.reason), func(t *testing.T) {
+			got, err := actionFor(CodeRecoveryFailure, tt.reason, &RecoveryReport{Resynchronized: true})
+			if err != nil {
+				t.Fatalf("actionFor(RECOVERY_FAILURE, %s) unexpected error: %v", tt.reason, err)
+			}
+			if got != tt.action {
+				t.Fatalf("actionFor(RECOVERY_FAILURE, %s) = %s, want %s", tt.reason, got, tt.action)
+			}
+		})
+	}
+}
+
+// TestRecoveryRefusalMessagesCoverEveryRefusal checks every refusal reason
+// has a recovery message, and that none claims a publication outcome.
+func TestRecoveryRefusalMessagesCoverEveryRefusal(t *testing.T) {
+	for _, tt := range recoveryRefusals {
+		t.Run(string(tt.reason), func(t *testing.T) {
+			ne := assertErrorCode(t, recoveryFailure(RecoveryReport{}, nil, tt.sentinel), CodeRecoveryFailure)
+			if ne.Reason != tt.reason {
+				t.Fatalf("reason = %s, want %s", ne.Reason, tt.reason)
+			}
+			msg, ok := recoveryRefusalMessages[tt.reason]
+			if !ok || msg == "" || !strings.HasSuffix(ne.Message, msg) {
+				t.Fatalf("message = %q, want it to end with the recovery message %q", ne.Message, msg)
+			}
+			for _, claim := range []string{"published", "commit again"} {
+				if strings.Contains(ne.Message, claim) {
+					t.Fatalf("message = %q claims %q", ne.Message, claim)
+				}
+			}
+		})
+	}
+	if len(recoveryRefusalMessages) != len(recoveryRefusals) {
+		t.Fatalf("recovery messages = %d, want one per refusal reason (%d)", len(recoveryRefusalMessages), len(recoveryRefusals))
+	}
+}
+
+// TestRecoveryFailureKeepsBothCauses checks the resynchronization failure
+// joins the local cause, and that a failure other than a store refusal
+// keeps LOCAL_MUTATION_FAILED.
+func TestRecoveryFailureKeepsBothCauses(t *testing.T) {
+	cause := errors.New("local")
+	resync := errors.New("resync")
+	ne := assertErrorCode(t, recoveryFailure(RecoveryReport{}, cause, resync), CodeRecoveryFailure)
+	if ne.Reason != ReasonLocalMutationFailed || ne.Action != ActionRetry {
+		t.Fatalf("reason/action = %s/%s, want LOCAL_MUTATION_FAILED/RETRY", ne.Reason, ne.Action)
+	}
+	if !errors.Is(ne, cause) || !errors.Is(ne, resync) {
+		t.Fatalf("cause = %v, want both failures", ne.Cause)
+	}
+	if entry := assertErrorCode(t, recoveryFailure(RecoveryReport{}, nil, resync), CodeRecoveryFailure); entry.Cause != resync {
+		t.Fatalf("entry cause = %v, want the resynchronization failure itself", entry.Cause)
+	}
+}
+
 // TestErrorConstructorsCarryReasonAndAction checks every constructor sets Reason
 // and Action.
 func TestErrorConstructorsCarryReasonAndAction(t *testing.T) {
@@ -125,8 +196,8 @@ func TestErrorConstructorsCarryReasonAndAction(t *testing.T) {
 		{"storageIntegrity", storageIntegrity(ReasonEngineFailed, cause, "merge failed"), CodeStorageIntegrity, ReasonEngineFailed, ActionOperator},
 		{"storageFailure", storageFailure(ReasonManifestRead, cause, "read current manifest"), CodeStorageFailure, ReasonManifestRead, ActionRetry},
 		{"remoteBusy", remoteBusy("exhausted"), CodeRemoteBusy, ReasonRetriesExhausted, ActionRetry},
-		{"recoveryFailure resynchronized", recoveryFailure(RecoveryReport{Resynchronized: true}, cause), CodeRecoveryFailure, ReasonLocalMutationFailed, ActionPull},
-		{"recoveryFailure not resynchronized", recoveryFailure(RecoveryReport{Resynchronized: false}, cause), CodeRecoveryFailure, ReasonLocalMutationFailed, ActionRetry},
+		{"recoveryFailure resynchronized", recoveryFailure(RecoveryReport{Resynchronized: true}, cause, nil), CodeRecoveryFailure, ReasonLocalMutationFailed, ActionPull},
+		{"recoveryFailure not resynchronized", recoveryFailure(RecoveryReport{Resynchronized: false}, cause, nil), CodeRecoveryFailure, ReasonLocalMutationFailed, ActionRetry},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -205,6 +276,24 @@ func TestMapLocalErrorNamesScanFile(t *testing.T) {
 		}
 	})
 
+	t.Run("path collision names both paths", func(t *testing.T) {
+		src := &workspace.ScanError{Path: "notes.md", Other: "Notes.md", Err: workspace.ErrPathCollision}
+		var ne *Error
+		if !errors.As(nb.mapLocalError(src), &ne) {
+			t.Fatal("mapLocalError did not return *Error")
+		}
+		if ne.Code != CodeInvalidRequest || ne.Reason != ReasonInvalidContent || ne.Action != ActionEditFiles {
+			t.Fatalf("error = %+v, want INVALID_REQUEST/INVALID_CONTENT/EDIT_FILES", ne)
+		}
+		want := []ErrorFile{
+			{Path: "Notes.md", Reason: FileReasonInvalidContent},
+			{Path: "notes.md", Reason: FileReasonInvalidContent},
+		}
+		if !reflect.DeepEqual(ne.Files, want) {
+			t.Fatalf("files = %+v, want %+v", ne.Files, want)
+		}
+	})
+
 	t.Run("scan rejection without a known path", func(t *testing.T) {
 		var ne *Error
 		if !errors.As(nb.mapLocalError(workspace.ErrInvalidContent), &ne) {
@@ -261,5 +350,55 @@ func TestNoErrorLiteralsOutsideErrorsFile(t *testing.T) {
 			t.Errorf("%s:%s: &Error{...} literal outside errors.go", e.Name(), fset.Position(n.Pos()))
 			return true
 		})
+	}
+}
+
+// TestStorageFailureNamesStoreRefusals proves an account-level refusal of
+// the store replaces the operation's reason and message with one that names
+// the fix, keeps the cause for errors.Is, and leaves other causes alone.
+func TestStorageFailureNamesStoreRefusals(t *testing.T) {
+	tests := []struct {
+		cause   error
+		reason  Reason
+		action  Action
+		message string
+	}{
+		{storage.ErrQuotaExceeded, ReasonStorageFull, ActionOperator, "https://slivingdoc.dev"},
+		{storage.ErrRequestLimit, ReasonRequestLimit, ActionOperator, "first of the month"},
+		{storage.ErrRateLimited, ReasonRateLimited, ActionRetry, "wait, then retry"},
+		{storage.ErrAccessDenied, ReasonAccessDenied, ActionOperator, "SLIVINGDOC_TOKEN"},
+		{storage.ErrTooLarge, ReasonObjectTooLarge, ActionOperator, "larger than the storage accepts"},
+		{storage.ErrTransport, ReasonPackUpload, ActionRetry, "pack upload failed"},
+	}
+	for _, tt := range tests {
+		t.Run(string(tt.reason), func(t *testing.T) {
+			cause := fmt.Errorf("httpstore: put: %w", tt.cause)
+			var e *Error
+			if !errors.As(storageFailure(ReasonPackUpload, cause, "pack upload failed"), &e) {
+				t.Fatal("storageFailure did not build a notebook error")
+			}
+			if e.Code != CodeStorageFailure || e.Reason != tt.reason || e.Action != tt.action {
+				t.Fatalf("error = %s/%s/%s, want %s/%s/%s", e.Code, e.Reason, e.Action, CodeStorageFailure, tt.reason, tt.action)
+			}
+			if !strings.Contains(e.Message, tt.message) {
+				t.Fatalf("message = %q, want it to contain %q", e.Message, tt.message)
+			}
+			if !errors.Is(e, tt.cause) {
+				t.Fatal("the error does not wrap its cause")
+			}
+		})
+	}
+}
+
+// The store's own message is written for the person running the client, so
+// it follows the notebook's message as is.
+func TestStorageFailureShowsStoreMessage(t *testing.T) {
+	cause := &storage.Refusal{Err: storage.ErrRequestLimit, Detail: "HTTP 507", Message: "Upgrade at https://slivingdoc.dev/billing."}
+	var e *Error
+	if !errors.As(storageFailure(ReasonPackUpload, fmt.Errorf("put: %w", cause), "pack upload failed"), &e) {
+		t.Fatal("storageFailure did not build a notebook error")
+	}
+	if !strings.HasSuffix(e.Message, ". The storage says: Upgrade at https://slivingdoc.dev/billing.") {
+		t.Fatalf("message = %q, want the store's message at the end", e.Message)
 	}
 }

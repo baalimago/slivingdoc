@@ -10,7 +10,7 @@ import (
 
 // TestScenarioIntegrityCorruptManifest proves that current is strict
 // authoritative state: malformed bytes cannot be replaced by object-name
-// discovery or a stale local guess (architecture sections 9.2 (L423) and 10 (L603)).
+// discovery or a stale local guess (architecture/storage.md and pull.md).
 func TestScenarioIntegrityCorruptManifest(t *testing.T) {
 	t.Parallel()
 	h := newFakeHarness(t, HarnessConfig{})
@@ -44,8 +44,8 @@ func TestScenarioIntegrityCorruptManifest(t *testing.T) {
 // TestScenarioIntegrityPackTransportFailure proves that a pack GET failing
 // with a transport error is a retryable STORAGE_FAILURE, not an integrity
 // verdict: nothing is known to be wrong with the stored bytes, so the
-// baseline stays where it was and the next pull succeeds (architecture
-// section 10, L603).
+// baseline stays where it was and the next pull succeeds
+// (architecture/pull.md).
 func TestScenarioIntegrityPackTransportFailure(t *testing.T) {
 	t.Parallel()
 	a := newFakeHarness(t, HarnessConfig{})
@@ -72,7 +72,7 @@ func TestScenarioIntegrityPackTransportFailure(t *testing.T) {
 
 // TestScenarioIntegrityCorruptPack proves a descriptor checksum failure
 // prevents a cold reader from importing corrupt bytes or rewriting L
-// (architecture sections 9.3 (L537) and 10 (L603)).
+// (architecture/storage.md and pull.md).
 func TestScenarioIntegrityCorruptPack(t *testing.T) {
 	t.Parallel()
 	a := newFakeHarness(t, HarnessConfig{})
@@ -102,7 +102,7 @@ func TestScenarioIntegrityCorruptPack(t *testing.T) {
 // TestScenarioIntegrityMissingPackWithUnchangedManifest proves a reader
 // only restarts after it observes current move. When the ETag remains the
 // same, the missing referenced pack is storage corruption, not a retry loop
-// or an inference from LIST (architecture section 10, L603).
+// or an inference from LIST (architecture/pull.md).
 func TestScenarioIntegrityMissingPackWithUnchangedManifest(t *testing.T) {
 	t.Parallel()
 	a := newFakeHarness(t, HarnessConfig{})
@@ -124,8 +124,8 @@ func TestScenarioIntegrityMissingPackWithUnchangedManifest(t *testing.T) {
 
 // TestScenarioIntegrityStartupProbeFailure proves an incompatible store is
 // refused before the stdio transport starts. The diagnostic is a category,
-// not a disposable probe key or private protocol detail (architecture
-// sections 9.4 (L567) and 17 (L1040)).
+// not a disposable probe key or private protocol detail
+// (architecture/storage.md and cli.md).
 func TestScenarioIntegrityStartupProbeFailure(t *testing.T) {
 	t.Parallel()
 	h := spawnHelper(t, "bad-store", nil, "serve")
@@ -147,7 +147,8 @@ func TestScenarioIntegrityStartupProbeFailure(t *testing.T) {
 // TestScenarioIntegrityStartupProbeAuthReason proves the real S3 reason
 // behind a probe failure reaches the startup diagnostic, redacted of the
 // probe key and the secret: an authentication refusal names its server
-// error code instead of the blanket incompatible-store verdict.
+// error code and how to fix it instead of the blanket incompatible-store
+// verdict.
 func TestScenarioIntegrityStartupProbeAuthReason(t *testing.T) {
 	t.Parallel()
 	suite := tests3.Ensure(t)
@@ -167,8 +168,11 @@ func TestScenarioIntegrityStartupProbeAuthReason(t *testing.T) {
 	if strings.TrimSpace(stdout) != "" {
 		t.Fatalf("startup auth refusal wrote protocol stdout: %q", stdout)
 	}
-	if !strings.Contains(stderr, "INCOMPATIBLE_STORE") {
-		t.Fatalf("stderr = %q, want the INCOMPATIBLE_STORE category", stderr)
+	if strings.Contains(stderr, "INCOMPATIBLE_STORE") {
+		t.Fatalf("stderr = %q, a refused credential is not an incompatible store", stderr)
+	}
+	if !strings.Contains(stderr, "refused the credentials") || !strings.Contains(stderr, "--bucket") {
+		t.Fatalf("stderr = %q, want the credentials refusal with its fix", stderr)
 	}
 	if !strings.Contains(stderr, "InvalidAccessKeyId") {
 		t.Fatalf("stderr = %q, want the S3 InvalidAccessKeyId reason", stderr)

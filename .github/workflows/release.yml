@@ -34,11 +34,11 @@ jobs:
     uses: baalimago/simple-go-pipeline/.github/workflows/release.yml@0f3e945a5090f3b1bc4dfa5bf8a19db616c0a992
     with:
       go-version: "1.26.5"
-      # project-name makes the pipeline produce the architecture-21 asset
-      # grammar: slivingdoc-v<version>-<os>-<arch>[.exe].
+      # project-name makes the pipeline produce the asset grammar
+      # of architecture/build.md: slivingdoc-v<version>-<os>-<arch>[.exe].
       project-name: slivingdoc
       branch: master
-      # The six supported targets of architecture section 21. `linux/arm` is
+      # The six supported targets listed in architecture/build.md. `linux/arm` is
       # a statically linked ARMv7 hard-float binary for 32-bit Raspberry Pi OS.
       # Windows arm64 is deliberately absent until its native toolchain and
       # runner are proven.
@@ -59,19 +59,18 @@ jobs:
       # The release version is injected by the linker; make build passes it.
       # BIN is the Makefile's build destination, so release builds write the
       # artifact directly at the pipeline's expected path ($TARGET_BINARY,
-      # the architecture-21 asset name) instead of .build/slivingdoc.
+      # the asset name in architecture/build.md) instead of .build/slivingdoc.
       native-build-command: 'if [ "${TARGET_OS}" = linux ]; then if [ "${TARGET_ARCH}" = arm ]; then GOFLAGS="-tags=netgo,osusergo" GOOS=linux GOARCH=arm GOARM=7 CC=arm-linux-gnueabihf-gcc make build BIN="${TARGET_BINARY}" VERSION="${RELEASE_VERSION#v}" STATIC=1; else CC=musl-gcc make build BIN="${TARGET_BINARY}" VERSION="${RELEASE_VERSION#v}" STATIC=1; fi; else make build BIN="${TARGET_BINARY}" VERSION="${RELEASE_VERSION#v}"; fi'
       # Each target proves its own runtime dependency baseline. The pipeline
       # names platforms the way Go does (darwin), while the repo's checkers
       # use the OS names (macos); the substitution maps the one difference.
       dependency-check-command: os="${TARGET_OS/darwin/macos}"; ./scripts/check-deps-"${os}".sh "${TARGET_BINARY}"
-      # The binary must start and report the injected version. The router has
-      # no --version flag: a dash-prefixed argument is a skipped flag and a
-      # bare invocation prints usage, so the smoke uses the version
-      # subcommand. The ./ prefix is required because bash does not search
-      # the working directory for executables.
+      # The binary must start and report the injected version. A bare
+      # invocation prints usage, so the smoke uses the version subcommand.
+      # The ./ prefix is required because bash does not search the working
+      # directory for executables.
       smoke-command: 'if [ "${TARGET_OS}" = linux ] && [ "${TARGET_ARCH}" = arm ]; then qemu-arm "./${TARGET_BINARY}" version; else ./"${TARGET_BINARY}" version; fi'
-      # The strict SHA256SUMS grammar of architecture section 21. The
+      # The strict SHA256SUMS grammar in architecture/build.md. The
       # pipeline appends `dist/*` to this command itself, so the input is
       # the script path alone: a trailing `dist` argument would make the
       # script hash the directory and fail ("sha256sum: dist: Is a
@@ -129,15 +128,15 @@ jobs:
             dist_tag="next"
           fi
           echo "slivingdoc: publishing ${package_version} to the '${dist_tag}' dist-tag"
-          # The prepublishOnly gate runs inside npm publish and blocks until
-          # the GitHub release for this version is complete. Trusted
+          # The prepublishOnly gate runs inside npm publish and refuses to
+          # publish unless every release asset already exists. Trusted
           # publishing (OIDC) supplies the credentials; no token exists.
           npm publish --tag "$dist_tag"
 
   publish-mcp:
     # The Registry verifies the npm package's mcpName and version. Depend on
-    # publish-npm so this card can only be submitted once that exact package
-    # version is publicly available.
+    # publish-npm so this card is never submitted before that package version
+    # is published, then wait until npm serves it (see the first step).
     name: Publish MCP Registry card
     needs: [publish-npm]
     if: github.ref_type == 'tag'
@@ -149,6 +148,31 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      # The new version may not be readable from registry.npmjs.org yet
+      # when npm publish returns, and the Registry refuses the card while
+      # its read of <package>/<version> misses. Poll the same URL the
+      # Registry reads until it answers with the tag's version and the
+      # expected mcpName, and give up after 15 minutes. npm drops build
+      # metadata, so the version is the tag without any +suffix.
+      - name: Wait for the npm launcher version to be public
+        run: |
+          package="$(node -p "require('./npm/slivingdoc/package.json').name")"
+          mcp_name="$(node -p "require('./npm/slivingdoc/package.json').mcpName")"
+          version="${GITHUB_REF_NAME#v}"
+          version="${version%%+*}"
+          url="https://registry.npmjs.org/${package}/${version}"
+          deadline=$(( SECONDS + 900 ))
+          until manifest="$(curl --fail --silent --show-error --location --max-time 20 --header 'Accept: application/json' "$url")" &&
+            [[ "$(jq -r '.version' <<< "$manifest")" == "$version" ]] &&
+            [[ "$(jq -r '.mcpName' <<< "$manifest")" == "$mcp_name" ]]; do
+            if (( SECONDS >= deadline )); then
+              echo "::error::${package}@${version} with mcpName ${mcp_name} was not readable at ${url} within 15 minutes; re-run this job once it is" >&2
+              exit 1
+            fi
+            echo "slivingdoc: ${package}@${version} not yet public on npm; retrying in 30s"
+            sleep 30
+          done
+          echo "slivingdoc: ${package}@${version} is public on npm"
       - name: Install mcp-publisher
         run: |
           curl --fail --silent --show-error --location "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
@@ -156,5 +180,19 @@ jobs:
         run: ./mcp-publisher validate server.json
       - name: Authenticate to the MCP Registry
         run: ./mcp-publisher login github-oidc
+      # The Registry's own npm read happens once per submission, from its
+      # own network, so it can still miss a version the poll above saw.
+      # Retry the submission a few times before failing.
       - name: Publish MCP Registry card
-        run: ./mcp-publisher publish server.json
+        run: |
+          for attempt in 1 2 3; do
+            if ./mcp-publisher publish server.json; then
+              exit 0
+            fi
+            if (( attempt < 3 )); then
+              echo "slivingdoc: MCP Registry publish attempt ${attempt} failed; retrying in 60s"
+              sleep 60
+            fi
+          done
+          echo "::error::MCP Registry publish failed after 3 attempts; re-run this job" >&2
+          exit 1

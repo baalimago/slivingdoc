@@ -27,7 +27,7 @@ import (
 )
 
 // codeRecoveryFailure is the only error category whose envelope may carry
-// the recovery report (architecture section 2, L26).
+// the recovery report (architecture/product-contract.md).
 const codeRecoveryFailure = "RECOVERY_FAILURE"
 
 // HarnessConfig wires one black-box harness. The zero store builds the
@@ -51,6 +51,12 @@ type HarnessConfig struct {
 	// PackCacheRoot is the shared pack-cache root served to the app; empty
 	// keeps the private per-workspace cache.
 	PackCacheRoot string
+	// WorkspaceRoot and PrivateRoot reuse existing roots instead of fresh
+	// temporary ones, so a scenario can reopen the private state an earlier
+	// harness left behind, as a new process would. Empty creates fresh
+	// roots.
+	WorkspaceRoot string
+	PrivateRoot   string
 	// RetryLimit, CheckpointPacks, and RetainedCheckpoints override the
 	// documented defaults (8, 256, 1). They are pointers because zero is a
 	// documented value of two of them (no retries, no retained generation),
@@ -63,6 +69,8 @@ type HarnessConfig struct {
 	// WritablePaths configures the service's writable set; a non-empty set
 	// protects every unmatched path.
 	WritablePaths []string
+	// Ignore adds ignore patterns to the built-in defaults.
+	Ignore []string
 }
 
 // setting returns the pointed-to override, or def when the field is unset.
@@ -146,8 +154,14 @@ func NewHarness(t *testing.T, cfg HarnessConfig) *Harness {
 		t.Fatal("a protocol prefix is required for an injected store")
 	}
 
-	workspaceRoot := t.TempDir()
-	privateRoot := t.TempDir()
+	workspaceRoot := cfg.WorkspaceRoot
+	if workspaceRoot == "" {
+		workspaceRoot = t.TempDir()
+	}
+	privateRoot := cfg.PrivateRoot
+	if privateRoot == "" {
+		privateRoot = t.TempDir()
+	}
 	serviceCfg := app.ServiceConfig{
 		Bucket:              bucket,
 		Prefix:              prefix,
@@ -161,6 +175,7 @@ func NewHarness(t *testing.T, cfg HarnessConfig) *Harness {
 		RetainedCheckpoints: setting(cfg.RetainedCheckpts, notebook.DefaultRetainedCheckpoints),
 		ReadOnlyPaths:       cfg.ReadOnlyPaths,
 		WritablePaths:       cfg.WritablePaths,
+		Ignore:              cfg.Ignore,
 	}
 	hooks := cfg.Hooks
 	if hooks == nil {
@@ -223,6 +238,9 @@ func (h *Harness) Client(name string) *sdk.ClientSession {
 // PrivateRoot returns the per-test configured private root.
 func (h *Harness) PrivateRoot() string { return h.privateRoot }
 
+// WorkspaceRoot returns the harness's visible workspace root.
+func (h *Harness) WorkspaceRoot() string { return h.workspaceRoot }
+
 // Path returns the request path below the workspace root.
 func (h *Harness) Path(rel string) string {
 	return filepath.Join(h.workspaceRoot, rel)
@@ -262,6 +280,7 @@ func (h *Harness) Identity() workspace.Identity {
 		Bucket:          h.cfg.Bucket,
 		Prefix:          h.cfg.Prefix,
 		ManifestVersion: workspace.ManifestVersion,
+		SpaceID:         h.cfg.SpaceID,
 	}
 }
 
@@ -331,6 +350,13 @@ func (h *Harness) RemoveFile(path string) {
 // imported" passes on a missing directory.
 func (h *Harness) FSSnapshot(dir string) map[string]string {
 	h.t.Helper()
+	return fsSnapshot(h.t, dir)
+}
+
+// fsSnapshot is FSSnapshot for scenarios without a harness, such as the
+// process scenarios that drive a spawned helper.
+func fsSnapshot(t *testing.T, dir string) map[string]string {
+	t.Helper()
 	out := map[string]string{}
 	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
@@ -351,7 +377,7 @@ func (h *Harness) FSSnapshot(dir string) map[string]string {
 		return nil
 	})
 	if err != nil {
-		h.t.Fatalf("snapshot %s: %v", dir, err)
+		t.Fatalf("snapshot %s: %v", dir, err)
 	}
 	return out
 }
@@ -468,9 +494,9 @@ func (h *Harness) assertOK(t *testing.T, res *sdk.CallToolResult) {
 // pathSetText is the expected success text item for the configured path
 // sets, writable first, and — when both are configured, where the sets can
 // name the same region at different depths — the rule that decides between
-// them (architecture section 2, Writable paths). The wording is written out
-// here rather than taken from the server, so the black-box oracle is an
-// independent expectation.
+// them (architecture/product-contract.md, Read-only and writable paths).
+// The wording is written out here rather than taken from the server, so the
+// black-box oracle is an independent expectation.
 func pathSetText(path string, entries, writable []string) string {
 	parts := make([]string, 0, 2)
 	if len(writable) > 0 {
@@ -542,7 +568,7 @@ func (h *Harness) assertSuccessStat(t *testing.T, call ToolCall, res *sdk.CallTo
 // assertEnvelope asserts the full envelope expectation of one call result.
 // Every error envelope is also checked for the shape invariants: a
 // non-empty message, the files key always present, and no recovery report
-// outside RECOVERY_FAILURE (architecture section 2).
+// outside RECOVERY_FAILURE (architecture/product-contract.md).
 func (h *Harness) assertEnvelope(t *testing.T, call ToolCall, res *sdk.CallToolResult) {
 	t.Helper()
 	exp := call.Expect
@@ -635,9 +661,9 @@ func (h *Harness) assertEnvelope(t *testing.T, call ToolCall, res *sdk.CallToolR
 }
 
 // envelope is the structured error object of the tool-error shape
-// (architecture section 2): code, reason, action, diagnostic ID, retryable,
-// message, and files are always present; recovery appears only for
-// RECOVERY_FAILURE.
+// (architecture/product-contract.md): code, reason, action, diagnostic ID,
+// retryable, message, and files are always present; recovery appears only
+// for RECOVERY_FAILURE.
 type envelope struct {
 	Code         string            `json:"code"`
 	Reason       string            `json:"reason"`
@@ -669,7 +695,7 @@ type envelopeRecovery struct {
 }
 
 // envelopeTokenViolation describes the first envelope shape invariant an
-// error envelope breaks, or returns "" (architecture section 2).
+// error envelope breaks, or returns "" (architecture/product-contract.md).
 func envelopeTokenViolation(env envelope) string {
 	switch {
 	case env.Message == "":
@@ -723,7 +749,7 @@ func decodeEnvelope(t *testing.T, call ToolCall, res *sdk.CallToolResult) envelo
 	}
 	// The error envelope never carries the success shape: the success-only
 	// field names are absent from the raw structured content, so the two
-	// envelopes cannot be confused (architecture section 2).
+	// envelopes cannot be confused (architecture/product-contract.md).
 	raw, err := json.Marshal(res.StructuredContent)
 	if err != nil {
 		t.Fatalf("marshal structured content: %v", err)

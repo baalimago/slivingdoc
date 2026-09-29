@@ -45,7 +45,47 @@ func TestMapErrorEveryCategory(t *testing.T) {
 			name: "storage integrity", wantCode: "STORAGE_INTEGRITY", wantReason: "PACK_INVALID", wantAction: "OPERATOR", wantRetry: false,
 			err: &notebook.Error{Code: notebook.CodeStorageIntegrity, Reason: notebook.ReasonPackInvalid, Action: notebook.ActionOperator, Message: "corrupt pack"},
 		},
+		{
+			name: "storage full", wantCode: codeStorageFailure, wantReason: "STORAGE_FULL", wantAction: "OPERATOR", wantRetry: false,
+			err: &notebook.Error{Code: notebook.CodeStorageFailure, Reason: notebook.ReasonStorageFull, Action: notebook.ActionOperator, Message: "the storage space is full"},
+		},
+		{
+			name: "access denied", wantCode: codeStorageFailure, wantReason: "ACCESS_DENIED", wantAction: "OPERATOR", wantRetry: false,
+			err: &notebook.Error{Code: notebook.CodeStorageFailure, Reason: notebook.ReasonAccessDenied, Action: notebook.ActionOperator, Message: "the storage refused the credentials"},
+		},
+		{
+			name: "object too large", wantCode: codeStorageFailure, wantReason: "OBJECT_TOO_LARGE", wantAction: "OPERATOR", wantRetry: false,
+			err: &notebook.Error{Code: notebook.CodeStorageFailure, Reason: notebook.ReasonObjectTooLarge, Action: notebook.ActionOperator, Message: "too large"},
+		},
+		{
+			name: "request limit", wantCode: codeStorageFailure, wantReason: "REQUEST_LIMIT", wantAction: "OPERATOR", wantRetry: false,
+			err: &notebook.Error{Code: notebook.CodeStorageFailure, Reason: notebook.ReasonRequestLimit, Action: notebook.ActionOperator, Message: "request allowance"},
+		},
+		{
+			name: "rate limited", wantCode: codeStorageFailure, wantReason: "RATE_LIMITED", wantAction: "RETRY", wantRetry: true,
+			err: &notebook.Error{Code: notebook.CodeStorageFailure, Reason: notebook.ReasonRateLimited, Action: notebook.ActionRetry, Message: "slowing down"},
+		},
 		{name: "recovery failure", err: recoveryError(), wantCode: "RECOVERY_FAILURE", wantReason: "LOCAL_MUTATION_FAILED", wantAction: "PULL", wantRetry: true, wantReco: true},
+		{
+			name: "recovery stopped by access denied", wantCode: "RECOVERY_FAILURE", wantReason: "ACCESS_DENIED", wantAction: "OPERATOR", wantRetry: false, wantReco: true,
+			err: recoveryRefusal(notebook.ReasonAccessDenied, notebook.ActionOperator),
+		},
+		{
+			name: "recovery stopped by storage full", wantCode: "RECOVERY_FAILURE", wantReason: "STORAGE_FULL", wantAction: "OPERATOR", wantRetry: false, wantReco: true,
+			err: recoveryRefusal(notebook.ReasonStorageFull, notebook.ActionOperator),
+		},
+		{
+			name: "recovery stopped by request limit", wantCode: "RECOVERY_FAILURE", wantReason: "REQUEST_LIMIT", wantAction: "OPERATOR", wantRetry: false, wantReco: true,
+			err: recoveryRefusal(notebook.ReasonRequestLimit, notebook.ActionOperator),
+		},
+		{
+			name: "recovery stopped by object too large", wantCode: "RECOVERY_FAILURE", wantReason: "OBJECT_TOO_LARGE", wantAction: "OPERATOR", wantRetry: false, wantReco: true,
+			err: recoveryRefusal(notebook.ReasonObjectTooLarge, notebook.ActionOperator),
+		},
+		{
+			name: "recovery stopped by rate limit", wantCode: "RECOVERY_FAILURE", wantReason: "RATE_LIMITED", wantAction: "RETRY", wantRetry: true, wantReco: true,
+			err: recoveryRefusal(notebook.ReasonRateLimited, notebook.ActionRetry),
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -320,7 +360,7 @@ func recoveryError() error {
 }
 
 // TestRedact scrubs credentials, S3 keys, private paths, and Git IDs from
-// diagnostic text (architecture section 2).
+// diagnostic text (architecture/product-contract.md).
 func TestRedact(t *testing.T) {
 	packUUID := "0196c2d0-7f2b-7e00-8000-000000000004"
 	probeUUID := "0196c2d0-7f2b-7e00-8000-000000000005"
@@ -330,11 +370,13 @@ func TestRedact(t *testing.T) {
 		"probe/" + probeUUID + " did not create; " +
 		"head " + gitID + " unreadable; " +
 		"private /home/user/.cache/slivingdoc/" + derivedKey + " + " +
-		"key AKIAIOSFODNN7EXAMPLE and endpoint http://user:secret@s3.example.com"
+		"key AKIAIOSFODNN7EXAMPLE and endpoint http://user:secret@s3.example.com " +
+		"token sld_0123456789abcdef_c2VjcmV0LXRva2Vu-_x " +
+		"and sld_0123456789abcdef_ab-AKIAIOSFODNN7EXAMPLE-tailsecret"
 	got := Redact(input)
 	for _, leaked := range []string{
 		"packs/increments", packUUID, "probe/" + probeUUID,
-		gitID, derivedKey, "AKIAIOSFODNN7EXAMPLE", "user:secret",
+		gitID, derivedKey, "AKIAIOSFODNN7EXAMPLE", "user:secret", "sld_", "c2VjcmV0LXRva2Vu", "tailsecret",
 	} {
 		if strings.Contains(got, leaked) {
 			t.Fatalf("Redact() leaked %q in %q", leaked, got)
@@ -372,5 +414,15 @@ func TestRedactPreservesReasonTokens(t *testing.T) {
 	}
 	if strings.Contains(te.Message, "packs/increments") {
 		t.Fatalf("message = %q, want the pack key redacted", te.Message)
+	}
+}
+
+// recoveryRefusal is a RECOVERY_FAILURE whose resynchronizing read the store
+// refused for reason.
+func recoveryRefusal(reason notebook.Reason, action notebook.Action) error {
+	return &notebook.Error{
+		Code: notebook.CodeRecoveryFailure, Reason: reason, Action: action,
+		Message:  "recovery could not resynchronize the notebook directory",
+		Recovery: &notebook.RecoveryReport{Stage: "entry", RemoteAccepted: notebook.RemoteAcceptedUnknown},
 	}
 }

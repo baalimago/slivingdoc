@@ -1,8 +1,8 @@
 {
   "name": "slivingdoc",
-  "version": "0.1.19",
+  "version": "0.2.5",
   "mcpName": "io.github.baalimago/slivingdoc",
-  "description": "Launcher for the slivingdoc MCP notebook server: selects, downloads, verifies, and runs the native slivingdoc binary for this platform.",
+  "description": "Durable context for agents: shared notes over MCP and the CLI. This launcher selects, downloads, verifies, and runs the native slivingdoc binary for this platform.",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -29,7 +29,12 @@
     "prepublishOnly": "node scripts/check-release.mjs"
   },
   "keywords": [
+    "durable-context",
+    "agentic-durable-context",
+    "agent-memory",
+    "agents",
     "mcp",
+    "mcp-server",
     "notebook",
     "s3",
     "slivingdoc"

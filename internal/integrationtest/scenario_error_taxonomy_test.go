@@ -15,7 +15,7 @@ import (
 // TestScenarioErrorTaxonomy proves every tool-level category reaches an MCP
 // caller as the stable, complete envelope. INCOMPATIBLE_STORE is necessarily
 // a process-startup category and is covered by
-// TestScenarioIntegrityStartupProbeFailure (architecture section 2, L26).
+// TestScenarioIntegrityStartupProbeFailure (architecture/product-contract.md).
 func TestScenarioErrorTaxonomy(t *testing.T) {
 	t.Parallel()
 	type outcome struct {
@@ -100,6 +100,24 @@ func TestScenarioErrorTaxonomy(t *testing.T) {
 				return outcome{h: h, call: call, result: h.Commit("", path, call.Message), code: codeRecoveryFailure, reason: "LOCAL_MUTATION_FAILED", action: "PULL", retry: true, recover: true}
 			},
 		},
+		{
+			// The store refuses the resynchronizing read: the call stays a
+			// RECOVERY_FAILURE but carries the refusal's reason and action,
+			// and is not retryable.
+			name: "recovery refused by the store",
+			run: func(t *testing.T) outcome {
+				h := newRecoveryHarness(t)
+				path := h.Path("notes")
+				h.assertOK(t, h.Pull("", path))
+				h.WriteFile(path+"/a.md", "alpha")
+				h.NotebookFailpoints().CAS = func() error {
+					h.Faults().FailNext(OpGet, storage.CurrentKey, &storage.Refusal{Err: storage.ErrAccessDenied, Detail: "HTTP 403 forbidden"})
+					return errors.New("injected recovery")
+				}
+				call := ToolCall{Tool: toolCommit, Path: path, Message: "recover"}
+				return outcome{h: h, call: call, result: h.Commit("", path, call.Message), code: codeRecoveryFailure, reason: "ACCESS_DENIED", action: "OPERATOR", retry: false, recover: true}
+			},
+		},
 	}
 
 	for _, row := range rows {
@@ -135,7 +153,7 @@ func TestScenarioErrorTaxonomy(t *testing.T) {
 }
 
 // gitObjectID matches a bare 40-hex Git object ID. Git history is internal
-// (architecture section 12, L763), so no object ID may reach a caller.
+// (architecture/git-engine.md), so no object ID may reach a caller.
 var gitObjectID = regexp.MustCompile(`\b[0-9a-f]{40}\b`)
 
 // gitVocabulary is Git terminology that may never reach a caller. Recovery
@@ -146,8 +164,8 @@ var gitVocabulary = []string{"git ", "git:", "rebase", "merge-base", "refs/", "p
 
 // assertTaxonomyRedaction proves that neither the caller-facing envelope nor
 // the harness's own log records leak an S3 key, a private path, or a Git
-// object ID, and that no caller-facing text speaks Git (architecture
-// section 2, L26).
+// object ID, and that no caller-facing text speaks Git
+// (architecture/product-contract.md).
 //
 // Credential redaction is proven where a credential actually exists: the
 // in-process harness constructs its own store, so no secret ever reaches

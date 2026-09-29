@@ -109,7 +109,9 @@ resource "aws_iam_user" "this" {
 
 # The user can touch this bucket and nothing else: object read/write/delete,
 # multipart upload, and the bucket listing the cleanup pass needs. No IAM,
-# no other buckets, no bucket configuration.
+# no other buckets, no bucket configuration. IAM authorizes
+# CreateMultipartUpload, UploadPart, and CompleteMultipartUpload through
+# s3:PutObject; only the abort and the part listing have their own actions.
 data "aws_iam_policy_document" "user_bucket" {
   statement {
     sid    = "AllowBucketObjects"
@@ -118,9 +120,6 @@ data "aws_iam_policy_document" "user_bucket" {
       "s3:GetObject",
       "s3:PutObject",
       "s3:DeleteObject",
-      "s3:CreateMultipartUpload",
-      "s3:UploadPart",
-      "s3:CompleteMultipartUpload",
       "s3:AbortMultipartUpload",
       "s3:ListMultipartUploadParts",
     ]

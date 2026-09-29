@@ -12,7 +12,7 @@ import (
 
 // UploadUnique stores immutable pack bytes at a uniquely-owned protocol key
 // and writes the slivingdoc metadata. A transport failure is ambiguous
-// (architecture section 15): the request may have landed before the response
+// (architecture/guarantees.md): the request may have landed before the response
 // was lost. UploadUnique resolves the ambiguity by reading the unique key
 // back and proving its bytes:
 //
@@ -22,7 +22,7 @@ import (
 //
 // Existing bytes at the unique key are reused only through that read-back.
 // The streamed GET proves the size and SHA-256. Metadata alone is never
-// proof (architecture section 9.1).
+// proof (architecture/storage.md).
 func UploadUnique(ctx context.Context, s ObjectStore, key Key, r io.Reader, meta Metadata) error {
 	if !key.Kind.Valid() {
 		return fmt.Errorf("%w: upload key has invalid kind %q", ErrIntegrity, key.Kind)

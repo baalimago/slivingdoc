@@ -6,9 +6,9 @@ import (
 
 // TestScenarioPullDeltaStat proves the pull success envelope carries the
 // on-disk delta: the diffstat between the visible state the pull observed
-// and the materialized result (architecture section 2 diff semantics).
-// A remote advance plus a local edit yields exactly the changed paths with
-// their line counts, and untouched files contribute no entry.
+// and the materialized result (architecture/product-contract.md, Success
+// envelope). A remote advance plus a local edit yields exactly the changed
+// paths with their line counts, and untouched files contribute no entry.
 func TestScenarioPullDeltaStat(t *testing.T) {
 	t.Parallel()
 	h := newFakeHarness(t, HarnessConfig{})
@@ -55,9 +55,10 @@ func TestScenarioPullDeltaStat(t *testing.T) {
 
 // TestScenarioCommitIncrementStat proves the commit success envelope
 // carries the published increment: the diffstat between the observed
-// remote parent tree and the accepted merged tree (architecture section 2
-// diff semantics). The first publication reports every file as new; a
-// later increment reports exactly the paths the commit changed.
+// remote parent tree and the accepted merged tree
+// (architecture/product-contract.md, Success envelope). The first
+// publication reports every file as new; a later increment reports exactly
+// the paths the commit changed.
 func TestScenarioCommitIncrementStat(t *testing.T) {
 	t.Parallel()
 	h := newFakeHarness(t, HarnessConfig{})

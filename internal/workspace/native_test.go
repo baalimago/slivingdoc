@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/baalimago/slivingdoc/internal/git2"
+	"github.com/baalimago/slivingdoc/internal/scratch"
 )
 
 // newNativeConfig builds a config backed by the real libgit2 engine.
@@ -187,7 +188,13 @@ func TestMain(m *testing.M) {
 		}
 		os.Exit(0)
 	}
-	os.Exit(m.Run())
+	cleanup, err := scratch.Use()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "workspace: %v; using the default temporary directory\n", err)
+	}
+	code := m.Run()
+	cleanup()
+	os.Exit(code)
 }
 
 const lockHelperEnv = "SLIVINGDOC_LOCK_HELPER"

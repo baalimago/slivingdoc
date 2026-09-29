@@ -12,7 +12,7 @@ import (
 // the configured threshold schedules one checkpoint: the manifest advances
 // to the compacted state with a fresh checkpoint ID, an empty tail, and
 // the new cutoff checkpoint pack, and no lock object ever appears
-// (architecture section 13.1, L815).
+// (architecture/checkpoints.md).
 func TestScenarioCheckpointThresholdTrigger(t *testing.T) {
 	t.Parallel()
 	h := newFakeHarness(t, HarnessConfig{CheckpointPacks: new(2)})
@@ -59,7 +59,7 @@ func TestScenarioCheckpointThresholdTrigger(t *testing.T) {
 // TestScenarioCheckpointWritersAdvanceDuringBuild proves that later
 // increments accepted while a checkpoint builds survive the compaction: the
 // checkpoint CAS replaces only its stable selected prefix and preserves the
-// later tail (architecture section 13.3, L864).
+// later tail (architecture/checkpoints.md).
 func TestScenarioCheckpointWritersAdvanceDuringBuild(t *testing.T) {
 	t.Parallel()
 	a := newFakeHarness(t, HarnessConfig{CheckpointPacks: new(2)})
@@ -115,7 +115,7 @@ func TestScenarioCheckpointWritersAdvanceDuringBuild(t *testing.T) {
 // TestScenarioCheckpointCompetingWorkers proves that two workers compacting
 // the same prefix leave exactly one physical index: one CAS wins, the loser
 // discards its proposal after observing the prefix gone, and cleanup
-// deletes the unreferenced checkpoint pack (architecture section 13.3, L864).
+// deletes the unreferenced checkpoint pack (architecture/checkpoints.md).
 func TestScenarioCheckpointCompetingWorkers(t *testing.T) {
 	t.Parallel()
 	a := NewHarness(t, HarnessConfig{CheckpointPacks: new(2)})
@@ -214,7 +214,7 @@ func TestScenarioCheckpointCompetingWorkers(t *testing.T) {
 // TestScenarioCheckpointRetention proves the retention contract: after the
 // second checkpoint, the active checkpoint plus one retained previous
 // generation reconstruct the replaced state, and the older unretained
-// descriptors are deleted best-effort (architecture section 14, L893).
+// descriptors are deleted best-effort (architecture/checkpoints.md).
 func TestScenarioCheckpointRetention(t *testing.T) {
 	t.Parallel()
 	h := newFakeHarness(t, HarnessConfig{CheckpointPacks: new(2)})
@@ -254,7 +254,7 @@ func TestScenarioCheckpointRetention(t *testing.T) {
 	// The retention contract keeps the active checkpoint plus one previous
 	// generation readable: the retained chain (P3 plus I4/I5) reconstructs
 	// the state P5 replaced, and the first compaction's P1/I2/I3 are
-	// unretained (architecture section 14, L893).
+	// unretained (architecture/checkpoints.md).
 	if len(roots) != 2+len(finalRetained.Increments) {
 		t.Fatalf("retained roots = %v, want active plus one previous generation", roots)
 	}
@@ -281,12 +281,11 @@ func TestScenarioCheckpointRetention(t *testing.T) {
 }
 
 // TestScenarioCheckpointCleanupAfterCAS proves the cleanup contract after a
-// successful checkpoint CAS over the real S3 backend (architecture section
-// 14, L893):
-// unreferenced generations at or before the cutoff are deleted best effort,
-// the active and retained descriptors are never deleted, the cleanup roots
-// are reread from `current` before deleting, and a cold reader still
-// reconstructs the head.
+// successful checkpoint CAS over the real S3 backend
+// (architecture/checkpoints.md): unreferenced generations at or before the
+// cutoff are deleted best effort, the active and retained descriptors are
+// never deleted, the cleanup roots are reread from `current` before
+// deleting, and a cold reader still reconstructs the head.
 func TestScenarioCheckpointCleanupAfterCAS(t *testing.T) {
 	t.Parallel()
 	h := NewHarness(t, HarnessConfig{CheckpointPacks: new(2)})
@@ -354,7 +353,7 @@ func TestScenarioCheckpointCleanupAfterCAS(t *testing.T) {
 
 // TestScenarioCheckpointCleanupFence proves that cleanup considers only
 // candidate generations at or before the successful checkpoint cutoff: a
-// proposal after the cutoff is never touched (architecture section 14, L893).
+// proposal after the cutoff is never touched (architecture/checkpoints.md).
 func TestScenarioCheckpointCleanupFence(t *testing.T) {
 	t.Parallel()
 	h := newFakeHarness(t, HarnessConfig{CheckpointPacks: new(2)})
@@ -388,7 +387,7 @@ func TestScenarioCheckpointCleanupFence(t *testing.T) {
 
 // TestScenarioCheckpointMalformedKeys proves that malformed keys in the
 // pack namespaces are never parsed as cleanup candidates and stay untouched
-// (architecture section 14, L893).
+// (architecture/checkpoints.md).
 //
 // A well-formed unreferenced pre-cutoff pack is seeded beside the malformed
 // keys as a positive control: without it, a run in which cleanup never
@@ -428,7 +427,7 @@ func TestScenarioCheckpointMalformedKeys(t *testing.T) {
 // TestScenarioCheckpointCleanupFailure proves that a failing cleanup batch
 // never changes the already accepted commit result: the commit returns OK,
 // the accepted manifest is the compacted one, and the failure is observable
-// as a warning naming the failed step (architecture section 14, L893).
+// as a warning naming the failed step (architecture/checkpoints.md).
 func TestScenarioCheckpointCleanupFailure(t *testing.T) {
 	t.Parallel()
 	h := newFakeHarness(t, HarnessConfig{CheckpointPacks: new(2)})
@@ -470,7 +469,7 @@ func TestScenarioCheckpointCleanupFailure(t *testing.T) {
 // TestScenarioCheckpointUploadFailure proves that a failed checkpoint pack
 // upload leaves the accepted state exactly as the commit published it: the
 // compaction is a best-effort background effort and can never undo or fail
-// an accepted commit (architecture section 13, L813).
+// an accepted commit (architecture/checkpoints.md).
 func TestScenarioCheckpointUploadFailure(t *testing.T) {
 	t.Parallel()
 	h := newFakeHarness(t, HarnessConfig{CheckpointPacks: new(2)})
@@ -513,7 +512,7 @@ func TestScenarioCheckpointUploadFailure(t *testing.T) {
 // TestScenarioCheckpointCASExhaustion proves that a checkpoint whose CAS
 // loses every attempt gives up within the configured bound instead of
 // looping, leaves the accepted commit untouched, and compacts on a later
-// trigger once the contention passes (architecture section 13, L813).
+// trigger once the contention passes (architecture/checkpoints.md).
 func TestScenarioCheckpointCASExhaustion(t *testing.T) {
 	t.Parallel()
 	const retries = 1
@@ -599,7 +598,7 @@ func compactedCaller(t *testing.T, a *Harness, pathA string) (*Harness, string) 
 // materialized from a checkpoint publishes an increment in the process that
 // pulled it. Exporting the increment walks the parent chain of the remote
 // head, so the shallow boundary has to be visible to the handle that imported
-// the pack, not only to a freshly opened one (architecture section 13.3).
+// the pack, not only to a freshly opened one (architecture/checkpoints.md).
 func TestScenarioCommitAfterCheckpointMaterialization(t *testing.T) {
 	t.Parallel()
 	a := newFakeHarness(t, HarnessConfig{CheckpointPacks: new(2)})

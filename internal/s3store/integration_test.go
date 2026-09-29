@@ -14,6 +14,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/baalimago/slivingdoc/internal/scratch"
 
 	"github.com/baalimago/slivingdoc/internal/storage"
 	"github.com/baalimago/slivingdoc/internal/storage/contract"
@@ -31,8 +32,13 @@ import (
 // TestMain terminates the shared S3-compatible container after the whole
 // suite.
 func TestMain(m *testing.M) {
+	cleanup, err := scratch.Use()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "s3store: %v; using the default temporary directory\n", err)
+	}
 	code := m.Run()
 	tests3.Terminate()
+	cleanup()
 	os.Exit(code)
 }
 

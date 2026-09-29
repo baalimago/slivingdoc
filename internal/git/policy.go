@@ -9,10 +9,10 @@ import (
 
 // PathPolicy answers, for one process, which notebook paths may be written
 // and which changes to protected paths an operation must refuse or restore
-// (architecture section 2, Read-only paths). The two entry sets compose by
-// longest match; the unmatched default is writable while the writable set
-// is empty and protected once it is not. The zero value is unconfigured and
-// protects nothing.
+// (architecture/product-contract.md, Read-only and writable paths). The two
+// entry sets compose by longest match; the unmatched default is writable
+// while the writable set is empty and protected once it is not. The zero
+// value is unconfigured and protects nothing.
 type PathPolicy struct {
 	readOnly EntrySet
 	writable EntrySet
@@ -41,7 +41,7 @@ func (e *OverlapError) Error() string {
 // the other for the same reason — an entry the other set splits from its
 // own-set ancestor still decides paths the ancestor does not, so it
 // survives and the collapsed sets resolve exactly as the written ones do
-// (architecture section 2, Writable paths).
+// (architecture/product-contract.md, Read-only and writable paths).
 func NewPolicy(readOnly, writable []string) (PathPolicy, error) {
 	ro, err := validateEntries(readOnly, kindReadOnly)
 	if err != nil {
@@ -70,8 +70,8 @@ func (p PathPolicy) Configured() bool {
 // The collapse keeps every entry resolution needs, so the pair of accessors
 // is a lossless input to NewPolicy: a policy rebuilt from them protects
 // exactly the same paths, which is what lets a process carry its two sets
-// as entries rather than as a policy value (architecture section 2,
-// Writable paths).
+// as entries rather than as a policy value
+// (architecture/product-contract.md, Read-only and writable paths).
 func (p PathPolicy) ReadOnly() []string { return p.readOnly.Entries() }
 
 // Writable returns a copy of the normalized writable entries; never nil,

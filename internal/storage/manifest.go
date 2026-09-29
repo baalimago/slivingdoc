@@ -20,13 +20,33 @@ import (
 // collision.
 var ErrIntegrity = errors.New("storage: integrity failure")
 
+// ManifestVersion is the one manifest version this build reads and writes.
+const ManifestVersion = 1
+
+// ErrUpgradeRequired reports a manifest written by a newer slivingdoc than
+// this one: the notebook is intact, this build cannot read it. Nothing may
+// be written to it.
+var ErrUpgradeRequired = errors.New("storage: the notebook needs a newer slivingdoc")
+
+// UpgradeRequiredError carries the manifest version a newer slivingdoc
+// wrote. It matches ErrUpgradeRequired.
+type UpgradeRequiredError struct {
+	Version uint64
+}
+
+func (e *UpgradeRequiredError) Error() string {
+	return fmt.Sprintf("storage: decode manifest: manifest version %d is newer than the supported version %d: %v", e.Version, ManifestVersion, ErrUpgradeRequired)
+}
+
+func (e *UpgradeRequiredError) Unwrap() error { return ErrUpgradeRequired }
+
 // CurrentKey is the protocol key of the only authoritative state index
-// (architecture section 9.2). An absent current object is the implicit
+// (architecture/storage.md). An absent current object is the implicit
 // empty-notebook state at generation 0.
 const CurrentKey = "current"
 
 // Manifest is a validated manifest version 1 value. Field order and names
-// follow the normative shape in architecture section 9.2 exactly; the
+// follow the normative shape in architecture/storage.md exactly; the
 // encoder writes compact JSON with HTML escaping disabled and no trailing
 // newline.
 type Manifest struct {
@@ -75,7 +95,7 @@ type Retained struct {
 // DecodeManifest strictly decodes and validates a stored manifest. It
 // rejects unknown fields, duplicate names, missing required fields, and
 // explicit null at every object level, and applies every cross-field rule
-// of architecture section 9.2 before returning. Any failure is an
+// in architecture/storage.md before returning. Any failure is an
 // ErrIntegrity error; the caller must not touch referenced packs.
 func DecodeManifest(data []byte) (Manifest, error) {
 	root, err := strictjson.Parse(data)
@@ -89,7 +109,10 @@ func DecodeManifest(data []byte) (Manifest, error) {
 	if err != nil {
 		return Manifest{}, integrityErr(err)
 	}
-	if ver != 1 {
+	if ver > ManifestVersion {
+		return Manifest{}, &UpgradeRequiredError{Version: ver}
+	}
+	if ver != ManifestVersion {
 		return Manifest{}, fmt.Errorf("storage: decode manifest: unsupported version %d: %w", ver, ErrIntegrity)
 	}
 	m, err := decodeManifest(root)
@@ -105,6 +128,8 @@ func DecodeManifest(data []byte) (Manifest, error) {
 // EncodeManifest validates m and encodes it as compact JSON in the
 // normative field order, with HTML escaping disabled and no trailing
 // newline. An invalid manifest is rejected before any bytes are produced.
+// A nil tail, active or retained, encodes as the empty array the decoder
+// requires; the caller's slices are never modified.
 func EncodeManifest(m Manifest) ([]byte, error) {
 	if m.Increments == nil {
 		m.Increments = []Increment{}
@@ -112,6 +137,7 @@ func EncodeManifest(m Manifest) ([]byte, error) {
 	if m.Retained == nil {
 		m.Retained = []Retained{}
 	}
+	m.Retained = withEmptyRetainedTails(m.Retained)
 	if err := validateManifest(&m); err != nil {
 		return nil, integrityErr(err)
 	}
@@ -124,6 +150,25 @@ func EncodeManifest(m Manifest) ([]byte, error) {
 	return bytes.TrimSuffix(buf.Bytes(), []byte("\n")), nil
 }
 
+// withEmptyRetainedTails returns retained with every nil increment tail
+// replaced by an empty one, copying the slice only when one is nil.
+func withEmptyRetainedTails(retained []Retained) []Retained {
+	var out []Retained
+	for i, r := range retained {
+		if r.Increments != nil {
+			continue
+		}
+		if out == nil {
+			out = append([]Retained(nil), retained...)
+		}
+		out[i].Increments = []Increment{}
+	}
+	if out == nil {
+		return retained
+	}
+	return out
+}
+
 // decodeManifest converts a validated value tree into a Manifest. Field
 // grammar errors carry a field path for diagnostics.
 func decodeManifest(root strictjson.Value) (Manifest, error) {
@@ -131,7 +176,7 @@ func decodeManifest(root strictjson.Value) (Manifest, error) {
 		return Manifest{}, fmt.Errorf("storage: manifest: %w", err)
 	}
 	m := Manifest{}
-	m.Version = 1
+	m.Version = ManifestVersion
 	gen, err := requiredUint(root, "generation", "manifest")
 	if err != nil {
 		return Manifest{}, err
@@ -395,8 +440,8 @@ func integrityErr(err error) error {
 	return fmt.Errorf("storage: manifest: %w: %w", ErrIntegrity, err)
 }
 
-// validateManifest applies the cross-field rules of architecture section
-// 9.2 to an already schema-valid manifest.
+// validateManifest applies the cross-field rules in architecture/storage.md to
+// an already schema-valid manifest.
 func validateManifest(m *Manifest) error {
 	if m.Generation == 0 {
 		return errors.New("generation must be at least 1")

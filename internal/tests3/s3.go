@@ -21,9 +21,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"github.com/moby/moby/client"
-	"github.com/testcontainers/testcontainers-go"
-	"github.com/testcontainers/testcontainers-go/wait"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 
 	"github.com/baalimago/slivingdoc/internal/storage"
 )
@@ -64,7 +62,7 @@ var (
 type Suite struct {
 	Endpoint string
 	Raw      *s3.Client
-	ctr      testcontainers.Container
+	ctr      *container
 }
 
 // StoreConfig is the plain connection description of the suite's S3
@@ -91,11 +89,12 @@ func Start() error {
 			suite, startErr = attach(endpoint)
 			return
 		}
-		if err := dockerAvailable(); err != nil {
+		d, err := dockerAvailable()
+		if err != nil {
 			startErr = fmt.Errorf("docker unavailable: %w", err)
 			return
 		}
-		suite, startErr = start()
+		suite, startErr = start(d)
 	})
 	return startErr
 }
@@ -141,23 +140,19 @@ func require(t fataler, s *Suite, err error) *Suite {
 	return s
 }
 
-// Terminate requests that the shared container stop. Call it from TestMain
-// after the suite ran; it is a no-op when the container never started.
+// Terminate stops the shared container. Call it from TestMain after the
+// suite ran; it is a no-op when this process does not own a container.
 //
-// Termination runs detached so the test-binary critical path never blocks on
-// the Docker HTTP client: go test budgets one timeout for the whole binary
-// lifetime including TestMain, and the stop request can contend for a moby
-// connection on a busy runner. The testcontainers reaper (Ryuk) guarantees
-// eventual cleanup, so the binary may exit before the stop completes.
+// Stopping only closes the container's stdin, a local socket close that
+// never blocks the test binary's critical path; the container's command
+// ends at end of input and the daemon removes it. A process that dies
+// without calling Terminate closes that socket too, so no container
+// outlives its owner.
 func Terminate() {
 	if suite == nil || suite.ctr == nil {
 		return
 	}
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		_ = suite.ctr.Terminate(ctx)
-	}()
+	suite.ctr.stop()
 }
 
 // attach builds an attach-only suite for the endpoint published by the
@@ -219,15 +214,18 @@ func loopbackEndpoint(endpoint string) (string, error) {
 	if u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
 		return "", fmt.Errorf("must not contain a path, query, or fragment")
 	}
-	host := u.Hostname()
-	if ip := net.ParseIP(host); ip != nil {
-		if !ip.IsLoopback() {
-			return "", fmt.Errorf("host %q is not loopback", host)
-		}
-	} else if !strings.EqualFold(host, "localhost") {
+	if host := u.Hostname(); !isLoopbackHost(host) {
 		return "", fmt.Errorf("host %q is not loopback", host)
 	}
 	return u.String(), nil
+}
+
+// isLoopbackHost reports whether host is a loopback IP or "localhost".
+func isLoopbackHost(host string) bool {
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return strings.EqualFold(host, "localhost")
 }
 
 // StoreConfig returns the plain connection values of the local S3 endpoint:
@@ -247,32 +245,25 @@ func (s *Suite) FreshPrefix(namespace string) string {
 	return namespace + "/" + id.String()
 }
 
-// dockerAvailable pings the Docker daemon; the S3 suite depends on it.
-func dockerAvailable() error {
-	cli, err := testcontainers.NewDockerClientWithOpts(context.Background())
+// dockerAvailable locates and pings the Docker daemon; the S3 suite
+// depends on it.
+func dockerAvailable() (*dockerClient, error) {
+	d, err := dockerDaemon(os.Getenv)
 	if err != nil {
-		return fmt.Errorf("docker client: %w", err)
+		return nil, fmt.Errorf("docker client: %w", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := cli.Ping(ctx, client.PingOptions{}); err != nil {
-		return fmt.Errorf("docker daemon: %w", err)
+	if err := d.ping(ctx); err != nil {
+		return nil, fmt.Errorf("docker daemon: %w", err)
 	}
-	return nil
+	return d, nil
 }
 
-// start starts the pinned S3-compatible container with the static identity
-// below a shared bucket, waits for the S3 gateway log line, and creates the
-// test bucket.
-func start() (*Suite, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-
-	req := testcontainers.ContainerRequest{
-		Image:        Image,
-		ExposedPorts: []string{"8333/tcp"},
-		Entrypoint:   []string{"/bin/sh"},
-		Cmd: []string{"-c", `echo '{
+// seaweedScript writes the static identity, serves S3 in the background,
+// and runs until its stdin ends: the stdin attachment is the container's
+// lease (see container).
+const seaweedScript = `echo '{
       "identities": [
         {
           "name": "slivingdoc",
@@ -282,34 +273,75 @@ func start() (*Suite, error) {
           "actions": ["Admin", "Read", "Write", "List", "Tagging"]
         }
       ]
-    }' > /etc/seaweedfs/s3.json && weed server -s3 -s3.config /etc/seaweedfs/s3.json -dir /data`},
-		WaitingFor: wait.ForLog("Start Seaweed S3 API Server").
-			WithStartupTimeout(30 * time.Second),
+    }' > /etc/seaweedfs/s3.json && { weed server -s3 -s3.config /etc/seaweedfs/s3.json -dir /data & } && cat > /dev/null`
+
+// startTimeout bounds start, from the image check to the created bucket.
+// A live start therefore starts its container within startTimeout of
+// creating it, so a labelled container still not started after that
+// belongs to no live run (removeStale).
+const startTimeout = 2 * time.Minute
+
+// suiteLabel marks every container the suite creates.
+const suiteLabel = "org.slivingdoc.tests3"
+
+// readyTimeout bounds how long the S3 gateway may take to accept the
+// bucket after the container started.
+const readyTimeout = 30 * time.Second
+
+// start starts the pinned S3-compatible container with the static identity
+// below a shared bucket and creates the test bucket, retrying until the S3
+// gateway accepts it.
+func start(d *dockerClient) (*Suite, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), startTimeout)
+	defer cancel()
+	if err := d.removeStale(ctx, suiteLabel, time.Now().Add(-startTimeout)); err != nil {
+		return nil, fmt.Errorf("s3 container leftovers: %w", err)
 	}
-	c, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
-		ContainerRequest: req,
-		Started:          true,
+	if err := d.ensureImage(ctx, Image); err != nil {
+		return nil, fmt.Errorf("s3 image: %w", err)
+	}
+	c, port, err := d.run(ctx, containerSpec{
+		Image:      Image,
+		Entrypoint: []string{"/bin/sh"},
+		Cmd:        []string{"-c", seaweedScript},
+		Port:       "8333/tcp",
+		Labels:     map[string]string{suiteLabel: "seaweedfs"},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("start s3 container: %w", err)
 	}
-	host, err := c.Host(ctx)
-	if err != nil {
-		_ = c.Terminate(ctx)
-		return nil, fmt.Errorf("s3 host: %w", err)
-	}
-	port, err := c.MappedPort(ctx, "8333/tcp")
-	if err != nil {
-		_ = c.Terminate(ctx)
-		return nil, fmt.Errorf("s3 port: %w", err)
-	}
-	endpoint := fmt.Sprintf("http://%s:%s", host, port.Port())
+	endpoint := "http://" + net.JoinHostPort(publishHost, port)
 	raw := newRawClient(endpoint)
-	if _, err := raw.CreateBucket(ctx, &s3.CreateBucketInput{Bucket: aws.String(Bucket)}); err != nil {
-		_ = c.Terminate(ctx)
-		return nil, fmt.Errorf("create bucket: %w", err)
+	if err := createBucket(ctx, raw, readyTimeout); err != nil {
+		c.stop()
+		return nil, err
 	}
 	return &Suite{Endpoint: endpoint, Raw: raw, ctr: c}, nil
+}
+
+// createBucket creates the suite bucket once the gateway answers.
+func createBucket(ctx context.Context, raw *s3.Client, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		_, err := raw.CreateBucket(ctx, &s3.CreateBucketInput{Bucket: aws.String(Bucket)})
+		if bucketCreated(err) {
+			return nil
+		}
+		if time.Now().After(deadline) || ctx.Err() != nil {
+			return fmt.Errorf("create bucket: the S3 gateway did not accept it within %s: %w", timeout, err)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// bucketCreated reports whether a CreateBucket answer leaves the suite
+// bucket in place. An existing bucket is ours, under either error a server
+// may choose: the container is new, private to this process, and has one
+// identity, so only an earlier attempt whose answer was lost made it.
+func bucketCreated(err error) bool {
+	var owned *types.BucketAlreadyOwnedByYou
+	var exists *types.BucketAlreadyExists
+	return err == nil || errors.As(err, &owned) || errors.As(err, &exists)
 }
 
 func newRawClient(endpoint string) *s3.Client {

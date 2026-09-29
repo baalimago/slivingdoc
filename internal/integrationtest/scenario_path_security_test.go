@@ -8,8 +8,8 @@ import (
 
 // TestScenarioPathSecurityOverlappingRoots proves the portable half of the
 // path-security catalog: a private root at or below the workspace root is
-// refused at startup, before any transport serves a call (architecture
-// section 17, L1040; section 18.2, L1131).
+// refused at startup, before any transport serves a call
+// (architecture/config.md and security.md).
 //
 // The two roots must stay disjoint because P is server-owned state that a
 // caller must never observe or edit through L. The check therefore belongs

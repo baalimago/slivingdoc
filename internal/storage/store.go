@@ -24,15 +24,55 @@ var (
 	// ErrIncompatible reports that a store failed the startup capability
 	// probe and cannot serve the protocol.
 	ErrIncompatible = errors.New("storage: incompatible store")
+	// ErrQuotaExceeded reports that the store refused a write because the
+	// space, or the account that owns it, is full. Nothing was stored;
+	// reads keep working.
+	ErrQuotaExceeded = errors.New("storage: quota exceeded")
+	// ErrRequestLimit reports that the store refused a write because the
+	// account used its request allowance for the billing period. Nothing
+	// was stored; a retry fails until the allowance grows or resets.
+	ErrRequestLimit = errors.New("storage: request allowance used up")
+	// ErrRateLimited reports that the store is throttling the account's
+	// requests. Nothing changed; a later retry can succeed.
+	ErrRateLimited = errors.New("storage: rate limited")
+	// ErrAccessDenied reports that the store refused the credentials: they
+	// are missing, revoked, read-only for a write, or do not reach the
+	// configured space.
+	ErrAccessDenied = errors.New("storage: access denied")
+	// ErrTooLarge reports an object larger than the store accepts.
+	ErrTooLarge = errors.New("storage: object too large")
+	// ErrCredentialRenewed reports a request the store refused because its
+	// short-lived credential expired or was replaced while it ran, and which
+	// could not be sent again: a streamed upload. It is no refusal of the
+	// credentials: the upload did not land, and a retry uses the new one.
+	ErrCredentialRenewed = errors.New("storage: the short-lived credential was renewed during the upload")
 )
 
+// Refusal carries the text a store wrote for the person running the
+// client alongside a semantic error. Callers match Err with errors.Is and
+// may show Message as is; Message is one sanitized line.
+type Refusal struct {
+	Err     error
+	Detail  string
+	Message string
+}
+
+func (r *Refusal) Error() string {
+	if r.Message == "" {
+		return r.Detail + ": " + r.Err.Error()
+	}
+	return r.Detail + ": " + r.Message + ": " + r.Err.Error()
+}
+
+func (r *Refusal) Unwrap() error { return r.Err }
+
 // ETag is an opaque concurrency token for conditional replacement. It is
-// never a content digest (architecture section 9.3): pack integrity comes
+// never a content digest (architecture/storage.md): pack integrity comes
 // from the descriptor SHA-256 and size.
 type ETag string
 
 // Metadata is the slivingdoc user metadata written with every pack upload
-// (architecture section 9.1): the pack SHA-256, byte size, kind, and target
+// (architecture/storage.md): the pack SHA-256, byte size, kind, and target
 // or through generation. The manifest descriptor is authoritative; metadata
 // only diagnoses and resumes uploads.
 type Metadata struct {
@@ -53,7 +93,7 @@ type ObjectInfo struct {
 
 // ObjectStore is the smallest semantic object-store boundary consumed by
 // notebook storage. Implementations own a configured S3 prefix: methods
-// take protocol keys relative to that prefix (architecture section 9.1) and
+// take protocol keys relative to that prefix (architecture/storage.md) and
 // the store joins them. Implementations must be safe for concurrent use.
 //
 // The interface expresses reads with metadata, uniquely-owned immutable
