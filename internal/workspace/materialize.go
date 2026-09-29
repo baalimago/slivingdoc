@@ -303,6 +303,16 @@ func tempSuffix() string {
 // visible directory keeps ignored entries.
 var ErrIgnoredConflict = errors.New("workspace: ignored files are in the way")
 
+// IgnoredConflictError names the target file that cannot take the place of
+// a directory holding ignored entries. It matches ErrIgnoredConflict.
+type IgnoredConflictError struct{ Path string }
+
+func (e *IgnoredConflictError) Error() string {
+	return fmt.Sprintf("%s: %q must become a file, but the directory holds ignored files; move them away", ErrIgnoredConflict, e.Path)
+}
+
+func (e *IgnoredConflictError) Is(target error) bool { return target == ErrIgnoredConflict }
+
 // withoutIgnored drops the files this machine ignores from a target: a
 // materialization neither writes nor removes an ignored path.
 func (w *Workspace) withoutIgnored(target git.Snapshot) git.Snapshot {
@@ -330,7 +340,7 @@ func (w *Workspace) refuseIgnoredConflict(ctx context.Context, target git.Snapsh
 	}
 	for _, f := range target.Files {
 		if existing.keep[f.Path] {
-			return fmt.Errorf("%w: %q must become a file, but the directory holds ignored files; move them away", ErrIgnoredConflict, f.Path)
+			return &IgnoredConflictError{Path: f.Path}
 		}
 	}
 	return nil

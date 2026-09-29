@@ -66,6 +66,7 @@ const (
 	ReasonDirectoryNotEmpty   Reason = "DIRECTORY_NOT_EMPTY"
 	ReasonInvalidContent      Reason = "INVALID_CONTENT"
 	ReasonReadOnlyPath        Reason = "READ_ONLY_PATH"
+	ReasonIgnoredConflict     Reason = "IGNORED_CONFLICT"
 	ReasonMergeConflict       Reason = "MERGE_CONFLICT"
 	ReasonUnresolvedMarkers   Reason = "UNRESOLVED_MARKERS"
 	ReasonRetriesExhausted    Reason = "RETRIES_EXHAUSTED"
@@ -135,6 +136,7 @@ var actionForPairing = map[codeReason]Action{
 	{CodeInvalidRequest, ReasonDirectoryNotEmpty}:   ActionFixInput,
 	{CodeInvalidRequest, ReasonInvalidContent}:      ActionEditFiles,
 	{CodeInvalidRequest, ReasonReadOnlyPath}:        ActionEditFiles,
+	{CodeInvalidRequest, ReasonIgnoredConflict}:     ActionEditFiles,
 	{CodeContentConflict, ReasonMergeConflict}:      ActionEditFiles,
 	{CodeContentConflict, ReasonUnresolvedMarkers}:  ActionEditFiles,
 	{CodeRemoteBusy, ReasonRetriesExhausted}:        ActionRetry,

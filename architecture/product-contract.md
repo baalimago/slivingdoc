@@ -94,6 +94,7 @@ The notebook emits every pairing below except `MALFORMED_INPUT` and `PATH_OUTSID
 | `INVALID_REQUEST` | `PULL_REQUIRED` | Commit before any pull on this P | `PULL` |
 | `INVALID_REQUEST` | `DIRECTORY_NOT_EMPTY` | First pull into a directory holding files the notebook lacks, or unprotected files it holds with other bytes (an empty notebook still refuses protected files); L, the pulled marker and `state.json` unchanged (P's repository and pack cache may hold R) | `FIX_INPUT` |
 | `INVALID_REQUEST` | `INVALID_CONTENT` | A visible file breaks the content or path rules; `files` names it | `EDIT_FILES` |
+| `INVALID_REQUEST` | `IGNORED_CONFLICT` | A pull would put a file where this machine keeps ignored files inside a directory; nothing changed. Move the ignored files away | `EDIT_FILES` |
 | `INVALID_REQUEST` | `READ_ONLY_PATH` | Commit touched a protected path; files were reset | `EDIT_FILES` |
 | `CONTENT_CONFLICT` | `MERGE_CONFLICT` | Three-tree merge conflicted; markers written | `EDIT_FILES` |
 | `CONTENT_CONFLICT` | `UNRESOLVED_MARKERS` | Commit found complete marker blocks | `EDIT_FILES` |
