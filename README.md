@@ -82,7 +82,7 @@ npx -y slivingdoc version
 install the matching binary with the checksummed setup script:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/baalimago/slivingdoc/main/setup.sh | sh
+curl -fsSL https://raw.githubusercontent.com/baalimago/slivingdoc/setup.sh | sh
 ```
 
 It installs into `$HOME/.local/bin` (or `/usr/local/bin` when run as root).
