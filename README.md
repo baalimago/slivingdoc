@@ -59,7 +59,10 @@ Free for one space, 10 MB and 250,000 requests a month
 supports conditional writes.:
 
 ```sh
-AWS_REGION=eu-north-1 AWS_ACCESS_KEY_ID=<key> AWS_SECRET_ACCESS_KEY=<key> npx -y slivingdoc serve --bucket my-notes
+export AWS_REGION=eu-north-1
+export AWS_ACCESS_KEY_ID=<key>
+export AWS_SECRET_ACCESS_KEY=<key>
+npx -y slivingdoc serve --bucket my-notes
 ```
 
 No bucket yet? [`examples/seaweedfs/`](examples/seaweedfs/) runs one
