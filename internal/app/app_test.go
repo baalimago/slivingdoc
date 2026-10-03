@@ -371,9 +371,10 @@ func TestLogStorageNamesTheStoreAndItsSource(t *testing.T) {
 		{"s3 at an IPv6 AWS_ENDPOINT_URL with a zone", config{bucket: "b"}, map[string]string{"AWS_ENDPOINT_URL": "https://[fe80::1%25u:p]:9000/x"}, []string{`endpoint="https://[fe80::1]:9000 (AWS_ENDPOINT_URL)"`}},
 		{"s3 at a scheme-relative AWS_ENDPOINT_URL", config{bucket: "b"}, map[string]string{"AWS_ENDPOINT_URL": "//u:p@minio.local"}, []string{`endpoint="an unparsable URL (AWS_ENDPOINT_URL)"`}},
 		{"s3 at its own endpoint", config{bucket: "b", endpoint: "https://s3.local"}, map[string]string{"AWS_ENDPOINT_URL": "https://minio.local"}, []string{"endpoint=https://s3.local"}},
-		{"hosted through the environment", config{bucket: "b", token: "t", endpoint: DefaultHostedEndpoint, tokenOrigin: originEnv}, nil, []string{"backend=hosted", "token=env"}},
-		{"hosted with the token's own space", config{token: "t", endpoint: DefaultHostedEndpoint, tokenOrigin: originEnv}, nil, []string{`space="the token's own"`}},
-		{"hosted through a login", config{bucket: "b", login: &credentials.Login{}, endpoint: DefaultHostedEndpoint, tokenOrigin: originLogin}, nil, []string{"backend=hosted", "token=login", "space=b"}},
+		{"hosted through the environment", config{bucket: "b", token: "t", endpoint: DefaultHostedEndpoint, tokenOrigin: originEnv}, nil, []string{"backend=hosted", "token=env", "s3=ignored"}},
+		{"hosted ignores S3 credentials", config{bucket: "b", token: "t", endpoint: DefaultHostedEndpoint, tokenOrigin: originEnv}, map[string]string{"AWS_ACCESS_KEY_ID": "access-key", "AWS_SECRET_ACCESS_KEY": "aws-secret-value"}, []string{"backend=hosted", "s3=ignored"}},
+		{"hosted with the token's own space", config{token: "t", endpoint: DefaultHostedEndpoint, tokenOrigin: originEnv}, nil, []string{`space="the token's own"`, "s3=ignored"}},
+		{"hosted through a login", config{bucket: "b", login: &credentials.Login{}, endpoint: DefaultHostedEndpoint, tokenOrigin: originLogin}, nil, []string{"backend=hosted", "token=login", "space=b", "s3=ignored"}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			var buf strings.Builder

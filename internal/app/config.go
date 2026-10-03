@@ -142,7 +142,7 @@ func (f *Flags) Bind(fs *flag.FlagSet) {
 	fs.Var(&f.space, "space", "hosted space, the hosted name of --bucket (default: with SLIVINGDOC_TOKEN the token's own, else the login's default space)")
 	fs.Var(&f.prefix, "prefix", "S3 object prefix")
 	fs.Var(&f.region, "region", "S3 region")
-	fs.Var(&f.endpoint, "endpoint", "S3-compatible endpoint URL")
+	fs.Var(&f.endpoint, "endpoint", "S3 or hosted API endpoint URL")
 	fs.Var(&f.pathStyle, "path-style", "force S3 path-style addressing")
 	fs.Var(&f.workspaceRoot, "workspace-root", "visible workspace root")
 	fs.Var(&f.privateRoot, "private-root", "private state root")
@@ -649,9 +649,9 @@ func parseUnsigned(s string) (int, error) {
 const FlagReference = `  --storage string              storage backend: auto, hosted, or s3         SLIVINGDOC_STORAGE
                                 (default "auto": SLIVINGDOC_TOKEN, else a
                                 stored login, selects hosted storage;
-                                otherwise S3; a login beside a named
-                                bucket plus S3 settings, or the token plus
-                                an S3 endpoint, is refused as ambiguous)
+                                otherwise S3; token wins over S3 settings
+                                unless --storage s3; a login beside an
+                                explicit space plus S3 settings needs a choice)
   --bucket string               S3 bucket (required for S3); the same        SLIVINGDOC_BUCKET
                                 setting as --space
   --space string                hosted space, the hosted name of --bucket    SLIVINGDOC_SPACE

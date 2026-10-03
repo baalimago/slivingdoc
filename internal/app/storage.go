@@ -45,11 +45,9 @@ const (
 
 // awsSignals returns the environment variables that mean the operator
 // configured S3 on purpose. In auto mode they make a stored login beside an
-// explicit bucket a refusal rather than a guess; SLIVINGDOC_TOKEN is
-// refused only beside the ones that name an S3 host (destinationSignals).
-// Any variable starting with awsContainerPrefix counts too, and so do the
-// shared AWS files (awsFiles) and the S3-only flags --region and
-// --path-style (s3Signals).
+// explicit bucket a refusal rather than a guess. Any variable starting
+// with awsContainerPrefix counts too, and so do the shared AWS files
+// (awsFiles) and the S3-only flags --region and --path-style (s3Signals).
 func awsSignals() []string {
 	return []string{
 		"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_PROFILE",
@@ -57,15 +55,6 @@ func awsSignals() []string {
 		"AWS_ROLE_ARN", "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_ENDPOINT_URL", "AWS_ENDPOINT_URL_S3",
 		"SLIVINGDOC_PATH_STYLE",
 	}
-}
-
-// destinationSignals are the environment variables that name an S3 host.
-// Beside SLIVINGDOC_TOKEN in auto mode they are a refusal as an intent
-// check: the operator pointed S3 at a host on purpose, so hosted mode is
-// not assumed. Hosted mode never reads them, so the token never follows
-// them. A region or AWS credentials name no host and are no refusal.
-func destinationSignals() []string {
-	return []string{"AWS_ENDPOINT_URL", "AWS_ENDPOINT_URL_S3"}
 }
 
 // awsContainerPrefix starts the container credential variables of the
@@ -225,11 +214,9 @@ type storageInputs struct {
 //     ignored and never read.
 //   - hosted: SLIVINGDOC_TOKEN if set, else the stored login; neither is a
 //     refusal.
-//   - auto: SLIVINGDOC_TOKEN → hosted, unless the --endpoint flag,
-//     AWS_ENDPOINT_URL or AWS_ENDPOINT_URL_S3 is set too (refusal). Else a
-//     stored login → hosted when the space is the login's stored default,
-//     or when no S3 signal is set; an explicit bucket with an S3 signal is
-//     a refusal. Otherwise S3.
+//   - auto: SLIVINGDOC_TOKEN → hosted. Else a stored login → hosted when
+//     the space is the login's stored default, or when no S3 signal is set;
+//     an explicit bucket with an S3 signal is a refusal. Otherwise S3.
 //
 // With SLIVINGDOC_TOKEN the stored logins are never read: an omitted
 // bucket stays empty and resolveHostedSpace asks the API for the token's
@@ -258,14 +245,9 @@ func resolveStorage(f *Flags, env map[string]string, in storageInputs) (storageS
 	if token := env["SLIVINGDOC_TOKEN"]; token != "" {
 		// The token alone is enough: its space comes from the hosted API
 		// (resolveHostedSpace), and the stored logins are not read, so a
-		// broken credentials file never stops a token user.
-		if mode == storageAuto {
-			if dest := tokenDestinations(f, env); len(dest) > 0 {
-				return storageSelection{}, fmt.Errorf(
-					"SLIVINGDOC_TOKEN and an S3 endpoint (%s) are both configured; pass --storage hosted to use hosted storage (the token goes only to the hosted endpoint), or --storage s3",
-					strings.Join(dest, ", "))
-			}
-		}
+		// broken credentials file never stops a token user. In auto mode,
+		// the token wins over S3 settings; --storage s3 is the explicit
+		// override.
 		sel.token, sel.origin, sel.endpoint = token, originEnv, explicit
 		if sel.endpoint == "" {
 			sel.endpoint = DefaultHostedEndpoint
@@ -346,23 +328,6 @@ func noLoginRefusal(logins credentials.Set, explicit string) error {
 		msg += fmt.Sprintf(" for %s; the stored login is for %s", explicit, others[0].Endpoint)
 	}
 	return fmt.Errorf("%s; run 'slivingdoc login'", msg)
-}
-
-// tokenDestinations returns the settings beside SLIVINGDOC_TOKEN that say
-// the operator meant an S3 host: the --endpoint flag (which is the S3
-// endpoint outside hosted mode) and the destinationSignals that are set.
-// SLIVINGDOC_ENDPOINT alone names the hosted API and is not one.
-func tokenDestinations(f *Flags, env map[string]string) []string {
-	var set []string
-	if f.endpoint.set {
-		set = append(set, "--endpoint")
-	}
-	for _, name := range destinationSignals() {
-		if env[name] != "" {
-			set = append(set, name)
-		}
-	}
-	return set
 }
 
 // s3Signals returns what configures S3 on purpose, in a fixed order: the

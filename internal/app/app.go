@@ -690,8 +690,9 @@ func endpointForLog(raw string) string {
 
 // logStorage records the store the configuration chose, so an operator
 // can see at startup whether a stored login or SLIVINGDOC_TOKEN turned the
-// process hosted (architecture/login.md). It never logs the token. An S3
-// process with no endpoint of its own names the variable the AWS SDK will
+// process hosted and that S3 settings are ignored (architecture/login.md).
+// It never logs the token or AWS credentials. An S3 process with no endpoint
+// of its own names the variable the AWS SDK will
 // read instead (AWS_ENDPOINT_URL_S3, then AWS_ENDPOINT_URL: an explicitly
 // empty --endpoint does not clear them), and otherwise says the SDK may
 // still take one from the environment or a shared profile.
@@ -719,5 +720,9 @@ func logStorage(logger *slog.Logger, cfg config, env map[string]string) {
 		// logs the space it resolved.
 		space = "the token's own"
 	}
-	logger.Info("storage selected", "backend", backend, "endpoint", endpoint, "space", space, "token", source)
+	attrs := []any{"backend", backend, "endpoint", endpoint, "space", space, "token", source}
+	if cfg.hosted() {
+		attrs = append(attrs, "s3", "ignored")
+	}
+	logger.Info("storage selected", attrs...)
 }

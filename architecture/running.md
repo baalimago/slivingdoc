@@ -501,9 +501,9 @@ non-empty `SLIVINGDOC_TOKEN`, or a stored login
   chain are not used, and `--path-style` is validated, then unused. Beside
   `SLIVINGDOC_TOKEN` a region, AWS credentials and the `~/.aws` files are
   simply ignored; `--region` counts only against a stored login used
-  with a `--space` you named (see [Choosing the storage](#choosing-the-storage)),
-  and the `--endpoint` flag, `AWS_ENDPOINT_URL` or `AWS_ENDPOINT_URL_S3`
-  beside the token refuse startup under `--storage auto`.
+  with a `--space` you named (see [Choosing the storage](#choosing-the-storage)).
+  When the token selects hosted mode, `--endpoint` names the hosted API and
+  S3 endpoint settings are ignored; use `--storage s3` to select S3.
 - The token is read from the environment, or minted from the stored
   login, never from a flag; `SLIVINGDOC_TOKEN`
   must be printable ASCII (0x21 to 0x7E) without white space. It travels only in

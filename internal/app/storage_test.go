@@ -137,6 +137,11 @@ func TestResolveStorage(t *testing.T) {
 			wantHosted: true, wantToken: hostedTestToken, wantOrigin: originEnv, wantBucket: "notes", wantFrom: bucketFromEnv, wantEndpoint: devEndpoint,
 		},
 		{
+			name: "auto: token makes endpoint flag the hosted endpoint", env: []string{token, "SLIVINGDOC_BUCKET=notes"},
+			args:       []string{"--endpoint", devEndpoint},
+			wantHosted: true, wantToken: hostedTestToken, wantOrigin: originEnv, wantBucket: "notes", wantFrom: bucketFromEnv, wantEndpoint: devEndpoint,
+		},
+		{
 			name: "auto: the default space takes the login even with AWS settings", env: []string{notes, "AWS_PROFILE=p", "AWS_REGION=eu-north-1"},
 			wantHosted: true, wantKey: loginToken, wantOrigin: originLogin, wantBucket: "notes", wantFrom: bucketFromLogin, wantEndpoint: DefaultHostedEndpoint,
 		},
@@ -160,6 +165,14 @@ func TestResolveStorage(t *testing.T) {
 		},
 		{
 			name: "auto: the token with the hosted endpoint variable", env: []string{token, "SLIVINGDOC_BUCKET=notes", "SLIVINGDOC_ENDPOINT=" + devEndpoint},
+			wantHosted: true, wantToken: hostedTestToken, wantOrigin: originEnv, wantBucket: "notes", wantFrom: bucketFromEnv, wantEndpoint: devEndpoint,
+		},
+		{
+			name: "auto: token ignores S3 endpoint and credentials", env: []string{
+				token, "SLIVINGDOC_BUCKET=notes", "SLIVINGDOC_ENDPOINT=" + devEndpoint,
+				"AWS_ENDPOINT_URL=https://s3.example.test", "AWS_ENDPOINT_URL_S3=https://s3.example.test",
+				"AWS_ACCESS_KEY_ID=key", "AWS_SECRET_ACCESS_KEY=secret",
+			},
 			wantHosted: true, wantToken: hostedTestToken, wantOrigin: originEnv, wantBucket: "notes", wantFrom: bucketFromEnv, wantEndpoint: devEndpoint,
 		},
 		{
@@ -375,18 +388,6 @@ func TestResolveStorageRefusals(t *testing.T) {
 			[]string{notes, "HOME=" + awsHome},
 			[]string{"--bucket", "notes"},
 			[]string{"~/.aws/credentials, ~/.aws/config"},
-		},
-		{
-			"the token and an endpoint flag are ambiguous",
-			[]string{"SLIVINGDOC_TOKEN=" + hostedTestToken, "SLIVINGDOC_BUCKET=notes"},
-			[]string{"--endpoint", "https://minio.local"},
-			[]string{"SLIVINGDOC_TOKEN and an S3 endpoint (--endpoint)", "--storage hosted", "--storage s3"},
-		},
-		{
-			"the token and the AWS endpoint variables are ambiguous",
-			[]string{"SLIVINGDOC_TOKEN=" + hostedTestToken, "SLIVINGDOC_BUCKET=notes", "AWS_ENDPOINT_URL=https://minio.local", "AWS_ENDPOINT_URL_S3=https://minio.local", "AWS_REGION=eu-north-1"},
-			nil,
-			[]string{"SLIVINGDOC_TOKEN and an S3 endpoint (AWS_ENDPOINT_URL, AWS_ENDPOINT_URL_S3)"},
 		},
 	}
 	for _, tt := range tests {

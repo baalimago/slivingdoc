@@ -31,14 +31,16 @@ Read this when: changing hosted-mode selection or its settings, the HTTP request
 
 ```text
 Flags.resolve → resolveStorage (login.md): --storage s3 → S3, never hosted
-  SLIVINGDOC_TOKEN non-empty → auto with the --endpoint flag, AWS_ENDPOINT_URL or AWS_ENDPOINT_URL_S3 → refusal (intent check)
-    → config.hosted(), tokenOrigin env
+  SLIVINGDOC_TOKEN non-empty → hosted in auto or hosted mode, regardless of S3 settings
+    --storage s3 → S3 and ignores the token
     endpoint = --endpoint | SLIVINGDOC_ENDPOINT | DefaultHostedEndpoint   (AWS variables ignored)
+    → config.hosted(), tokenOrigin env
   else a usable stored login (the one for the explicit endpoint, else the only one)
     space = the bucket setting, else the stored default space; none → refusal ('slivingdoc space <name>')
     → auto with an explicit space and an S3 signal → refusal
     → config.hosted(), tokenOrigin login, endpoint = the login's own
-  setup → logStorage: Info "storage selected" backend, endpoint, space, token source
+  setup → logStorage: Info "storage selected" backend, endpoint, space, token source;
+                      hosted adds s3=ignored
   normalizeEndpoint → validateHosted (space grammar, token grammar unless a login, https unless loopback)
   buildService (login) → newMintedTokens → first Token: POST <site>/cli/v1/space-token (login.md); failure → mintRefusal
   buildService (SLIVINGDOC_TOKEN) → resolveHostedSpace: DescribeToken (GET /v1 tokenless, then GET /v1/token)
@@ -82,7 +84,7 @@ commit on a full space (notebook, any store):
 
 ## Behavior
 
-**Selection and settings.** A non-empty `SLIVINGDOC_TOKEN` selects hosted mode (`config.hosted`) unless `--storage s3` is given; under the default `--storage auto` it is refused when a setting that points S3 at a host is also present (the `--endpoint` flag, `AWS_ENDPOINT_URL`, `AWS_ENDPOINT_URL_S3`), as an intent check: hosted mode never reads the two variables, so the token cannot follow them, but the operator configured an S3 host on purpose, and `--storage hosted` states which store is meant. A region, AWS credentials, a profile or the `~/.aws` files are no refusal; the hosted adapter never reads any of them. Without the token, a stored login selects hosted mode when the space is its stored default space, or when nothing configures S3 ([login.md](./login.md), Which storage a process uses, has the exact table). The startup log records the backend, endpoint, space and token source (`logStorage`). The token has no flag, so it never appears in a process listing.
+**Selection and settings.** A non-empty `SLIVINGDOC_TOKEN` selects hosted mode (`config.hosted`) unless `--storage s3` is given. In hosted mode, `--endpoint` names the hosted API; AWS endpoint variables, AWS credentials, profiles and `~/.aws` files are ignored. `--storage s3` ignores the token. Without the token, a stored login selects hosted mode when the space is its stored default space, or when nothing configures S3 ([login.md](./login.md), Which storage a process uses, has the exact table). The startup log records the backend, endpoint, space and token source (`logStorage`); hosted records add `s3=ignored`. The token has no flag, so it never appears in a process listing.
 
 | Setting             | Flag         | Environment           | Default                      |
 | ------------------- | ------------ | --------------------- | ---------------------------- |
@@ -155,7 +157,7 @@ Because the compacted manifest keeps no retained generation, another writer's pu
 
 - Upgrading to a CLI that keys by the space id, against a server that names ids, gives every existing hosted directory new private state: its next pull is a first pull. A directory whose files all equal the space's pulls cleanly; one holding an uncommitted edit, a file the space lacks, or a file a teammate changed since the last pull is refused (`DIRECTORY_NOT_EMPTY`) before anything changes, so nothing is lost, but the files must be moved aside, the directory pulled, and the edits copied back and committed. The old private directories and shared cache directories stay behind unused. A local deletion made before the upgrade is undone by that first pull. A protected path (`--read-only-paths`, `--writable-paths`) is not compared on a first pull: R restores it.
 - An empty hosted space still admits any directory on its first pull (the directory seeds it, as in S3 mode): a directory pulled from one account's "notes" and then pulled with another account's empty "notes" is published there by a commit. The space id stops the silent merge into a space that holds notes, not a deliberate seed.
-- `--endpoint` is shared with S3 mode. Under `--storage auto` (the default) an S3 command line that passes `--endpoint` while `SLIVINGDOC_TOKEN` is set in the environment refuses to start rather than guess which store is meant; `--storage hosted` makes that `--endpoint` the hosted endpoint on purpose, and `--storage s3` never reads the token. A CI job that sets `SLIVINGDOC_TOKEN` beside `AWS_ENDPOINT_URL` or `AWS_ENDPOINT_URL_S3`, or passes the hosted endpoint with the `--endpoint` flag, needs `--storage hosted` (`SLIVINGDOC_ENDPOINT` names the hosted API and is no refusal; AWS credentials, a region and the shared AWS files are ignored). Under `--storage hosted` the two AWS endpoint variables are not read at all. A stored login is only used at the endpoint it was issued for ([login.md](./login.md)).
+- `--endpoint` is shared with S3 mode. When `SLIVINGDOC_TOKEN` is set, `--storage auto` selects hosted mode, and that flag names the hosted API endpoint. `AWS_ENDPOINT_URL`, `AWS_ENDPOINT_URL_S3` and other S3 settings are ignored; use `--storage s3` to select S3 instead. A stored login is only used at the endpoint it was issued for ([login.md](./login.md)).
 - `ReplaceObject` relies on the API answering `If-Match` on an absent object with 412; a 404 there means the space is gone or the grant was revoked (`ErrAccessDenied`), never CAS contention.
 - A 507 must never be retried and never become `ErrTransport`: `do` excludes it explicitly, and the compaction branch matches `ErrQuotaExceeded` only.
 - A space that stops being reachable while `serve` runs (deleted, or the grant revoked or moved) answers 404 `no_space`, which is `ACCESS_DENIED` on every read: a pull, a first pull, or an entry recovery is refused with L and P untouched (`TestHostedUnreachableSpacePullKeepsNotes`, `TestHostedUnreachableSpaceFirstPullKeepsFiles`, `TestHostedUnreachableSpaceEntryRecoveryKeepsNotes`). The black-box scenarios pin the same contract through the public entries, with the notebook directory byte-identical: a `serve` process whose `notes_pull` and `notes_commit` are refused after `DeleteSpace` or a moved grant (`TestScenarioHostedSpaceGoneMidSession`), a one-shot `pull` whose space goes between the access check and the read of `current` (`TestScenarioHostedSpaceGoneDuringOneShotPull`), and a failed replacement followed by entry recovery, both `ACCESS_DENIED` and not resynchronized until the grant is back (`TestScenarioHostedSpaceGoneEntryRecovery`); `CheckAccess` alone could only catch it at startup. Do not loosen the `no_object` test: `readCurrent` reads `ErrNotFound` on `current` as the empty notebook.

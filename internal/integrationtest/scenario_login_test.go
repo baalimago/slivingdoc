@@ -321,11 +321,11 @@ func TestScenarioLoginPollOutcomes(t *testing.T) {
 }
 
 // TestScenarioStorageSelection proves --storage and its automatic choice
-// from the outside: SLIVINGDOC_TOKEN beats a stored login and is refused
-// only beside an S3 endpoint; a login beside a named bucket plus S3
-// settings is refused as ambiguous until --storage decides; s3 never
-// sends a token or a login to the hosted API; hosted without a login is
-// refused; and a login is only used for its own endpoint.
+// from the outside: SLIVINGDOC_TOKEN beats a stored login and S3 settings.
+// A login beside a named bucket plus S3 settings is refused as ambiguous
+// until --storage decides; s3 never sends a token or a login to the hosted
+// API; hosted without a login is refused; a login is only used for its own
+// endpoint.
 func TestScenarioStorageSelection(t *testing.T) {
 	t.Parallel()
 	g, site, env, root := loginEnv(t)
@@ -352,17 +352,6 @@ func TestScenarioStorageSelection(t *testing.T) {
 			name: "a login and AWS settings are ambiguous for an explicit bucket",
 			env:  with(append([]string{"SLIVINGDOC_BUCKET=" + hostedSpace}, s3...)...),
 			want: []string{"a stored login and S3 settings (AWS_ACCESS_KEY_ID", `for "team-notes"`, "--storage hosted or --storage s3"},
-		},
-		{
-			name: "the token and an S3 endpoint flag are ambiguous",
-			env:  with("SLIVINGDOC_TOKEN="+hostedToken, "SLIVINGDOC_BUCKET="+hostedSpace),
-			args: []string{"--endpoint", closedS3},
-			want: []string{"SLIVINGDOC_TOKEN and an S3 endpoint (--endpoint)", "--storage hosted to use hosted storage (the token goes only to the hosted endpoint)"},
-		},
-		{
-			name: "the token and an AWS endpoint variable are ambiguous",
-			env:  with(append([]string{"SLIVINGDOC_TOKEN=" + hostedToken, "SLIVINGDOC_ENDPOINT=" + g.URL(), "AWS_ENDPOINT_URL_S3=" + closedS3}, s3...)...),
-			want: []string{"SLIVINGDOC_TOKEN and an S3 endpoint (AWS_ENDPOINT_URL_S3)"},
 		},
 		{
 			name: "s3 ignores the token and the login",
@@ -416,11 +405,29 @@ func TestScenarioStorageSelection(t *testing.T) {
 		})
 	}
 
+	// With a token, auto chooses hosted even when AWS credentials and an S3
+	// endpoint are configured. --endpoint then names the hosted API, and the
+	// startup record makes clear that S3 was not selected.
+	tokenEnv := with(append([]string{
+		"SLIVINGDOC_TOKEN=" + hostedToken,
+		"SLIVINGDOC_BUCKET=" + hostedSpace,
+		"AWS_ENDPOINT_URL_S3=" + closedS3,
+	}, s3...)...)
+	code, stdout, stderr := runCLI(t, "real", tokenEnv, "pull", "--endpoint", g.URL(), notes)
+	if code != 0 || !strings.HasPrefix(stdout, "OK  generation ") {
+		t.Fatalf("pull with token and S3 settings = exit %d, stdout %q, stderr %s", code, stdout, stderr)
+	}
+	for _, want := range []string{"storage selected", "backend=hosted", "endpoint=" + g.URL(), "token=env", "s3=ignored"} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("pull stderr = %q, want it to contain %q", stderr, want)
+		}
+	}
+
 	// Choosing hosted resolves the ambiguity with the same AWS settings,
 	// and the stored default space needs no choice: S3 has no bucket to
 	// use.
 	runCLIOK(t, "real", with(append([]string{"SLIVINGDOC_BUCKET=" + hostedSpace}, s3...)...), nil, "pull", "--storage", "hosted", notes)
-	code, stdout, stderr := runCLI(t, "real", with(s3...), "pull", notes)
+	code, stdout, stderr = runCLI(t, "real", with(s3...), "pull", notes)
 	if code != 0 || !strings.HasPrefix(stdout, "OK  generation ") {
 		t.Fatalf("pull with the default space and AWS settings = exit %d, stdout %q, stderr %s", code, stdout, stderr)
 	}
