@@ -49,15 +49,11 @@ func (c *command) Setup(context.Context) error {
 	if c.limit < 1 {
 		return fmt.Errorf("log: --limit must be at least 1, got %d", c.limit)
 	}
-	path, err := app.OperationPath(c.flagset, c.opts.Cwd)
-	if err != nil {
-		return fmt.Errorf("log: %w", err)
-	}
-	c.path = path
-	runtime, err := app.Setup(c.engine, c.flags, c.opts)
+	path, runtime, err := app.OperationSetup("log", c.flagset, c.engine, c.flags, c.opts)
 	if err != nil {
 		return err
 	}
+	c.path = path
 	c.runtime = runtime
 	return nil
 }
@@ -83,6 +79,9 @@ History older than a checkpoint may not be held here; log says when older
 publications exist.
 
   --limit int    how many publications to show (default 20)
+
+A notebook directory that already pulled a hosted space remembers it, so
+log there needs no --space and no --storage hosted.
 
 Takes the same flags as pull.
 

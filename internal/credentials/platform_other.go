@@ -19,7 +19,7 @@ const hasOwners = false
 var errNoOwners = errors.New("the platform has no file owners")
 
 // fileOwner and pathOwner answer errNoOwners. File.private is false in
-// this build (checksOwners), so Load never calls them; a File built by
+// this build (ChecksOwners), so Load never calls them; a File built by
 // hand with private set is refused rather than trusted.
 func fileOwner(*os.File) (int, error) { return 0, errNoOwners }
 

@@ -160,6 +160,28 @@ func TestScenarioCLIStderrOnTerminal(t *testing.T) {
 // ansiEscapeRE matches one ANSI SGR escape sequence.
 var ansiEscapeRE = regexp.MustCompile("\x1b\\[[0-9;]*m")
 
+// TestScenarioStatusTrailerOnTerminal proves the colour side of the status
+// source trailer: on a real terminal it is dimmed like every other detail
+// line, and stripped of colour it reads as the words a pipe sees.
+func TestScenarioStatusTrailerOnTerminal(t *testing.T) {
+	t.Parallel()
+	_, _, env, root := rememberedEnv(t)
+	notes := filepath.Join(root, "remembered")
+	remember(t, env, notes, secondSpace, hostedPrefix)
+	runCLIOK(t, "real", env, nil, "pull", notes)
+
+	code, stdout := runCLITTY(t, "real", env, "status", notes)
+	if code != 0 {
+		t.Fatalf("status on a terminal = exit %d, stdout %q", code, stdout)
+	}
+	if !strings.Contains(stdout, "\x1b[2mspace: remembered space\x1b[0m\n") {
+		t.Fatalf("status on a terminal = %q, want the dimmed source trailer", stdout)
+	}
+	if plain := stripANSI(stdout); !strings.Contains(plain, notes+"  space "+secondSpace+"\nspace: remembered space\n") {
+		t.Fatalf("stripped status = %q, want the plain trailer", plain)
+	}
+}
+
 // stripANSI removes every ANSI SGR escape sequence from s.
 func stripANSI(s string) string {
 	return ansiEscapeRE.ReplaceAllString(s, "")

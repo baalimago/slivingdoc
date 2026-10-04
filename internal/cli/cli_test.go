@@ -224,6 +224,43 @@ func TestCommandsCoverTheDocumentedSurface(t *testing.T) {
 	}
 }
 
+// TestHelpTextNamesTheOrder proves the help an operator reads carries the
+// one thing the flag table cannot: which setting wins over which, and that a
+// notebook directory remembers the hosted space it pulled. The order lives
+// in the shared reference; each path-taking command names the consequence in
+// its own words, and serve carries the order alone because it never reads
+// the file.
+func TestHelpTextNamesTheOrder(t *testing.T) {
+	t.Parallel()
+	for _, want := range []string{
+		"then the space the\nnotebook directory remembers, then the default space of the stored login",
+		"workspaces.json",
+		"pull, commit, status and log read that file, and serve never does",
+	} {
+		if !strings.Contains(app.FlagReference, want) {
+			t.Fatalf("the shared flag reference does not name %q", want)
+		}
+	}
+	commands := Commands(&stubEngine{}, app.ProcessOptions{})
+	for _, row := range []struct {
+		key  string
+		want []string
+	}{
+		{key: "serve|s", want: []string{"slivingdoc serve", "workspaces.json"}},
+		{key: "pull|p", want: []string{"slivingdoc pull", "remembers it", "--storage hosted"}},
+		{key: "commit|c", want: []string{"slivingdoc commit", "remembers it", "--storage hosted"}},
+		{key: "status", want: []string{"slivingdoc status", "remembers it", "source of a space"}},
+		{key: "log", want: []string{"slivingdoc log", "remembers it", "--storage hosted"}},
+	} {
+		help := commands[row.key].Help()
+		for _, want := range row.want {
+			if !strings.Contains(help, want) {
+				t.Fatalf("%s -h does not name %q", row.key, want)
+			}
+		}
+	}
+}
+
 // TestRunPassesTheProcessEnvironment proves that options without an
 // environment — what main passes — reach the commands with the process
 // environment, so NO_COLOR set in the shell disables the report colour

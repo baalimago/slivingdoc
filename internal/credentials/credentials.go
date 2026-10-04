@@ -10,16 +10,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"io/fs"
 	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"time"
-
-	"github.com/gofrs/flock"
 
 	"github.com/baalimago/slivingdoc/internal/httpstore"
 	"github.com/baalimago/slivingdoc/internal/strictjson"
@@ -38,17 +34,22 @@ const FormatVersion = 2
 // read-modify-write of a login, a logout or a default space.
 const LockName = "credentials.lock"
 
-// maxFileSize bounds how much of the credentials file Load reads.
-const maxFileSize = 1 << 20
+// MaxFileSize bounds how much of the credentials file Load reads and
+// Save writes; it is the bound of every slivingdoc configuration file
+// (internal/settings).
+const MaxFileSize = 1 << 20
 
 // lockRetry is how often Lock tries again while another process holds it.
 const lockRetry = 20 * time.Millisecond
 
-// The file and directory modes: the key is readable by its owner only.
-const (
-	fileMode os.FileMode = 0o600
-	dirMode  os.FileMode = 0o700
-)
+// wording is this file's error vocabulary inside the hardened handling
+// every configuration file shares (privatefile.go).
+var wording = Wording{
+	Prefix:     "credentials",
+	NotPrivate: ErrExposed,
+	Oversized:  ErrMalformed,
+	Holder:     "login, logout or space command",
+}
 
 var (
 	// ErrNoConfigDir reports that neither DirEnv nor the platform's user
@@ -287,15 +288,26 @@ func (s Set) where() string {
 type File struct {
 	dir string
 	// private says whether Load checks POSIX owners and permission bits:
-	// on a platform built with them (hasOwners), unless goos is Windows.
+	// on a platform built with them, unless goos is Windows
+	// (ChecksOwners).
 	private bool
 	// uid is the effective user that must own the file and its directory.
 	uid int
 }
 
-// checksOwners is whether a File for goos checks owners and modes: the
-// build has them, and goos is not Windows, whose ACLs they do not describe.
-func checksOwners(goos string) bool { return hasOwners && goos != "windows" }
+// hardened is this file inside the hardened configuration-file handling
+// every slivingdoc configuration file shares (privatefile.go). The
+// schema and the wording stay here.
+func (f File) hardened() PrivateFile {
+	return PrivateFile{
+		Path:     f.Path(),
+		Dir:      f.dir,
+		UID:      f.uid,
+		Private:  f.private,
+		MaxBytes: MaxFileSize,
+		Wording:  wording,
+	}
+}
 
 // Locate resolves the credentials file from the environment: DirEnv when
 // set, else <user configuration directory>/slivingdoc. getenv and goos are
@@ -304,15 +316,15 @@ func checksOwners(goos string) bool { return hasOwners && goos != "windows" }
 func Locate(getenv func(string) string, goos string) (File, error) {
 	if dir := getenv(DirEnv); dir != "" {
 		if !filepath.IsAbs(dir) {
-			return File{}, fmt.Errorf("%w: %s must be an absolute path", ErrNoConfigDir, DirEnv)
+			return File{}, NoDirectory(ErrNoConfigDir, NoConfigDir{Reason: DirEnv + " must be an absolute path"})
 		}
-		return File{dir: filepath.Clean(dir), private: checksOwners(goos), uid: os.Geteuid()}, nil
+		return File{dir: filepath.Clean(dir), private: ChecksOwners(goos), uid: os.Geteuid()}, nil
 	}
 	base, err := userConfigDir(getenv, goos)
 	if err != nil {
-		return File{}, err
+		return File{}, NoDirectory(ErrNoConfigDir, err)
 	}
-	return File{dir: filepath.Join(base, "slivingdoc"), private: checksOwners(goos), uid: os.Geteuid()}, nil
+	return File{dir: filepath.Join(base, "slivingdoc"), private: ChecksOwners(goos), uid: os.Geteuid()}, nil
 }
 
 // Path is the credentials file path.
@@ -344,7 +356,7 @@ func userConfigDir(getenv func(string) string, goos string) (string, error) {
 		}
 	}
 	if dir == "" || !filepath.IsAbs(dir) {
-		return "", fmt.Errorf("%w: set %s or HOME", ErrNoConfigDir, DirEnv)
+		return "", NoConfigDir{Reason: "set " + DirEnv + " or HOME"}
 	}
 	return dir, nil
 }
@@ -361,40 +373,12 @@ func userConfigDir(getenv func(string) string, goos string) (string, error) {
 // the platform can, checked through the open descriptor, and read up to
 // 1 MiB.
 func (f File) Load() (Set, error) {
-	link, err := os.Lstat(f.Path())
-	if errors.Is(err, fs.ErrNotExist) {
-		return Set{location: f.Path()}, nil
-	}
+	data, found, err := f.hardened().Read()
 	if err != nil {
-		return Set{}, fmt.Errorf("credentials: read %s: %w", f.Path(), err)
-	}
-	if link.Mode()&fs.ModeSymlink != 0 {
-		return Set{}, fmt.Errorf("%w: %s is a symbolic link; replace it with the file itself", ErrExposed, f.Path())
-	}
-	file, err := os.OpenFile(f.Path(), openFlags, 0)
-	if errors.Is(err, fs.ErrNotExist) {
-		return Set{location: f.Path()}, nil
-	}
-	if err != nil {
-		return Set{}, fmt.Errorf("credentials: open %s: %w", f.Path(), err)
-	}
-	defer file.Close()
-	info, err := file.Stat()
-	if err != nil {
-		return Set{}, fmt.Errorf("credentials: stat %s: %w", f.Path(), err)
-	}
-	if err := f.CheckDir(); err != nil {
 		return Set{}, err
 	}
-	if err := f.checkFile(info, func() (int, error) { return fileOwner(file) }); err != nil {
-		return Set{}, err
-	}
-	data, err := io.ReadAll(io.LimitReader(file, maxFileSize+1))
-	if err != nil {
-		return Set{}, fmt.Errorf("credentials: read %s: %w", f.Path(), err)
-	}
-	if len(data) > maxFileSize {
-		return Set{}, fmt.Errorf("%w %s: larger than %d bytes", ErrMalformed, f.Path(), maxFileSize)
+	if !found {
+		return Set{location: f.Path()}, nil
 	}
 	set, err := decode(data)
 	var version *versionError
@@ -412,91 +396,20 @@ func (f File) Load() (Set, error) {
 // directory, is owned by another user, or group or other can write it; a
 // missing directory is private. Load checks it only when the file exists,
 // so a command that will write the file calls it first.
-func (f File) CheckDir() error {
-	info, err := os.Stat(f.dir)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("credentials: stat %s: %w", f.dir, err)
-	}
-	if !info.IsDir() {
-		return fmt.Errorf("%w: %s is not a directory", ErrExposed, f.dir)
-	}
-	if !f.private {
-		return nil
-	}
-	if err := f.checkOwner(func() (int, error) { return pathOwner(f.dir) }, f.dir); err != nil {
-		return err
-	}
-	if info.Mode().Perm()&0o022 != 0 {
-		return fmt.Errorf("%w: other users can write to %s; run 'chmod go-w %s'", ErrExposed, f.dir, f.dir)
-	}
-	return nil
-}
-
-// checkFile refuses an opened credentials file that is not a regular file,
-// another user's, or accessible to group or other.
-func (f File) checkFile(info fs.FileInfo, owner func() (int, error)) error {
-	if !info.Mode().IsRegular() {
-		return fmt.Errorf("%w: %s is not a regular file", ErrExposed, f.Path())
-	}
-	if !f.private {
-		return nil
-	}
-	if err := f.checkOwner(owner, f.Path()); err != nil {
-		return err
-	}
-	if info.Mode().Perm()&0o077 != 0 {
-		return fmt.Errorf("%w: other users can access %s; run 'chmod 600 %s'", ErrExposed, f.Path(), f.Path())
-	}
-	return nil
-}
-
-func (f File) checkOwner(ownerOf func() (int, error), path string) error {
-	owner, err := ownerOf()
-	if err != nil {
-		return fmt.Errorf("credentials: %s: %w", path, err)
-	}
-	if owner != f.uid {
-		return fmt.Errorf("%w: %s is owned by user %d, not by you (user %d)", ErrExposed, path, owner, f.uid)
-	}
-	return nil
-}
-
-// Lock is a held credentials lock.
-type Lock struct {
-	fl *flock.Flock
-}
+func (f File) CheckDir() error { return f.hardened().CheckDir() }
 
 // Lock takes the lock beside the file, creating the directory 0700 when
 // needed, so a login or logout reads, changes and writes the file without
 // another one interleaving. It waits while another process holds it,
 // until ctx ends.
 func (f File) Lock(ctx context.Context) (*Lock, error) {
-	if err := os.MkdirAll(f.dir, dirMode); err != nil {
+	if err := os.MkdirAll(f.dir, DirMode); err != nil {
 		return nil, fmt.Errorf("credentials: create %s: %w", f.dir, err)
 	}
 	if err := f.CheckDir(); err != nil {
 		return nil, err
 	}
-	fl := flock.New(filepath.Join(f.dir, LockName), flock.SetPermissions(fileMode))
-	locked, err := fl.TryLockContext(ctx, lockRetry)
-	if err != nil {
-		return nil, fmt.Errorf("credentials: lock %s: %w", fl.Path(), err)
-	}
-	if !locked {
-		return nil, fmt.Errorf("credentials: lock %s: another login, logout or space command holds it", fl.Path())
-	}
-	return &Lock{fl: fl}, nil
-}
-
-// Unlock releases the lock.
-func (l *Lock) Unlock() error {
-	if err := l.fl.Unlock(); err != nil {
-		return fmt.Errorf("credentials: unlock %s: %w", l.fl.Path(), err)
-	}
-	return nil
+	return f.hardened().Lock(ctx, filepath.Join(f.dir, LockName))
 }
 
 // Save writes s atomically: a temporary file in the same directory, mode
@@ -506,42 +419,7 @@ func (f File) Save(s Set) error {
 	if err != nil {
 		return fmt.Errorf("credentials: encode: %w", err)
 	}
-	if err := os.MkdirAll(f.dir, dirMode); err != nil {
-		return fmt.Errorf("credentials: create %s: %w", f.dir, err)
-	}
-	if err := f.CheckDir(); err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(f.dir, ".credentials-*.json")
-	if err != nil {
-		return fmt.Errorf("credentials: create temporary file: %w", err)
-	}
-	tmpName := tmp.Name()
-	if err := writeSynced(tmp, data); err != nil {
-		os.Remove(tmpName)
-		return fmt.Errorf("credentials: write temporary file: %w", err)
-	}
-	if err := os.Rename(tmpName, f.Path()); err != nil {
-		os.Remove(tmpName)
-		return fmt.Errorf("credentials: replace %s: %w", f.Path(), err)
-	}
-	return nil
-}
-
-func writeSynced(tmp *os.File, data []byte) error {
-	if err := tmp.Chmod(fileMode); err != nil {
-		tmp.Close()
-		return err
-	}
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		return err
-	}
-	return tmp.Close()
+	return f.hardened().Write(data)
 }
 
 // The JSON field names of the file (architecture/login.md).

@@ -64,7 +64,6 @@ One line per `internal/` package.
 | `app` | Process body: flag/env resolution (`config.go`), storage selection (`storage.go`), login, logout and space (`login.go`, `space.go`), minted space tokens (`minted.go`), startup order (`app.go`), `Service` path-to-notebook map (`service.go`), CLI report rendering (`command.go`), logging, `DEBUG_PERF` profiling |
 | `cli` | The command map (`serve|s`, `pull|p`, `commit|c`, `status`, `log`, `login`, `logout`, `space`, `version|v`), usage text, `Run` and its `router` (help, the one-line error, the home screen) |
 | `tui` | The terminal presentation every command renders through: palette, status marks, columns, the progress spinner, the table picker; plain off a terminal. See [tui.md](./tui.md) |
-| `credentials` | The stored account logins of `slivingdoc login` and their default spaces: the strict, versioned `credentials.json` under the user configuration directory, written 0600 by temp file and rename. See [login.md](./login.md) |
 | `sitelogin` | Client of the site's CLI login routes (start, key polling, spaces, space-token minting, revoke) that validates every answer and never follows a redirect. See [login.md](./login.md) |
 | `sitelogin/sitetest` | Test-only reference server of the site's CLI login routes with scripted approvals |
 | `git` | Go-facing engine seam (`Engine`, `Repository`) and all Git policy: trees, snapshots, merge structuring, packs, history validation, path/content rules, read-only/writable `PathPolicy`, diffstat. See [git-engine.md](./git-engine.md) |
@@ -79,6 +78,8 @@ One line per `internal/` package.
 | `httpstore` | The second production `ObjectStore`, selected by `SLIVINGDOC_TOKEN` or a stored login: the hosted storage API over HTTPS with a bearer token (fixed, or from a `TokenSource` of minted tokens) and one space, status-to-semantic error mapping, `CheckAccess` instead of the probe. See [hosted-mode.md](./hosted-mode.md) |
 | `httpstore/gatewaytest` | Test-only reference server of the hosted API over `storage/fake` |
 | `mcp` | stdio MCP server: two strict tool schemas, strict decoding, error/success envelopes, redaction, `mcpReqID` logging |
+| `credentials` | The stored account logins of `slivingdoc login` and their default spaces, the strict versioned `credentials.json`. See [login.md](./login.md) |
+| `settings` | The scoped settings registry: the strict versioned `workspaces.json`, one record per directory, sharing the credentials file's hardened handling. `pull`, `commit`, `status` and `log` read the remembered hosted notebook of their directory from it, and a successful `pull` or `commit` writes it. See [config.md](./config.md) |
 | `strictjson` | Strict JSON value tree shared by the manifest and `state.json` (rejects unknown, duplicate, missing, null) |
 | `pathutil` | `ExpandHome` for `~/` request paths |
 | `scratch` | Test-only: `Use` moves a test binary's temporary directory onto a memory filesystem so fsync-heavy packages fit the 30 s gate. See [testing.md](./testing.md) |
@@ -106,7 +107,7 @@ Rules the import graph follows (verified by `grep` over non-test imports):
 - `git2` imports only `git`. In production only `main.go` imports it; tests in `integrationtest`, `cmd/pull`, `cmd/commit`, `app`, `notebook`, and `workspace` import it for native runs. Every other package receives a `git.Engine`.
 - `s3store` imports only `storage`, and only `app` (`realStoreFactory`, the default when `ProcessOptions.StoreFactory` is nil) and `integrationtest` import it.
 - `httpstore` imports only `storage` (and the standard library); in production `app` (`realStoreFactory`, `validateHosted`, `PrepareLogin`), `credentials` and `sitelogin` (its validators and `Sanitize`) import it.
-- `credentials` imports `httpstore` and `strictjson`; `sitelogin` imports `credentials` and `httpstore`; only `app` imports either in production, and `sitelogin/sitetest` only tests (`sitelogin`, `app`, `integrationtest`). `httpstore/gatewaytest` imports `storage` and `storage/fake` and is imported only by tests (`httpstore`, `app` and `notebook` in their `hosted_test.go`, `integrationtest`).
+- `credentials` imports `httpstore` and `strictjson`; `settings` imports `credentials` (the shared hardened handling and the configuration directory rule) and `strictjson`; `sitelogin` imports `credentials` and `httpstore`; only `app` imports any of them in production, and `sitelogin/sitetest` only tests (`sitelogin`, `app`, `integrationtest`). `httpstore/gatewaytest` imports `storage` and `storage/fake` and is imported only by tests (`httpstore`, `app` and `notebook` in their `hosted_test.go`, `integrationtest`).
 - `tui` imports no internal package (only `go_away_boilerplate/pkg/table`); in production `app` and `cli` import it.
 - `notebook` imports `workspace`, `git`, `storage`; it never imports `mcp` or `app`.
 - `workspace` imports `git` and `strictjson`; it never reads remote state.

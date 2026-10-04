@@ -9,7 +9,6 @@ import (
 	"context"
 	"errors"
 	"flag"
-	"fmt"
 	"io"
 
 	"github.com/baalimago/slivingdoc/internal/app"
@@ -50,15 +49,11 @@ func (c *command) Help() string { return helpText }
 // pinned-version engine check, and the S3 compatibility probe. The path
 // refusal comes first, so a bad command line touches no dependency.
 func (c *command) Setup(context.Context) error {
-	path, err := app.OperationPath(c.flagset, c.opts.Cwd)
-	if err != nil {
-		return fmt.Errorf("pull: %w", err)
-	}
-	c.path = path
-	runtime, err := app.Setup(c.engine, c.flags, c.opts)
+	path, runtime, err := app.OperationSetup("pull", c.flagset, c.engine, c.flags, c.opts)
 	if err != nil {
 		return err
 	}
+	c.path = path
 	c.runtime = runtime
 	return nil
 }
@@ -106,5 +101,8 @@ terminal, and any non-empty NO_COLOR disables it.
 
 Flags take precedence over environment variables, which override defaults.
 An explicitly empty flag value does not fall back to an environment value.
+A notebook directory that already pulled a hosted space remembers it, so
+the next command there needs no --space and no --storage hosted; a flag or
+SLIVINGDOC_SPACE still wins for one run and changes nothing recorded.
 
 ` + app.FlagReference

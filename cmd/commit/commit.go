@@ -65,14 +65,14 @@ func (c *command) Setup(context.Context) error {
 	if err != nil {
 		return fmt.Errorf("commit: %w", err)
 	}
-	c.path = path
 	if !c.messageSet {
 		return errors.New("commit: a message is required: -m <message>")
 	}
-	runtime, err := app.Setup(c.engine, c.flags, c.opts)
+	runtime, err := app.Setup(c.engine, c.flags, c.opts.WithAssociation(path))
 	if err != nil {
 		return err
 	}
+	c.path = path
 	c.runtime = runtime
 	return nil
 }
@@ -125,5 +125,8 @@ terminal, and any non-empty NO_COLOR disables it.
 
 Flags take precedence over environment variables, which override defaults.
 An explicitly empty flag value does not fall back to an environment value.
+A notebook directory that already pulled a hosted space remembers it, so
+committing there needs no --space and no --storage hosted; a flag or
+SLIVINGDOC_SPACE still wins for one run and changes nothing recorded.
 
 ` + app.FlagReference

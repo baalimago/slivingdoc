@@ -142,7 +142,7 @@ makes the choice explicit ([Choosing the storage](#choosing-the-storage)).
 | Function                          | Flag                     | Environment variable              | Default                      |
 | --------------------------------- | ------------------------ | --------------------------------- | ---------------------------- |
 | Storage backend                   | `--storage`              | `SLIVINGDOC_STORAGE`              | `auto`                       |
-| Bucket or hosted space            | `--bucket` or `--space`  | `SLIVINGDOC_BUCKET` or `SLIVINGDOC_SPACE` | S3: none (required); hosted: the token's (`SLIVINGDOC_TOKEN`), else the login's default space |
+| Bucket or hosted space            | `--bucket` or `--space`  | `SLIVINGDOC_BUCKET` or `SLIVINGDOC_SPACE` | S3: none (required); hosted: the token's (`SLIVINGDOC_TOKEN`), else the space the directory remembers, else the login's default space |
 | Object prefix                     | `--prefix`               | `SLIVINGDOC_PREFIX`               | `slivingdoc`                 |
 | S3 region                         | `--region`               | `AWS_REGION`                      | `us-east-1`                  |
 | S3 endpoint                       | `--endpoint`             | `AWS_ENDPOINT_URL_S3`             | empty (AWS resolution)       |
@@ -491,7 +491,8 @@ non-empty `SLIVINGDOC_TOKEN`, or a stored login
   (`GET /v1/token`) and uses it. A `--space` that names a different
   space refuses startup, naming both; one that names the same space
   changes nothing. With a stored login, the space is `--space`, else
-  `SLIVINGDOC_SPACE`, else the default space. When given, it is 1 to 63 lowercase letters, digits,
+  `SLIVINGDOC_SPACE`, else the space the notebook directory remembers,
+  else the default space. When given, it is 1 to 63 lowercase letters, digits,
   and inner hyphens. `--prefix` still separates notebooks inside the
   space.
 - The endpoint is `--endpoint`, else `SLIVINGDOC_ENDPOINT`, else
@@ -670,6 +671,40 @@ backend=hosted endpoint=... space=... token=login` (or `env`, or
 with the variable's name, and none at all as `aws-default (SDK: env or
 profile)`).
 
+### A directory remembers its space
+
+After a successful `pull` or `commit` into a directory, that directory
+remembers the hosted notebook it reached. The record is one line per
+directory in `workspaces.json`, beside `credentials.json` in the
+configuration directory (`SLIVINGDOC_CONFIG_DIR`, else
+`<user-config-dir>/slivingdoc`), and it holds the space and the prefix
+only: no token and no key ([config.md](./config.md)).
+
+After that first pull, `slivingdoc pull`, `slivingdoc commit`,
+`slivingdoc status` and `slivingdoc log` in the same directory reach the
+same notebook with no flag and no `SLIVINGDOC_TOKEN`:
+
+```text
+slivingdoc pull --space team ~/work/team   # the first pull, with the space named
+cd ~/work/team
+slivingdoc pull                            # the same space, no flag
+slivingdoc status                          # ... space: remembered space
+```
+
+To see which space a directory uses and where it came from, run
+`slivingdoc status` there: the first line names the store, and a space the
+directory remembered is followed by `space: remembered space`.
+
+To change it, pass `--space` (or set `SLIVINGDOC_SPACE`) for that run, or
+change the login's default with `slivingdoc space <name>`. A flag, a
+variable or a token always wins for its own run and changes nothing that
+is recorded; `--storage s3` and `serve` ignore the file completely.
+Deleting the line for a directory from `workspaces.json`, or the file
+itself, makes that directory use the login's default space again. A
+remembered space the credentials no longer reach refuses startup and
+names the space and `slivingdoc login`, so notes are never pulled into
+another notebook silently ([login.md](./login.md)).
+
 ### Choosing the storage
 
 `--storage` (`SLIVINGDOC_STORAGE`) is `auto` by default. In `auto`, these
@@ -695,8 +730,9 @@ stored login: any of
    read-only token in one MCP entry and a login in another can sit side by
    side.
 2. A login is stored and no space is given: hosted storage with the
-   login's default space, whatever S3 settings exist (S3 would have no
-   bucket); with no default space, startup is refused, naming
+   space the notebook directory remembers, else the login's default
+   space, whatever S3 settings exist (S3 would have no
+   bucket); with neither, startup is refused, naming
    `slivingdoc space <name>`.
 3. A login is stored and the space is given (`--space`, `--bucket`,
    `SLIVINGDOC_SPACE` or `SLIVINGDOC_BUCKET`): with S3 settings, startup

@@ -119,9 +119,15 @@ R  <bucket>/<prefix>/      current                manifest v1, strict; the only
                            packs/increments/<gen>-<id>.pack    one publication
 ```
 
+Beside them, `workspaces.json` in the configuration directory holds what
+hosted notebook each notebook directory remembers: no credential, never
+inside L or P. `internal/settings` owns that file.
+
 Supporting packages sit beside the main path. `internal/strictjson`
-supplies the strict JSON value tree shared by the manifest and
-`state.json`. `internal/storage/fake` and `internal/storage/contract`
+supplies the strict JSON value tree shared by the manifest, the
+private-state record and the configuration files. `internal/settings`
+is the scoped settings registry, over the hardened configuration file
+of `internal/credentials`. `internal/storage/fake` and `internal/storage/contract`
 provide the deterministic object store and the one contract suite run
 against the fake, the real S3 backend, and the hosted adapter.
 `internal/tests3` starts the pinned S3-compatible backend container through
@@ -190,6 +196,11 @@ slivingdoc/
     |                        join, multipart upload, semantic error mapping
     |-- credentials/         the stored logins: strict versioned
     |                        credentials.json (0600, temp file + rename)
+    |-- settings/            the scoped settings registry: strict versioned
+    |                        workspaces.json, one record per directory, over
+    |                        the hardened configuration file of
+    |                        internal/credentials; the remembered hosted
+    |                        notebook of a notebook directory
     |-- sitelogin/           client of the site's CLI login routes (start,
     |   |                    key polling, spaces, space-token minting, revoke)
     |   `-- sitetest/        test-only reference site with scripted approvals
@@ -198,8 +209,8 @@ slivingdoc/
     |   |                    bearer token, space, status-to-semantic error
     |   |                    mapping, access check instead of the probe
     |   `-- gatewaytest/     test-only reference server of the hosted API
-    |-- strictjson/          neutral strict JSON value tree (manifest and
-    |                        state.json)
+    |-- strictjson/          neutral strict JSON value tree (manifest,
+    |                        state.json and the configuration files)
     |-- scratch/             test-only: TMPDIR on a memory filesystem
     |-- tests3/              S3 backend container over the Docker Engine
     |                        API (currently SeaweedFS): one per test

@@ -1,6 +1,6 @@
 # Phase 1: the scoped settings store
 
-**Status:** Not Started
+**Status:** Complete
 
 README: [README.md](./README.md)
 
@@ -140,8 +140,93 @@ slivingdoc is updated, and the file is never rewritten.
 
 ## Implementation notes
 
-Not started.
+### 2026-10-03: phase 1, worker session (agent, clai)
+
+**Deviation 1: the shared handling is one exported type, not exported
+helpers.** The phase planned to export the credentials package's owner,
+mode, lock and directory helpers. Copying them into
+`internal/settings` would have produced two nearly identical sets of
+filesystem code, so the helpers moved into `credentials.PrivateFile`
+(`privatefile.go`), which every configuration file goes through. The
+schema and the wording stay in each package: a `Wording` value names the
+message prefix, the not-private error, the over-bound error and the
+commands that hold the lock. `File.hardened` builds the credentials value,
+and `File.hardened` in `internal/settings` builds its own.
+
+**Deviation 2: `ConfigDir` and `NoConfigDir` replace two unexported
+functions.** `credentials.ConfigDir(getenv, goos)` answers the
+configuration directory and the effective user, and a failure is a
+`credentials.NoConfigDir` naming the cause. `credentials.NoDirectory`
+words such a failure in the caller's own sentinel, so
+`credentials.ErrNoConfigDir` and `settings.ErrNoConfigDir` keep the
+message each package's callers already read. `userConfigDir` and
+`checksOwners` stayed unexported behind them; `checksOwners` became
+`ChecksOwners` because a package outside the one locating a file needs it.
+`maxFileSize` became `credentials.MaxFileSize`, because the settings
+bound is that bound.
+
+**Deviation 3: `File` carries the bound, and `Config` reads through
+`Locate`.** The README's interface shows `Config.MaxFileSize` and a
+`Config.Load func() (Set, error)`. The bound has to reach the read, so it
+is a field of `File` too (`File.withBound`), and `Config.Read(getenv,
+goos)` takes the same environment and operating system as
+`credentials.Locate`, because a caller that reads the store has to
+locate it the same way. `Set.Entries` is exported so a test, and Phase
+3, can inspect what a set holds without a file.
+
+**Deviation 4: the lock refusal never names a holder.** `flock`
+returns the context error when the context ends first, so the "another
+command holds it" wording is only reachable when the lock path itself
+fails; `TestSaveRefusesWhileLocked` therefore proves the deadline, and
+the holder wording is exercised by `credentials`' own lock rows.
+
+**Deviation 5: the device row is a FIFO.** A device node needs a
+privilege no test has, so `TestLoadRefusesWhatIsNotTheFile` covers a
+symbolic link (to a stored file and dangling), a directory and a FIFO,
+which all reach the same "not a regular file" refusal through build-tagged
+`mkfifo` helpers exactly as `internal/credentials` does.
+
+**Commands run, and their results.**
+
+```bash
+go test ./internal/credentials/... ./internal/strictjson/...   # before: ok, ok
+make test    # ok: every package, coverage 88.8% (floor 70%)
+make lint    # gofumpt, go vet, staticcheck, go fix: clean
+make npm-test  # ok
+go run github.com/mibk/dupl@v1.0.0 -t 80 .   # 2 pre-existing clone groups, none in this phase
+go test -count=1 -coverpkg=./internal/settings ./internal/settings/   # coverage 97.7%
+go test -race -count=3 -timeout=30s ./internal/settings/   # ok
+```
+
+`make test`, `make lint` and `make npm-test` were each run twice: once
+after the store was written, and once after the tests were finished. Both
+runs of each passed. No test was skipped except on Windows, where POSIX
+owners, permission bits and symbolic links do not exist.
+
+**Surprise worth a note.** `go test -coverprofile` with a multi-package
+`-coverpkg` printed `total 0.0%` in `go tool cover -func` while the run
+itself reported real percentages; one package at a time in `-coverpkg`
+is the reliable form.
 
 ## Review findings
 
-None.
+### Review 2 — 2026-10-04 — status `Complete` (one nit)
+
+**R2-05 — nit — `internal/credentials/platform_other.go:22`.** The comment on
+`fileOwner` and `pathOwner` names `checksOwners`, but the exported function is
+`ChecksOwners` (`internal/credentials/privatefile.go`). The build is unchanged;
+the comment sends the next reader to a name that does not exist.
+
+- [x] Correct the name in the comment. Closed by Phase 6.
+
+### Verified good (review 2)
+
+The review read `internal/credentials/privatefile.go` and `internal/settings/`
+in full and traced the file handling through every branch: `Load` refuses a
+symbolic link, anything but a regular file, an exposed file or directory and a
+file over the bound; `Save` locks beside the file, writes a 0600 temporary file
+and renames it; the codec refuses an unknown, duplicate, missing and null field
+(including a token or a key) and refuses another version before any decode,
+without rewriting the file. The concurrency test proves two processes keep both
+entries. `Locate` answers without touching the credentials file, and the bound
+travels on `File` so `Config.MaxFileSize` reaches the read.

@@ -1,6 +1,6 @@
 # Phase 3: recording the association
 
-**Status:** Not Started
+**Status:** Complete
 
 README: [README.md](./README.md)
 
@@ -93,7 +93,7 @@ asserted at the boundary rather than reimplemented here.
 | The recorded file holds only the version, the paths, the spaces and the prefixes | `TestRecordedFileHoldsNoCredential` |
 | A recorder failure warns and changes no result | `TestRecordFailureChangesNoResult` |
 | An existing entry is replaced only by a pull that succeeded against its space | `TestSecondDirectoryReplacesOnlyItsOwnEntry` |
-| The recorded file is byte-identical when nothing changed | `TestUnchangedEntryIsNotRewritten` |
+| The recorded file is byte-identical when nothing changed | `TestSecondDirectoryReplacesOnlyItsOwnEntry`, `TestScenarioPullRecordsTheHostedNotebook` |
 
 ## Error coverage
 
@@ -105,8 +105,121 @@ asserted at the boundary rather than reimplemented here.
 
 ## Implementation notes
 
-Not started.
+### 2026-10-03: phase 3, worker session (agent, clai)
+
+**Deviation 1: the recorder is one `ProcessOptions.Record` field, and the
+conditions are a switch on the resolved source.** The phase named the field
+`ProcessOptions.Record` implicitly and a condition table; the code keeps both
+in `Runtime.recordsSpace` and `Runtime.rememberSpace`
+(`internal/app/association.go`). One row of the table needs an explanation the
+code had to settle: an explicit choice (flag or variable) beside an existing
+record records nothing, because the record says which notebook the directory
+already holds and a flag is a choice for this run alone (F15, F16). The table
+in the phase only said "the source is a flag or the environment", which would
+have replaced a record. That rule is `recordsSpace`'s second case, and
+`TestScenarioExplicitChoiceBeatsTheRememberedSpace` proves it.
+
+**Deviation 2: the token's own space is not recorded, and that is D11 read the
+other way.** `bucketFromToken` is `kindOther`, so the first table row would
+have recorded it. A token names its own space for this run and ignores the
+record, so recording it would pin a directory to a token the next command does
+not carry. `recordsSpace` therefore records only the remembered source and an
+explicit choice over an empty record; `TestTokenSpaceIsNotRecorded` proves it.
+
+**Deviation 3: an unchanged entry is not rewritten.** The phase asked for
+`Load`, `Put`, `Save`. `storeEntry` compares the loaded entry with the new one
+first and returns without a `Save` when they are equal, so a repeated pull or
+commit leaves the file byte for byte (`TestSecondDirectoryReplacesOnlyItsOwnEntry`,
+`TestScenarioPullRecordsTheHostedNotebook`). The read-modify-write still
+happens under `workspaces.lock`, so a second writer's entry is never lost.
+
+**Deviation 4: a write over the bound and an unreadable file are two branches
+of one case.** F24 and F3 both fail inside `storeEntry`, so both rows of the
+error coverage table reach the recorder through a process whose reader is nil:
+a file this build cannot read refuses the startup that would read it, so
+`rigs.runtimeOverAnUnreadableFile` builds that process. Both prove one warning
+and an unchanged result.
+
+**Deviation 5: the named acceptance tests became a unit file and a scenario
+file.** `internal/app/remember_test.go` holds the unit rows over the injected
+recorder and a reference gateway, and
+`internal/integrationtest/scenario_recording_test.go` holds the black-box rows
+the recorder must also satisfy at the command line: one `pull --space`
+followed by four bare commands, the three failing operations, and two
+directories recorded in turn. The tables above now name both files where a row
+has one proof on each side.
+
+**Test names, as declared.** `TestRecordsSpaceAfterPull`,
+`TestRecordsSpaceAfterCommit`, `TestRememberedOnlyOnSuccess`,
+`TestS3ModeNeverRecords`, `TestDefaultSpaceIsNotRecorded`,
+`TestTokenSpaceIsNotRecorded`, `TestExplicitChoiceRecordsAnEmptyDirectory`,
+`TestServeNeverRecords`, `TestRecordedKeyIsTheResolvedPath`,
+`TestRecordedFileHoldsNoCredential`, `TestRecordFailureChangesNoResult`,
+`TestSecondDirectoryReplacesOnlyItsOwnEntry` (which also records the same
+entry twice to prove that an unchanged entry is not rewritten),
+`TestRecordRefusedOverBoundChangesNoResult`,
+`TestUnreadableSettingsFileWarnsAndContinues`;
+`TestScenarioPullRecordsTheHostedNotebook`,
+`TestScenarioFailedOperationRecordsNothing`,
+`TestScenarioEachDirectoryKeepsItsOwnEntry`.
+
+**Commands run, and their results.**
+
+```bash
+go build ./...                                  # ok
+go test -count=1 ./internal/app/... ./internal/settings/... ./internal/credentials/... ./cmd/...
+                                                # ok, before and after the change
+go test -count=1 ./internal/integrationtest/... # ok
+go run mvdan.cc/gofumpt@v0.11.0 -w -l .         # one file formatted
+go vet ./... && go run honnef.co/go/tools/cmd/staticcheck@v0.7.0 ./...
+go fix -diff ./...                              # prints nothing
+make qa                                         # ok: lint, test, npm-test
+go run github.com/mibk/dupl@v1.0.0 -t 80 .    # 2 pre-existing clone groups, none in this phase
+```
+
+`make qa` reported coverage 88.9 % against the floor of 70 %. The two clone
+groups are the pre-existing ones (a conflict scenario against a pull unit
+test, and two merge rows), both outside the code of this phase.
 
 ## Review findings
 
-None.
+### Review 2 — 2026-10-04 — status `Complete` (one major doc contradiction, one nit)
+
+**R2-01 — major — `architecture/config.md:110`.** The doc says the recorder's
+sources include "the token's own space". `runtime.recordsSpace`
+(`internal/app/association.go`) never records it: `bucketFromToken.kind()` is
+`kindOther`, so the switch answers `bucketFrom == bucketFromRemembered`, which is
+false for a token. Deviation 2 and `TestTokenSpaceIsNotRecorded` say the same
+thing, and the code is right. A later agent reading the doc could "fix" the code
+to match it and pin a directory to a credential the next command does not carry.
+
+- [x] Remove the token's own space from the recorder's sources in
+      `architecture/config.md`. Closed by Phase 6.
+
+**R2-04 — nit — `internal/app/remember_test.go:352`.**
+`TestExplicitChoiceLeavesARecordAlone` is named for leaving an existing record
+alone, and its comment claims it proves that beside a record a flag changes
+nothing, but its body only records into a directory that remembers nothing. The
+beside-a-record case is proved by `TestRecordsSpaceAfterCommit` and the
+black-box `TestScenarioExplicitChoiceBeatsTheRememberedSpace`, so deviation 1
+cites the wrong test for the rule it states.
+
+- [x] Rename the test and its comment to what it proves, and point deviation 1
+      at the test that proves the beside-a-record rule. Closed by Phase 6.
+
+### Verified good (review 2)
+
+`recordsSpace` records the record's own source and a flag or variable beside a
+directory that remembers nothing; it excludes `bucketFromToken` and
+`bucketFromLogin`, and `TestTokenSpaceIsNotRecorded` and
+`TestDefaultSpaceIsNotRecorded` pin both. `rememberSpace` runs only after the
+operation returned no error and only for a path-taking process, so `serve`
+records nothing (`TestServeNeverRecords`) and a refused or conflicted operation
+records nothing (`TestRememberedOnlyOnSuccess`, `TestScenarioFailedOperationRecordsNothing`).
+`storeEntry` locks, compares and skips an unchanged entry, so a repeated
+operation rewrites nothing and a concurrent writer's entry survives
+(`TestSecondDirectoryReplacesOnlyItsOwnEntry`,
+`TestScenarioEachDirectoryKeepsItsOwnEntry`). A write failure warns at the
+`notebook` level and changes neither the result nor the exit code
+(`TestRecordFailureChangesNoResult`, `TestRecordRefusedOverBoundChangesNoResult`,
+`TestUnreadableSettingsFileWarnsAndContinues`).

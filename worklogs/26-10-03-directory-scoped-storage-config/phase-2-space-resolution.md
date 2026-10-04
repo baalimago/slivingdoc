@@ -1,6 +1,6 @@
 # Phase 2: space resolution and precedence
 
-**Status:** Not Started
+**Status:** Complete
 
 README: [README.md](./README.md)
 
@@ -16,18 +16,19 @@ way it can fail.
 
 The read enters `internal/app`'s configuration, where the flags and the
 environment are already resolved, and the process options carry the pieces the
-resolution needs. `ProcessOptions` gains two fields, injected like the ones
-beside them:
+resolution needs. `ProcessOptions` gains the key and the reader, injected like
+the ones beside them:
 
 ```text
-ProcessOptions.Lookup func(path string) (settings.Target, bool)
-ProcessOptions.Load   func() (settings.Set, error)
+ProcessOptions.NotebookPath string
+ProcessOptions.Load         func() (settings.Set, error)
 ```
 
-When `Lookup` is nil the process consults no association at all, which is how
-`serve` and every in-process test keep today's behavior. The production `Load`
-reads the file once per process through `settings.Locate`; the lookup then runs
-in memory.
+`ProcessOptions.WithAssociation(path)` sets both, so `serve` and every in-process
+test that sets neither consults no association at all and keeps today's behavior.
+The production `Load` reads the file once per process through `settings.Locate`,
+and `settingsAssociation.read` runs the lookup in memory once the workspace root
+is known.
 
 ### The key
 
@@ -86,8 +87,8 @@ enum. The startup log record that names the source keeps its existing fields.
 | --- | --- | --- |
 | The settings file holds no credential | the record has no credential field, so nothing is written and nothing is read | `TestDecodeRejectsCredentialField`, the scenario's file inspection |
 | The association never overrides an explicit choice | the lookup runs only after flags and the environment resolved nothing | `TestResolveSpacePrecedenceTable` |
-| A remembered space selects hosted mode | the lookup precedes the `ErrNoLogin` + `auto` S3 fallback and the remembered source is host-only for `s3Signals` | `TestRememberedSpaceSelectsHostedBesideAWSSettings`, `TestRememberedSpaceWithoutCredentialRefuses` |
-| `serve` never consults the association | `Lookup` is nil unless a path-taking command set it | `TestServeNeverLooksUpTheAssociation` |
+| A remembered space selects hosted mode | the lookup precedes the `ErrNoLogin` + `auto` S3 fallback and the remembered source is host-only for `s3Signals` | `TestScenarioRememberedSpaceBeatsS3Settings`, `TestScenarioRememberedSpaceRefusals` |
+| `serve` never consults the association | the reader is nil unless a path-taking command set it | `TestServeNeverLooksUpTheAssociation`, `TestScenarioServeIgnoresTheRememberedSpace` |
 | A remembered space the credentials cannot reach is a refusal | every unreachable case returns before any store is built | the refusal rows of the scenario table |
 
 ## Integration contract
@@ -103,53 +104,155 @@ enum. The startup log record that names the source keeps its existing fields.
 
 ## Acceptance criteria
 
-| Criterion | Test |
-| --- | --- |
-| A remembered space beats the stored default space and loses to a flag and to `SLIVINGDOC_SPACE` | `TestResolveSpacePrecedenceTable` |
-| The resolved source is `remembered space` for the remembered case and today's wording for the others | `TestSpaceSourceWording` |
-| A remembered space reaches the hosted store beside AWS signals | `TestRememberedSpaceSelectsHostedBesideAWSSettings` |
-| A remembered space with no credential refuses and names the space and `slivingdoc login` | `TestRememberedSpaceWithoutCredentialRefuses` |
-| A remembered space with a login for another endpoint refuses naming both | `TestRememberedSpaceLoginForOtherEndpointRefuses` |
-| A remembered space with several logins refuses asking for `--endpoint` | `TestRememberedSpaceAmbiguousLoginRefuses` |
-| An expired login beside a remembered space refuses telling the user to log in | `TestRememberedSpaceExpiredLoginRefuses` |
-| A remembered space fails `ValidateSpace` and refuses naming it | `TestRememberedSpaceInvalidRefuses` |
-| `SLIVINGDOC_TOKEN` ignores the entry and the entry is byte-identical after | `TestTokenIgnoresRememberedSpace` |
-| `--storage s3` ignores the entry and the entry is byte-identical after | `TestS3ModeIgnoresRememberedSpace` |
-| `--storage hosted` with no space takes the remembered one | `TestHostedModeTakesRememberedSpace` |
-| A remembered prefix differs from `--prefix` and refuses naming both | `TestRememberedPrefixMismatchRefuses` |
-| A remembered prefix supplies the prefix when none is named | `TestRememberedPrefixAppliesWhenNoneNamed` |
-| `serve` performs no lookup | `TestServeNeverLooksUpTheAssociation` |
-| A malformed, exposed, oversized or other-version file refuses startup naming the file | `TestSetupRefusesUnusableSettingsFile` |
-| `Runtime.Space` and `Runtime.SpaceSource` report the resolved pair | `TestRuntimeSpaceAccessors` |
+| Criterion | Unit | Scenario |
+| --- | --- | --- |
+| A remembered space beats the stored default space and loses to a flag and to `SLIVINGDOC_SPACE` | `TestResolveSpacePrecedenceTable` | `TestScenarioRememberedSpaceReachesTheHostedStore`, `TestScenarioExplicitChoiceBeatsTheRememberedSpace` |
+| The resolved source is `remembered space` for the remembered case and today's wording for the others | `TestSpaceSourceWording` | `TestScenarioRememberedSpaceReachesTheHostedStore` |
+| A remembered space reaches the hosted store beside AWS signals | `TestResolveSpacePrecedenceTable` | `TestScenarioRememberedSpaceBeatsS3Settings` |
+| A remembered space with no credential refuses and names the space and `slivingdoc login` | `TestRememberedSpaceRefusals` | `TestScenarioRememberedSpaceRefusals` |
+| A remembered space with a login for another endpoint refuses naming both | `TestRememberedSpaceRefusals` | `TestScenarioRememberedSpaceRefusals` |
+| A remembered space with several logins refuses asking for `--endpoint` | `TestRememberedSpaceRefusals` | `TestScenarioSeveralStoredLoginsRefuseTheRememberedSpace` |
+| An expired login beside a remembered space refuses telling the user to log in | `TestRememberedSpaceRefusals` | `TestScenarioRememberedSpaceRefusals` |
+| A remembered space fails `ValidateSpace` and refuses naming it | `TestRememberedSpaceRefusals` | `TestScenarioRememberedSpaceRefusals` |
+| A remembered space the account does not hold refuses naming it | the mint refusal of `mintRefusal`, which is today's | `TestScenarioRememberedSpaceRefusals` |
+| `SLIVINGDOC_TOKEN` ignores the entry and the entry is byte-identical after | `TestResolveSpacePrecedenceTable` | `TestScenarioTokenAndS3ModeIgnoreTheRememberedSpace` |
+| `--storage s3` ignores the entry and the entry is byte-identical after | — | `TestScenarioTokenAndS3ModeIgnoreTheRememberedSpace` |
+| `--storage hosted` with no space takes the remembered one | `TestResolveSpacePrecedenceTable` | `TestScenarioRememberedSpaceBeatsS3Settings` |
+| A remembered prefix differs from a flag or variable and refuses naming both | `TestRememberedSpaceRefusals` | `TestScenarioRememberedSpaceRefusals` |
+| A remembered prefix supplies the prefix when none is named | `TestResolveSpacePrecedenceTable` | `TestScenarioRememberedSpaceReachesTheHostedStore` |
+| `serve` performs no lookup and writes nothing | `TestServeNeverLooksUpTheAssociation` | `TestScenarioServeIgnoresTheRememberedSpace` |
+| A malformed, exposed, oversized or other-version file refuses startup naming the file | `TestUnusableSettingsFileRefusesStartup` | `TestScenarioUnusableSettingsFileRefusesStartup`, `TestScenarioSettingsFileMustBeTheUsers`, `TestScenarioSettingsDirectoryMustBePrivate` |
+| `Runtime.Space` and `Runtime.SpaceSource` report the resolved pair | `TestRuntimeSpaceAccessors` | `TestScenarioRememberedSpaceReachesTheHostedStore` |
+| The settings file is read once per process | `TestAssociationReadsTheSettingsOnce` | — |
 
 ## Error coverage
 
-Every row is the README's failure surface; the mapping is one to one.
+Every row is the README's failure surface. The scenario is the proof at the
+command line; the unit test covers the same wording beside the resolution it
+belongs to.
 
-| Row | Failure | Expected outcome | Test |
-| --- | --- | --- | --- |
-| F3 | malformed file | refuse naming the file | `TestSetupRefusesUnusableSettingsFile` |
-| F4 | other version | refuse naming the file and the two fixes | `TestSetupRefusesUnusableSettingsFile` |
-| F5 | exposed file or directory | refuse wording the `chmod` | `TestSetupRefusesUnusableSettingsFile` |
-| F6 | a link or a non-regular file | refuse | `TestSetupRefusesUnusableSettingsFile` |
-| F7 | invalid space | refuse naming the space | `TestRememberedSpaceInvalidRefuses` |
-| F9 | no credential | refuse naming the space and `slivingdoc login` | `TestRememberedSpaceWithoutCredentialRefuses` |
-| F10 | a login for another endpoint | refuse naming both endpoints | `TestRememberedSpaceLoginForOtherEndpointRefuses` |
-| F11 | several matching logins | refuse asking for `--endpoint` | `TestRememberedSpaceAmbiguousLoginRefuses` |
-| F12 | an expired login | refuse telling the user to log in | `TestRememberedSpaceExpiredLoginRefuses` |
-| F13 | a space the account cannot reach | refuse naming it as unreachable | `TestRememberedSpaceNotInTheAccountRefuses` |
-| F14 | a token beside an entry | the token's space, the entry untouched | `TestTokenIgnoresRememberedSpace` |
-| F15 | `SLIVINGDOC_SPACE` or `SLIVINGDOC_BUCKET` | the environment's space, the entry untouched | `TestResolveSpacePrecedenceTable` |
-| F16 | `--space`, `--bucket`, `--endpoint` | the flag's space, the entry untouched | `TestResolveSpacePrecedenceTable` |
-| F17 | `--storage s3` | S3 mode, the entry untouched | `TestS3ModeIgnoresRememberedSpace` |
-| F18 | `--storage hosted` with no space | the remembered space | `TestHostedModeTakesRememberedSpace` |
-| F19 | ambient S3 signals | the remembered space | `TestRememberedSpaceSelectsHostedBesideAWSSettings` |
-| F20 | a prefix mismatch | refuse naming both prefixes | `TestRememberedPrefixMismatchRefuses` |
+| Row | Failure | Expected outcome | Scenario | Unit |
+| --- | --- | --- | --- | --- |
+| F3 | malformed file | refuse naming the file | `TestScenarioUnusableSettingsFileRefusesStartup` | `TestUnusableSettingsFileRefusesStartup` |
+| F4 | other version | refuse naming the file and the two fixes | `TestScenarioUnusableSettingsFileRefusesStartup` | `TestUnusableSettingsFileRefusesStartup` |
+| F5 | exposed file or directory | refuse wording the `chmod` | `TestScenarioSettingsFileMustBeTheUsers`, `TestScenarioSettingsDirectoryMustBePrivate` | `internal/settings`: `TestLoadRefusesExposedFileAndDir` |
+| F6 | a link or a non-regular file | refuse | `TestScenarioSettingsFileMustBeTheUsers` | `internal/settings`: `TestLoadRefusesWhatIsNotTheFile` |
+| F7 | invalid space | refuse naming the space | `TestScenarioRememberedSpaceRefusals` | `TestRememberedSpaceRefusals` |
+| F9 | no credential | refuse naming the space and `slivingdoc login` | `TestScenarioRememberedSpaceRefusals` | `TestRememberedSpaceRefusals` |
+| F10 | a login for another endpoint | refuse naming both endpoints | `TestScenarioRememberedSpaceRefusals` | `TestRememberedSpaceRefusals` |
+| F11 | several matching logins | refuse asking for `--endpoint` | `TestScenarioSeveralStoredLoginsRefuseTheRememberedSpace` | `TestRememberedSpaceRefusals` |
+| F12 | an expired login | refuse telling the user to log in | `TestScenarioRememberedSpaceRefusals` | `TestRememberedSpaceRefusals` |
+| F13 | a space the account cannot reach | refuse naming it as unreachable | `TestScenarioRememberedSpaceRefusals` | the mint refusal, which is today's |
+| F14 | a token beside an entry | the token's space, the entry untouched | `TestScenarioTokenAndS3ModeIgnoreTheRememberedSpace` | `TestResolveSpacePrecedenceTable` |
+| F15 | `SLIVINGDOC_SPACE` or `SLIVINGDOC_BUCKET` | the environment's space, the entry untouched | `TestScenarioExplicitChoiceBeatsTheRememberedSpace` | `TestResolveSpacePrecedenceTable` |
+| F16 | `--space`, `--bucket`, `--endpoint` | the flag's space, the entry untouched | `TestScenarioExplicitChoiceBeatsTheRememberedSpace` | `TestResolveSpacePrecedenceTable` |
+| F17 | `--storage s3` | S3 mode, the entry untouched | `TestScenarioTokenAndS3ModeIgnoreTheRememberedSpace` | — |
+| F18 | `--storage hosted` with no space | the remembered space | `TestScenarioRememberedSpaceBeatsS3Settings` | `TestResolveSpacePrecedenceTable` |
+| F19 | ambient S3 signals | the remembered space | `TestScenarioRememberedSpaceBeatsS3Settings` | `TestResolveSpacePrecedenceTable` |
+| F20 | a prefix mismatch | refuse naming both prefixes | `TestScenarioRememberedSpaceRefusals` | `TestRememberedSpaceRefusals` |
 
 ## Implementation notes
 
-Not started.
+### 2026-10-03: phase 2, worker session (agent, clai)
+
+**Deviation 1: the association is one reader on `ProcessOptions`, not a
+`Lookup` and a `Load` pair.** The phase named both fields. The load alone is
+enough, because the resolved workspace root is not known inside
+`resolveStorage`, so the lookup needs the set it just read. The two
+`ProcessOptions` fields are therefore `NotebookPath` (the key) and `Load` (the
+reader), and `settingsAssociation.read(workspaceRoot)` does the lookup once the
+root is known.
+
+**Deviation 2: root resolution moved ahead of `resolveStorage` as one
+extracted function.** The phase asked for a move inside `resolve`. Doing it
+inside a switch left `resolve` with two copies of the root assignment, so the
+move became `resolveRoots`, which returns the session directory beside the two
+roots. The session directory is still created before the store resolves, and a
+refusal still removes it.
+
+**Deviation 3: the prefix is applied in `finish`, not where it resolves.** The
+prefix may come from a record, but a refusal about it is a validation like every
+other, and `finish` is where validation lives. `config.applyRememberedPrefix`
+fills the prefix from the record where nothing named one and refuses a named
+prefix that differs; it runs only when the record named the space, so an
+explicit `--space` with the default prefix behaves exactly as before.
+
+**Deviation 4: F13 needs no new branch.** A space the account cannot reach is
+already refused by the site when it mints (`mintRefusal`), because the mint
+names the space and the site answers `no_space`. The unit test covers the
+grammar row (F7) and the endpoint, ambiguity and expiry rows; the reachability
+row is the site's own refusal, reached at the first mint.
+
+### 2026-10-03: phase 2 scenarios and gate, worker session (agent, clai)
+
+**Deviation 5: the named unit tests became tables and scenarios.** The phase
+named one test per refusal row. Each row is one subtest of a table where the
+unit test belongs (`TestRememberedSpaceRefusals`,
+`TestUnusableSettingsFileRefusesStartup`), and one row of a scenario table at
+the command line (`TestScenarioRememberedSpaceRefusals`,
+`TestScenarioUnusableSettingsFileRefusesStartup`). The acceptance tables above
+now name both, so the mapping from row to test stays exact.
+
+**Deviation 6: the POSIX rows of F5 and F6 are their own file.** A symbolic
+link, a FIFO and the owner and permission checks need build-tagged helpers, so
+`scenario_remembered_posix_test.go` carries them, exactly as the credentials
+file's own scenarios do. The unprivileged rows (malformed, credential field,
+version, bound) need no POSIX facility and stay in the portable file.
+
+**Deviation 7: one test for the once-per-process read.** The README's limit
+row asks for a test that counts `Load` calls. Counting a reader the test
+injects proves the caller's own reader, not `scopedSettings`, so
+`TestAssociationReadsTheSettingsOnce` changes the file between the two reads
+and asserts the second read answers from the set of the first. That proves the
+bound the row exists for: one read of the file per process.
+
+**Commands run, and their results.**
+
+```bash
+go build ./...                                  # ok
+go vet ./...                                    # ok
+go test -count=1 ./internal/integrationtest/... # ok, every package
+go test -count=1 -run TestScenario -v ./internal/integrationtest/...   # ok
+go test -count=1 ./internal/app/... ./internal/settings/... ./internal/credentials/... ./cmd/...
+                                                # ok, before and after the change
+make qa                                         # ok: lint, test, npm-test
+go run github.com/mibk/dupl@v1.0.0 -t 80 .    # 2 pre-existing clone groups, none in this phase
+```
+
+`make qa` reported coverage 88.9 % against the floor of 70 %. The two clone
+groups are the pre-existing ones (a conflict scenario against a pull unit
+test, and two merge rows), both outside the code of this phase.
 
 ## Review findings
 
-None.
+### Review 2 — 2026-10-04 — status `Complete` (one minor finding, doc only)
+
+**R2-02 — minor — README failure surface F14, F15 and F16.** The rows
+paraphrase the resolution code and drifted from it. F14 says a token beside a
+record extends the `spaceMismatch` wording; the token branch of `resolveStorage`
+returns before any record is read (`internal/app/storage.go`), so no
+`spaceMismatch` is involved and the row's token column is wrong. F15 and F16 say
+the entry is "neither used nor rewritten"; `applyRememberedPrefix`
+(`internal/app/config.go`) applies the record's prefix whenever the resolved
+space equals the remembered one, whatever named that space, so an environment
+space or a flag that matches the record still uses its prefix — required by F20
+and by this phase's acceptance criteria — and `--endpoint` names no space, so
+the record still selects the space under it. The entry is never rewritten, which
+those rows keep.
+
+- [x] State the rule once in `runtime.recordsSpace` and `applyRememberedPrefix`,
+      and make F14, F15 and F16 quote it rather than paraphrase it. Closed by
+      Phase 6.
+
+### Verified good (review 2)
+
+`bucketFromRemembered` is the only remembered source; `s3Signals` excludes it,
+so a remembered space beside the shared AWS files reaches the hosted store and
+never the ambiguity refusal. The lookup runs before the `ErrNoLogin` + `auto`
+branch, so a remembered space with no credential refuses and never falls back to
+S3. `applyRememberedPrefix` runs only when the resolved space equals the
+remembered one, and a remembered record with no prefix leaves the default
+standing. `serve` sets no association, so it reads nothing; a malformed,
+exposed, oversized or other-version file refuses startup naming the file. The
+scenario table proves F14 to F20 at the command line against the reference
+gateway.
