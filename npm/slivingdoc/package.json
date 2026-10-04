@@ -1,6 +1,6 @@
 {
   "name": "slivingdoc",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "mcpName": "io.github.baalimago/slivingdoc",
   "description": "Durable context for agents: shared notes over MCP and the CLI. This launcher selects, downloads, verifies, and runs the native slivingdoc binary for this platform.",
   "license": "MIT",
