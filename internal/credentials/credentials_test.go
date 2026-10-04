@@ -538,7 +538,7 @@ func TestLoadRefusesWhatIsNotTheUsersPlainFile(t *testing.T) {
 	})
 	t.Run("a file larger than 1 MiB", func(t *testing.T) {
 		f := savedFile(t)
-		if err := os.WriteFile(f.Path(), make([]byte, maxFileSize+1), 0o600); err != nil {
+		if err := os.WriteFile(f.Path(), make([]byte, MaxFileSize+1), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := f.Load(); !errors.Is(err, ErrMalformed) || !strings.Contains(err.Error(), "larger than") {
@@ -595,7 +595,7 @@ func TestLockSerializesLogins(t *testing.T) {
 }
 
 func TestChecksOwnersNeverOnWindows(t *testing.T) {
-	if checksOwners("windows") {
+	if ChecksOwners("windows") {
 		t.Fatal("a Windows file checks POSIX owners")
 	}
 }

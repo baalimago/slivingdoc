@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/baalimago/slivingdoc/internal/credentials"
+	"github.com/baalimago/slivingdoc/internal/settings"
 )
 
 // storageMode is the --storage choice (architecture/login.md, Which
@@ -69,8 +70,9 @@ func awsFiles() []string {
 
 // storageSelection is the outcome of resolveStorage: the store kind, the
 // space or bucket, and, when hosted, the SLIVINGDOC_TOKEN value or the
-// stored login whose key mints the tokens, the origin, and the hosted
-// endpoint.
+// stored login whose key mints the tokens, the origin, the hosted endpoint,
+// and the target the directory remembers, which supplies the prefix when
+// nothing named one.
 type storageSelection struct {
 	bucket     string
 	bucketFrom bucketSource
@@ -78,6 +80,7 @@ type storageSelection struct {
 	login      *credentials.Login
 	origin     tokenOrigin
 	endpoint   string
+	remembered settings.Target
 }
 
 // bucketSource is where the bucket or space came from, in the spelling
@@ -103,7 +106,15 @@ const (
 	bucketFromLogin
 	// bucketFromToken is the space the hosted API says the token reaches.
 	bucketFromToken
+	// bucketFromRemembered is the space this directory remembers in the
+	// scoped settings file (architecture/config.md, The scoped settings
+	// store).
+	bucketFromRemembered
 )
+
+// rememberedSource is how the space of a record reads everywhere: the
+// wording of its source, the trailer status prints, and the help text.
+const rememberedSource = "remembered space"
 
 func (b bucketSource) String() string {
 	switch b {
@@ -119,6 +130,8 @@ func (b bucketSource) String() string {
 		return "default space"
 	case bucketFromToken:
 		return "token"
+	case bucketFromRemembered:
+		return rememberedSource
 	default:
 		return "none"
 	}
@@ -199,11 +212,16 @@ func (s storageSelection) hosted() bool { return s.token != "" || s.login != nil
 // storageInputs are the injected facts resolveStorage reads besides the
 // flags and the environment: the operating system (which picks the user
 // configuration directory and the home variable), the clock (which judges
-// expiry) and stat (which finds the shared AWS files; nil is os.Stat).
+// expiry), stat (which finds the shared AWS files; nil is os.Stat) and the
+// scoped settings of the directories (which may name the space).
 type storageInputs struct {
 	goos string
 	now  time.Time
 	stat func(string) (fs.FileInfo, error)
+	// remembered is the target this directory remembers in the scoped
+	// settings, or an error when the file cannot be read. Nil is a process
+	// that consults no association.
+	remembered func() (settings.Target, error)
 }
 
 // resolveStorage decides whether the process uses S3 or the hosted API,
@@ -216,15 +234,20 @@ type storageInputs struct {
 //     refusal.
 //   - auto: SLIVINGDOC_TOKEN → hosted. Else a stored login → hosted when
 //     the space is the login's stored default, or when no S3 signal is set;
-//     an explicit bucket with an S3 signal is a refusal. Otherwise S3.
+//     a space this directory remembers, or an explicit bucket with no S3
+//     signal. An explicit bucket with an S3 signal is a refusal. Otherwise
+//     S3.
 //
 // With SLIVINGDOC_TOKEN the stored logins are never read: an omitted
 // bucket stays empty and resolveHostedSpace asks the API for the token's
 // space. With a stored login the space is the bucket setting, else the
-// login's default space; with neither it is a refusal naming
-// 'slivingdoc space <name>'. The login is the one for the explicit
-// endpoint when one is configured, else the only one stored. No refusal
-// echoes a key or a token.
+// space this directory remembers, else the login's default space; with
+// neither it is a refusal naming 'slivingdoc space <name>'. The login is
+// the one for the explicit endpoint when one is configured, else the only
+// one stored. A remembered space counts like the login's default for the
+// S3 signal refusal, and a remembered space with no credential at all is a
+// refusal naming the space, never an S3 bucket. No refusal echoes a key
+// or a token.
 func resolveStorage(f *Flags, env map[string]string, in storageInputs) (storageSelection, error) {
 	mode, err := parseStorageMode(resolveString(&f.storage, env["SLIVINGDOC_STORAGE"], string(storageAuto)))
 	if err != nil {
@@ -261,16 +284,28 @@ func resolveStorage(f *Flags, env map[string]string, in storageInputs) (storageS
 		}
 		return storageSelection{}, fmt.Errorf("%w; fix or remove the file, or pass --storage s3 to use S3", err)
 	}
+	if sel.remembered, err = rememberedTarget(in); err != nil {
+		return storageSelection{}, err
+	}
 	login, err := pickLogin(logins, explicit)
 	switch {
 	case errors.Is(err, credentials.ErrAmbiguous):
 		return storageSelection{}, fmt.Errorf("%w; pass --endpoint to choose one, or --storage s3", err)
 	case errors.Is(err, credentials.ErrNoLogin) && mode == storageAuto:
+		if sel.remembered.Space != "" {
+			return storageSelection{}, noCredentialRefusal(logins, explicit, sel.remembered.Space)
+		}
 		return sel, nil
 	case errors.Is(err, credentials.ErrNoLogin):
+		if sel.remembered.Space != "" {
+			return storageSelection{}, noCredentialRefusal(logins, explicit, sel.remembered.Space)
+		}
 		return storageSelection{}, noLoginRefusal(logins, explicit)
 	case err != nil:
 		return storageSelection{}, err
+	}
+	if sel.bucket == "" && sel.remembered.Space != "" {
+		sel.bucket, sel.bucketFrom = sel.remembered.Space, bucketFromRemembered
 	}
 	if sel.bucket == "" {
 		if space, err := logins.DefaultSpace(login.Endpoint); err == nil {
@@ -282,7 +317,10 @@ func resolveStorage(f *Flags, env map[string]string, in storageInputs) (storageS
 			"the stored login for %s has no default space; run 'slivingdoc space' to list its spaces and 'slivingdoc space <name>' to choose one, or pass --space (for S3, pass --storage s3 and --bucket)",
 			login.Endpoint)
 	}
-	if mode == storageAuto && sel.bucketFrom != bucketFromLogin {
+	// A remembered space counts like the login's default space: both are the
+	// space this machine means for this directory, not a choice the operator
+	// made on the command line beside S3 settings.
+	if mode == storageAuto && sel.bucketFrom != bucketFromLogin && sel.bucketFrom != bucketFromRemembered {
 		if signals := s3Signals(f, env, in); len(signals) > 0 {
 			return storageSelection{}, fmt.Errorf(
 				"a stored login and S3 settings (%s) are both configured for %q; pass --storage hosted or --storage s3",
@@ -294,6 +332,17 @@ func resolveStorage(f *Flags, env map[string]string, in storageInputs) (storageS
 	}
 	sel.login, sel.origin, sel.endpoint = &login, originLogin, login.Endpoint
 	return sel, nil
+}
+
+// rememberedTarget is the notebook this directory remembers in the scoped
+// settings (architecture/config.md, The scoped settings store). A process that
+// consults no association has none, and a directory with no record has none
+// either.
+func rememberedTarget(in storageInputs) (settings.Target, error) {
+	if in.remembered == nil {
+		return settings.Target{}, nil
+	}
+	return in.remembered()
 }
 
 // loadLogins reads the stored logins. A process whose environment names

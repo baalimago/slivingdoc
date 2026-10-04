@@ -24,7 +24,8 @@ Read this when: changing commit validation order, proposal construction, the man
 ## Flow
 
 ```text
-Notebook.Commit(ctx, message)
+app.Runtime.Commit (attaches the notebook logger, records the hosted notebook of the directory on success)
+  → Service.Commit(path, message) → Notebook.Commit(ctx, message)
   0. holdWorkspace → ws.Hold(ctx): the op lock, held until the result
   1. RecoveryRequired()? → entryRecovery → RECOVERY_FAILURE stage entry (always; no commit runs)
   2. ValidateMessage(message)                    INVALID_REQUEST MESSAGE_*

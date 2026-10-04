@@ -19,7 +19,7 @@ Read this when: changing any line a command prints for a person, adding a comman
 | `internal/app/present.go` | `ProcessOptions.errStyle`/`outStyle`/`styleOf` (the `Style` seam), `pickable`, `spacesTable`, `spaceRows`, `pickSpace`, `pickLogins`, `skipped`, `line` |
 | `internal/app/config.go` | `EnvLookup`: the `getenv` that `Detect` reads, over `ProcessOptions.Env` |
 | `internal/app/status.go` | `LoginStatus`, `StoredLogins` (the home screen's login lines, from the credentials file only) |
-| `internal/app/progress.go` | `Runtime.WithProgress` (the pull/commit progress line), `Runtime.Target`; `statuslog.go`: `ReportStatus`, `ReportLog` render through the same style |
+| `internal/app/progress.go` | `Runtime.WithProgress` (the pull/commit progress line), `Runtime.Target`; `statuslog.go`: `ReportStatus` (whose `space: remembered space` trailer is dimmed like every other detail line), `ReportLog` render through the same style |
 | `internal/app/command.go` | `Report`, `writeSuccess`, `writeError`, `writePathSets` render through a `tui.Style` |
 | `internal/app/login.go` | `showApproval`, `countdown`, `approvedBy`, `loggedIn`, `Login.offerDefault`, `ProcessOptions.ErrOut`, the styled `Login.report` and `Logout.Run` lines |
 | `internal/app/space.go` | `Space.Run` (the picker), `Space.list` (the styled table or the plain `*` list) |
@@ -54,6 +54,8 @@ logout           on a terminal with 2+ logins and no --site/SLIVINGDOC_SITE: a p
 ## Behavior
 
 **Plain is the script form.** A plain rendering carries no escape codes and no marks: `OK  generation N`, `next:`, the `*` space list and `Logged in as …` are the lines scripts read. A mark in a plain line is the empty string, so `s.Mark(tui.Done) + "text"` is just `text`. `NO_COLOR` makes every line plain, but it does not turn pickers off: a picker depends on whether a person can answer (below), not on colour, and on the terminal it still clears itself with cursor escapes once answered.
+
+**A report gains a line only for what the operator cannot infer.** `status` prints one extra line, `space: remembered space`, and only when the notebook directory's own record named the space ([config.md](./config.md)); the store it already printed on the line above it. A source the operator set by hand needs no explanation, so it adds nothing, and a pipe reads the trailer as the same plain words, since it is rendered through the one style of the stream like every other line (`TestScenarioStatusTrailerOnTerminal`).
 
 **Styled adds, never removes, what a person must check.** The login's "Only approve it if you started this login in your own terminal." warning, the account that approved the code, the storage endpoint, the site, every space with its owner's email, and the `Store this login? [y/N]` prompt all appear in both forms. The owner column never says "you": whoever approves a code decides the login, so the owner email is how someone else's approval shows (architecture/login.md, Threat model).
 

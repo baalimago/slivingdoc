@@ -26,7 +26,7 @@ Read this when: changing pull ordering, remote reading, the pack cache, the pull
 
 ```text
 mcp handler.pull → Service.Pull(path)
-  | cmd/pull → app.Runtime.Pull (attaches the notebook logger) → Service.Pull(path)
+  | cmd/pull → app.Runtime.Pull (attaches the notebook logger, records the hosted notebook of the directory on success) → Service.Pull(path)
   → notebookFor(path) → Notebook.Pull(ctx)
   0. holdWorkspace → ws.Hold(ctx)          → the op lock, held until the result (mapLocalError on failure)
   1. ws.RecoveryRequired()? → entryRecovery → recoverState → RECOVERY_FAILURE stage entry (always; no pull runs)

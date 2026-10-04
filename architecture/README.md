@@ -84,7 +84,9 @@ the code and fix the doc in the same change (see
 - **[config.md](./config.md)**: every flag and environment variable,
   defaults, bounds, precedence, endpoint normalization, hosted-mode
   selection, the session directory, the shared pack cache, path sets,
-  credentials.
+  credentials, and the scoped settings store in which a notebook
+  directory remembers its hosted notebook (which commands read and write
+  it, where it sits in the order, and what it refuses).
 - **[errors.md](./errors.md)**: the error taxonomy from storage and Git
   up to the tool result and the CLI exit code: codes, retryability,
   reason and action tokens, redaction, strict JSON rejections.
@@ -129,6 +131,8 @@ the code and fix the doc in the same change (see
 - Working on hosted storage: **hosted-mode.md → login.md → storage.md →
   errors.md → commit.md → checkpoints.md**.
 - Adding a flag or command: **config.md → cli.md → running.md**.
+- Changing what a notebook directory remembers, or which commands may:
+  **config.md → login.md → cli.md → running.md**.
 - Changing what an agent sees: **product-contract.md → mcp-server.md →
   errors.md**.
 - Changing a stored format, a flag or an error token: **compatibility.md →

@@ -90,7 +90,7 @@ func TestOperationPathParsesTrailingFlags(t *testing.T) {
 	if _, err := OperationPath(fs, cwd); err != nil {
 		t.Fatalf("OperationPath() = %v", err)
 	}
-	cfg, err := flags.resolve(nil, cwd, t.TempDir(), false, nil)
+	cfg, err := flags.resolve(nil, cwd, t.TempDir(), false, nil, settingsAssociation{})
 	if err != nil {
 		t.Fatalf("resolve() = %v", err)
 	}

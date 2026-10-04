@@ -279,6 +279,9 @@ func TestScenarioCLIUsageRefusals(t *testing.T) {
 		{name: "commit without a message", args: []string{"commit", "notes"}, wantExit: 1, wantErr: "-m"},
 		{name: "pull help skips startup dependencies", args: []string{"pull", "-h"}, wantExit: 0, wantOut: "slivingdoc pull"},
 		{name: "commit help skips startup dependencies", args: []string{"commit", "-h"}, wantExit: 0, wantOut: "slivingdoc commit"},
+		{name: "status help names the remembered space", args: []string{"status", "-h"}, wantExit: 0, wantOut: "remembers it"},
+		{name: "log help names the remembered space", args: []string{"log", "-h"}, wantExit: 0, wantOut: "remembers it"},
+		{name: "help names the order every command reads", args: []string{"pull", "-h"}, wantExit: 0, wantOut: "serve never does"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()

@@ -12,6 +12,7 @@ Read this when: changing a stored format, a flag, an environment variable, a too
 | `internal/storage/key.go` | The object key grammar (`current`, `packs/checkpoints/`, `packs/increments/`) |
 | `internal/workspace/state.go` | `state.json` version 1 |
 | `internal/credentials/credentials.go` | `FormatVersion`, `ErrUnsupportedVersion` for `credentials.json` |
+| `internal/settings/codec.go` | `FormatVersion`, `ErrUnsupportedVersion` for `workspaces.json` |
 | `internal/notebook/errors.go` | The `Code`, `Reason`, `Action` tokens; `ReasonUpgradeRequired` |
 | `internal/notebook/remote.go` | `manifestError`: a newer manifest is `UPGRADE_REQUIRED`, not corruption |
 | `internal/app/config.go` | The flag and environment reference (`FlagReference`) |

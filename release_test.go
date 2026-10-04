@@ -520,7 +520,7 @@ func TestReleaseBinaryCommandSurface(t *testing.T) {
 		wantStdout []string
 	}{
 		{name: "version shortcut", args: []string{"v"}, wantStdout: []string{"slivingdoc " + releaseTestVersion}},
-		{name: "serve help", args: []string{"serve", "-h"}, wantStdout: []string{"--bucket", "--retained-checkpoints"}},
+		{name: "serve help", args: []string{"serve", "-h"}, wantStdout: []string{"--bucket", "--retained-checkpoints", "workspaces.json"}},
 		{name: "serve shortcut help", args: []string{"s", "-h"}, wantStdout: []string{"--bucket"}},
 		{name: "no command", wantCode: 1, wantStdout: []string{"serve", "version"}},
 		{name: "unknown command", args: []string{"frobnicate"}, wantCode: 1, wantStdout: []string{"serve", "version"}},

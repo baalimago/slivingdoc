@@ -27,6 +27,7 @@ import (
 	"github.com/baalimago/slivingdoc/internal/mcp"
 	"github.com/baalimago/slivingdoc/internal/notebook"
 	"github.com/baalimago/slivingdoc/internal/s3store"
+	"github.com/baalimago/slivingdoc/internal/settings"
 	"github.com/baalimago/slivingdoc/internal/sitelogin"
 	"github.com/baalimago/slivingdoc/internal/storage"
 	"github.com/baalimago/slivingdoc/internal/tui"
@@ -69,6 +70,23 @@ type ProcessOptions struct {
 	// (architecture/config.md). The serve command sets it; the one-shot
 	// subcommands address a real directory and leave it false.
 	Ephemeral bool
+
+	// NotebookPath is the positional notebook path a path-taking command
+	// resolved, empty when it gave none and its notebook directory is the
+	// workspace root. With Load it forms the association of that directory.
+	NotebookPath string
+
+	// Load reads the scoped settings of every directory, so the space this
+	// directory remembers can name the hosted store
+	// (architecture/config.md, The scoped settings store). Nil consults no
+	// association, which is what serve and every in-process test use.
+	Load func() (settings.Set, error)
+
+	// Record stores the notebook a successful pull or commit of this
+	// process proved its directory holds (architecture/config.md, The
+	// remembered notebook of a directory). Nil records nothing, which is
+	// what serve and every in-process test use.
+	Record func(context.Context, settings.Entry) error
 
 	// NewSessionDir creates the ephemeral session directory. Nil uses the
 	// operating-system temporary directory.
@@ -146,6 +164,9 @@ type process struct {
 
 	ephemeral     bool
 	newSessionDir func() (string, error)
+	// association is the resolved association of this process: the
+	// notebook path whose record is read, and the reader.
+	association settingsAssociation
 
 	// siteClient sends a stored login's mint requests to its site; nil
 	// uses the default client. now is the clock that schedules a minted
@@ -231,6 +252,7 @@ func Setup(engine git.Engine, flags *Flags, opts ProcessOptions) (*Runtime, erro
 		shutdownDeadline: deadline,
 		ephemeral:        opts.Ephemeral,
 		newSessionDir:    opts.NewSessionDir,
+		association:      opts.association(),
 		siteClient:       opts.SiteClient,
 	})
 }
@@ -267,15 +289,25 @@ func (r *Runtime) Serve(ctx context.Context) error {
 }
 
 // Pull writes the current notebook into path for one CLI invocation and
-// returns the operation result. An empty path is the workspace root.
+// returns the operation result. An empty path is the workspace root. A
+// successful pull records the hosted notebook the directory holds, so the
+// next command there needs no space flag.
 func (r *Runtime) Pull(ctx context.Context, path string) (notebook.Result, error) {
-	return r.svc.Pull(notebook.WithLogger(ctx, Module(r.base, ModuleNotebook)), r.resolve(path))
+	ctx = notebook.WithLogger(ctx, Module(r.base, ModuleNotebook))
+	res, err := r.svc.Pull(ctx, r.resolve(path))
+	r.rememberSpace(ctx, err)
+	return res, err
 }
 
 // Commit publishes the caller's changes at path for one CLI invocation and
-// returns the operation result. An empty path is the workspace root.
+// returns the operation result. An empty path is the workspace root. A
+// successful commit records the hosted notebook the directory holds, beside
+// the pull that must have come first.
 func (r *Runtime) Commit(ctx context.Context, path, message string) (notebook.Result, error) {
-	return r.svc.Commit(notebook.WithLogger(ctx, Module(r.base, ModuleNotebook)), r.resolve(path), message)
+	ctx = notebook.WithLogger(ctx, Module(r.base, ModuleNotebook))
+	res, err := r.svc.Commit(ctx, r.resolve(path), message)
+	r.rememberSpace(ctx, err)
+	return res, err
 }
 
 // Status reports the local state of the notebook at path. An empty path is
@@ -295,6 +327,17 @@ func (r *Runtime) ReadOnlyPaths() []string { return r.svc.ReadOnlyPaths() }
 
 // WritablePaths returns the service's normalized, sorted writable entries.
 func (r *Runtime) WritablePaths() []string { return r.svc.WritablePaths() }
+
+// Space is the bucket or hosted space this process talks to, empty for an
+// S3 process that named none.
+func (r *Runtime) Space() string { return r.cfg.bucket }
+
+// SpaceSource names the setting that named the space, in the spelling an
+// operator would change it by: --bucket, --space, SLIVINGDOC_BUCKET,
+// SLIVINGDOC_SPACE, the login's default space, the token's own space, the
+// remembered space, or "none". An S3 process names its bucket by the flag or
+// variable too, so the pair is always read together.
+func (r *Runtime) SpaceSource() string { return r.cfg.bucketFrom.String() }
 
 // resolve maps an omitted CLI path to the workspace root.
 func (r *Runtime) resolve(path string) string {

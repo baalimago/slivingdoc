@@ -11,14 +11,19 @@ import (
 )
 
 // ReportStatus prints the status of the notebook at path and returns nil, or
-// renders a domain error like Report does.
-func ReportStatus(out io.Writer, st notebook.Status, err error, path, target string, env []string, readOnly, writable []string) error {
+// renders a domain error like Report does. source is the setting that named
+// the space, as Runtime.SpaceSource words it; only the remembered space adds
+// a trailer, because a source the operator set by hand needs no explanation.
+func ReportStatus(out io.Writer, st notebook.Status, err error, path, target, source string, env []string, readOnly, writable []string) error {
 	p := tui.Detect(out, EnvLookup(env))
 	if err != nil {
 		return reportError(out, err, p, readOnly, writable)
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s%s  %s\n", p.Mark(tui.Done), p.Brand(path), p.Dim(target))
+	if source == rememberedSource {
+		b.WriteString(p.Dim("space: "+source) + "\n")
+	}
 	switch {
 	case st.Generation == 0 && !st.Pulled:
 		b.WriteString("not pulled yet: run 'slivingdoc pull' first\n")

@@ -20,6 +20,7 @@ import (
 	"github.com/baalimago/slivingdoc/internal/httpstore"
 	"github.com/baalimago/slivingdoc/internal/notebook"
 	"github.com/baalimago/slivingdoc/internal/pathutil"
+	"github.com/baalimago/slivingdoc/internal/settings"
 	"github.com/baalimago/slivingdoc/internal/storage"
 	"github.com/baalimago/slivingdoc/internal/workspace"
 )
@@ -49,7 +50,12 @@ type config struct {
 	// used: --bucket, --space, SLIVINGDOC_BUCKET, SLIVINGDOC_SPACE, the
 	// login's default space, the token's own space, or none,
 	// so a space mismatch or a refused token names the right fix.
-	bucketFrom          bucketSource
+	bucketFrom bucketSource
+	// remembered is the target the notebook directory of this command
+	// remembers in the scoped settings file, and prefixFrom says whether a
+	// flag or the environment named the prefix (architecture/config.md).
+	remembered          settings.Target
+	prefixFrom          settingKind
 	pathStyle           bool
 	workspaceRoot       string
 	privateRoot         string
@@ -160,6 +166,9 @@ func (f *Flags) Bind(fs *flag.FlagSet) {
 // The ranges come from the notebook package, which owns them, so the flag
 // validation and the notebook validation cannot drift.
 const (
+	// defaultPrefix is the object prefix of a notebook that names none
+	// (architecture/config.md).
+	defaultPrefix              = "slivingdoc"
 	defaultCommitRetries       = notebook.DefaultRetryLimit
 	maxCommitRetries           = notebook.MaxRetryLimit
 	defaultCheckpointPacks     = notebook.DefaultCheckpointPacks
@@ -183,7 +192,7 @@ func loadConfig(p process) (config, error) {
 			return config{}, err
 		}
 	}
-	return f.resolve(p.env, p.cwd, p.cacheDir, p.ephemeral, p.newSessionDir)
+	return f.resolve(p.env, p.cwd, p.cacheDir, p.ephemeral, p.newSessionDir, p.association)
 }
 
 // resolve applies the documented precedence — an explicitly set flag over
@@ -192,7 +201,11 @@ func loadConfig(p process) (config, error) {
 // temporary session directory holding both roots as siblings. A refusal
 // after that directory exists removes it again: a startup refusal must
 // leave nothing behind.
-func (f *Flags) resolve(environment []string, cwd, cacheDir string, ephemeral bool, newSessionDir func() (string, error)) (cfgOut config, errOut error) {
+//
+// The roots resolve before the store does, because the notebook directory
+// of an omitted path is the workspace root, and that root is the key the
+// remembered space of this directory is stored under.
+func (f *Flags) resolve(environment []string, cwd, cacheDir string, ephemeral bool, newSessionDir func() (string, error), assoc settingsAssociation) (cfgOut config, errOut error) {
 	var session string
 	defer func() {
 		if errOut != nil {
@@ -200,13 +213,33 @@ func (f *Flags) resolve(environment []string, cwd, cacheDir string, ephemeral bo
 		}
 	}()
 	env := environ(environment)
-	sel, err := resolveStorage(f, env, storageInputs{goos: runtime.GOOS, now: time.Now()})
+	wsRoot, wsSet := resolveRoot(&f.workspaceRoot, env["SLIVINGDOC_WORKSPACE_ROOT"])
+	privRoot, privSet := resolveRoot(&f.privateRoot, env["SLIVINGDOC_PRIVATE_ROOT"])
+	roots, err := resolveRoots(cwd, cacheDir, ephemeral, newSessionDir, wsRoot, wsSet, privRoot, privSet)
+	if err != nil {
+		return config{}, err
+	}
+	session = roots.session
+	// The workspace root is the key the association is read by, so it is
+	// made absolute here, before the store resolves: a root spelled relative
+	// to the working directory or with a home abbreviation would name a
+	// directory the recorder never writes that key for.
+	if roots.workspaceRoot, err = absolute(cwd, roots.workspaceRoot); err != nil {
+		return config{}, fmt.Errorf("workspace root: %w", err)
+	}
+	sel, err := resolveStorage(f, env, storageInputs{
+		goos:       runtime.GOOS,
+		now:        time.Now(),
+		remembered: func() (settings.Target, error) { return assoc.read(roots.workspaceRoot) },
+	})
 	if err != nil {
 		return config{}, err
 	}
 	cfg := config{
 		bucket:      sel.bucket,
-		prefix:      resolveString(&f.prefix, env["SLIVINGDOC_PREFIX"], "slivingdoc"),
+		prefix:      resolveString(&f.prefix, env["SLIVINGDOC_PREFIX"], defaultPrefix),
+		prefixFrom:  resolvePrefixSource(&f.prefix, env["SLIVINGDOC_PREFIX"]),
+		remembered:  sel.remembered,
 		token:       sel.token,
 		login:       sel.login,
 		tokenOrigin: sel.origin,
@@ -220,31 +253,7 @@ func (f *Flags) resolve(environment []string, cwd, cacheDir string, ephemeral bo
 		cfg.region = resolveString(&f.region, env["AWS_REGION"], "us-east-1")
 		cfg.endpoint = resolveString(&f.endpoint, env["AWS_ENDPOINT_URL_S3"], "")
 	}
-	wsRoot, wsSet := resolveRoot(&f.workspaceRoot, env["SLIVINGDOC_WORKSPACE_ROOT"])
-	privRoot, privSet := resolveRoot(&f.privateRoot, env["SLIVINGDOC_PRIVATE_ROOT"])
-	switch {
-	case ephemeral && !wsSet && !privSet:
-		if newSessionDir == nil {
-			newSessionDir = defaultSessionDir
-		}
-		created, err := newSessionDir()
-		if err != nil {
-			return config{}, fmt.Errorf("create session directory: %w", err)
-		}
-		session = created
-		cfg.sessionDir = session
-		cfg.workspaceRoot = filepath.Join(session, sessionNotebookDir)
-		cfg.privateRoot = filepath.Join(session, sessionPrivateDir)
-	default:
-		cfg.workspaceRoot = cwd
-		if wsSet {
-			cfg.workspaceRoot = wsRoot
-		}
-		cfg.privateRoot = filepath.Join(cacheDir, "slivingdoc")
-		if privSet {
-			cfg.privateRoot = privRoot
-		}
-	}
+	cfg.sessionDir, cfg.workspaceRoot, cfg.privateRoot = roots.session, roots.workspaceRoot, roots.privateRoot
 	if cfg.pathStyle, err = resolveBool(&f.pathStyle, env["SLIVINGDOC_PATH_STYLE"], false); err != nil {
 		return config{}, err
 	}
@@ -283,6 +292,47 @@ func (f *Flags) resolve(environment []string, cwd, cacheDir string, ephemeral bo
 	return cfg.finish(cwd)
 }
 
+// resolvedRoots are the two roots of the process after resolution, beside
+// the session directory it owns: empty outside the ephemeral server case.
+type resolvedRoots struct {
+	session       string
+	workspaceRoot string
+	privateRoot   string
+}
+
+// resolveRoots applies the documented root defaults: the server with no
+// configured root owns a temporary session directory holding both roots as
+// siblings, so they can never overlap and no two servers can select the same
+// private state; every other process takes the workspace root from the flag,
+// the variable or the working directory, and the private root from the flag,
+// the variable or the user cache directory.
+func resolveRoots(cwd, cacheDir string, ephemeral bool, newSessionDir func() (string, error), wsRoot string, wsSet bool, privRoot string, privSet bool) (resolvedRoots, error) {
+	switch {
+	case ephemeral && !wsSet && !privSet:
+		if newSessionDir == nil {
+			newSessionDir = defaultSessionDir
+		}
+		created, err := newSessionDir()
+		if err != nil {
+			return resolvedRoots{}, fmt.Errorf("create session directory: %w", err)
+		}
+		return resolvedRoots{
+			session:       created,
+			workspaceRoot: filepath.Join(created, sessionNotebookDir),
+			privateRoot:   filepath.Join(created, sessionPrivateDir),
+		}, nil
+	default:
+		roots := resolvedRoots{workspaceRoot: cwd, privateRoot: filepath.Join(cacheDir, "slivingdoc")}
+		if wsSet {
+			roots.workspaceRoot = wsRoot
+		}
+		if privSet {
+			roots.privateRoot = privRoot
+		}
+		return roots, nil
+	}
+}
+
 // finish validates the resolved configuration: required bucket (optional
 // in hosted mode), valid
 // prefix, normalized endpoint, absolute and disjoint roots, and the
@@ -291,6 +341,15 @@ func (f *Flags) resolve(environment []string, cwd, cacheDir string, ephemeral bo
 func (cfg config) finish(cwd string) (config, error) {
 	if cfg.bucket == "" && !cfg.hosted() {
 		return config{}, errors.New("bucket is required (pass --bucket for S3, or --space or 'slivingdoc login' for hosted storage)")
+	}
+	// The record says which notebook of the space this directory holds, so
+	// it owns the prefix whenever the resolved space is that one, whether
+	// the record or a flag named the space. A flag naming another space
+	// leaves the record alone: that run addresses another notebook.
+	if cfg.remembered.Space != "" && cfg.remembered.Space == cfg.bucket {
+		if err := cfg.applyRememberedPrefix(); err != nil {
+			return config{}, err
+		}
 	}
 	if err := storage.ValidatePrefix(cfg.prefix); err != nil {
 		return config{}, err
@@ -352,6 +411,29 @@ func (cfg config) finish(cwd string) (config, error) {
 		return config{}, fmt.Errorf("--ignore: %w", err)
 	}
 	return cfg, nil
+}
+
+// applyRememberedPrefix applies the remembered prefix of a process whose
+// resolved space is the one its notebook directory remembers
+// (architecture/config.md), whether the record or a flag named that space:
+// the record says which notebook of the space this directory holds, so a flag
+// naming the same space and no prefix addresses that notebook too. A prefix
+// the flag or the environment named wins, and one that differs from the
+// remembered one is a refusal naming both. A remembered record with no prefix
+// names none, so the default stands.
+func (cfg *config) applyRememberedPrefix() error {
+	if cfg.prefixFrom == kindOther {
+		// A record without a prefix names none, so the default stands.
+		cfg.prefix = cfg.remembered.Prefix
+		if cfg.prefix == "" {
+			cfg.prefix = defaultPrefix
+		}
+		return nil
+	}
+	if cfg.remembered.Prefix != "" && cfg.prefix != cfg.remembered.Prefix {
+		return prefixMismatch(cfg.remembered.Space, cfg.prefix, cfg.remembered.Prefix)
+	}
+	return nil
 }
 
 // resolvePolicy normalizes both entry sets and composes them into the
@@ -433,6 +515,20 @@ func resolveString(f *stringFlag, env, def string) string {
 		return env
 	}
 	return def
+}
+
+// resolvePrefixSource says which layer named the object prefix, so the
+// resolution knows whether the remembered prefix of this directory may fill
+// it (architecture/config.md).
+func resolvePrefixSource(f *stringFlag, env string) settingKind {
+	switch {
+	case f.set:
+		return kindFlag
+	case env != "":
+		return kindEnv
+	default:
+		return kindOther
+	}
 }
 
 const pathEntrySeparator = ","
@@ -708,6 +804,13 @@ const FlagReference = `  --storage string              storage backend: auto, ho
   --log-timestamp               include the time= field in log records       SLIVINGDOC_LOG_TIMESTAMP
                                 (default true; pass =false when the host
                                 stamps log lines itself)
+
+The hosted space of a notebook is resolved in this order: --space or
+--bucket, then SLIVINGDOC_SPACE or SLIVINGDOC_BUCKET, then the space the
+notebook directory remembers, then the default space of the stored login.
+A successful pull or commit remembers the space it reached in workspaces.json
+beside credentials.json, so a later command in that directory needs no space
+flag; pull, commit, status and log read that file, and serve never does.
 `
 
 // HelpText is the serve-command help (architecture/config.md).

@@ -7,7 +7,6 @@ import (
 	"context"
 	"errors"
 	"flag"
-	"fmt"
 	"io"
 
 	"github.com/baalimago/slivingdoc/internal/app"
@@ -41,15 +40,11 @@ func (c *command) Help() string { return helpText }
 
 // Setup resolves the path argument, then the same startup as pull.
 func (c *command) Setup(context.Context) error {
-	path, err := app.OperationPath(c.flagset, c.opts.Cwd)
-	if err != nil {
-		return fmt.Errorf("status: %w", err)
-	}
-	c.path = path
-	runtime, err := app.Setup(c.engine, c.flags, c.opts)
+	path, runtime, err := app.OperationSetup("status", c.flagset, c.engine, c.flags, c.opts)
 	if err != nil {
 		return err
 	}
+	c.path = path
 	c.runtime = runtime
 	return nil
 }
@@ -61,7 +56,7 @@ func (c *command) Run(ctx context.Context) error {
 	}
 	defer c.runtime.Close()
 	st, err := c.runtime.Status(ctx, c.path)
-	return app.ReportStatus(c.opts.Out(), st, err, c.path, c.runtime.Target(), c.opts.Env, c.runtime.ReadOnlyPaths(), c.runtime.WritablePaths())
+	return app.ReportStatus(c.opts.Out(), st, err, c.path, c.runtime.Target(), c.runtime.SpaceSource(), c.opts.Env, c.runtime.ReadOnlyPaths(), c.runtime.WritablePaths())
 }
 
 const helpText = `slivingdoc status - show what a notebook directory changed locally
@@ -77,6 +72,10 @@ refuses them. It changes no file, creates the directory when it is missing
 like pull does, and reads no remote state; it opens the store only to check it, like pull. A
 directory that needs recovery says so instead of listing changes, and the
 next pull or commit repairs it.
+
+A notebook directory that already pulled a hosted space remembers it, so
+status there needs no --space and no --storage hosted, and it reports the
+source of a space the directory remembered.
 
 Takes the same flags as pull.
 
