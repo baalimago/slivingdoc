@@ -158,6 +158,13 @@ func (b bucketSource) kind() settingKind {
 	}
 }
 
+// namedAsBucket says whether the space was named with the S3 spelling of
+// the setting, which beside S3 settings selects S3 (architecture/login.md,
+// Which storage a process uses).
+func (b bucketSource) namedAsBucket() bool {
+	return b == bucketFromFlag || b == bucketFromEnv
+}
+
 const (
 	bucketEnv = "SLIVINGDOC_BUCKET"
 	spaceEnv  = "SLIVINGDOC_SPACE"
@@ -233,9 +240,10 @@ type storageInputs struct {
 //   - hosted: SLIVINGDOC_TOKEN if set, else the stored login; neither is a
 //     refusal.
 //   - auto: SLIVINGDOC_TOKEN → hosted. Else a stored login → hosted when
-//     the space is the login's stored default, or when no S3 signal is set;
-//     a space this directory remembers, or an explicit bucket with no S3
-//     signal. An explicit bucket with an S3 signal is a refusal. Otherwise
+//     the space is the login's stored default, a space this directory
+//     remembers, or a space named with no S3 signal set. A space named as
+//     --bucket or SLIVINGDOC_BUCKET beside an S3 signal is S3; named as
+//     --space or SLIVINGDOC_SPACE beside one it is a refusal. Otherwise
 //     S3.
 //
 // With SLIVINGDOC_TOKEN the stored logins are never read: an omitted
@@ -317,11 +325,17 @@ func resolveStorage(f *Flags, env map[string]string, in storageInputs) (storageS
 			"the stored login for %s has no default space; run 'slivingdoc space' to list its spaces and 'slivingdoc space <name>' to choose one, or pass --space (for S3, pass --storage s3 and --bucket)",
 			login.Endpoint)
 	}
-	// A remembered space counts like the login's default space: both are the
-	// space this machine means for this directory, not a choice the operator
-	// made on the command line beside S3 settings.
-	if mode == storageAuto && sel.bucketFrom != bucketFromLogin && sel.bucketFrom != bucketFromRemembered {
+	// Beside S3 settings the spelling decides. --bucket and SLIVINGDOC_BUCKET
+	// name an S3 bucket, so they select S3; --space and SLIVINGDOC_SPACE name
+	// a hosted space, which beside S3 settings is a refusal rather than a
+	// guess. The login's default space and a remembered space are the space
+	// this machine means for this directory, not a choice the operator made
+	// beside S3 settings, so neither is judged here.
+	if mode == storageAuto && sel.bucketFrom.kind() != kindOther {
 		if signals := s3Signals(f, env, in); len(signals) > 0 {
+			if sel.bucketFrom.namedAsBucket() {
+				return sel, nil
+			}
 			return storageSelection{}, fmt.Errorf(
 				"a stored login and S3 settings (%s) are both configured for %q; pass --storage hosted or --storage s3",
 				strings.Join(signals, ", "), sel.bucket)

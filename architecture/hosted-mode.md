@@ -37,7 +37,8 @@ Flags.resolve → resolveStorage (login.md): --storage s3 → S3, never hosted
     → config.hosted(), tokenOrigin env
   else a usable stored login (the one for the explicit endpoint, else the only one)
     space = the bucket setting, else the stored default space; none → refusal ('slivingdoc space <name>')
-    → auto with an explicit space and an S3 signal → refusal
+    → auto with a space named as --space | SLIVINGDOC_SPACE and an S3 signal → refusal
+      (named as --bucket | SLIVINGDOC_BUCKET beside one → S3)
     → config.hosted(), tokenOrigin login, endpoint = the login's own
   setup → logStorage: Info "storage selected" backend, endpoint, space, token source;
                       hosted adds s3=ignored

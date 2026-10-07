@@ -188,6 +188,20 @@ func TestResolveStorage(t *testing.T) {
 			wantHosted: true, wantToken: hostedTestToken, wantOrigin: originEnv, wantBucket: "", wantEndpoint: DefaultHostedEndpoint,
 		},
 		{
+			name: "auto: SLIVINGDOC_BUCKET beside AWS keys keeps S3 despite a login", env: []string{notes, "SLIVINGDOC_BUCKET=notes", "AWS_ACCESS_KEY_ID=k", "AWS_SECRET_ACCESS_KEY=s"},
+			wantBucket: "notes", wantFrom: bucketFromEnv,
+		},
+		{
+			name: "auto: --bucket beside the shared AWS files keeps S3 despite a login", env: []string{notes, "HOME=" + awsHome},
+			args:       []string{"--bucket", "notes"},
+			wantBucket: "notes", wantFrom: bucketFromFlag,
+		},
+		{
+			name: "auto: --bucket beside the S3-only flags keeps S3 despite a login", env: []string{notes},
+			args:       []string{"--bucket", "notes", "--region", "eu-north-1", "--path-style"},
+			wantBucket: "notes", wantFrom: bucketFromFlag,
+		},
+		{
 			name: "auto: no login keeps S3", env: []string{credentials.DirEnv + "=" + t.TempDir(), "SLIVINGDOC_BUCKET=notes"},
 			wantBucket: "notes", wantFrom: bucketFromEnv,
 		},
@@ -268,15 +282,21 @@ func TestResolveStorageRefusals(t *testing.T) {
 	}{
 		{
 			"a login and AWS keys are ambiguous",
-			[]string{notes, "SLIVINGDOC_BUCKET=notes", "AWS_ACCESS_KEY_ID=k"},
+			[]string{notes, "SLIVINGDOC_SPACE=notes", "AWS_ACCESS_KEY_ID=k"},
 			nil,
 			[]string{"a stored login and S3 settings (AWS_ACCESS_KEY_ID)", `for "notes"`, "--storage hosted", "--storage s3"},
 		},
 		{
 			"a login and an AWS profile and endpoint are ambiguous",
-			[]string{notes, "SLIVINGDOC_BUCKET=notes", "AWS_PROFILE=p", "AWS_ENDPOINT_URL_S3=https://s3.example.test"},
+			[]string{notes, "SLIVINGDOC_SPACE=notes", "AWS_PROFILE=p", "AWS_ENDPOINT_URL_S3=https://s3.example.test"},
 			nil,
 			[]string{"AWS_PROFILE, AWS_ENDPOINT_URL_S3", "--storage hosted"},
+		},
+		{
+			"both spellings of one space agreeing are judged as the hosted one",
+			[]string{notes, "SLIVINGDOC_BUCKET=notes", "SLIVINGDOC_SPACE=notes", "AWS_ACCESS_KEY_ID=k"},
+			nil,
+			[]string{"a stored login and S3 settings (AWS_ACCESS_KEY_ID)", "--storage s3"},
 		},
 		{
 			"hosted without a token or a login",
@@ -352,20 +372,20 @@ func TestResolveStorageRefusals(t *testing.T) {
 		},
 		{
 			"a login and a generic AWS endpoint are ambiguous",
-			[]string{notes, "SLIVINGDOC_BUCKET=notes", "AWS_ENDPOINT_URL=https://s3.example.test"},
+			[]string{notes, "SLIVINGDOC_SPACE=notes", "AWS_ENDPOINT_URL=https://s3.example.test"},
 			nil,
 			[]string{"AWS_ENDPOINT_URL", "--storage s3"},
 		},
 		{
 			"a login and a web identity are ambiguous",
-			[]string{notes, "SLIVINGDOC_BUCKET=notes", "AWS_WEB_IDENTITY_TOKEN_FILE=/t", "AWS_SHARED_CREDENTIALS_FILE=/c"},
+			[]string{notes, "SLIVINGDOC_SPACE=notes", "AWS_WEB_IDENTITY_TOKEN_FILE=/t", "AWS_SHARED_CREDENTIALS_FILE=/c"},
 			nil,
 			[]string{"AWS_SHARED_CREDENTIALS_FILE, AWS_WEB_IDENTITY_TOKEN_FILE"},
 		},
 		{
 			"a login and every other AWS variable are ambiguous",
 			[]string{
-				notes, "SLIVINGDOC_BUCKET=notes", "AWS_SECRET_ACCESS_KEY=s", "AWS_SESSION_TOKEN=t", "AWS_DEFAULT_REGION=r",
+				notes, "SLIVINGDOC_SPACE=notes", "AWS_SECRET_ACCESS_KEY=s", "AWS_SESSION_TOKEN=t", "AWS_DEFAULT_REGION=r",
 				"AWS_CONFIG_FILE=/c", "AWS_ROLE_ARN=arn", "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI=/v2", "AWS_CONTAINER_CREDENTIALS_FULL_URI=http://x",
 			},
 			nil,
@@ -373,20 +393,20 @@ func TestResolveStorageRefusals(t *testing.T) {
 		},
 		{
 			"a login and the S3-only flags are ambiguous",
-			[]string{notes, "SLIVINGDOC_BUCKET=notes"},
+			[]string{notes, "SLIVINGDOC_SPACE=notes"},
 			[]string{"--region", "eu-north-1", "--path-style"},
 			[]string{"(--region, --path-style)"},
 		},
 		{
 			"a login and path-style from the environment are ambiguous",
-			[]string{notes, "SLIVINGDOC_BUCKET=notes", "SLIVINGDOC_PATH_STYLE=true"},
+			[]string{notes, "SLIVINGDOC_SPACE=notes", "SLIVINGDOC_PATH_STYLE=true"},
 			nil,
 			[]string{"SLIVINGDOC_PATH_STYLE"},
 		},
 		{
 			"a login and the shared AWS files are ambiguous",
 			[]string{notes, "HOME=" + awsHome},
-			[]string{"--bucket", "notes"},
+			[]string{"--space", "notes"},
 			[]string{"~/.aws/credentials, ~/.aws/config"},
 		},
 	}

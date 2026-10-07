@@ -355,10 +355,11 @@ copy is the authoritative one. Behavior worth remembering:
   flag. An environment token never reads `credentials.json`.
 - In `--storage auto`, an environment token beside `--endpoint`,
   `AWS_ENDPOINT_URL` or `AWS_ENDPOINT_URL_S3` is refused. A stored login
-  wins over S3 when the space is the stored default, or when an explicit
-  space comes with no S3 setting at all; an explicit space plus any S3
-  setting is refused as ambiguous. architecture/login.md has the exact
-  table.
+  wins over S3 when the space is the stored default or remembered, or
+  when a named space comes with no S3 setting at all; a space named as
+  `--space` or `SLIVINGDOC_SPACE` plus any S3 setting is refused as
+  ambiguous, while the `--bucket` or `SLIVINGDOC_BUCKET` spelling of that
+  setting selects S3. architecture/login.md has the exact table.
 - `--private-root` must not be at or below the workspace root.
 - `--commit-retries` exhaustion is `REMOTE_BUSY`.
 - An invalid `--read-only-paths` or `--writable-paths` entry refuses

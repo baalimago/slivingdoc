@@ -502,7 +502,8 @@ non-empty `SLIVINGDOC_TOKEN`, or a stored login
   chain are not used, and `--path-style` is validated, then unused. Beside
   `SLIVINGDOC_TOKEN` a region, AWS credentials and the `~/.aws` files are
   simply ignored; `--region` counts only against a stored login used
-  with a `--space` you named (see [Choosing the storage](#choosing-the-storage)).
+  with a space you named as `--space` or `SLIVINGDOC_SPACE` (see
+  [Choosing the storage](#choosing-the-storage)).
   When the token selects hosted mode, `--endpoint` names the hosted API and
   S3 endpoint settings are ignored; use `--storage s3` to select S3.
 - The token is read from the environment, or minted from the stored
@@ -734,11 +735,17 @@ stored login: any of
    space, whatever S3 settings exist (S3 would have no
    bucket); with neither, startup is refused, naming
    `slivingdoc space <name>`.
-3. A login is stored and the space is given (`--space`, `--bucket`,
-   `SLIVINGDOC_SPACE` or `SLIVINGDOC_BUCKET`): with S3 settings, startup
-   is refused, naming them; pass `--storage hosted` or `--storage s3`.
-   Otherwise hosted storage with the login.
-4. Otherwise: S3.
+3. A login is stored and the space is given as `--space` or
+   `SLIVINGDOC_SPACE`: with S3 settings, startup is refused, naming them;
+   pass `--storage hosted` or `--storage s3`. Otherwise hosted storage
+   with the login.
+4. A login is stored and the same setting is given in its S3 spelling,
+   `--bucket` or `SLIVINGDOC_BUCKET`: with S3 settings, that is a bucket,
+   so S3; pass `--storage hosted` to use the login for that space
+   instead. Without S3 settings it is the space of hosted storage with
+   the login, as in 3. Both spellings given with one value count as
+   `--space`.
+5. Otherwise: S3.
 
 `--storage s3` uses the AWS credential chain only; `SLIVINGDOC_TOKEN` and
 stored logins are ignored, so a token can never reach an S3 endpoint.

@@ -322,8 +322,9 @@ func TestScenarioLoginPollOutcomes(t *testing.T) {
 
 // TestScenarioStorageSelection proves --storage and its automatic choice
 // from the outside: SLIVINGDOC_TOKEN beats a stored login and S3 settings.
-// A login beside a named bucket plus S3 settings is refused as ambiguous
-// until --storage decides; s3 never sends a token or a login to the hosted
+// A login beside a named space plus S3 settings is refused as ambiguous
+// until --storage decides, while the bucket spelling of that setting beside
+// S3 settings keeps S3; s3 never sends a token or a login to the hosted
 // API; hosted without a login is refused; a login is only used for its own
 // endpoint.
 func TestScenarioStorageSelection(t *testing.T) {
@@ -349,9 +350,26 @@ func TestScenarioStorageSelection(t *testing.T) {
 			sent: true,
 		},
 		{
-			name: "a login and AWS settings are ambiguous for an explicit bucket",
-			env:  with(append([]string{"SLIVINGDOC_BUCKET=" + hostedSpace}, s3...)...),
+			name: "a login and AWS settings are ambiguous for an explicit space",
+			env:  with(append([]string{"SLIVINGDOC_SPACE=" + hostedSpace}, s3...)...),
 			want: []string{"a stored login and S3 settings (AWS_ACCESS_KEY_ID", `for "team-notes"`, "--storage hosted or --storage s3"},
+		},
+		{
+			name: "--space and AWS settings are ambiguous",
+			env:  with(s3...),
+			args: []string{"--space", hostedSpace},
+			want: []string{"a stored login and S3 settings (AWS_ACCESS_KEY_ID", "--storage hosted or --storage s3"},
+		},
+		{
+			name: "SLIVINGDOC_BUCKET beside AWS settings keeps S3 despite a login",
+			env:  with(append([]string{"SLIVINGDOC_BUCKET=" + hostedSpace, "AWS_ENDPOINT_URL_S3=" + closedS3}, s3...)...),
+			want: []string{"backend=s3", "token=none", "S3 compatibility probe failed"},
+		},
+		{
+			name: "--bucket beside AWS settings keeps S3 despite a login",
+			env:  with(append([]string{"AWS_ENDPOINT_URL_S3=" + closedS3}, s3...)...),
+			args: []string{"--bucket", hostedSpace},
+			want: []string{"backend=s3", "token=none", "S3 compatibility probe failed"},
 		},
 		{
 			name: "s3 ignores the token and the login",

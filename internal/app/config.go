@@ -746,10 +746,12 @@ const FlagReference = `  --storage string              storage backend: auto, ho
                                 (default "auto": SLIVINGDOC_TOKEN, else a
                                 stored login, selects hosted storage;
                                 otherwise S3; token wins over S3 settings
-                                unless --storage s3; a login beside an
-                                explicit space plus S3 settings needs a choice)
+                                unless --storage s3; a login beside --space
+                                or SLIVINGDOC_SPACE plus S3 settings needs a
+                                choice, while --bucket then selects S3)
   --bucket string               S3 bucket (required for S3); the same        SLIVINGDOC_BUCKET
-                                setting as --space
+                                setting as --space, and beside S3 settings
+                                it selects S3 over a stored login
   --space string                hosted space, the hosted name of --bucket    SLIVINGDOC_SPACE
                                 (default: with SLIVINGDOC_TOKEN the token's
                                 own space, else the login's default space
