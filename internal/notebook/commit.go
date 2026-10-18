@@ -481,7 +481,7 @@ func (n *Notebook) publish(ctx context.Context, remote remoteState, p proposal) 
 	case errors.Is(err, storage.ErrTransport):
 		// The response was lost after the request was sent: read current
 		// and search for the publication ID before deciding the result.
-		found, lerr := n.lookupPublication(ctx, p.publicationID)
+		found, lerr := n.lookupPublication(ctx, nil, p.publicationID)
 		if lerr != nil {
 			return lerr
 		}

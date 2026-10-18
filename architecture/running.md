@@ -1,8 +1,8 @@
 # Configure and run
 
-The operator reference for running slivingdoc: the commands, the result report, every flag, the session directory and shared pack cache, read-only and writable paths, S3 credentials and requirements, hosted storage and logging in, MCP host configuration, logging, profiling, the notebook rules, conflict recovery, checkpoints, and operational ownership. It answers "how do I run it, configure it, and read what it tells me?" The [README](../README.md) has the short version.
+The operator reference for running slivingdoc: the commands, the result report, every flag, the session directory and shared pack cache, read-only and writable paths, S3 credentials and requirements, hosted storage and logging in, MCP host configuration, logging, profiling, the notebook rules, conflict recovery, checkpoints, notebook encryption, and operational ownership. It answers "how do I run it, configure it, and read what it tells me?" The [README](../README.md) has the short version.
 
-Read this when: operating or deploying slivingdoc, writing an MCP host configuration, changing any operator-visible behavior (then update this doc in the same change), or looking for the user-facing contract behind a code path.
+Read this when: operating or deploying slivingdoc, managing an encrypted notebook, writing an MCP host configuration, changing any operator-visible behavior (then update this doc in the same change), or looking for the user-facing contract behind a code path.
 
 ## Key files
 
@@ -45,6 +45,7 @@ flag.
 | `login`         | Log in to a hosted account through the browser.               |
 | `space`         | List every stored login's spaces and every reachable S3 bucket, set a default (`space <n>`), or create one (`space new <n>`). |
 | `logout`        | Revoke the stored login key and its tokens, and remove it.    |
+| `encrypt`       | Manage a notebook's encryption (`init`, `status`, `passwd`, `recovery`, `rekey`). |
 | `version` (`v`) | Print `slivingdoc <semver>` and exit, touching nothing else. `slivingdoc --version` does the same. |
 
 ## Direct use: pull and commit
@@ -155,7 +156,9 @@ or network dependency is touched.
 ## Configuration
 
 `serve`, `pull`, `commit`, `status` and `log` read the same flags and environment
-variables. Flags override environment variables, the environment
+variables; `encrypt` reads the same startup flags through `app.Setup` but
+publishes nothing until the conversion is accepted
+([encryption.md](./encryption.md)). Flags override environment variables, the environment
 overrides defaults, and each target field takes its flag or slivingdoc
 variable, then the directory record of the resolved kind, then the one
 global default, then the ambient AWS configuration. The same layers name
@@ -194,8 +197,14 @@ makes the choice explicit ([Choosing the storage](#choosing-the-storage)).
 | Read-only paths                   | `--read-only-paths`      | `SLIVINGDOC_READ_ONLY_PATHS`      | empty (no read-only path)    |
 | Writable paths                    | `--writable-paths`       | `SLIVINGDOC_WRITABLE_PATHS`       | empty (no confinement)       |
 | Ignore patterns                   | `--ignore`               | `SLIVINGDOC_IGNORE`               | empty (built-in names only)  |
+| Encryption passphrase             | none                     | `SLIVINGDOC_PASSPHRASE`           | empty (terminal or key record) |
+| Encryption passphrase envfile     | none                     | `SLIVINGDOC_PASSPHRASE_FILE`      | empty (terminal or key record) |
 | Log levels                        | `--log-level`            | `LOG_LEVEL`                       | `info`                       |
 | Log timestamps                    | `--log-timestamp`        | `SLIVINGDOC_LOG_TIMESTAMP`        | `true`                       |
+
+The two encryption settings carry a secret and no flag can name one; they
+belong to the `encrypt` command and to a process that unlocks the notebook
+([Encryption](#encryption)).
 
 `--workspace-root` is the notebook directory `serve` serves and the root an
 omitted one-shot path resolves to; a one-shot path must stay at or below it.
@@ -1018,6 +1027,66 @@ generation's descriptors so a stale reader can restart. A later
 checkpoint deletes older physical storage on a best-effort basis.
 Checkpoints preserve current file state, not permanent history.
 
+## Encryption
+
+`slivingdoc encrypt init|status|passwd|recovery|rekey [flags] [path]` manages
+the client-side encryption of one notebook's stored objects. It is CLI-only:
+there is no MCP tool for it, the two tools are unchanged, and an unlocked
+encrypted notebook pulls and commits like any other. Only the stored objects
+are encrypted; the visible directory, the private state and the pack cache
+stay plaintext on this machine always.
+
+```text
+slivingdoc encrypt init mynotes      # one-way: every later publication is ciphertext
+slivingdoc encrypt status mynotes    # encryption: enabled; doors: passphrase, recovery; local: plaintext
+```
+
+The passphrase or recovery code comes from `SLIVINGDOC_PASSPHRASE`, from the
+envfile named by `SLIVINGDOC_PASSPHRASE_FILE`, from the stored key record
+(`notebooks.json` in the configuration directory), or, when none of them
+supplies one, from the terminal. `pull` and `commit` ask on the terminal when
+none of the three exists at all and the stored notebook is encrypted, and keep
+the answer in memory for that run. The ask is masked: the terminal shows one
+`*` per typed character and never the secret, and Ctrl-C or Ctrl-D with
+nothing typed keeps the `KEY_REQUIRED` refusal ([tui.md](./tui.md), The masked
+read). `serve`, `status` and `log` never ask: they
+resolve the three sources at startup and hold the resulting keyring for the
+process, so one of those settings is how a long-running server unlocks the
+notebook. A process that holds no secret refuses an encrypted notebook with
+`STORAGE_FAILURE · KEY_REQUIRED` and changes nothing. No flag carries a secret and no command
+echoes one.
+
+- `init` establishes encryption over a plaintext notebook and prints the
+  recovery code once, after the encrypted checkpoint is accepted; an already
+  encrypted notebook is refused.
+- `status` reports the mode, the doors, the KDF cost and the key-material
+  source. It reads only and never writes; a notebook no candidate opens is
+  reported as locked.
+- `passwd` adds, changes or removes the passphrase door. Only the `current`
+  header is rewritten, so no pack object moves.
+- `recovery` replaces the recovery door and shows the new code once.
+- `rekey` replaces the notebook key and republishes the state as a new root
+  checkpoint under a fresh recovery code; the old history is cleaned up
+  best-effort.
+
+The key-record flags decide what is remembered locally: `--store-passphrase`
+(with `--confirm-store-passphrase`) stores the plaintext passphrase,
+`--store-passphrase-file <path>` stores only the envfile path, and
+`--forget-key-material` removes the entry. A change lands only after the store
+accepts the operation; if the local change then fails, the command still
+reports its accepted result and prints a warning.
+
+The transition is one-way: no command returns a notebook to plaintext, and a
+plaintext copy is a separate notebook. A converted notebook is unreadable to
+an older slivingdoc, which answers `UPGRADE_REQUIRED` before it reads a pack
+or writes anything ([compatibility.md](./compatibility.md)). There is no key
+exchange, keychain, unlock cache or service-side recovery, and a lost key
+cannot be recovered: keep the passphrase and the printed recovery code.
+Encryption protects the content of the active stored objects, not the visible
+workspace, the private state, the pack cache, or old object versions, backups
+and external copies, and a storage operator still observes object keys, sizes,
+timing, publication count and public envelope headers ([encryption.md](./encryption.md)).
+
 ## Operational ownership
 
 slivingdoc guarantees:
@@ -1027,14 +1096,18 @@ slivingdoc guarantees:
 - accepted packs are immutable;
 - a successful commit is durably referenced by `current`;
 - merge conflicts do not advance remote state;
-- checkpoint and cleanup failures do not corrupt current state.
+- checkpoint and cleanup failures do not corrupt current state;
+- a locked encrypted notebook publishes nothing; a refused unlock changes no
+  stored object.
 
 Deployment owners decide:
 
 - bucket versioning and noncurrent-version retention;
 - replication and object lock;
 - backup export and recovery procedures;
-- the storage lifecycle policy.
+- the storage lifecycle policy;
+- passphrase and recovery-code safekeeping: slivingdoc holds no key escrow and
+  cannot recover a lost notebook key ([Encryption](#encryption)).
 
 These S3 features complement slivingdoc. They are not hidden
 prerequisites of the synchronization algorithm; choose them according to
@@ -1047,4 +1120,5 @@ your own recovery requirements.
 - [storage.md](./storage.md), [s3store.md](./s3store.md): what the bucket holds and how it is addressed.
 - [hosted-mode.md](./hosted-mode.md): the hosted storage adapter, its limits, and compaction of a full space.
 - [conflicts.md](./conflicts.md), [checkpoints.md](./checkpoints.md): conflict and checkpoint mechanics.
+- [encryption.md](./encryption.md): the envelope, the key record and the `encrypt` command contract.
 - [build.md](./build.md), [releasing.md](./releasing.md): installing and shipping binaries.

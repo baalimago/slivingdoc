@@ -7,10 +7,12 @@ package storage
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 
+	"github.com/baalimago/slivingdoc/internal/crypt"
 	"github.com/baalimago/slivingdoc/internal/git"
 	"github.com/baalimago/slivingdoc/internal/strictjson"
 )
@@ -22,6 +24,105 @@ var ErrIntegrity = errors.New("storage: integrity failure")
 
 // ManifestVersion is the one manifest version this build reads and writes.
 const ManifestVersion = 1
+
+// ManifestWrapperVersion is the version field of the strict wrapper this
+// build writes around an encrypted current object
+// (architecture/storage.md, Encrypted current). An older build reads the
+// version first, so it refuses the notebook with UpgradeRequiredError
+// before it reads a pack or writes an object; a build that knows this
+// version decodes the wrapper and decrypts its envelope to the unchanged
+// version-one manifest.
+const ManifestWrapperVersion = 2
+
+// CurrentEncoding classifies a stored current object by its wrapper.
+type CurrentEncoding uint8
+
+const (
+	// CurrentPlaintext is an unchanged version-one manifest, or bytes that
+	// are not the version-two wrapper at all: the notebook is not
+	// encrypted, and DecodeManifest decides whether the bytes are valid.
+	CurrentPlaintext CurrentEncoding = iota
+	// CurrentEncrypted is the version-two wrapper around a binary envelope
+	// (architecture/storage.md, Encrypted current).
+	CurrentEncrypted
+)
+
+// currentWrapper is the normative version-two wire shape: exactly the
+// ordered fields version and envelope, with the binary envelope as
+// standard padded Base64.
+type currentWrapper struct {
+	Version  int    `json:"version"`
+	Envelope string `json:"envelope"`
+}
+
+// WrapCurrentEnvelope encodes a binary encrypted current envelope as the
+// strict compact version-two wrapper. It refuses an envelope whose stored
+// wrapper would exceed the phase-1 current bound, so no oversized current
+// can reach the store.
+func WrapCurrentEnvelope(envelope []byte) ([]byte, error) {
+	if crypt.WrappedCurrentSize(len(envelope)) > crypt.CurrentEnvelopeLimit {
+		return nil, integrityErr(fmt.Errorf("current envelope of %d bytes exceeds the stored bound", len(envelope)))
+	}
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(currentWrapper{Version: ManifestWrapperVersion, Envelope: base64.StdEncoding.EncodeToString(envelope)}); err != nil {
+		return nil, fmt.Errorf("storage: encode current wrapper: %w", err)
+	}
+	return bytes.TrimSuffix(buf.Bytes(), []byte("\n")), nil
+}
+
+// ClassifyCurrent reports how a stored current object is encoded and, for
+// an encrypted object, returns its binary envelope. A wrapper of a
+// version newer than this build returns *UpgradeRequiredError before any
+// other field is read; a malformed version-two wrapper, an unknown wrapper
+// field, or an invalid Base64 envelope is an ErrIntegrity error. Bytes
+// that are not the wrapper are CurrentPlaintext, so both the unchanged
+// version-one manifest and arbitrary corrupted bytes reach DecodeManifest
+// and its own rejection.
+func ClassifyCurrent(data []byte) (CurrentEncoding, []byte, error) {
+	root, err := strictjson.Parse(data)
+	if err != nil || root.Kind != strictjson.Object {
+		return CurrentPlaintext, nil, nil
+	}
+	version, ok := root.Field("version")
+	if !ok || version.Kind != strictjson.Number || version.Num < ManifestWrapperVersion {
+		return CurrentPlaintext, nil, nil
+	}
+	if version.Num > ManifestWrapperVersion {
+		return CurrentPlaintext, nil, &UpgradeRequiredError{Version: version.Num}
+	}
+	if err := root.RejectUnknown("version", "envelope"); err != nil {
+		return CurrentPlaintext, nil, wrapperIntegrity(err)
+	}
+	field, ok := root.Field("envelope")
+	if !ok || field.Kind != strictjson.String {
+		return CurrentPlaintext, nil, wrapperIntegrity(errors.New("missing envelope"))
+	}
+	envelope, err := base64.StdEncoding.DecodeString(field.Str)
+	if err != nil {
+		return CurrentPlaintext, nil, wrapperIntegrity(fmt.Errorf("envelope: %w", err))
+	}
+	return CurrentEncrypted, envelope, nil
+}
+
+// wrapperIntegrity wraps a malformed version-two wrapper as stored state
+// that failed validation.
+func wrapperIntegrity(err error) error {
+	return integrityErr(fmt.Errorf("current wrapper: %w", err))
+}
+
+// CheckManifestRollback refuses a decoded manifest whose generation is
+// below the generation the workspace already accepted: the stored current
+// rolled back, and accepting it would silently discard accepted state
+// (architecture/storage.md, Encrypted current). A cold workspace has no
+// baseline, so baselineGeneration 0 never refuses.
+func CheckManifestRollback(m Manifest, baselineGeneration uint64) error {
+	if m.Generation >= baselineGeneration {
+		return nil
+	}
+	return integrityErr(fmt.Errorf("current generation %d is below the workspace baseline %d", m.Generation, baselineGeneration))
+}
 
 // ErrUpgradeRequired reports a manifest written by a newer slivingdoc than
 // this one: the notebook is intact, this build cannot read it. Nothing may

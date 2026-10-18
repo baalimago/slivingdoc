@@ -90,6 +90,9 @@ func (c *command) Run(ctx context.Context) error {
 	if path == "" {
 		path = c.runtime.NotebookDirectory()
 	}
+	if err := c.runtime.AskForSecret(ctx); err != nil {
+		return app.Report(c.opts.Out(), notebook.Result{}, err, path, c.opts.Env, c.runtime.ReadOnlyPaths(), c.runtime.WritablePaths())
+	}
 	result, err := c.runtime.WithProgress("Publishing", path, func() (notebook.Result, error) {
 		return c.runtime.Commit(ctx, path, c.message)
 	})
@@ -126,6 +129,11 @@ ranges when present, a 'next:' line naming the caller's next step, the
 retryable verdict, and the same trailers when configured, and
 exits nonzero. Colour is presentation-only: it appears only on a real
 terminal, and any non-empty NO_COLOR disables it.
+
+An encrypted notebook resolves its passphrase or recovery code from
+SLIVINGDOC_PASSPHRASE, the envfile named by SLIVINGDOC_PASSPHRASE_FILE, or the
+stored key record; when none of those supplies one, this command asks on the
+terminal, and the answer stays in memory for this run.
 
 Flags take precedence over environment variables, which override defaults.
 An explicitly empty flag value does not fall back to an environment value.

@@ -123,11 +123,13 @@ func (r router) lookup(name string) (cmd.Command, string) {
 }
 
 // fail prints one error line on stderr: "error: <message>" when plain,
-// a red cross before the message on a terminal. A refusal is always
-// exactly one line, so scripts can read it whole.
+// a red cross before the message on a terminal. A domain error prints its
+// stable code and reason instead of its text, so a startup refusal carries
+// the same tokens an operation report does (architecture/errors.md). A
+// refusal is always exactly one line, so scripts can read it whole.
 func (r router) fail(err error) {
 	s := r.err
-	msg := strings.ReplaceAll(err.Error(), "\n", " ")
+	msg := strings.ReplaceAll(app.RefusalLine(err), "\n", " ")
 	if s.Mode() == tui.Styled {
 		fmt.Fprintf(r.stderr, "%s%s\n", s.Mark(tui.Failed), msg)
 		return

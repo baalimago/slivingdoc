@@ -1,6 +1,6 @@
 # Phase Four: command surface
 
-**Status:** Not Started
+**Status:** Complete
 
 README: [README.md](./README.md)
 
@@ -71,6 +71,7 @@ top-level codes. Each failure carries the listed action and retryable value.
 | Key record or envfile is missing, malformed, exposed or unsafe; rekey credential conflicts with the record | `STORAGE_FAILURE` / `KEY_MATERIAL_INVALID` | `OPERATOR` | No | Correct key material without sharing its value; use explicit store or forget options for rekey. |
 | Door cap is exceeded | `INVALID_REQUEST` / `DOOR_LIMIT` | `FIX_INPUT` | No | Remove a door before adding another. |
 | `init` targets an encrypted notebook | `INVALID_REQUEST` / `ENCRYPTION_ALREADY_ENABLED` | `FIX_INPUT` | No | Use the existing encrypted notebook or choose a plaintext notebook. |
+| `status` is not the target; a door command targets a plaintext notebook | `INVALID_REQUEST` / `ENCRYPTION_NOT_ENABLED` | `FIX_INPUT` | No | Run `slivingdoc encrypt init` first. |
 | Non-empty remote has no workspace baseline | `INVALID_REQUEST` / `PULL_REQUIRED` | `PULL` | No | Pull accepted state, then retry conversion. |
 | Manifest is older than the workspace baseline | `STORAGE_INTEGRITY` / `HISTORY_INVALID` | `OPERATOR` | No | Treat as rollback; do not replace the local baseline. |
 | Store account is full | `STORAGE_FAILURE` / `STORAGE_FULL` | `OPERATOR` | No | Free space or use a store with more capacity. |
@@ -80,10 +81,39 @@ Files owned by this phase:
 
 ```text
 cmd/encrypt/encrypt.go
+internal/app/app.go
 internal/app/encryption.go
+internal/app/encryption_test.go
 internal/cli/cli.go
-internal/integrationtest/scenario_encrypt_command_test.go
+internal/cli/home.go
+internal/cli/encrypt_command_test.go
+internal/crypt/kdf.go
+internal/mcp/errors.go
+internal/notebook/encryption.go
+internal/notebook/errors.go
+internal/notebook/remote.go
+internal/recovery/code.go
+internal/recovery/code_test.go
+internal/recovery/wordlist.go
 ```
+
+Two notes on that list. `internal/notebook/encryption.go` was listed by
+Phase 5's plan, but this phase's commands call its operations
+(`EncryptStatus`, `EncryptDoors`, `EncryptInit`, `EncryptRekey`), so this
+phase owns its first content; Phase 5 owns extending it with
+conversion-specific behavior and `internal/notebook/encryption_test.go`.
+`internal/crypt/kdf.go` and `internal/notebook/remote.go` belong to earlier
+phases and gain one additive change each here (`NewKDFGateForCost` and the
+`ENVELOPE_INVALID` pack mapping that Phase 2 deferred to this phase).
+
+The black-box command scenarios live in `internal/cli/encrypt_command_test.go`
+rather than `internal/integrationtest`. The spawned-helper model gives every
+helper process its own fake store, so consecutive encrypt commands could not
+observe one notebook, and a spawned process cannot inject the cheap Argon2id
+cost the scenarios need. The `internal/cli` harness runs `cli.Run` in process
+over one shared fake store and injects the cost through
+`ProcessOptions.KDFParams`, which is the same process boundary with none of
+those limits.
 
 | Invariant | Mechanism | Proof |
 | --- | --- | --- |
@@ -134,8 +164,90 @@ internal/integrationtest/scenario_encrypt_command_test.go
 
 ## Implementation notes
 
-Not started.
+Implemented in `cmd/encrypt`, `internal/app/encryption.go`,
+`internal/recovery` and the notebook operations the commands call.
+
+- `internal/app/encryption.go` owns the command contract: `EncryptSubcommand`
+  and `EncryptSubcommands`, `KeyRecordOptions.Validate`, `EncryptCommand`,
+  `EncryptReport`/`EncryptionReport`, `SecretPrompt`, `EncryptArgs`,
+  `Runtime.NotebookPath` and `Runtime.Encrypt`. Every subcommand resolves the
+  candidates (`keyrecord.Resolve`), builds one keyring over the injected
+  `crypt.KDFGate`, and never repeats a cryptographic operation. `init` mints
+  the key and the recovery door and publishes the root checkpoint; `status`
+  classifies without writing; `passwd`/`recovery` rewrite only the encrypted
+  header; `rekey` mints a new key, keeps a chosen secret or reads a new one,
+  and publishes a new root; the key-record change lands only after acceptance
+  and a failure becomes a warning (`recordWarnings`). The reason constructors
+  (`keyRequired`, `keyRejected` through `encryptionOpenError`,
+  `keyMaterialInvalid`, `alreadyEnabled`, `notEnabled`, `doorLimit`) plus the
+  `notebook.Reason` tokens carry the stable taxonomy.
+- `internal/app/app.go` creates one `crypt.KDFGate` per process over
+  `ProcessOptions.KDFParams` (the canonical cost, or an injected cheap one)
+  and passes it to every keyring.
+- `cmd/encrypt/encrypt.go` registers the five subcommands, binds the four
+  key-record flags, composes the same startup surface as `pull`, and renders
+  the unified report, the status report and the one-time recovery code.
+  `internal/cli/cli.go` and `internal/cli/home.go` route the command and its
+  home-screen group.
+- `internal/recovery` owns the codec: `Generate` draws 128 bits and renders
+  twelve canonical lowercase BIP-39 words with the 4-bit checksum; `Parse`
+  proves the checksum before any key work; `Secret` returns the phrase bytes,
+  never a BIP-39 seed.
+- `internal/notebook/encryption.go` owns the notebook operations:
+  `EncryptStatus` classifies `current`, `EncryptDoors` conditionally replaces
+  the header with the notebook's bounded retry, and `publishRoot` publishes
+  the merged visible and accepted state as one root checkpoint with empty
+  `increments` and `retained`. `internal/notebook/errors.go` adds the
+  phase's reason tokens; `internal/mcp/errors.go` marks the three key
+  refusals permanent.
+- The pack envelope mapping Phase 2 deferred is repointed to
+  `STORAGE_INTEGRITY` / `ENVELOPE_INVALID` in `internal/notebook/remote.go`,
+  and Phase 2's deferred finding is deleted.
+
+The command scenarios are `TestEncryptCommandSurface`,
+`TestEncryptCandidateSources`, `TestEncryptRekeyCredentialChoice`,
+`TestEncryptPasswdChangesHeaderOnly`, `TestEncryptStaleSourceWarning`,
+`TestEncryptStatusIsReadOnly`, `TestEncryptKeyRecordOptions`,
+`TestEncryptErrorEnvelope`, `TestEncryptCommandDoesNotLeakSecrets`,
+`TestEncryptRekeyPolicy`, `TestEncryptRekeyKeyRecordOptions`,
+`TestEncryptRekeyRecordFailureAfterAcceptance`, `TestEncryptPasswdContention`,
+`TestEncryptUnsafeKeyRecord` and `TestEncryptUnlockRefusals` in
+`internal/cli/encrypt_command_test.go`, plus `TestEncryptDoorLimit` in
+`internal/app/encryption_test.go`. Decisions are D15–D20 of the
+[README](README.md#decisions-log).
 
 ## Review findings
 
-None.
+One deferred finding, outside this phase's contract and unowned by any phase.
+The process never constructs `storage.Encrypted`: only the five `encrypt`
+commands, which build their own keyrings, and the Phase 2 scenarios, which
+inject the decorator, ever wrap a store. A normal `serve`, `pull` or `commit`
+reads `current` through the raw store, so an encrypted notebook is refused as
+unreadable and no later write is encrypted. The README's read/publish diagram
+and Definition of Success expect that path. Constructing the decorator needs a
+keyring built from the resolved candidates after the store identity is
+resolved, and a malformed record must surface at the operation rather than at
+startup, so the fix either extends `internal/app` with a lazy resolver or adds
+a decorator constructor that resolves its own candidates. Phase 7's readiness
+review must open the owning phase or carry the finding forward explicitly.
+
+## Commands and results
+
+```text
+make qa
+== gofumpt == / == go vet == / == staticcheck == / == go fix ==  (clean)
+== coverage: 86.9% (floor 70%) ==
+npm test: tests 35, pass 35, fail 0
+
+go test -race -count=3 -timeout=30s ./internal/recovery/
+ok  github.com/baalimago/slivingdoc/internal/recovery  1.025s
+
+go test -count=100 ./internal/recovery/
+ok  github.com/baalimago/slivingdoc/internal/recovery  0.045s
+
+The first `make qa` run failed on a flaky `TestParseRejects/checksum_fails`:
+it swapped the last word of a fresh random code and assumed the four-bit
+checksum would reject every mutation, but a four-bit checksum accepts one
+mutation in sixteen. The row now uses the canonical all-zero vector and its
+checksum-broken twin, both fixed, and the package passes at count 100.
+```

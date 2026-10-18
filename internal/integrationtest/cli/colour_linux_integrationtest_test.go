@@ -149,8 +149,9 @@ func TestScenarioCLIHomeOnTerminal(t *testing.T) {
 		plain := StripANSI(stdout)
 		for _, want := range []string{
 			"◆ slivingdoc · v", "Not logged in to hosted storage · → slivingdoc login\n",
-			"  Sync     pull     write the current notebook into a directory\n",
-			"  Account  login    log in to hosted storage through the browser\n",
+			"  Sync        pull     write the current notebook into a directory\n",
+			"  Account     login    log in to hosted storage through the browser\n",
+			"  Encryption  encrypt  manage the encryption of a notebook\n",
 		} {
 			if !strings.Contains(plain, want) {
 				t.Fatalf("home on a terminal = %q, want it to contain %q", plain, want)

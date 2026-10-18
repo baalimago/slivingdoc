@@ -72,6 +72,11 @@ the code and fix the doc in the same change (see
   semantic errors and `Refusal`, the probe, `UploadUnique`, the
   `ObjectStore` interface, contract suite and fake. Start here to
   implement a new backend.
+- **[encryption.md](./encryption.md)**: client-side encryption of stored
+  objects: the envelope and KDF, the keyring and its candidate sources,
+  the `notebooks.json` key record, the recovery code, the version-two
+  `current` wrapper, the `Encrypted` decorator, and the `encrypt` command
+  family. Start here for notebook encryption.
 - **[s3store.md](./s3store.md)**: `internal/s3store` over the AWS SDK
   (addressing, conditional writes, multipart, error mapping, metadata
   headers, IAM permissions) and the `internal/tests3` container.
@@ -137,6 +142,8 @@ the code and fix the doc in the same change (see
   errors.md**.
 - Changing a stored format, a flag or an error token: **compatibility.md →
   storage.md or config.md → errors.md**.
+- Working on encrypted notebooks: **encryption.md → storage.md →
+  compatibility.md → config.md**.
 - Debugging a failed build or release: **build.md → releasing.md**.
 
 ## The hosted service

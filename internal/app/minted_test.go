@@ -446,7 +446,7 @@ func TestStreamedUploadRefusedUnderAStoredLogin(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = eng.Close() })
 	cfg := testServiceConfig(t)
-	svc, err := NewService(eng, store, cfg.serviceConfig(), nil)
+	svc, err := NewService(eng, store, cfg.serviceConfig(), nil, nil)
 	if err != nil {
 		t.Fatalf("NewService() = %v", err)
 	}

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/baalimago/slivingdoc/internal/app"
+	"github.com/baalimago/slivingdoc/internal/crypt"
 	"github.com/baalimago/slivingdoc/internal/git"
 	"github.com/baalimago/slivingdoc/internal/git2"
 	"github.com/baalimago/slivingdoc/internal/mcp"
@@ -73,6 +74,11 @@ type HarnessConfig struct {
 	WritablePaths []string
 	// Ignore adds ignore patterns to the built-in defaults.
 	Ignore []string
+	// Keyring is the notebook key material the service resolves encrypted
+	// stored objects with, as a released process resolves it at startup. Nil
+	// leaves the store undecorated: the plaintext process every scenario but
+	// the encrypted ones runs.
+	Keyring *crypt.Keyring
 }
 
 // setting returns the pointed-to override, or def when the field is unset.
@@ -185,7 +191,7 @@ func NewHarness(t *testing.T, cfg HarnessConfig) *Harness {
 	}
 	faults := NewFaultStore(raw)
 	store := NewRecorder(faults)
-	svc, err := app.NewService(eng, store, serviceCfg, hooks)
+	svc, err := app.NewService(eng, store, serviceCfg, hooks, cfg.Keyring)
 	if err != nil {
 		t.Fatalf("app.NewService() = %v", err)
 	}

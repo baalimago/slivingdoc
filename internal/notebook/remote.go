@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/baalimago/slivingdoc/internal/crypt"
 	"github.com/baalimago/slivingdoc/internal/git"
 	"github.com/baalimago/slivingdoc/internal/storage"
 	"github.com/baalimago/slivingdoc/internal/workspace"
@@ -99,6 +100,12 @@ func (n *Notebook) readRemoteMode(ctx context.Context, mode loadMode) (remoteSta
 		m, err := storage.DecodeManifest(data)
 		if err != nil {
 			return remoteState{}, manifestError(err)
+		}
+		if err := storage.CheckManifestRollback(m, n.ws.Baseline().RemoteGeneration); err != nil {
+			// The store served an older accepted state than this workspace
+			// already recorded. Refuse it before any pack access and keep the
+			// local baseline: accepting it would discard accepted state.
+			return remoteState{}, storageIntegrity(ReasonHistoryInvalid, err, "current is older than the workspace baseline")
 		}
 
 		st, err := n.loadRemote(ctx, m, etag, mode)
@@ -251,14 +258,25 @@ func (n *Notebook) validateRemote(m storage.Manifest, etag storage.ETag) (remote
 }
 
 // readCurrent reads the authoritative manifest object. ErrNotFound maps to
-// the implicit empty-notebook state, not an error.
+// the implicit empty-notebook state, not an error; the decorator's
+// key-material refusals reach the caller as KEY_REQUIRED and KEY_REJECTED
+// before any pack access (architecture/encryption.md).
 func (n *Notebook) readCurrent(ctx context.Context) (data []byte, etag storage.ETag, present bool, err error) {
 	rc, info, err := n.store.ReadObject(ctx, storage.CurrentKey)
 	if err != nil {
-		if errors.Is(err, storage.ErrNotFound) {
-			return nil, "", false, nil
+		if keyErr, ok := keyMaterialError(err); ok {
+			return nil, "", false, keyErr
 		}
-		return nil, "", false, storageFailure(ReasonManifestRead, err, "read current manifest")
+		switch {
+		case errors.Is(err, storage.ErrNotFound):
+			return nil, "", false, nil
+		case errors.Is(err, storage.ErrIntegrity), errors.Is(err, storage.ErrUpgradeRequired):
+			// The store held current but it is not a readable manifest: an
+			// invalid one or a newer build's. Refuse it before any pack access.
+			return nil, "", false, manifestError(err)
+		default:
+			return nil, "", false, storageFailure(ReasonManifestRead, err, "read current manifest")
+		}
 	}
 	defer rc.Close()
 	data, err = io.ReadAll(rc)
@@ -423,10 +441,18 @@ func (n *Notebook) ensurePack(ctx context.Context, spec packSpec) ([]byte, error
 	}
 	rc, _, err := n.store.ReadObject(ctx, spec.key)
 	if err != nil {
+		if keyErr, ok := keyMaterialError(err); ok {
+			return nil, keyErr
+		}
 		if errors.Is(err, storage.ErrNotFound) {
 			// A referenced pack disappeared: the manifest observation is
 			// stale, not the pack. The caller re-reads current.
 			return nil, fmt.Errorf("notebook: pack %s: %w", spec.key, errStaleManifest)
+		}
+		if errors.Is(err, storage.ErrIntegrity) {
+			// The stored body failed envelope validation: refuse it as
+			// corrupt state before any import.
+			return nil, storageIntegrity(ReasonEnvelopeInvalid, err, "pack %s failed envelope authentication", spec.key)
 		}
 		return nil, storageFailure(ReasonPackDownload, err, "download pack %s", spec.key)
 	}
@@ -500,8 +526,9 @@ func (n *Notebook) cacheWrite(sha storage.SHA256, data []byte) error {
 // increment descriptors of the authoritative manifest for a publication ID.
 // The notebook returns success only when the ID is present
 // (architecture/commit.md); an ID that no descriptor records cannot be
-// proved accepted.
-func (n *Notebook) lookupPublication(ctx context.Context, id storage.UUID) (bool, error) {
+// proved accepted. open decrypts a version-two current wrapper, so a
+// converted notebook can prove a publication too.
+func (n *Notebook) lookupPublication(ctx context.Context, open *crypt.Keyring, id storage.UUID) (bool, error) {
 	data, _, present, err := n.readCurrent(ctx)
 	if err != nil {
 		return false, err
@@ -509,29 +536,35 @@ func (n *Notebook) lookupPublication(ctx context.Context, id storage.UUID) (bool
 	if !present {
 		return false, nil
 	}
-	m, err := storage.DecodeManifest(data)
+	m, err := decodeStoredCurrent(ctx, open, data)
 	if err != nil {
-		return false, manifestError(err)
+		return false, err
 	}
+	return publicationIn(m, id), nil
+}
+
+// publicationIn reports whether a manifest records id as an active or
+// retained checkpoint or increment publication.
+func publicationIn(m storage.Manifest, id storage.UUID) bool {
 	if m.Checkpoint.Publication == id {
-		return true, nil
+		return true
 	}
 	for _, inc := range m.Increments {
 		if inc.Publication == id {
-			return true, nil
+			return true
 		}
 	}
 	for _, ret := range m.Retained {
 		if ret.Checkpoint.Publication == id {
-			return true, nil
+			return true
 		}
 		for _, inc := range ret.Increments {
 			if inc.Publication == id {
-				return true, nil
+				return true
 			}
 		}
 	}
-	return false, nil
+	return false
 }
 
 // recoverState is the generic recovery path (architecture/guarantees.md): it

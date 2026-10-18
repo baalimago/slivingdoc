@@ -1,6 +1,6 @@
 # Phase Three: key material
 
-**Status:** Not Started
+**Status:** Complete
 
 README: [README.md](./README.md)
 
@@ -100,8 +100,62 @@ internal/keyrecord/*_test.go
 
 ## Implementation notes
 
-Not started.
+Implemented in `internal/keyrecord`, with one small addition to
+`internal/workspace`.
+
+- `codec.go` owns the strict `notebooks.json` schema: `FileName`,
+  `FormatVersion`, an `Entry` variant (`KindPassphrase` or
+  `KindPassphraseFile`) built by `Passphrase`/`PassphraseFile`, `Set`
+  (`Lookup`, `Put`, `Remove`, `Entries`) and `encode`/`decode`. Entries encode
+  in digest order; an unknown, duplicate, missing, null or conflicting field,
+  a non-canonical digest, and an empty value are refused, and no refusal
+  echoes a stored secret.
+- `file.go` owns `File`: `Locate` (the credentials file's own rule), `Load`,
+  `Save`, `CheckDir`, `Lock`, and the locked `Update`/`Forget`. Every read and
+  write goes through `credentials.PrivateFile`, so a symbolic link, a
+  non-regular file, another user's file, or an exposed file or directory is a
+  typed `ErrExposed`, and the file is written atomically 0600 in a 0700
+  directory.
+- `resolve.go` owns `Resolve(id, getenv)`: it returns `crypt.Candidate` values
+  in the order environment value, envfile value, key-record value, each with
+  its `crypt.CandidateSource`. The envfile grammar (a `SLIVINGDOC_PASSPHRASE`
+  assignment, blank lines and full-line `#` comments, an optional `export `
+  prefix, matching quotes, `~` expansion) is parsed here; the file is read
+  through `credentials.PrivateFile`, and any failure is re-worded to name the
+  setting (`SLIVINGDOC_PASSPHRASE_FILE` or `passphraseFile`) and never the
+  path.
+- `internal/workspace/identity.go` gains `IdentityDigest`, the full lowercase
+  SHA-256 digest of a storage identity; `SharedCacheDirName` now truncates it.
+  The key record is keyed by that digest (`workspace.IdentityDigest(id)`).
+
+`workspaces.json` is untouched, and the record is a separate file in the same
+configuration directory. Decisions are D12–D14 of the
+[README](README.md#decisions-log).
 
 ## Review findings
 
 None.
+
+## Commands and results
+
+```text
+make qa
+== gofumpt == / == go vet == / == staticcheck == / == go fix ==  (clean)
+== coverage: 87.6% (floor 70%) ==
+npm test: tests 35, pass 35, fail 0
+
+go test -race -count=3 -timeout=30s ./internal/keyrecord/ ./internal/workspace/
+ok  github.com/baalimago/slivingdoc/internal/keyrecord  1.081s
+ok  github.com/baalimago/slivingdoc/internal/workspace  3.471s
+
+go test -cover ./internal/keyrecord/
+ok  github.com/baalimago/slivingdoc/internal/keyrecord  0.014s  coverage: 91.5% of statements
+
+go run github.com/mibk/dupl@v1.0.0 -t 80 .
+Found total 5 clone groups: three pre-existing, the versioned-record error
+boilerplate shared with internal/settings, and the Load shape of a strict
+versioned configuration file shared with internal/settings. Both are the
+established per-package configuration-file idiom, whose wording and version
+sentinels each package owns; extracting them would touch internal/credentials
+and internal/settings and is out of this phase's scope.
+```

@@ -1,6 +1,6 @@
 # Phase Two: manifest and encrypted store
 
-**Status:** Not Started
+**Status:** Complete
 
 README: [README.md](./README.md)
 
@@ -57,8 +57,16 @@ Files owned by this phase:
 internal/storage/manifest.go
 internal/storage/encrypted.go
 internal/storage/*encrypted*_test.go
-internal/integrationtest/scenario_encrypted_store_test.go
+internal/notebook/remote.go
+internal/integrationtest/sync/encrypted_integrationtest_test.go
 ```
+
+The one notebook edit maps the decorator's failures onto the existing taxonomy:
+a manifest below the recorded baseline is `STORAGE_INTEGRITY` /
+`HISTORY_INVALID` and keeps the local baseline; an unreadable `current`
+(invalid or newer) is refused before pack access; a pack that fails envelope
+validation is `STORAGE_INTEGRITY` / `PACK_INVALID`. Phase 4 refines that last
+token to `ENVELOPE_INVALID` when it owns the reason table.
 
 | Invariant | Mechanism | Proof |
 | --- | --- | --- |
@@ -83,7 +91,7 @@ internal/integrationtest/scenario_encrypted_store_test.go
 | The version-two wrapper is strict and the decrypted version-one manifest remains unchanged | `TestEncryptedManifestCodec` |
 | A manifest below the recorded workspace baseline is rejected as rollback | `TestEncryptedManifestRollback` |
 | Every object-store method round-trips through encryption and decryption | `TestEncryptedStoreContract` |
-| The shared store contract passes through the decorator for fake, S3, and hosted stores | `TestEncryptedObjectStoreContracts` |
+| The shared store contract passes through the decorator for fake, S3, and hosted stores | `TestEncryptedStorePreservesBackendContracts` |
 | A conditional-write loss is returned without retry | `TestEncryptedConditionalWrite` |
 | An unopened notebook refuses pack access and object writes | `TestEncryptedStoreRefusesLockedNotebook` |
 | Ciphertext that exceeds the existing hosted limit does not publish `current` | `TestEncryptedPackLimitPreservesCurrent` |
@@ -104,8 +112,76 @@ internal/integrationtest/scenario_encrypted_store_test.go
 
 ## Implementation notes
 
-Not started.
+Implemented in `internal/storage` plus the two small notebook read-path
+mappings.
+
+- `manifest.go` owns the version-two wrapper: `ManifestWrapperVersion`,
+  `CurrentEncoding` (`CurrentPlaintext`, `CurrentEncrypted`),
+  `currentWrapper`, `WrapCurrentEnvelope`, `ClassifyCurrent` and
+  `CheckManifestRollback`. `WrapCurrentEnvelope` writes strict compact JSON
+  with exactly the ordered fields `version` and `envelope`, and refuses an
+  envelope whose stored wrapper would exceed `crypt.CurrentEnvelopeLimit`.
+  `ClassifyCurrent` returns `*UpgradeRequiredError` for a wrapper newer than
+  this build before it reads any other field, `ErrIntegrity` for a malformed
+  version-two wrapper, and `CurrentPlaintext` for bytes that are not the
+  wrapper at all, so `DecodeManifest` keeps deciding the unchanged
+  version-one manifest.
+- `encrypted.go` owns `Encrypted(store, keyring)`. It resolves the notebook
+  mode lazily from `current` (or at once from a keyring that already holds
+  the key), seals `PutObject`, `CreateObject` and `ReplaceObject` bodies,
+  opens `ReadObject` bodies, rewrites upload metadata to the stored
+  ciphertext, and reports plaintext size and digest to the notebook. Listing
+  and deletion pass through; a plaintext version-one notebook and an absent
+  `current` pass through; every raw store result, including a
+  conditional-write loss, is returned unchanged.
+- `internal/notebook/remote.go` refuses a `current` below the workspace
+  baseline as `HISTORY_INVALID` before any pack access, keeps the local
+  baseline, and refuses an unreadable `current` and a pack that fails
+  envelope validation without importing it.
+
+Decisions are D10 and D11 of the [README](README.md#decisions-log). The
+`Encrypted` constructor keeps the two-argument interface the README declares:
+the draft `sealDoors` variadic was removed, and `encrypt init`, `rekey` and
+`passwd` write an already-wrapped `current` body through the decorator's
+passthrough instead of handing it a new door set.
 
 ## Review findings
 
-None.
+None. Phase 4 repointed the pack envelope mapping to
+`STORAGE_INTEGRITY` / `ENVELOPE_INVALID` in `internal/notebook/remote.go` and
+deleted the deferred finding that stood here.
+
+## Commands and results
+
+```text
+go test -race -count=1 ./internal/storage/... ./internal/notebook/
+ok  github.com/baalimago/slivingdoc/internal/storage     2.618s
+ok  github.com/baalimago/slivingdoc/internal/storage/fake 1.037s
+ok  github.com/baalimago/slivingdoc/internal/notebook     7.549s
+
+go test -race -count=3 -timeout=30s ./internal/storage/...
+ok  github.com/baalimago/slivingdoc/internal/storage     6.159s
+ok  github.com/baalimago/slivingdoc/internal/storage/fake 1.074s
+
+go test ./internal/integrationtest/ -count=1 -timeout=600s
+ok  github.com/baalimago/slivingdoc/internal/integrationtest  7.010s
+
+go test ./internal/integrationtest/ -run TestEncrypted -count=1 -v
+PASS TestEncryptedStorePreservesBackendContracts (fake, s3, hosted)
+PASS TestEncryptedPullCommit
+PASS TestEncryptedCommitContainsCiphertext
+PASS TestEncryptedCommitUploadBeforeManifest
+PASS TestEncryptedPackLimitPreservesCurrent
+PASS TestEncryptedManifestRollback
+
+gofumpt -l  (clean)
+go vet ./internal/integrationtest/ ./internal/storage/...  (clean)
+staticcheck ./internal/storage/... ./internal/integrationtest/... ./internal/notebook/...  (clean)
+go fix -diff ./internal/storage/... ./internal/integrationtest/...  (clean)
+
+go run github.com/mibk/dupl@v1.0.0 -t 80 .
+Found total 3 clone groups: two pre-existing and one cross-package test-key
+setup between internal/storage/encrypted_store_test.go and
+internal/integrationtest/sync/encrypted_integrationtest_test.go (acceptable
+test-setup boilerplate; the two test packages cannot share a helper).
+```

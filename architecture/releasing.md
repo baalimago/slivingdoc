@@ -54,6 +54,8 @@ push tag v* → .github/workflows/release.yml
 
 **Pinned pipeline.** `release.yml` references `baalimago/simple-go-pipeline/.github/workflows/release.yml` by an immutable commit SHA, never a branch or moving tag; `check-release-ref.sh` and `TestReleaseWorkflowReference` enforce it. Bump it only with a reviewed commit.
 
+**Encryption dependency.** Client-side encryption adds one direct Go module dependency, pinned like the rest in `go.mod`: `golang.org/x/crypto v0.57.0`, which supplies Argon2id and XChaCha20-Poly1305. HKDF-SHA-256 comes from the standard library `crypto/hkdf`, so no further module joins the build, and the runtime dependency checks are unchanged because the module is compiled into the binary ([encryption.md](./encryption.md)).
+
 **Publication order.** One tag publishes three things strictly in sequence:
 
 1. The GitHub release, created by the reusable job only after every target build, dependency check and smoke test passed and every asset is uploaded.

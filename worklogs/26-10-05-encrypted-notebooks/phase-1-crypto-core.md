@@ -1,6 +1,6 @@
 # Phase One: crypto core
 
-**Status:** Not Started
+**Status:** Complete
 
 README: [README.md](./README.md)
 
@@ -181,7 +181,56 @@ scripts/encryption-perf/main.go
 
 ## Implementation notes
 
-Not started.
+Implemented in `internal/crypt` plus `scripts/encryption-perf`.
+
+- `envelope.go` owns the preamble, the immutable core, the door and extension
+  sections, the commitment and payload framing. `decodeEnvelope` validates the
+  whole wire structure without key work, so a malformed or unsupported
+  envelope is refused before a KDF runs; the declared plaintext size and chunk
+  size must account for the payload bytes exactly.
+- `header.go` owns the domain-separated HKDF keys, the header transcript, the
+  object-key encoding, the door record codec and `WrapKey`/`UnwrapKey`.
+- `kdf.go` owns `KDFParams`, `KDFGate` and `DeriveKEK`. The secret and cost are
+  validated before a gate slot is taken, so an out-of-window cost cannot
+  allocate 256 MiB.
+- `keyring.go` owns `NotebookKey`, the candidate set, `Open`, `Seal` and
+  `Rewrap`.
+
+Decisions are D1–D9 of the [README](README.md#decisions-log). The wire vector
+pinned by `TestEnvelopeVectors` is the executable form of the format table.
+
+### Reference-host measurement
+
+Run on the named reference host (Intel Core i5-8350U, 8 logical CPUs, 16 GiB
+RAM, Linux), `go1.26.5`, `golang.org/x/crypto v0.57.0`:
+
+```text
+go run ./scripts/encryption-perf
+PASS one isolated full unlock               403.5 ms  budget 15.000 s
+PASS two simultaneous full unlocks          855.7 ms  budget 30.000 s
+PASS paired full-unlock peak RSS           874.0 MiB  budget 1024.0 MiB
+PASS framing encryption throughput       619.1 MiB/s  budget 100.0 MiB/s
+PASS framing decryption throughput      1028.5 MiB/s  budget 100.0 MiB/s
+PASS framing encryption peak RSS           291.6 MiB  budget 350.0 MiB
+PASS framing decryption peak RSS           292.5 MiB  budget 350.0 MiB
+```
+
+A full unlock is a two-candidate search against every door (one rejected
+candidate, one accepted). Framing payload is 95 MiB, five trials each
+direction, median time and throughput and maximum sampled RSS.
+
+### Commands and results
+
+```text
+go test ./internal/crypt/ -race -count=3 -timeout=30s
+ok  github.com/baalimago/slivingdoc/internal/crypt  14.207s
+
+go test ./internal/crypt/ -cover
+total: (statements) 90.9%
+
+go run github.com/mibk/dupl@v1.0.0 -t 80 .
+Found total 2 clone groups (both pre-existing; none in internal/crypt)
+```
 
 ## Review findings
 

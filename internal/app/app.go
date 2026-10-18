@@ -22,6 +22,7 @@ import (
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/baalimago/slivingdoc/internal/crypt"
 	"github.com/baalimago/slivingdoc/internal/git"
 	"github.com/baalimago/slivingdoc/internal/httpstore"
 	"github.com/baalimago/slivingdoc/internal/mcp"
@@ -102,6 +103,11 @@ type ProcessOptions struct {
 	// (LOG_LEVEL and NO_COLOR) over Stderr.
 	Logger *slog.Logger
 
+	// KDFParams is the Argon2id cost the encrypt commands write for a new
+	// door. Nil is crypt.DefaultKDFParams; a test injects a cheaper accepted
+	// cost, because the canonical cost is deliberately expensive.
+	KDFParams *crypt.KDFParams
+
 	// OpenBrowser opens the login approval page. Nil starts the platform
 	// opener (xdg-open, open, or the Windows URL handler); tests inject one
 	// so no browser ever starts (architecture/login.md).
@@ -119,9 +125,9 @@ type ProcessOptions struct {
 	Hostname func() (string, error)
 
 	// Stdin is where login reads the answer to its confirmation prompt,
-	// and where the space and logout pickers read theirs. Nil is the
-	// process stdin for the prompt and the controlling terminal for a
-	// picker (architecture/tui.md).
+	// where the space and logout pickers read theirs, and where pull and
+	// commit read a passphrase the process did not resolve itself. Nil is
+	// the process stdin.
 	Stdin io.Reader
 
 	// Style chooses how login, space and logout render on a stream. Nil
@@ -129,12 +135,12 @@ type ProcessOptions struct {
 	// elsewhere; tests inject a styled one.
 	Style func(out io.Writer) tui.Style
 
-	// Terminal says whether a person can answer that prompt. Nil checks
-	// that the process stdin and stderr are both terminals.
+	// Terminal says whether a person can answer a prompt. Nil checks that
+	// the process stdin and stderr are both terminals.
 	Terminal func() TerminalState
 }
 
-// TerminalState says whether login can ask the person at the keyboard.
+// TerminalState says whether a prompt can ask the person at the keyboard.
 type TerminalState int
 
 const (
@@ -161,7 +167,14 @@ type process struct {
 	stdout io.Writer
 	stderr io.Writer
 
+	// stdin and terminal answer the encrypt command's secret prompt and the
+	// passphrase ask of pull and commit. A process off a terminal never asks
+	// (architecture/encryption.md, The process keyring).
+	stdin    io.Reader
+	terminal TerminalState
+
 	logger           *slog.Logger
+	kdfParams        *crypt.KDFParams
 	signals          <-chan os.Signal
 	transport        sdk.Transport
 	storeFactory     func(ctx context.Context, cfg config) (storage.ObjectStore, error)
@@ -239,6 +252,10 @@ func Setup(engine git.Engine, flags *Flags, opts ProcessOptions) (*Runtime, erro
 	if stderr == nil {
 		stderr = io.Discard
 	}
+	stdin := opts.Stdin
+	if stdin == nil {
+		stdin = os.Stdin
+	}
 	deadline := opts.ShutdownDeadline
 	if deadline == 0 {
 		deadline = 30 * time.Second
@@ -253,7 +270,10 @@ func Setup(engine git.Engine, flags *Flags, opts ProcessOptions) (*Runtime, erro
 		engine:           engine,
 		stdout:           stdout,
 		stderr:           stderr,
+		stdin:            stdin,
+		terminal:         opts.terminal(),
 		signals:          sig,
+		kdfParams:        opts.KDFParams,
 		storeFactory:     wrapped,
 		shutdownDeadline: deadline,
 		ephemeral:        opts.Ephemeral,
@@ -275,6 +295,11 @@ type Runtime struct {
 	cfg    config
 	base   *slog.Logger // process logger; module loggers derive from it
 	logger *slog.Logger
+	// gate bounds Argon2id derivations process-wide: the encryption commands
+	// and every keyring they build share it (phase-4-command-surface.md).
+	gate *crypt.KDFGate
+	// kdfParams is the cost a new door is written with.
+	kdfParams crypt.KDFParams
 }
 
 // Serve runs the MCP server until the client disconnects, ctx is cancelled,
@@ -421,7 +446,21 @@ func setup(p process) (*Runtime, error) {
 	case packCacheBelowWorkspace:
 		logger.Debug("shared pack cache unavailable", "reason", "pack cache directory is at or below the workspace root")
 	}
-	svc, resolved, check, err := buildService(p, cfg)
+	params := crypt.DefaultKDFParams()
+	if p.kdfParams != nil {
+		params = *p.kdfParams
+	}
+	// The gate accepts the canonical window, lowered only to the injected
+	// cost, so a test can derive cheap doors while production keeps the
+	// canonical floor (phase-4-command-surface.md). It exists before the
+	// service, because the service resolves the notebook key through it.
+	gate, err := crypt.NewKDFGateForCost(1, params)
+	if err != nil {
+		p.engine.Close()
+		removeSessionDir(cfg.sessionDir)
+		return nil, fmt.Errorf("app: create the key-derivation gate: %w", err)
+	}
+	svc, resolved, check, err := buildService(p, cfg, gate)
 	if err != nil {
 		p.engine.Close()
 		removeSessionDir(cfg.sessionDir)
@@ -431,7 +470,7 @@ func setup(p process) (*Runtime, error) {
 		logger.Info("hosted space resolved", "space", resolved.bucket, "from", resolved.bucketFrom.String())
 	}
 	logStoreCheck(logger, check)
-	return &Runtime{p: p, svc: svc, cfg: resolved, base: base, logger: logger}, nil
+	return &Runtime{p: p, svc: svc, cfg: resolved, base: base, logger: logger, gate: gate, kdfParams: params}, nil
 }
 
 // run is the whole process body in one call, used where the caller does not
@@ -451,7 +490,7 @@ func run(p process) error {
 // configuration with the resolved space and how the store was checked. Any
 // failure is a startup refusal: no transport runs and no operation is
 // accepted.
-func buildService(p process, cfg config) (*Service, config, storeCheckReport, error) {
+func buildService(p process, cfg config, gate *crypt.KDFGate) (*Service, config, storeCheckReport, error) {
 	storeFactory := p.storeFactory
 	if storeFactory == nil {
 		storeFactory = realStoreFactory
@@ -488,7 +527,16 @@ func buildService(p process, cfg config) (*Service, config, storeCheckReport, er
 	if err != nil {
 		return nil, config{}, check, err
 	}
-	svc, err := NewService(p.engine, store, cfg.serviceConfig(), p.hooks)
+	// The keyring is resolved after the store check, so a locked notebook
+	// still proves the store (architecture/encryption.md). A notebook with
+	// no candidate stays readable until an encrypted current is met; key
+	// material that cannot be resolved at all refuses startup, because the
+	// operator must fix the record before any notebook can use it.
+	ring, err := keyring(cfg, EnvLookup(p.env), gate)
+	if err != nil {
+		return nil, config{}, check, keyMaterialInvalid(err)
+	}
+	svc, err := NewService(p.engine, store, cfg.serviceConfig(), p.hooks, ring)
 	if err != nil {
 		return nil, config{}, check, err
 	}

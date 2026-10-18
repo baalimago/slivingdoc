@@ -1,6 +1,6 @@
 # Phase Six: compatibility and documentation
 
-**Status:** Not Started
+**Status:** Complete (the hosted privacy text is the blocked Human required artifact; see Implementation notes)
 
 README: [README.md](./README.md)
 
@@ -33,6 +33,7 @@ objects. Document the wrapper and envelope contracts from Phases 1 and 2.
 Files owned by this phase:
 
 ```text
+AGENTS.md
 architecture/encryption.md
 architecture/README.md
 architecture/cli.md
@@ -41,13 +42,14 @@ architecture/config.md
 architecture/errors.md
 architecture/guarantees.md
 architecture/hosted-mode.md
+architecture/overview.md
 architecture/product-contract.md
 architecture/releasing.md
 architecture/running.md
 architecture/security.md
 architecture/storage.md
 scripts/check-architecture-links.py
-internal/integrationtest/scenario_upgrade_test.go
+internal/integrationtest/sync/upgrade_integrationtest_test.go
 ```
 
 Update hosted privacy text to use the same security boundary as this phase.
@@ -60,7 +62,7 @@ The artifact is the updated hosted privacy text in the cloud repository, with th
 | Invariant | Mechanism | Proof |
 | --- | --- | --- |
 | Older builds refuse encrypted state before pack access | Version-two wrapper and compatibility scenario | `TestScenarioUpgradeRequiredForNewerManifest` |
-| Documentation does not claim local files are encrypted | Explicit scope text and status wording | `TestEncryptStatusWording` |
+| Documentation does not claim local files are encrypted | Explicit scope text and status wording | `TestEncryptCommandSurface` |
 | Gateway code and routes remain unchanged | Compare the cloud source tree | `git -C "$CLOUD_REPO" diff HEAD --exit-code -- src/` |
 
 ## Integration contract
@@ -93,8 +95,82 @@ The artifact is the updated hosted privacy text in the cloud repository, with th
 
 ## Implementation notes
 
-Not started.
+Done this session (2026-10-09, phase-6 worker):
+
+- `scripts/check-architecture-links.py`: checks every `architecture/*.md`
+  local Markdown link (file existence) and every `#fragment` against a
+  GitHub-style heading slug. `python3 scripts/check-architecture-links.py`
+  passes: `29 file(s) checked, every local link resolves`.
+- `architecture/encryption.md`: the new contract doc (envelope, KDF, keyring,
+  candidate sources, `notebooks.json`, recovery code, version-two wrapper,
+  `Encrypted` decorator, `encrypt` family, compatibility, errors, gotchas).
+- `internal/integrationtest/sync/upgrade_integrationtest_test.go`: added
+  `TestScenarioUpgradeRequiredForEncryptedCurrent`. It converts a fake
+  notebook at rest with `encryptNotebookAtRest`, then proves a pull and a
+  commit return `STORAGE_FAILURE`/`UPGRADE_REQUIRED`/`OPERATOR` (not
+  retryable) with zero additional pack reads and zero writes and an
+  untouched draft. Both upgrade tests pass.
+- Architecture docs updated: `README.md` (index + reading order),
+  `storage.md`, `compatibility.md`, `errors.md`, `product-contract.md`,
+  `config.md`, `cli.md`, `security.md`, `guarantees.md`.
+
+Completed this session:
+
+- `architecture/hosted-mode.md`: the **Encryption and the hosted operator**
+  boundary (ciphertext bodies; `object keys, sizes, timing, publication count`
+  and public headers remain visible; no route, field or adapter change), plus
+  a `Related` link to `encryption.md`.
+- `architecture/releasing.md`: the **Encryption dependency** note
+  (`golang.org/x/crypto` v0.57.0 for Argon2id and XChaCha20-Poly1305;
+  `crypto/hkdf` is standard library).
+- `architecture/running.md`: `encrypt` in the command table, the two
+  passphrase settings in the configuration table, an `## Encryption` operator
+  section, the encryption lines in Operational ownership, and a `Related`
+  link.
+- `architecture/overview.md`: the `encrypt` entry in the `cli` command map,
+  the `crypt`, `keyrecord` and `recovery` package rows, and the import-graph
+  rules for `crypt`, `keyrecord` and `recovery`. Not in the phase draft's
+  file list, but the overview is an architecture document that names the
+  command map and every `internal/` package, so leaving it stale would
+  contradict `cli.md` and `encryption.md`.
+- `AGENTS.md`: the `cmd/encrypt`, `internal/crypt`, `internal/recovery` and
+  `internal/keyrecord` entries in the package map, the `encrypt` command in
+  the startup-wiring command map, and the CLI-only clause in the tool-surface
+  invariant.
+- `README.md` (worklog): the status line, the Phase 6 board row, decisions
+  D24–D26, and the session journal entry.
+
+Hosted privacy text in `baalimago/slivingdoc-cloud`
+(`src/content/site/privacy.md` line 68 says notes are not end-to-end
+encrypted): this remains the phase's **Human required** artifact. The
+repository exists at `/home/imago/Projects/private/slivingdoc-cloud`, but the
+required review and that repository's `make qa` cannot be obtained in this
+session, so it was not changed. **Blocked artifact reported to the maintainer**
+(D26).
+
+Test commands and results:
+
+```text
+python3 scripts/check-architecture-links.py
+29 file(s) checked, every local link resolves
+
+go test ./internal/integrationtest/ -run 'TestScenarioUpgradeRequired' -count=1 -v -timeout=180s
+--- PASS: TestScenarioUpgradeRequiredForNewerManifest (0.03s)
+--- PASS: TestScenarioUpgradeRequiredForEncryptedCurrent (0.16s)
+ok  github.com/baalimago/slivingdoc/internal/integrationtest  4.757s
+
+make qa
+gofumpt / go vet / staticcheck / go fix: clean
+ok  ... every package ... (race, -count=3, -timeout=30s)
+== coverage: 87.1% (floor 70%) ==
+npm test: 35 passed, 0 failed
+```
 
 ## Review findings
 
-None.
+Carried forward from Phase 4 and undeleted by Phase 5: the process never
+constructs `storage.Encrypted` for `serve`, `pull` or `commit`, so those
+commands read an encrypted `current` through the raw store and refuse it as
+`UPGRADE_REQUIRED` rather than unlocking it. The new `architecture/encryption.md`
+records this in its Gotchas. Phase 7's readiness review must either open an
+owning phase or carry the finding forward explicitly.

@@ -23,6 +23,7 @@ var commandGroups = []commandGroup{
 	{title: "Sync", commands: []string{"pull", "commit", "status", "log"}},
 	{title: "Agents", commands: []string{"serve"}},
 	{title: "Account", commands: []string{"login", "space", "logout"}},
+	{title: "Encryption", commands: []string{"encrypt"}},
 	{title: "About", commands: []string{"version"}},
 }
 

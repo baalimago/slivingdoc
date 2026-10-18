@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"path/filepath"
 	"slices"
 	"sync"
 	"time"
 
+	"github.com/baalimago/slivingdoc/internal/crypt"
 	"github.com/baalimago/slivingdoc/internal/git"
 	"github.com/baalimago/slivingdoc/internal/notebook"
 	"github.com/baalimago/slivingdoc/internal/storage"
@@ -100,9 +102,15 @@ type ServiceHooks struct {
 // the CLI passes its positional path. Calls for one path serialize on that
 // workspace's operation lock; distinct paths operate independently
 // (architecture/workspace.md).
+//
+// The service holds the raw store it was given and, when it was given a
+// keyring, serves every notebook operation through the encrypted decorator
+// (architecture/encryption.md). The encrypt commands read and rewrite the
+// stored wrapper itself, so they ask for the raw view.
 type Service struct {
 	engine git.Engine
 	store  storage.ObjectStore
+	ring   *crypt.Keyring
 	cfg    ServiceConfig
 	hooks  *ServiceHooks
 	policy git.PathPolicy
@@ -114,17 +122,35 @@ type Service struct {
 }
 
 // openedNotebook is one opened path: the workspace (the resource owner:
-// repository, operation lock, workspace root) and the notebook bound to
-// it.
+// repository, operation lock, workspace root) and its two notebook views,
+// the decorated one every operation uses and the raw one the encrypt
+// commands use.
 type openedNotebook struct {
 	workspace *workspace.Workspace
 	notebook  *notebook.Notebook
+	raw       *notebook.Notebook
 }
+
+// storedCurrentState classifies the stored current without opening it, which
+// is the question the secret prompt of pull and commit asks first.
+type storedCurrentState uint8
+
+const (
+	// storedCurrentUnknown means the store gave no answer here: the
+	// operation that follows reports its own failure.
+	storedCurrentUnknown storedCurrentState = iota
+	// storedCurrentAbsent is a store that holds no current yet.
+	storedCurrentAbsent
+	// storedCurrentPlaintext is a notebook with no envelope.
+	storedCurrentPlaintext
+	// storedCurrentEncrypted is an envelope this process holds no secret for.
+	storedCurrentEncrypted
+)
 
 // NewService returns a service bound to the store and the validated
 // configuration. The engine stays owned by the caller; the service closes
 // the workspaces it opens. hooks can be nil.
-func NewService(engine git.Engine, store storage.ObjectStore, cfg ServiceConfig, hooks *ServiceHooks) (*Service, error) {
+func NewService(engine git.Engine, store storage.ObjectStore, cfg ServiceConfig, hooks *ServiceHooks, ring *crypt.Keyring) (*Service, error) {
 	if engine == nil {
 		return nil, errors.New("app: engine is required")
 	}
@@ -142,6 +168,7 @@ func NewService(engine git.Engine, store storage.ObjectStore, cfg ServiceConfig,
 	return &Service{
 		engine: engine,
 		store:  store,
+		ring:   ring,
 		cfg:    cfg,
 		hooks:  hooks,
 		policy: policy,
@@ -220,6 +247,85 @@ func (s *Service) Log(ctx context.Context, path string, limit int) (notebook.His
 // map key is the cleaned path, so spellings of one directory such as
 // /ws/a and /ws/a/ share one workspace and its operation lock.
 func (s *Service) notebookFor(ctx context.Context, path string) (*notebook.Notebook, error) {
+	opened, err := s.open(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	return opened.notebook, nil
+}
+
+// rawNotebookFor returns the notebook view over the undecorated store, which
+// the encrypt commands use: they classify, open and rewrite the stored
+// current wrapper themselves, so the decorator must not decrypt it under
+// them.
+func (s *Service) rawNotebookFor(ctx context.Context, path string) (*notebook.Notebook, error) {
+	opened, err := s.open(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	return opened.raw, nil
+}
+
+// notebookStore is the store every operation uses: the decorator when the
+// service was given a keyring, the raw store otherwise.
+func (s *Service) notebookStore() storage.ObjectStore {
+	if s.ring == nil {
+		return s.store
+	}
+	return storage.Encrypted(s.store, s.ring)
+}
+
+// AskForSecret calls ask when the stored notebook is encrypted and this
+// process holds no key material, then adopts the answer as the prompted
+// candidate of the process keyring. Nothing is asked when a configured
+// candidate exists: a configured secret that opens no door stays
+// KEY_REJECTED rather than becoming a second question named the same as the
+// first. The answer stays in memory and is never written to the key record
+// (architecture/encryption.md, The process keyring).
+func (s *Service) AskForSecret(ctx context.Context, ask func() ([]byte, error)) error {
+	if s.ring == nil || s.ring.HasCandidates() || s.storedCurrent(ctx) != storedCurrentEncrypted {
+		return nil
+	}
+	secret, err := ask()
+	if err != nil {
+		return promptRefusal(err)
+	}
+	if err := s.ring.AddCandidate(crypt.Candidate{Source: crypt.SourcePrompt, Secret: secret}); err != nil {
+		return keyMaterialInvalid(err)
+	}
+	return nil
+}
+
+// storedCurrent classifies the stored current of this service's notebook
+// without a key. Every failure is storedCurrentUnknown, because this read only
+// decides whether to ask for a secret: the operation that follows reports a
+// store failure in its own taxonomy, with no raw cause on the caller's stream.
+func (s *Service) storedCurrent(ctx context.Context) storedCurrentState {
+	rc, _, err := s.store.ReadObject(ctx, storage.CurrentKey)
+	if errors.Is(err, storage.ErrNotFound) {
+		return storedCurrentAbsent
+	}
+	if err != nil {
+		return storedCurrentUnknown
+	}
+	defer rc.Close()
+	data, err := io.ReadAll(rc)
+	if err != nil {
+		return storedCurrentUnknown
+	}
+	encoding, _, err := storage.ClassifyCurrent(data)
+	if err != nil {
+		return storedCurrentUnknown
+	}
+	if encoding == storage.CurrentEncrypted {
+		return storedCurrentEncrypted
+	}
+	return storedCurrentPlaintext
+}
+
+// open returns the opened path's workspace and its two notebook views,
+// opening them on first use.
+func (s *Service) open(ctx context.Context, path string) (*openedNotebook, error) {
 	path = filepath.Clean(path)
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -227,7 +333,7 @@ func (s *Service) notebookFor(ctx context.Context, path string) (*notebook.Noteb
 		return nil, errors.New("app: service is closed")
 	}
 	if opened, ok := s.opened[path]; ok {
-		return opened.notebook, nil
+		return opened, nil
 	}
 	var wsFailpoints *workspace.Failpoints
 	var nbFailpoints *notebook.Failpoints
@@ -252,22 +358,30 @@ func (s *Service) notebookFor(ctx context.Context, path string) (*notebook.Noteb
 	// validates what it is configured with, and the normalized entries
 	// resolve exactly as the written ones do
 	// (architecture/product-contract.md, Read-only and writable paths).
-	nb, err := notebook.New(notebook.Config{
+	nbConfig := notebook.Config{
 		Workspace:           ws,
-		Store:               s.store,
+		Store:               s.notebookStore(),
 		RetryLimit:          s.cfg.CommitRetries,
 		CheckpointPacks:     s.cfg.CheckpointPacks,
 		RetainedCheckpoints: s.cfg.RetainedCheckpoints,
 		ReadOnlyPaths:       s.policy.ReadOnly(),
 		WritablePaths:       s.policy.Writable(),
 		Failpoints:          nbFailpoints,
-	})
+	}
+	nb, err := notebook.New(nbConfig)
 	if err != nil {
 		ws.Close()
 		return nil, fmt.Errorf("app: open notebook: %w", err)
 	}
-	s.opened[path] = &openedNotebook{workspace: ws, notebook: nb}
-	return nb, nil
+	nbConfig.Store = s.store
+	raw, err := notebook.New(nbConfig)
+	if err != nil {
+		ws.Close()
+		return nil, fmt.Errorf("app: open raw notebook: %w", err)
+	}
+	opened := &openedNotebook{workspace: ws, notebook: nb, raw: raw}
+	s.opened[path] = opened
+	return opened, nil
 }
 
 // identity is the storage identity derived from the normalized

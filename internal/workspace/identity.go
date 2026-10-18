@@ -56,17 +56,28 @@ func DerivedKey(canonicalPath string, id Identity) string {
 // disambiguate identities without pushing the readable components out.
 const sharedCacheDigestLen = 16
 
+// IdentityDigest returns the lowercase hexadecimal SHA-256 digest of one
+// storage identity: the digest half of a shared cache directory name. It
+// keys the stored key material of a notebook (internal/keyrecord), so it
+// carries the full digest rather than the truncated one a cache directory
+// name uses. Every component is length-prefixed, so no concatenation of
+// inputs can collide under ambiguous separators, and the digest exposes
+// neither the endpoint nor the prefix beyond a brute-force search.
+func IdentityDigest(id Identity) string {
+	h := sha256.New()
+	writeIdentity(h, id)
+	return hex.EncodeToString(h.Sum(nil))
+}
+
 // SharedCacheDirName returns the shared pack-cache directory name of one
 // storage identity: the sanitized bucket and prefix for human recognition,
 // then a truncated identity digest for disambiguation. The digest is
-// DerivedKey without the canonical visible path, so every workspace of one
-// notebook maps to one directory while distinct prefixes, buckets, or
+// IdentityDigest without the canonical visible path, so every workspace of
+// one notebook maps to one directory while distinct prefixes, buckets, or
 // endpoints never share. The name carries no correctness weight: cache
 // entries verify against the manifest descriptor on every read.
 func SharedCacheDirName(id Identity) string {
-	h := sha256.New()
-	writeIdentity(h, id)
-	digest := hex.EncodeToString(h.Sum(nil))[:sharedCacheDigestLen]
+	digest := IdentityDigest(id)[:sharedCacheDigestLen]
 	return sanitizeCacheComponent(id.Bucket) + "-" + sanitizeCacheComponent(id.Prefix) + "-" + digest
 }
 

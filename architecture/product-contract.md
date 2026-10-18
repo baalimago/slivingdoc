@@ -45,6 +45,17 @@ CLI:  cmd/pull, cmd/commit → Runtime.Pull/Commit → app.Report → writeSucce
 
 Workflow: `notes_pull` once, edit UTF-8 files, `notes_commit(message)`; repeat.
 
+### Encryption is a CLI-only addition
+
+The encryption feature adds one CLI-only command family, `slivingdoc encrypt
+init|status|passwd|recovery|rekey`, and no MCP tool, no storage route, and no
+adapter method. The two tools, their schemas and the meaning of every
+parameter and success field are unchanged. An encrypted notebook is
+unlocked transparently by the process that reads it, so the tool surface
+never names encryption; only a locked notebook's refusal (a key-material
+reason) or a newer-format refusal (`UPGRADE_REQUIRED`) reaches a caller
+([encryption.md](./encryption.md)).
+
 - One `serve` process binds exactly one notebook directory for its lifetime: the configured workspace root; with neither `--workspace-root` nor `--private-root`, a process-owned temporary session directory; otherwise the working directory (see [running.md](./running.md#the-session-directory)). A tool call cannot switch it.
 - Neither tool takes a path. A present `path` member of any JSON type, `null` included, is `INVALID_REQUEST`/`MALFORMED_INPUT` before an unknown member is considered; the refusal names `--workspace-root` and echoes no path (`rejectPath`). Every success names the server's directory, and so do the server `instructions`.
 - CLI mirror: `slivingdoc pull [path]`, `slivingdoc commit [path] -m <message>`. The path may be relative (resolved against the working directory) and must stay at or below the workspace root; the one-shot commands never use a temporary directory.
@@ -118,10 +129,12 @@ The notebook emits every pairing below except `MALFORMED_INPUT` and `PATH_OUTSID
 | `STORAGE_FAILURE` | `RATE_LIMITED` | The store is throttling the account | `RETRY` |
 | `STORAGE_FAILURE` | `STORAGE_FULL`, `REQUEST_LIMIT`, `ACCESS_DENIED`, `OBJECT_TOO_LARGE` | The store refused for an account reason; the refused request stored nothing (after a lost manifest-write response whose read-back was refused, acceptance is unknown); not retryable | `OPERATOR` |
 | `STORAGE_FAILURE` | `UPGRADE_REQUIRED` | The notebook was written by a newer slivingdoc; nothing was read or changed; not retryable ([compatibility.md](./compatibility.md)) | `OPERATOR` |
-| `STORAGE_INTEGRITY` | `MANIFEST_INVALID`, `PACK_INVALID`, `HISTORY_INVALID`, `ENGINE_FAILED` | Stored state untrusted, or engine failure | `OPERATOR` |
+| `STORAGE_INTEGRITY` | `MANIFEST_INVALID`, `PACK_INVALID`, `ENVELOPE_INVALID`, `HISTORY_INVALID`, `ENGINE_FAILED` | Stored state untrusted, or engine failure | `OPERATOR` |
 | `RECOVERY_FAILURE` | `LOCAL_MUTATION_FAILED` | Failure after local mutation began, or (stage `entry`) the repair of an earlier one rewrote L instead of running the call | `PULL` if `resynchronized`, else `RETRY` |
 | `RECOVERY_FAILURE` | `RATE_LIMITED` | As above, and the store throttled the resynchronizing read (`resynchronized=false`) | `RETRY` |
 | `RECOVERY_FAILURE` | `STORAGE_FULL`, `REQUEST_LIMIT`, `ACCESS_DENIED`, `OBJECT_TOO_LARGE`, `UPGRADE_REQUIRED` | As above, and the store refused the resynchronizing read for an account reason (`resynchronized=false`); not retryable | `OPERATOR` |
+| `STORAGE_FAILURE` | `KEY_REQUIRED`, `KEY_REJECTED`, `KEY_MATERIAL_INVALID` | The notebook is encrypted and no usable secret opened a door; refused before pack access; not retryable ([encryption.md](./encryption.md)) | `OPERATOR` |
+| `INVALID_REQUEST` | `DOOR_LIMIT`, `ENCRYPTION_ALREADY_ENABLED`, `ENCRYPTION_NOT_ENABLED` | A refused `encrypt` command: a door list outside the bounds (including removing the last door), or init on an encrypted / a door command on a plaintext notebook | `FIX_INPUT` |
 
 File reasons: `TEXT_CONFLICT` (marker ranges), `PATH_CONFLICT` (file versus directory, empty ranges), `UNRESOLVED_MARKERS` (ranges), `READ_ONLY` (empty), `INVALID_CONTENT` (empty), `NOT_IN_NOTEBOOK` and `DIFFERS_FROM_NOTEBOOK` (empty; a refused first pull). Action meanings: `FIX_INPUT` change the request; `EDIT_FILES` edit then commit; `PULL` pull then continue; `RETRY` repeat the call; `OPERATOR` a person must act.
 
@@ -152,7 +165,7 @@ Configured per process with `--read-only-paths` / `--writable-paths` (same for `
 
 ## Related
 
-- [overview.md](./overview.md), [pull.md](./pull.md), [commit.md](./commit.md), [conflicts.md](./conflicts.md), [guarantees.md](./guarantees.md)
+- [overview.md](./overview.md), [pull.md](./pull.md), [commit.md](./commit.md), [conflicts.md](./conflicts.md), [guarantees.md](./guarantees.md), [encryption.md](./encryption.md)
 - [git-engine.md](./git-engine.md) for path validation rules used by entries
 - [running.md](./running.md#read-only-paths), [running.md](./running.md#writable-paths), [running.md](./running.md#configuration)
 - `../AGENTS.md`: [Conventions](../AGENTS.md#conventions) (error taxonomy stability, invariants for read-only and writable paths)

@@ -23,6 +23,7 @@ Read this when: adding or changing a flag or environment variable, changing a de
 | `internal/workspace/identity.go` | `Identity`, `DerivedKey`, `SharedCacheDirName` (consume the normalized endpoint, region, bucket, prefix, and a hosted space's server id) |
 | `internal/s3store/store.go` | `Config`, `Options`, `New` (credentials and addressing) |
 | `internal/httpstore/store.go` | `ValidateSpace`, `ValidateToken`, `IsLoopback` (hosted-mode checks), `Config`, `New` |
+| `internal/keyrecord/codec.go`, `file.go`, `resolve.go` | The encryption key material: `FileName` (`notebooks.json`), `FormatVersion` (1), `PassphraseEnv`, `PassphraseFileEnv`, `Kind`, `Entry`, `Set`, `Locate`, `File.Load`/`Save`/`Update`/`Forget`, `Resolve` (candidate order), the envfile grammar ([encryption.md](./encryption.md)) |
 | `internal/pathutil/home.go` | `ExpandHome` (a leading `~/` in roots and paths) |
 
 ## Flow
@@ -97,7 +98,7 @@ app.Setup(engine, flags, opts) → setup(process)
 | Log level | `--log-level` | `LOG_LEVEL` | info | flag: `slogcolor.ParseLevels`, fatal; env: lenient |
 | Log timestamp | `--log-timestamp` | `SLIVINGDOC_LOG_TIMESTAMP` | `true` | `ParseBool` |
 
-Not flags: `NO_COLOR` and `DEBUG_PERF` are read from the environment only ([logging.md](./logging.md), [cli.md](./cli.md)).
+Not flags: `NO_COLOR` and `DEBUG_PERF` are read from the environment only ([logging.md](./logging.md), [cli.md](./cli.md)), and so are the two encryption settings `SLIVINGDOC_PASSPHRASE` and `SLIVINGDOC_PASSPHRASE_FILE`, which no command-line flag can name ([encryption.md](./encryption.md)).
 
 **Precedence.** An explicitly set flag wins over the environment, which wins over the default (`resolveString`, `resolveBool`, `resolveInt`); exception: the S3 transport endpoint, see Gotchas. Each flag type records `set`, so an explicitly empty flag (`--read-only-paths=`) does not fall back to the environment; that is how a process clears an inherited value. An empty environment value counts as unset. For roots, an explicitly empty flag counts as configured and then fails the empty-root check (`resolveRoot`, `absolute`). A duplicated environment variable takes its last value (`environ`).
 
@@ -139,6 +140,8 @@ After the store is built, `config.withStoreResolution` applies the effective end
 
 **Path sets.** `resolvePolicy` first normalizes the read-only entries (`git.NormalizeEntries`), then composes both with `git.NewPolicy`. An invalid entry refuses startup naming the setting; a path named by both settings is an `OverlapError` rendered as `--read-only-paths "x" and --writable-paths "x" name the same path`. `finish` stores `policy.ReadOnly()`/`Writable()` back into the config. The sets resolve by longest match, and a non-empty writable set protects every unmatched path; the behavioral contract is in [running.md, Read-only paths](./running.md#read-only-paths).
 
+**Notebook encryption key material.** The encryption commands read the candidate secrets of this notebook identity from two settings and one file, never from a flag: `SLIVINGDOC_PASSPHRASE` (the plaintext secret itself), `SLIVINGDOC_PASSPHRASE_FILE` (the path of an envfile that holds it), and the key record. The record is `notebooks.json` in the same configuration directory as `credentials.json` and `workspaces.json` (the configuration directory rule below), a strict versioned file (`keyrecord.FormatVersion` 1) that maps the lowercase SHA-256 identity digest (`workspace.IdentityDigest`) to one entry: a stored passphrase or the path of an envfile. It is read and written through the same hardened `credentials.PrivateFile` as every other configuration file, and a change is a locked read-modify-write under `notebooks.lock`. A refusal from either setting names the setting (`SLIVINGDOC_PASSPHRASE_FILE` or `passphraseFile`) and never the path; the settings' values and the record are never logged or echoed. The file is read only by the `encrypt` commands and by a process that holds the notebook key material, and it is the only configuration file that can carry a plaintext secret, which `--store-passphrase --confirm-store-passphrase` acknowledges ([encryption.md](./encryption.md)).
+
 **Diagnostics.** Resolution and validation refusals (environment values, `--log-level`, everything in `finish`) are wrapped by `setup` as `app: invalid configuration: <msg>` and passed through `mcp.Redact`. A malformed flag value on the command line is rejected earlier by the flag parser, unredacted: by the router (one stderr line `error: <command>: <flag error>; run 'slivingdoc <command> -h' for its flags`, empty stdout) when it precedes the path, or by `OperationPath` (`pull: ...`, `commit: ...`) when it follows it. Messages never echo credentials or private values; path-set entries are notebook-relative and may be named.
 
 ## Gotchas
@@ -156,5 +159,6 @@ After the store is built, `config.withStoreResolution` applies the effective end
 - [cli.md](./cli.md): where `Setup` runs and refusals exit.
 - [s3store.md](./s3store.md): how `Region`, `Endpoint`, `ForcePathStyle` and credentials reach the SDK.
 - [security.md](./security.md): redaction and path rules.
+- [encryption.md](./encryption.md): the passphrase settings, the key record and the `encrypt` flags.
 - [running.md, Configuration](./running.md#configuration): operator reference.
 - [AGENTS.md, Key Flags](../AGENTS.md#key-flags).
