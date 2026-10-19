@@ -111,6 +111,21 @@ func (s Style) Dim(t string) string { return s.code(t, codeDim) }
 // Bold paints what the reader must check, such as an account.
 func (s Style) Bold(t string) string { return s.code(t, codeBold) }
 
+// segmentHues tell a strip's segments apart; the failure red is left out.
+var segmentHues = []hue{
+	hueBrand, hueGood, hueWarn,
+	{basic: "\x1b[35m", true: "\x1b[38;2;190;120;255m"},
+	{basic: "\x1b[95m", true: "\x1b[38;2;240;110;170m"},
+	{basic: "\x1b[36m", true: "\x1b[38;2;120;200;220m"},
+	{basic: "\x1b[93m", true: "\x1b[38;2;200;200;90m"},
+	{basic: "\x1b[94m", true: "\x1b[38;2;150;170;255m"},
+}
+
+// Segment paints t in the i-th colour of a strip, wrapping after the last.
+func (s Style) Segment(i int, t string) string {
+	return s.hue(t, segmentHues[i%len(segmentHues)])
+}
+
 func (s Style) hue(t string, h hue) string {
 	if s.depth == TrueColor {
 		return s.code(t, h.true)

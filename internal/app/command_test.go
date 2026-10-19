@@ -312,6 +312,33 @@ func TestWriteSuccessEmptyStat(t *testing.T) {
 	}
 }
 
+func TestReportMaterializationPrintsTheTree(t *testing.T) {
+	t.Parallel()
+	result := notebook.Result{
+		Generation: 3,
+		Stat: git.DiffStat{
+			Files:      []git.FileStat{{Path: "docs/faq.md", Insertions: 2}, {Path: "notes/a.md", Insertions: 1}},
+			Insertions: 3,
+		},
+		Contents: []git.FileLines{{Path: "docs/faq.md", Lines: 2}, {Path: "notes/a.md", Lines: 1}},
+	}
+	var out bytes.Buffer
+	if err := Report(&out, result, nil, "/tmp/nb", nil, []string{"docs"}, []string{"notes"}); err != nil {
+		t.Fatalf("Report() = %v", err)
+	}
+	want := "OK  generation 3  /tmp/nb\n" +
+		"  2 files · 3 lines\n" +
+		"  entry            files    % largest inside, without a row of its own\n" +
+		"  docs/                1  50% faq.md\n" +
+		"  notes/               1  50% a.md\n" +
+		"writable: notes\n" +
+		"read-only: docs\n" +
+		"path-rule: longest match decides\n"
+	if out.String() != want {
+		t.Fatalf("output = %q, want %q", out.String(), want)
+	}
+}
+
 // TestWriteSuccessReadOnlyTrailer checks the trailer appears only for a
 // non-empty set.
 func TestWriteSuccessReadOnlyTrailer(t *testing.T) {

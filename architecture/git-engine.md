@@ -18,7 +18,7 @@ Read this when: adding or changing a native operation, touching tree building, s
 | `internal/git/path.go` | `ValidatePath`, `validateSegment`, `isWindowsDeviceName`, `ValidateContent`, `ValidateSnapshot`, `ValidateFoldedDirectories`, `FoldedDirectoryPairs`, `PathCollisionError` |
 | `internal/git/policy.go` | `PathPolicy`, `NewPolicy`, `Configured`, `Protects`, `ChangedProtected`, `RestoreProtected`, `OverlapError` |
 | `internal/git/readonly.go` | `EntrySet`, `NormalizeEntries`, `validateEntries`, `collapseEntries`, `Covers`, `CoveringEntry`, `ChangedUnder`, `Pin`, `ReadCovered` |
-| `internal/git/diffstat.go` | `DiffSnapshots`, `DiffStat`, `FileStat` (Myers middle-snake line diff) |
+| `internal/git/diffstat.go` | `DiffSnapshots`, `DiffStat`, `FileStat` (Myers middle-snake line diff); `LineCounts`, `FileLines` (the line count of every file of a snapshot, same line rule) |
 | `internal/git/errors.go` | Named causes `ErrNoNewObjects`, `ErrObjectMissing`, `ErrEmptyPack`, `ErrHeadRequired`; `UnsupportedModeError` |
 | `internal/git/gittest/gittest.go` | `ObjectID`: fake object hashing for fakes in `notebook` and `workspace` tests |
 | `internal/git2/doc.go` | Package doc: the only CGo/libgit2 boundary; no pure-Go build |

@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"regexp"
 	"slices"
@@ -306,6 +307,90 @@ func TestNoOpCommitReturnsEmptyStatEnvelope(t *testing.T) {
 	assertSuccessInfo(t, res, &SuccessInfo{
 		Path: "/abs/notes",
 		Code: "OK", Generation: 7, FilesChanged: 0, Insertions: 0, Deletions: 0, Files: []ChangeFile{},
+		ReadOnly: []string{}, Writable: []string{},
+	})
+}
+
+func materializedResult() notebook.Result {
+	return notebook.Result{
+		Generation: 4,
+		Stat: git.DiffStat{
+			Files:      []git.FileStat{{Path: "a.md", Insertions: 1}, {Path: "notes/b.md", Insertions: 2}},
+			Insertions: 3,
+		},
+		Contents: []git.FileLines{{Path: "a.md", Lines: 1}, {Path: "notes/b.md", Lines: 2}, {Path: "notes/empty", Lines: 0}},
+	}
+}
+
+const materializedOutline = `{"files":3,"lines":3,"entries":[` +
+	`{"path":"notes/","files":2,"share":67,"largest":[{"path":"notes/b.md","lines":2},{"path":"notes/empty","lines":0}]},` +
+	`{"path":"a.md","lines":1}]}`
+
+const materializedText = "\nfirst pull: 3 files now on disk; outline of the largest entries, as JSON; list or read the directory for more\n" +
+	materializedOutline
+
+func decodeOutline(t *testing.T, text string) *Outline {
+	t.Helper()
+	var o Outline
+	if err := json.Unmarshal([]byte(text), &o); err != nil {
+		t.Fatal(err)
+	}
+	return &o
+}
+
+func TestPullMaterializationEnvelope(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		readOnly []string
+		wantText string
+	}{
+		{name: "no path sets", wantText: "/abs/notes" + materializedText},
+		{name: "read-only set", readOnly: []string{"docs"}, wantText: "/abs/notes (read-only: docs)" + materializedText},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			client, _ := newTestPair(t, &fakeService{result: materializedResult(), readOnly: tt.readOnly})
+			res, err := client.CallTool(context.Background(), &sdk.CallToolParams{
+				Name:      toolPull,
+				Arguments: map[string]any{"path": "/abs/notes"},
+			})
+			if err != nil {
+				t.Fatalf("CallTool() = %v", err)
+			}
+			readOnly := tt.readOnly
+			if readOnly == nil {
+				readOnly = []string{}
+			}
+			assertSuccessInfo(t, res, &SuccessInfo{
+				Path: "/abs/notes", Code: "OK", Generation: 4, Materialized: true,
+				FilesChanged: 2, Insertions: 3, Deletions: 0, Files: []ChangeFile{},
+				Outline: decodeOutline(t, materializedOutline), ReadOnly: readOnly, Writable: []string{},
+			})
+			if text := res.Content[0].(*sdk.TextContent).Text; text != tt.wantText {
+				t.Fatalf("text item = %q, want %q", text, tt.wantText)
+			}
+		})
+	}
+}
+
+func TestInitializedPullListsEveryChangedFile(t *testing.T) {
+	var result notebook.Result
+	want := make([]ChangeFile, 0, 500)
+	for i := range 500 {
+		path := fmt.Sprintf("notes/%03d.md", i)
+		result.Stat.Files = append(result.Stat.Files, git.FileStat{Path: path, Insertions: 1})
+		want = append(want, ChangeFile{Path: path, Insertions: 1})
+	}
+	result.Stat.Insertions = 500
+	client, _ := newTestPair(t, &fakeService{result: result})
+	res, err := client.CallTool(context.Background(), &sdk.CallToolParams{
+		Name:      toolPull,
+		Arguments: map[string]any{"path": "/abs/notes"},
+	})
+	if err != nil {
+		t.Fatalf("CallTool() = %v", err)
+	}
+	assertSuccessInfo(t, res, &SuccessInfo{
+		Path: "/abs/notes", Code: "OK", FilesChanged: 500, Insertions: 500, Files: want,
 		ReadOnly: []string{}, Writable: []string{},
 	})
 }
@@ -690,8 +775,12 @@ func assertOKResult(t *testing.T, res *sdk.CallToolResult) {
 		t.Fatalf("content items = %d, want exactly one", len(res.Content))
 	}
 	text, ok := res.Content[0].(*sdk.TextContent)
-	if !ok || text.Text != got.Path {
-		t.Fatalf("text item = %#v, want the resolved notebook path %q", res.Content[0], got.Path)
+	if !ok {
+		t.Fatalf("text item = %#v, want text content", res.Content[0])
+	}
+	// The path-set suffix and a materialization's text are pinned per test.
+	if len(got.ReadOnly)+len(got.Writable) == 0 && !got.Materialized && text.Text != got.Path {
+		t.Fatalf("text item = %q, want the resolved notebook path %q", text.Text, got.Path)
 	}
 }
 

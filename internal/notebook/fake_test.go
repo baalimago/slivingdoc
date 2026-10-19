@@ -704,6 +704,7 @@ type nbConfig struct {
 	nbFail          *Failpoints
 	readOnly        []string
 	writable        []string
+	ignore          workspace.Ignore
 }
 
 // newNotebook builds one real workspace over the engine and one notebook
@@ -743,6 +744,7 @@ func newNotebook(tb testing.TB, cfg nbConfig) (*Notebook, *workspace.Workspace, 
 		Identity:      testIdentity(),
 		Engine:        engine,
 		Failpoints:    cfg.wsFail,
+		Ignore:        cfg.ignore,
 	}
 	w, err := workspace.Open(context.Background(), wcfg)
 	if err != nil {

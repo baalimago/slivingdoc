@@ -13,8 +13,10 @@ type SuccessInfo struct {
 	Code string `json:"code"`
 	// Path is the resolved notebook directory the operation ran against.
 	// It is the caller's own visible directory, never private state.
-	Path         string       `json:"path"`
-	Generation   uint64       `json:"generation"`
+	Path       string `json:"path"`
+	Generation uint64 `json:"generation"`
+	// Materialized marks a first pull into an empty directory: files is empty and outline describes the notebook.
+	Materialized bool         `json:"materialized"`
 	FilesChanged int          `json:"filesChanged"`
 	Insertions   int          `json:"insertions"`
 	Deletions    int          `json:"deletions"`
@@ -25,6 +27,8 @@ type SuccessInfo struct {
 	// Read-only and writable paths). Always present, empty when nothing is
 	// configured.
 	Writable []string `json:"writable"`
+	// Outline is a materialization's outline; absent from every other result.
+	Outline *Outline `json:"outline,omitempty"`
 }
 
 // ChangeFile is the per-file line-change summary of a success: the
@@ -37,24 +41,30 @@ type ChangeFile struct {
 
 // MapSuccess converts a notebook result into the structured success
 // object. The generation and the diffstat totals map directly; files is
-// always non-nil, empty for a no-op. No redaction is needed: the shape
+// always non-nil, empty for a no-op and for a materialization, which
+// carries its outline instead. No redaction is needed: the shape
 // carries no credential, S3 key, private path, or Git ID, and the diffstat
 // paths are already the normalized internal relative form used by error
 // files.
 func MapSuccess(result notebook.Result, path string) *SuccessInfo {
-	files := make([]ChangeFile, 0, len(result.Stat.Files))
-	for _, f := range result.Stat.Files {
-		files = append(files, ChangeFile{Path: f.Path, Insertions: f.Insertions, Deletions: f.Deletions})
-	}
-	return &SuccessInfo{
+	info := &SuccessInfo{
 		Code:         "OK",
 		Path:         path,
 		Generation:   result.Generation,
+		Materialized: len(result.Contents) > 0,
 		FilesChanged: len(result.Stat.Files),
 		Insertions:   result.Stat.Insertions,
 		Deletions:    result.Stat.Deletions,
-		Files:        files,
+		Files:        []ChangeFile{},
 		ReadOnly:     []string{},
 		Writable:     []string{},
 	}
+	if info.Materialized {
+		info.Outline = outline(result.Contents)
+		return info
+	}
+	for _, f := range result.Stat.Files {
+		info.Files = append(info.Files, ChangeFile{Path: f.Path, Insertions: f.Insertions, Deletions: f.Deletions})
+	}
+	return info
 }

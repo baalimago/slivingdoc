@@ -26,6 +26,7 @@ type Workspace interface {
 	Repo() git.Repository
 	Accept(ctx context.Context, baseline workspace.Baseline) error
 	Materialize(ctx context.Context, baseline workspace.Baseline, tree git.OID) error
+	WithoutIgnored(target git.Snapshot) git.Snapshot
 	Recover(ctx context.Context, baseline workspace.Baseline) error
 	RecoveryRequired() bool
 	CacheDir() string

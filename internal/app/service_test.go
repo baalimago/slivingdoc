@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 
@@ -326,8 +327,12 @@ func resultOK(res *sdk.CallToolResult) error {
 		return fmt.Errorf("content items = %d, want exactly one", len(res.Content))
 	}
 	text, ok := res.Content[0].(*sdk.TextContent)
-	if !ok || text.Text != got.Path {
-		return fmt.Errorf("text item = %#v, want the resolved notebook path %q", res.Content[0], got.Path)
+	if !ok {
+		return fmt.Errorf("text item = %#v, want text content", res.Content[0])
+	}
+	// a pull that lost the race to another writer's first commit materializes
+	if first, _, _ := strings.Cut(text.Text, "\n"); first != got.Path {
+		return fmt.Errorf("text item = %q, want the resolved notebook path %q first", text.Text, got.Path)
 	}
 	return nil
 }

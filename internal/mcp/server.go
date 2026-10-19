@@ -10,6 +10,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -192,13 +193,13 @@ func (h *handler) resultFor(err error, diagnosticID string) (*sdk.CallToolResult
 // successResult is the success envelope: one text item and the structured
 // SuccessInfo object (architecture/product-contract.md). The text item is
 // often the only part a client forwards to its model, so it names the
-// directory and the configured path sets.
+// directory, the configured path sets, and a materialization's header and tree.
 func (h *handler) successResult(result notebook.Result, path string) *sdk.CallToolResult {
 	info := MapSuccess(result, path)
 	info.ReadOnly = h.svc.ReadOnlyPaths()
 	info.Writable = h.svc.WritablePaths()
 	return &sdk.CallToolResult{
-		Content:           []sdk.Content{&sdk.TextContent{Text: successText(path, info.ReadOnly, info.Writable)}},
+		Content:           []sdk.Content{&sdk.TextContent{Text: successText(info)}},
 		StructuredContent: info,
 	}
 }
@@ -206,22 +207,29 @@ func (h *handler) successResult(result notebook.Result, path string) *sdk.CallTo
 // successText is the success text item (architecture/product-contract.md,
 // Read-only and writable paths). It names the actionable list: the writable
 // set first, because a non-empty one is the frame the read-only entries are
-// exceptions inside.
-func successText(path string, entries, writable []string) string {
+// exceptions inside. A materialization adds a header naming the files now
+// on disk, then the outline.
+func successText(info *SuccessInfo) string {
 	parts := make([]string, 0, 2)
-	if len(writable) > 0 {
-		parts = append(parts, "writable: "+strings.Join(writable, notebook.ReadOnlyListSeparator))
+	if len(info.Writable) > 0 {
+		parts = append(parts, "writable: "+strings.Join(info.Writable, notebook.ReadOnlyListSeparator))
 	}
-	if len(entries) > 0 {
-		parts = append(parts, "read-only: "+strings.Join(entries, notebook.ReadOnlyListSeparator))
+	if len(info.ReadOnly) > 0 {
+		parts = append(parts, "read-only: "+strings.Join(info.ReadOnly, notebook.ReadOnlyListSeparator))
 	}
 	if len(parts) == 2 {
 		parts = append(parts, notebook.PathSetsNestRule)
 	}
-	if len(parts) == 0 {
-		return path
+	text := info.Path
+	if len(parts) > 0 {
+		text += " (" + strings.Join(parts, "; ") + ")"
 	}
-	return path + " (" + strings.Join(parts, "; ") + ")"
+	if info.Materialized {
+		outline, _ := json.Marshal(info.Outline) // strings and ints cannot fail to marshal
+		text += fmt.Sprintf("\nfirst pull: %s now on disk; outline of the largest entries, as JSON; list or read the directory for more\n%s",
+			count(info.Outline.Files, "file", "files"), outline)
+	}
+	return text
 }
 
 // instructions is the server instruction text: the notebook directory and,

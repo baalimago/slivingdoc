@@ -323,3 +323,28 @@ func lcsLength(a, b []string) int {
 	}
 	return dp[len(a)][len(b)]
 }
+
+func TestLineCountsFollowTheDiffstatLineRule(t *testing.T) {
+	snap := fakeSnapshot(map[string]string{
+		"b/notes.md": "one\ntwo\nthree", // no trailing LF: three lines
+		"a.md":       "x\r\ny\r\n",      // CRLF: two lines
+		"empty":      "",
+	})
+	got := LineCounts(snap)
+	want := []FileLines{
+		{Path: "a.md", Lines: 2},
+		{Path: "b/notes.md", Lines: 3},
+		{Path: "empty", Lines: 0},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("LineCounts() = %+v, want %+v", got, want)
+	}
+	added := DiffSnapshots(Snapshot{}, snap)
+	for _, f := range added.Files {
+		for _, w := range want {
+			if w.Path == f.Path && w.Lines != f.Insertions {
+				t.Fatalf("%s: LineCounts = %d, DiffSnapshots insertions = %d", f.Path, w.Lines, f.Insertions)
+			}
+		}
+	}
+}

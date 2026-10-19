@@ -2,17 +2,17 @@
 
 `notes_pull` brings the visible directory L up to the accepted remote state R while keeping the caller's unpublished edits. It scans L, reads and validates `current`, imports only the descriptor packs the private repository lacks (downloading only those absent from the pack-byte cache), runs one three-tree merge (accepted baseline A, L, R), rewrites L with the full merge result, and records R as the new baseline. A conflict still rewrites L (with markers) and still advances the baseline. This doc answers "what exactly happens, in what order, on `notes_pull`".
 
-Read this when: changing pull ordering, remote reading, the pack cache, the pulled marker, the first-pull behavior, or protected-path restore on pull.
+Read this when: changing pull ordering, remote reading, the pack cache, the pulled marker, the first-pull behavior, the materialization result, or protected-path restore on pull.
 
 ## Key files
 
 | File | Purpose |
 |------|---------|
-| `internal/notebook/pull.go` | `Notebook.Pull`, `Notebook.pullAttempt`, `guardFirstPull`, `pinProtected` |
+| `internal/notebook/pull.go` | `Notebook.Pull`, `Notebook.pullAttempt`, `guardFirstPull`, `pinProtected`, `materializes` |
 | `internal/notebook/commit.go` | `restoreProtected` (used by `pinProtected`) |
 | `internal/notebook/remote.go` | `readRemote`, `readCurrent`, `emptyRemote`, `loadRemote`, `reuseAccepted`, `validateRemote`, `importRemote` (`importMissing`, `importAll`), `prefetchPacks`, `ensurePack`, `cacheRead`, `cacheWrite`, `remoteState.baseline` |
 | `internal/notebook/notebook.go` | `entryRecovery`, `applyLocal`, `mapLocalError`, `materializeTree` |
-| `internal/notebook/result.go` | `diffStat` |
+| `internal/notebook/result.go` | `Result`, `summarySnapshots` |
 | `internal/workspace/scan.go` | `Workspace.Snapshot`, `scanLocked`, `scanWalk`, `readVisibleFile` |
 | `internal/workspace/materialize.go` | `applyLocked` (via `Workspace.Materialize`) |
 | `internal/workspace/workspace.go` | `Workspace.Materialize`, `MarkPulled`, `Baseline`, `CacheDir` |
@@ -50,9 +50,10 @@ mcp handler.pull → Service.Pull(path)
   6. git.Merge(repo, Baseline().Tree, mergeTree, remote.tree)
   7a. conflicts: materializeTree → applyLocal(stageConflict, ws.Materialize(R baseline, tree))
                  → ws.MarkPulled → CONTENT_CONFLICT/MERGE_CONFLICT
-  7b. clean:     diffStat(localTree, merged.Tree)
+  7b. clean:     summarySnapshots(localTree, merged.Tree) → Stat = DiffSnapshots;
+                 materializes(local, remote)? Contents = LineCounts(ws.WithoutIgnored(result))
                  → applyLocal(stagePull, ws.Materialize(R baseline, merged.Tree))
-                 → ws.MarkPulled → Result{Generation: R generation, Stat}
+                 → ws.MarkPulled → Result{Generation: R generation, Stat[, Contents]}
 ```
 
 ## Behavior
@@ -71,13 +72,14 @@ mcp handler.pull → Service.Pull(path)
 - **Baseline always advances to R.** Clean or conflicted, `Materialize` durably records `remote.baseline()` (generation, head, tree). A conflict therefore never leaves the caller behind R: after resolving markers the next commit merges against that R. Pull never restores the pre-call bytes of L.
 - **Pulled marker.** Both the clean and the conflict path call `ws.MarkPulled`, which is what makes a later `notes_commit` legal (`PULL_REQUIRED` otherwise).
 - **Result.** `Generation` is R's generation; `Stat` is the diffstat from the raw scanned L to the merged tree, so it shows remote changes arriving and protected-path restores, while kept local edits (present on both sides) do not appear. A conflict returns the zero `Result` with the error.
+- **Materialization.** A clean pull with no `pulled` marker in P, an empty L and a non-empty R (`materializes`) is a materialization: `Contents` lists every file of the merged tree that the workspace writes, with its line count (`git.LineCounts` over `Workspace.WithoutIgnored`, so an ignored remote file is left out). `Stat` is unchanged: the diffstat of the whole notebook against the empty L. A first pull into an L that holds files reports its full diffstat, so a protected file restored from R or a file that a stale copy lacks still shows; a first pull of an empty R is not a materialization either. The MCP and CLI results then carry a bounded tree instead of `files[]` ([product-contract.md](./product-contract.md#materialization)); every later pull reports its full diffstat.
 - **Protected paths.** With `--read-only-paths` or `--writable-paths`, `pinProtected` replaces every changed protected path in the local side with baseline content (or removes it) before the merge, so the merge takes R there unconditionally and never reports a conflict under a protected path. With no policy configured it returns `localTree` unchanged.
 - **Failure mapping.** Merge or materialize engine errors are `STORAGE_INTEGRITY`/`ENGINE_FAILED`. A failure inside `Materialize` after the recovery flag is durable becomes `RECOVERY_FAILURE` with stage `pull.accept` (clean) or `merge.materialize` (conflict) and `remoteAccepted=no`. A failure before the flag (reading the target tree, staging; a cancelled request stays a protocol error; the operation lock is already held, so no lock wait fails here) returns the plain workspace error, reported as `STORAGE_FAILURE`/`INTERNAL` unless it is a context error; L and P are unchanged.
 
 ## Gotchas
 
 - The op lock is held from step 0 to the result, so another pull or commit on the same path waits; it does not stop a process that edits L directly, and such an edit between step 2 and step 7 is overwritten without being merged. The contract says callers edit only between tool calls.
-- `diffStat` runs before the clean-path `Materialize` on purpose: a read failure must abort while L and P are untouched. Keep new presentation work before the mutation.
+- `summarySnapshots` runs before the clean-path `Materialize` on purpose: a read failure must abort while L and P are untouched. Keep new presentation work before the mutation.
 - `readRemote` no longer re-imports present packs, and an unchanged head skips the history walk entirely; when the head moved, `ValidateHistory` still visits every commit from the head to the shallow boundary, so that part of the cost scales with the tail length until a checkpoint compacts it.
 - A present head commit is taken as proof of its whole pack. That holds because `ImportPack` is atomic and because the notebook's own commits are built locally before they are published. `BuildTree` writes L's blobs and trees loose before the remote read, so an object the store lost but L still holds is present again by the time the reuse path looks; that is harmless (the object is there), but it means a test for object damage must remove the file from L too.
 - When the head moved, `readRemote` validates the whole history from head to the shallow boundary; `ValidateHistory` shares one seen set so the cost is the number of unique objects, not commits times files. A reused head skips that walk, so a process that never needs a pack no longer audits it: a cold reader is the only detector of a corrupt remote pack.

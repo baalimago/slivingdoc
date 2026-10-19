@@ -1,5 +1,7 @@
 package integrationtest
 
+import "github.com/baalimago/slivingdoc/internal/mcp"
+
 // Tool names of the public API (architecture/product-contract.md). The catalog
 // entries reference exactly these two tools.
 const (
@@ -79,6 +81,9 @@ type SuccessExpectation struct {
 	Insertions   int
 	Deletions    int
 	Files        []FileStatExpectation
+	// Materialized expects a first pull's exact Outline in place of Files.
+	Materialized bool
+	Outline      *mcp.Outline
 }
 
 // FileStatExpectation is one structured success file: the normalized

@@ -53,7 +53,7 @@ func (w *Workspace) applyLocked(ctx context.Context, targetTree git.OID, newBase
 	if err != nil {
 		return fmt.Errorf("workspace: read target tree: %w", err)
 	}
-	snap = w.withoutIgnored(snap)
+	snap = w.WithoutIgnored(snap)
 	if err := w.refuseIgnoredConflict(ctx, snap); err != nil {
 		return err
 	}
@@ -313,9 +313,9 @@ func (e *IgnoredConflictError) Error() string {
 
 func (e *IgnoredConflictError) Is(target error) bool { return target == ErrIgnoredConflict }
 
-// withoutIgnored drops the files this machine ignores from a target: a
+// WithoutIgnored drops the files this machine ignores from a target: a
 // materialization neither writes nor removes an ignored path.
-func (w *Workspace) withoutIgnored(target git.Snapshot) git.Snapshot {
+func (w *Workspace) WithoutIgnored(target git.Snapshot) git.Snapshot {
 	if !w.ignore.Configured() {
 		return target
 	}

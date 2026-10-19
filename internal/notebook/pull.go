@@ -107,9 +107,13 @@ func (n *Notebook) pullAttempt(ctx context.Context, mode loadMode) (Result, erro
 	// The change summary is presentation-only: compute it against the
 	// merged result before any local mutation, so a read failure aborts
 	// with L and P untouched.
-	stat, err := n.diffStat(localTree, merged.Tree)
+	baseSnap, resultSnap, err := n.summarySnapshots(localTree, merged.Tree)
 	if err != nil {
 		return Result{}, err
+	}
+	result := Result{Generation: remote.generation, Stat: git.DiffSnapshots(baseSnap, resultSnap)}
+	if n.materializes(local, remote) {
+		result.Contents = git.LineCounts(n.ws.WithoutIgnored(resultSnap))
 	}
 	if err := n.applyLocal(ctx, stagePull, RemoteAcceptedNo, func() error {
 		return n.ws.Materialize(ctx, baseline, merged.Tree)
@@ -119,7 +123,11 @@ func (n *Notebook) pullAttempt(ctx context.Context, mode loadMode) (Result, erro
 	if err := n.ws.MarkPulled(ctx); err != nil {
 		return Result{}, n.mapLocalError(err)
 	}
-	return Result{Generation: remote.generation, Stat: stat}, nil
+	return result, nil
+}
+
+func (n *Notebook) materializes(local git.Snapshot, remote remoteState) bool {
+	return !n.ws.Pulled() && len(local.Files) == 0 && remote.tree != workspace.EmptyTreeID
 }
 
 // guardFirstPull refuses a first pull (no pulled marker in P) into a

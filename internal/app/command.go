@@ -202,8 +202,8 @@ func reportError(out io.Writer, err error, p tui.Style, readOnly, writable []str
 // writeSuccess renders the success report: the OK status token, the
 // accepted generation, and the resolved notebook directory, one line per
 // changed file with its insertion and deletion counts (a zero-count side
-// is omitted), the totals trailer, and the writable and read-only trailers
-// when those sets are non-empty.
+// is omitted) and the totals trailer, or a materialization's outline, then
+// the writable and read-only trailers when those sets are non-empty.
 func writeSuccess(out io.Writer, info *mcp.SuccessInfo, p tui.Style) {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s%s  %s  %s\n", p.Mark(tui.Done), p.Good("OK"), p.Brand(fmt.Sprintf("generation %d", info.Generation)), info.Path)
@@ -217,8 +217,12 @@ func writeSuccess(out io.Writer, info *mcp.SuccessInfo, p tui.Style) {
 		}
 		fmt.Fprintf(&b, "  %s  %s\n", f.Path, strings.Join(counts, " "))
 	}
-	b.WriteString(p.Dim(fmt.Sprintf("%d files changed, %d insertions(+), %d deletions(-)",
-		info.FilesChanged, info.Insertions, info.Deletions)) + "\n")
+	if info.Outline != nil {
+		writeOutline(&b, info.Outline, p)
+	} else {
+		b.WriteString(p.Dim(fmt.Sprintf("%d files changed, %d insertions(+), %d deletions(-)",
+			info.FilesChanged, info.Insertions, info.Deletions)) + "\n")
+	}
 	writePathSets(&b, info.Writable, info.ReadOnly, p)
 	io.WriteString(out, b.String())
 }

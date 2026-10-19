@@ -66,9 +66,10 @@ func runCLI(t *testing.T, mode string, env []string, args ...string) (int, strin
 
 // runCLIOK runs one one-shot CLI process and asserts the success
 // contract: exit zero and the plain OK-prefixed result report on stdout —
-// the status token and generation summary, one indented line per changed
-// file with its insertion and deletion counts, and the totals trailer
-// followed by exactly the trailers lines, in that order and no other —
+// the status token and generation summary, then one indented line per
+// changed file with its insertion and deletion counts and the totals
+// trailer, or a materialization's totals and outline rows, followed by
+// exactly the trailers lines, in that order and no other —
 // with no ANSI escapes, because the spawned process writes to a pipe. A
 // process configured with neither path set passes nil, which forbids every
 // path-set trailer rather than tolerating one (review 1, R1-07).
@@ -82,7 +83,7 @@ func runCLIOK(t *testing.T, mode string, env []string, trailers []string, args .
 		t.Fatalf("%v stdout = %q, want the OK-prefixed result report", args, stdout)
 	}
 	var want strings.Builder
-	want.WriteString(`\n\d+ files changed, \d+ insertions\(\+\), \d+ deletions\(-\)\n`)
+	want.WriteString(`(\n\d+ files changed, \d+ insertions\(\+\), \d+ deletions\(-\)\n|\n  \d+ files? · \d+ lines?\n(  .*\n)+)`)
 	for _, line := range trailers {
 		want.WriteString(regexp.QuoteMeta(line + "\n"))
 	}
@@ -378,9 +379,10 @@ func TestScenarioCLIReadOnlyCommit(t *testing.T) {
 	notes := filepath.Join(root, "notes")
 	runCLIExact(t, "real", env,
 		"OK  generation 1  "+notes+"\n"+
-			"  docs/faq.md  +2\n"+
-			"  notes/a.md  +1\n"+
-			"2 files changed, 3 insertions(+), 0 deletions(-)\n"+
+			"  2 files · 3 lines\n"+
+			"  entry            files    % largest inside, without a row of its own\n"+
+			"  docs/                1  50% faq.md\n"+
+			"  notes/               1  50% a.md\n"+
 			"read-only: docs\n",
 		"pull", notes)
 
