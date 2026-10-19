@@ -8,6 +8,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -481,14 +483,42 @@ func (h *Harness) assertOK(t *testing.T, res *sdk.CallToolResult) {
 	if got.Writable == nil {
 		t.Fatal("writable must always be present")
 	}
+	if got.Materialized != (got.Outline != nil) || (got.Materialized && len(got.Files) != 0) {
+		t.Fatalf("materialized = %t with %d files and outline %+v, want an outline and no files exactly when materialized",
+			got.Materialized, len(got.Files), got.Outline)
+	}
 	if len(res.Content) != 1 {
 		t.Fatalf("content items = %d, want exactly one", len(res.Content))
 	}
 	text, ok := res.Content[0].(*sdk.TextContent)
-	wantText := pathSetText(got.Path, got.ReadOnly, got.Writable)
-	if !ok || text.Text != wantText {
+	wantText := successText(got)
+	if !ok || maskFileCount(text.Text) != wantText {
 		t.Fatalf("text item = %#v, want %q", res.Content[0], wantText)
 	}
+}
+
+func firstLine(text string) string {
+	line, _, _ := strings.Cut(text, "\n")
+	return line
+}
+
+// successText is the expected text item: the path line, then a
+// materialization's header and its outline as JSON. The header's file count
+// is N here; the scenarios that know it pin it.
+func successText(got mcp.SuccessInfo) string {
+	text := pathSetText(got.Path, got.ReadOnly, got.Writable)
+	if got.Materialized {
+		outline, _ := json.Marshal(got.Outline)
+		text += "\nfirst pull: N files now on disk; outline of the largest entries, as JSON; list or read the directory for more\n" + string(outline)
+	}
+	return text
+}
+
+var headerFileCount = regexp.MustCompile(`(?m)^first pull: (1 file|\d+ files) `)
+
+// maskFileCount replaces the header's file count with the N of successText.
+func maskFileCount(text string) string {
+	return headerFileCount.ReplaceAllString(text, "first pull: N files ")
 }
 
 // pathSetText is the expected success text item for the configured path
@@ -562,6 +592,10 @@ func (h *Harness) assertSuccessStat(t *testing.T, call ToolCall, res *sdk.CallTo
 		if g.Path != w.Path || g.Insertions != w.Insertions || g.Deletions != w.Deletions {
 			t.Fatalf("call %s(%s) stat file %d = %+v, want %+v", call.Tool, call.Path, i, g, w)
 		}
+	}
+	if got.Materialized != exp.Materialized || !reflect.DeepEqual(got.Outline, exp.Outline) {
+		t.Fatalf("call %s(%s) materialized = %t with outline %+v, want %t with %+v",
+			call.Tool, call.Path, got.Materialized, got.Outline, exp.Materialized, exp.Outline)
 	}
 }
 

@@ -70,7 +70,8 @@ or below the workspace root. `commit` requires `-m`/`--message`.
 On success a subcommand writes the unified result report to stdout and
 exits zero: the `OK` status token, the accepted remote generation, the
 resolved notebook directory, one line per changed file with its insertion and deletion counts (a
-zero-count side is omitted), and the totals trailer:
+zero-count side is omitted; a first pull into an empty directory prints a
+tree instead, below), and the totals trailer:
 
 ```text
 OK  generation 18  /home/me/notes
@@ -89,7 +90,33 @@ The diffstat answers "what is new to check out": `pull` reports the
 delta between the visible directory before the pull and the materialized
 result, and `commit` reports the increment the publication added over the
 remote state it observed. A no-op synchronization reports an empty
-stat.
+stat. Every changed file gets its line, however many there are.
+
+The first pull into an empty directory is different, because nothing in
+it is new to the caller. It prints an outline of the notebook instead of
+one line per file: one row per top-level entry with a peek at what it
+holds, and the largest subdirectories promoted into rows of their own
+while rows remain:
+
+```text
+OK  generation 7  /home/me/notes
+  6 files · 104 lines
+  entry            files    % largest inside, without a row of its own
+  meetings/            3  50% 2026-10-01.md · 2026-10-08.md · 2026-10-15.md
+  people/              2  33% ana.md · ben.md
+  README.md           20 lines
+```
+
+The outline has at most 8 entries, each listing its 6 largest children,
+so a notebook with many top-level entries folds the smallest into one
+`+N smaller` row; the report is at most 150 columns wide. On a
+terminal the totals line becomes a coloured strip that splits the width
+over the top-level entries by their files, a blank line sets it off from
+the column header, and each row starts with a box in its entry's colour. The files are on disk, so list or read them for
+more detail. An MCP client gets the same entries as JSON in the `outline` field
+and, after a header line that counts the files on disk, in the text item
+of the `notes_pull` result
+([product-contract.md](./product-contract.md#materialization)).
 
 A domain error prints the same status/detail/trailer skeleton to stdout
 and exits nonzero: the status line (the code, a middle dot, and the

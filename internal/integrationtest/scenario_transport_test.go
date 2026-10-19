@@ -3,7 +3,6 @@ package integrationtest
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -137,12 +136,9 @@ func assertProcessArgsOK(t *testing.T, cs *sdk.ClientSession, tool, path string,
 	}
 	// A configured read-only set suffixes the text item
 	// (architecture/product-contract.md).
-	wantText := got.Path
-	if len(got.ReadOnly) > 0 {
-		wantText = fmt.Sprintf("%s (read-only: %s)", got.Path, strings.Join(got.ReadOnly, ", "))
-	}
+	wantText := successText(got)
 	text, ok := res.Content[0].(*sdk.TextContent)
-	if !ok || text.Text != wantText {
+	if !ok || maskFileCount(text.Text) != wantText {
 		t.Fatalf("%s(%s) text = %#v, want %q", tool, path, res.Content[0], wantText)
 	}
 	return got

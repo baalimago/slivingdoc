@@ -56,8 +56,9 @@ func TestScenarioCLIColourOnTerminal(t *testing.T) {
 		notes := filepath.Join(root, "notes")
 		runCLIExact(t, "real", env,
 			"OK  generation 1  "+notes+"\n"+
-				"  docs/faq.md  +2\n"+
-				"1 files changed, 2 insertions(+), 0 deletions(-)\n"+
+				"  1 file · 2 lines\n"+
+				"  entry            files    % largest inside, without a row of its own\n"+
+				"  docs/                1 100% faq.md\n"+
 				"read-only: docs\n",
 			"pull", notes)
 		writeCLIFile(t, filepath.Join(notes, "docs", "faq.md"), "A: 2\n")

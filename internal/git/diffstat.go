@@ -80,6 +80,21 @@ func DiffSnapshots(base, cur Snapshot) DiffStat {
 	return DiffStat{Files: stats, Insertions: insertions, Deletions: deletions}
 }
 
+// FileLines is one file of a snapshot and its line count under the DiffSnapshots line rule.
+type FileLines struct {
+	Path  string
+	Lines int
+}
+
+// LineCounts lists every file of snap in snapshot order; an empty file has zero lines.
+func LineCounts(snap Snapshot) []FileLines {
+	out := make([]FileLines, 0, len(snap.Files))
+	for _, f := range snap.Files {
+		out = append(out, FileLines{Path: f.Path, Lines: countLines(f.Data)})
+	}
+	return out
+}
+
 // countLines counts the comparison lines of content without materializing
 // them: one per LF terminator, plus the final run when content does not end
 // in LF. Empty content has zero lines.

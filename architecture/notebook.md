@@ -14,7 +14,7 @@ Read this when: wiring a notebook, changing a default or range, adding a metric,
 | `internal/notebook/commit.go` | `Commit`, `attemptPublication`, `buildProposal`, `publish`, `enforcePolicy`. See [commit.md](./commit.md) , `engineFailed` |
 | `internal/notebook/remote.go` | `remoteState`, `acceptedState`, `readRemote`, `readRemoteStrict`, `loadMode`, `readCurrent`, `loadRemote`, `reuseAccepted` (`reuseVerdict`), `validateRemote` (`validationVerdict`, `verdictFor`), `importRemote` (`importMode`), `prefetchPacks`, `ensurePack`, `cacheRead`, `cacheWrite`, `lookupPublication`, `recoverState` |
 | `internal/notebook/checkpoint.go` | `runCheckpoint`, `compactManifest`, `cleanup`, `cleanupRoots`, `recordTail`. See [checkpoints.md](./checkpoints.md) |
-| `internal/notebook/result.go` | `Result{Generation, Stat}`, `diffStat` |
+| `internal/notebook/result.go` | `Result{Generation, Stat, Contents}`, `diffStat`, `summarySnapshots` |
 | `internal/notebook/metrics.go` | `Metrics`: atomic counters and gauges |
 | `internal/notebook/failpoints.go` | `Failpoints{CAS}` |
 | `internal/notebook/backoff.go` | `BackoffWaiter`, `exponentialBackoff.Wait` |
@@ -51,7 +51,7 @@ Notebook.Commit(ctx, message) → see commit.md
 
 - One `Notebook` per opened workspace path, built by `New`, held by `app.Service` for the process lifetime. All methods are safe for concurrent use; there is no mutex in `Notebook` itself.
 - Fields: `ws Workspace`, `store storage.ObjectStore`, `retryLimit`, `checkpointPacks`, `retainedCheckpoints`, `policy git.PathPolicy`, `readOnly git.EntrySet` (only for refusal wording), `newID`, `now`, `waiter`, `failpoints`, `metrics`.
-- `Workspace` is the consumer-owned view: `Snapshot`, `Baseline`, `Repo`, `Accept`, `Materialize`, `Recover`, `RecoveryRequired`, `CacheDir`, `Pulled`, `MarkPulled`. The real implementation is `*workspace.Workspace`; tests use it over a fake `git.Repository`, so only the engine and the object store are ever faked.
+- `Workspace` is the consumer-owned view: `Snapshot`, `Baseline`, `Repo`, `Accept`, `Materialize`, `WithoutIgnored`, `Recover`, `RecoveryRequired`, `CacheDir`, `Pulled`, `MarkPulled`. The real implementation is `*workspace.Workspace`; tests use it over a fake `git.Repository`, so only the engine and the object store are ever faked.
 
 ### Configuration (`Config`, validated by `New`)
 
@@ -81,7 +81,7 @@ Notebook.Commit(ctx, message) → see commit.md
 
 ### Result (`result.go`)
 
-`Result{Generation, Stat}` is valid only with a nil error; every error path returns the zero `Result`. `diffStat(base, result)` reads both trees and calls `git.DiffSnapshots`; it is computed before any local mutation or publication, so a read failure aborts with nothing changed (`STORAGE_INTEGRITY`/`ENGINE_FAILED`).
+`Result{Generation, Stat, Contents}` is valid only with a nil error; every error path returns the zero `Result`. `Contents` (every file the pull wrote, with its line count) is set only by a materialization, the first pull of a non-empty notebook into an empty directory ([pull.md](./pull.md)). `diffStat(base, result)` reads both trees through `summarySnapshots` and calls `git.DiffSnapshots`; pull calls `summarySnapshots` itself, so it reads them once for `Stat` and `Contents`. Both are computed before any local mutation or publication, so a read failure aborts with nothing changed (`STORAGE_INTEGRITY`/`ENGINE_FAILED`).
 
 ### Metrics (`metrics.go`)
 

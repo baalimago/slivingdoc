@@ -607,6 +607,91 @@ func TestPullResultStat(t *testing.T) {
 	}
 }
 
+// TestPullMaterialization: only a first pull of a non-empty notebook into an empty directory materializes.
+func TestPullMaterialization(t *testing.T) {
+	store := fake.New("")
+	ids := &testIDSource{}
+	writer, ww, _ := newNotebook(t, nbConfig{store: store, ids: ids})
+	empty, _, _ := newNotebook(t, nbConfig{store: store, ids: ids})
+	res, err := empty.Pull(context.Background())
+	if err != nil || res.Contents != nil {
+		t.Fatalf("first pull of an empty notebook = %+v, %v; want no materialization", res, err)
+	}
+
+	writeLocal(t, ww, map[string]string{"a.md": "a1\n", "sub/b.md": "b1\nb2\n", "sub/empty": ""})
+	pullOK(t, writer)
+	commitOK(t, writer, "seed")
+	contents := []git.FileLines{{Path: "a.md", Lines: 1}, {Path: "sub/b.md", Lines: 2}, {Path: "sub/empty", Lines: 0}}
+
+	fresh, _, _ := newNotebook(t, nbConfig{store: store, ids: ids})
+	res, err = fresh.Pull(context.Background())
+	if err != nil {
+		t.Fatalf("first Pull() = %v", err)
+	}
+	wantStat := git.DiffStat{
+		Files:      []git.FileStat{{Path: "a.md", Insertions: 1}, {Path: "sub/b.md", Insertions: 2}},
+		Insertions: 3,
+	}
+	if !reflect.DeepEqual(res.Contents, contents) || !reflect.DeepEqual(res.Stat, wantStat) {
+		t.Fatalf("first pull = %+v, want a materialization of %+v with stat %+v", res, contents, wantStat)
+	}
+
+	res, err = fresh.Pull(context.Background())
+	if err != nil || res.Contents != nil || len(res.Stat.Files) != 0 {
+		t.Fatalf("second pull = %+v, %v; want an initialized no-op", res, err)
+	}
+
+	// A directory that already holds files gets the full delta: a stale copy, and a restored protected file.
+	for _, tt := range []struct {
+		name     string
+		readOnly []string
+		local    map[string]string
+		want     git.DiffStat
+	}{
+		{
+			name:  "stale copy",
+			local: map[string]string{"a.md": "a1\n"},
+			want:  git.DiffStat{Files: []git.FileStat{{Path: "sub/b.md", Insertions: 2}}, Insertions: 2},
+		},
+		{
+			name:     "protected file restored",
+			readOnly: []string{"sub"},
+			local:    map[string]string{"sub/b.md": "mine\n"},
+			want: git.DiffStat{
+				Files:      []git.FileStat{{Path: "a.md", Insertions: 1}, {Path: "sub/b.md", Insertions: 2, Deletions: 1}},
+				Insertions: 3, Deletions: 1,
+			},
+		},
+	} {
+		nb, w, _ := newNotebook(t, nbConfig{store: store, ids: ids, readOnly: tt.readOnly})
+		writeLocal(t, w, tt.local)
+		res, err = nb.Pull(context.Background())
+		if err != nil || res.Contents != nil || !reflect.DeepEqual(res.Stat, tt.want) {
+			t.Fatalf("%s: first pull = %+v, %v; want the delta %+v", tt.name, res, err, tt.want)
+		}
+	}
+}
+
+// TestPullMaterializationSkipsIgnoredFiles: Contents lists only what lands on disk; the stat keeps the ignored file.
+func TestPullMaterializationSkipsIgnoredFiles(t *testing.T) {
+	store := fake.New("")
+	ids := &testIDSource{}
+	writer, ww, _ := newNotebook(t, nbConfig{store: store, ids: ids})
+	writeLocal(t, ww, map[string]string{"README.md": "hi\n", "archive/old.md": "x\n"})
+	pullOK(t, writer)
+	commitOK(t, writer, "seed")
+
+	ignore, err := workspace.NewIgnore([]string{"archive"})
+	if err != nil {
+		t.Fatalf("NewIgnore() = %v", err)
+	}
+	reader, _, _ := newNotebook(t, nbConfig{store: store, ids: ids, ignore: ignore})
+	res := pullOK(t, reader)
+	if want := []git.FileLines{{Path: "README.md", Lines: 1}}; !reflect.DeepEqual(res.Contents, want) || len(res.Stat.Files) != 2 {
+		t.Fatalf("first pull = %+v, want contents %+v and a stat of both files", res, want)
+	}
+}
+
 // TestPullDiffStatReadFailureMapsToIntegrity proves that a snapshot read
 // failure while computing the pull change summary returns the zero result
 // with the existing STORAGE_INTEGRITY path, before L or P changes: the

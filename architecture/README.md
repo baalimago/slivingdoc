@@ -19,7 +19,7 @@ the code and fix the doc in the same change (see
   dependency direction between them.
 - **[product-contract.md](./product-contract.md)**: the public surface:
   the two operations and their CLI mirror, strict inputs, the success
-  envelope (`SuccessInfo`, diffstat) and error envelope (`ToolError`,
+  envelope (`SuccessInfo`, diffstat, the first pull's tree) and error envelope (`ToolError`,
   code/reason/action tokens), the CLI report (`app.Report`), and
   read-only and writable paths (`PathPolicy`).
 

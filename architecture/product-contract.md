@@ -11,14 +11,16 @@ Read this when: changing a tool schema, a result field, an error token, the CLI 
 | `internal/mcp/server.go` | `NewServer` (registers exactly two tools), `handler.pull` / `handler.commit`, `successResult`, `successText`, `instructions`, `readOnlyDescriptionSuffix`, `writableDescriptionSuffix`, `errorResult`, `errorText` |
 | `internal/mcp/decode.go` | `decodePull`, `decodeCommit`, `validatePath`: strict input decoding and byte bounds |
 | `internal/mcp/success.go` | `SuccessInfo`, `ChangeFile`, `MapSuccess` |
+| `internal/mcp/outline.go` | `Outline`, `OutlineEntry`, `OutlineItem`, `outline`: the outline of a materialization |
 | `internal/mcp/errors.go` | `ToolError`, `MapError`, `mapNotebookError`, `safeEngineDetail`, `retryable`, `Redact` |
 | `internal/notebook/errors.go` | `Code`, `Reason`, `FileReason`, `Action`, `actionForPairing`, `actionFor`, `Error`, `RecoveryReport` |
 | `internal/notebook/notebook.go` | `ValidateMessage`, `MaxMessageBytes`, `ReadOnlyListSeparator`, `PathSetsNestRule` |
 | `internal/notebook/commit.go` | `enforcePolicy`, `policyRefusal`, `refusalMessage`, `writableMessage`, `readOnlyMessage`, `violatedEntries` |
-| `internal/notebook/pull.go` | `pinProtected`: pull restores protected paths before the merge |
+| `internal/notebook/pull.go` | `pinProtected`: pull restores protected paths before the merge; `materializes`: which pull is a materialization |
 | `internal/git/policy.go` | `PathPolicy`, `NewPolicy`, `Protects`, `ChangedProtected`, `RestoreProtected`, `OverlapError` |
 | `internal/git/readonly.go` | `EntrySet`, `NormalizeEntries`, `collapseEntries`, `CoveringEntry` |
-| `internal/git/diffstat.go` | `DiffSnapshots`, `DiffStat`, `FileStat`: the result diffstat |
+| `internal/git/diffstat.go` | `DiffSnapshots`, `DiffStat`, `FileStat`: the result diffstat; `LineCounts`, `FileLines`: the line count of every file of a snapshot |
+| `internal/app/outline.go` | `writeOutline`, `stripWidths`: the CLI's painted outline |
 | `internal/app/command.go` | `Report`, `writeSuccess`, `writeError`, `fileReasonWords`, `actionWordings`: the CLI report; `OperationPath`, `resolvePath`: CLI path (`~/` expansion, clean, relative resolved against the working directory) |
 | `internal/workspace/path.go` | `canonicalize`, `PathEscapeError` (behind `PATH_OUTSIDE_ROOT`) |
 
@@ -62,13 +64,25 @@ One MCP text item plus the structured `SuccessInfo`:
 | `code` | Always `OK` |
 | `path` | The resolved notebook directory (the caller's own directory, never private state) |
 | `generation` | Accepted remote generation after the operation (`notebook.Result.Generation`) |
+| `materialized` | `true` for a materialization (below), else `false`; always present |
 | `filesChanged`, `insertions`, `deletions` | Totals of the diffstat |
-| `files[]` | `{path, insertions, deletions}` per changed file; always present, empty for a no-op |
+| `files[]` | `{path, insertions, deletions}` per changed file; always present, empty for a no-op and for a materialization |
+| `outline` | The outline of a materialization (below); absent from every other result |
 | `readOnly`, `writable` | The normalized sets; always present, empty when unconfigured |
 
-- Pull diffstat: raw visible snapshot before the pull versus the materialized result. Commit diffstat: observed remote parent tree versus the accepted merged tree; empty for a no-change sync (`notebook.Result`).
+- Pull diffstat: raw visible snapshot before the pull versus the materialized result. Commit diffstat: observed remote parent tree versus the accepted merged tree; empty for a no-change sync (`notebook.Result`). Outside a materialization `files[]` lists every changed file of the diffstat, sorted by path, with no budget and no truncation.
 - Line rule (`git.DiffSnapshots`): a line is an LF-terminated run with one trailing CR stripped; a final run without LF counts as one line; empty content has zero lines; an added file counts every line as an insertion, a removed file every line as a deletion; any file with zero counted line changes (a byte-different file that splits to identical lines, such as CRLF to LF, or an added or removed empty file) has no entry and does not count toward `filesChanged`.
-- Text item (`successText`): the bare path, or `<path> (writable: …; read-only: …; longest match decides)` with only the configured parts, writable first.
+- Text item (`successText`): the bare path, or `<path> (writable: …; read-only: …; longest match decides)` with only the configured parts, writable first. A materialization adds a header line, `first pull: <N> files now on disk; outline of the largest entries, as JSON; list or read the directory for more`, where N counts the files the pull wrote, then the `outline` object as compact JSON, so a client that forwards only the text item gives its model the same data.
+
+### Materialization
+
+A materialization is the first pull (no pulled marker in P, [pull.md](./pull.md)) of a notebook that holds files into an empty directory (`materializes`). A first pull into a directory that already holds files reports its full delta, like any other pull. A first pull of an empty notebook writes no visible file, still records the baseline and marks the directory pulled, and reports like any other pull. Every later pull is an initialized pull, and every commit reports as before.
+
+- `materialized` is `true`, `files[]` is empty, and `outline` describes the notebook as it is on disk after the pull, so a remote file this machine ignores is not in it. The totals still count the diffstat, which leaves out a file with no lines, such as an empty `empty.md`.
+- `outline` is `{files, lines, entries[]}`: the files on disk, their lines, and at most 8 entries (`outlineEntries`). Each entry lists at most its 6 largest children (`outlineLargest`). Both bounds are constants: no flag, variable or setting changes them. Depth has no bound of its own: promotion (below) spends the entry budget.
+- A directory entry is `{path, files, share, largest[], more}`: `path` ends with `/`, `files` counts every file below it at any depth, `share` is that count as a rounded percentage of the notebook's files, `largest` lists its children without an entry of their own, largest first, as `{path, files}` for a directory and `{path, lines}` for a file, and `more` counts the children left out, absent when zero. A file entry is `{path, lines}`. Every path is the full notebook path.
+- There is one entry per top-level entry. Directories come before files; larger come first, directories by the files they hold and files by their lines; equal sizes are ordered by path, byte for byte, so the outline is deterministic. When there are more than 8 top-level entries, the 7 largest get entries and the rest fold into a last one, `{folded[], files, share}`, naming them and counting their files.
+- While the budget lasts, the largest subdirectory below any entry that has no entry yet and holds more than one file gets one, placed after the entries already under its parent; on equal sizes the earlier entry wins. A small notebook therefore shows deeper levels, and a large one only its top.
 
 ### Domain-error envelope
 
@@ -113,7 +127,7 @@ File reasons: `TEXT_CONFLICT` (marker ranges), `PATH_CONFLICT` (file versus dire
 
 ### CLI report (`app.Report`)
 
-Success prints to stdout and exits 0: `OK  generation N  <path>`, one line per changed file with `+ins -del` (zero side omitted), a totals line, then `writable:`, `read-only:`, and `path-rule: longest match decides` trailers when configured. A domain error prints the same skeleton and exits nonzero: `CODE · REASON`, the message, one line per file (path padded to the longest path plus two, the reason as words from `fileReasonWords`, `lines a-b`), `next:` from `nextStep` (a reason's own wording in `reasonNextSteps`, else `actionWordings`), `retryable:`, the recovery report, and the same trailers. The CLI report omits `detail` and `diagnosticId`. File reason words (`fileReasonWords`): `TEXT_CONFLICT` "conflict", `PATH_CONFLICT` "path conflict", `UNRESOLVED_MARKERS` "unresolved markers", `READ_ONLY` "read-only", `INVALID_CONTENT` "invalid content", `NOT_IN_NOTEBOOK` "not in the notebook", `DIFFERS_FROM_NOTEBOOK` "differs from the notebook". Next-step wording by reason (`reasonNextSteps`): `DIRECTORY_NOT_EMPTY` "pull into an empty directory, or move those files away, then pull again". Next-step wording by action (`actionWordings`): `FIX_INPUT` "correct the request, then call again", `EDIT_FILES` "edit the files, then commit", `PULL` "pull, then continue", `RETRY` "retry the same call", `OPERATOR` "operator attention needed". Colour only on a real terminal with `NO_COLOR` empty ([tui.md](./tui.md)); there a green `✓ ` leads the success line, a red `✗ ` the error line, and `→ ` replaces `next: `; stripped of escapes, it is the plain form with those marks, and a pipe sees only the plain form.
+Success prints to stdout and exits 0: `OK  generation N  <path>`, one line per changed file with `+ins -del` (zero side omitted) and a totals line or, for a materialization, `<N> files · <L> lines`, a column header (`entry`, `files`, `%`, `largest inside, without a row of its own`) and one row per entry: its name indented two spaces per level, its files and share, or a file's lines, and its largest children cut to the 150-column width, ending `+<K> more` (`writeOutline`, `outlineRows`) (on a terminal, `writeOutline` paints that totals line as a strip that splits the width over the top-level entries by their files, in one colour per entry from `tui.Segment`, puts a blank line before the header, and leads each row with a box of its entry's colour; the folded row is grey; plain output drops the strip, its blank line and the boxes), then `writable:`, `read-only:`, and `path-rule: longest match decides` trailers when configured. A domain error prints the same skeleton and exits nonzero: `CODE · REASON`, the message, one line per file (path padded to the longest path plus two, the reason as words from `fileReasonWords`, `lines a-b`), `next:` from `nextStep` (a reason's own wording in `reasonNextSteps`, else `actionWordings`), `retryable:`, the recovery report, and the same trailers. The CLI report omits `detail` and `diagnosticId`. File reason words (`fileReasonWords`): `TEXT_CONFLICT` "conflict", `PATH_CONFLICT` "path conflict", `UNRESOLVED_MARKERS` "unresolved markers", `READ_ONLY` "read-only", `INVALID_CONTENT` "invalid content", `NOT_IN_NOTEBOOK` "not in the notebook", `DIFFERS_FROM_NOTEBOOK` "differs from the notebook". Next-step wording by reason (`reasonNextSteps`): `DIRECTORY_NOT_EMPTY` "pull into an empty directory, or move those files away, then pull again". Next-step wording by action (`actionWordings`): `FIX_INPUT` "correct the request, then call again", `EDIT_FILES` "edit the files, then commit", `PULL` "pull, then continue", `RETRY` "retry the same call", `OPERATOR` "operator attention needed". Colour only on a real terminal with `NO_COLOR` empty ([tui.md](./tui.md)); there a green `✓ ` leads the success line, a red `✗ ` the error line, and `→ ` replaces `next: `; stripped of escapes, it is the plain form with those marks, and a pipe sees only the plain form.
 
 ### Read-only and writable paths
 

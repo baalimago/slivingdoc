@@ -962,8 +962,8 @@ func TestScenarioWritableThreeLevelAdvertisementStatesRule(t *testing.T) {
 		},
 	}, res)
 	wantText := pathAgent + " (writable: notes/agent-a; read-only: notes, notes/agent-a/locked; longest match decides)"
-	if text, ok := res.Content[0].(*sdk.TextContent); !ok || text.Text != wantText {
-		t.Fatalf("text item = %#v, want %q", res.Content[0], wantText)
+	if text, ok := res.Content[0].(*sdk.TextContent); !ok || firstLine(text.Text) != wantText {
+		t.Fatalf("text item = %#v, want the path line %q", res.Content[0], wantText)
 	}
 	for surface, text := range map[string]string{"instructions": instructions, "text item": wantText} {
 		if strings.Contains(text, "write elsewhere") {
@@ -991,8 +991,8 @@ func TestScenarioWritableSuccessEnvelopeCarriesBothArrays(t *testing.T) {
 	}, res)
 	text, ok := res.Content[0].(*sdk.TextContent)
 	want := pathAgent + " (writable: notes; read-only: notes/locked; longest match decides)"
-	if !ok || text.Text != want {
-		t.Fatalf("text item = %#v, want %q", res.Content[0], want)
+	if !ok || firstLine(text.Text) != want {
+		t.Fatalf("text item = %#v, want the path line %q", res.Content[0], want)
 	}
 }
 

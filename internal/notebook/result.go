@@ -12,6 +12,8 @@ import "github.com/baalimago/slivingdoc/internal/git"
 type Result struct {
 	Generation uint64
 	Stat       git.DiffStat
+	// Contents is every file a materialization wrote, sorted by path; nil otherwise (architecture/pull.md).
+	Contents []git.FileLines
 }
 
 // diffStat reads the base and result trees of an accepted operation and
@@ -20,13 +22,21 @@ type Result struct {
 // presentation-only, so the operation aborts before any local mutation or
 // publication when the diff cannot be computed.
 func (n *Notebook) diffStat(base, result git.OID) (git.DiffStat, error) {
+	baseSnap, resultSnap, err := n.summarySnapshots(base, result)
+	if err != nil {
+		return git.DiffStat{}, err
+	}
+	return git.DiffSnapshots(baseSnap, resultSnap), nil
+}
+
+func (n *Notebook) summarySnapshots(base, result git.OID) (git.Snapshot, git.Snapshot, error) {
 	baseSnap, err := git.ReadSnapshot(n.ws.Repo(), base)
 	if err != nil {
-		return git.DiffStat{}, storageIntegrity(ReasonEngineFailed, err, "read the base snapshot for the change summary")
+		return git.Snapshot{}, git.Snapshot{}, storageIntegrity(ReasonEngineFailed, err, "read the base snapshot for the change summary")
 	}
 	resultSnap, err := git.ReadSnapshot(n.ws.Repo(), result)
 	if err != nil {
-		return git.DiffStat{}, storageIntegrity(ReasonEngineFailed, err, "read the result snapshot for the change summary")
+		return git.Snapshot{}, git.Snapshot{}, storageIntegrity(ReasonEngineFailed, err, "read the result snapshot for the change summary")
 	}
-	return git.DiffSnapshots(baseSnap, resultSnap), nil
+	return baseSnap, resultSnap, nil
 }

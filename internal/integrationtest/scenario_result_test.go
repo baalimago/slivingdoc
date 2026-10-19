@@ -1,8 +1,76 @@
 package integrationtest
 
 import (
+	"encoding/json"
+	"fmt"
 	"testing"
+
+	"github.com/baalimago/slivingdoc/internal/mcp"
+	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
+
+// TestScenarioPullMaterializesThenListsTheDeltaInFull: a first pull reports a bounded outline, a later one every changed file.
+func TestScenarioPullMaterializesThenListsTheDeltaInFull(t *testing.T) {
+	t.Parallel()
+	h := newFakeHarness(t, HarnessConfig{})
+	b := newSharedHarness(t, h.Raw(), h.cfg.Prefix, HarnessConfig{})
+	pathA, pathB := h.Path("notes"), b.Path("notes")
+
+	h.assertOK(t, h.Pull("", pathA))
+	h.WriteFile(pathA+"/CONTEXT.md", "one\ntwo\n")
+	for i := range 150 {
+		h.WriteFile(fmt.Sprintf("%s/log/f%03d.md", pathA, i), "entry\n")
+	}
+	h.assertOK(t, h.Commit("", pathA, "seed"))
+
+	// The log entry lists its 6 largest files and counts the rest.
+	one, two, share := 1, 2, 99
+	largest := make([]mcp.OutlineItem, 6)
+	for i := range largest {
+		largest[i] = mcp.OutlineItem{Path: fmt.Sprintf("log/f%03d.md", i), Lines: &one}
+	}
+	outline := &mcp.Outline{Files: 151, Lines: 152, Entries: []mcp.OutlineEntry{
+		{Path: "log/", Files: 150, Share: &share, Largest: largest, More: 144},
+		{Path: "CONTEXT.md", Lines: &two},
+	}}
+	res := b.Pull("", pathB)
+	b.assertEnvelope(t, ToolCall{
+		Tool: toolPull, Path: pathB,
+		Expect: CallExpectation{
+			OK: true,
+			Success: &SuccessExpectation{
+				Generation: 1, FilesChanged: 151, Insertions: 152, Files: []FileStatExpectation{},
+				Materialized: true, Outline: outline,
+			},
+		},
+	}, res)
+	encoded, err := json.Marshal(outline)
+	if err != nil {
+		t.Fatal(err)
+	}
+	header := "first pull: 151 files now on disk; outline of the largest entries, as JSON; list or read the directory for more\n"
+	if text := res.Content[0].(*sdk.TextContent).Text; text != pathB+"\n"+header+string(encoded) {
+		t.Fatalf("text item = %q, want the path line, the header and the outline", text)
+	}
+
+	files := make([]FileStatExpectation, 0, 150)
+	for i := range 150 {
+		h.WriteFile(fmt.Sprintf("%s/log/f%03d.md", pathA, i), "entry\nmore\n")
+		files = append(files, FileStatExpectation{Path: fmt.Sprintf("log/f%03d.md", i), Insertions: 1})
+	}
+	h.assertOK(t, h.Commit("", pathA, "grow every entry"))
+	res = b.Pull("", pathB)
+	b.assertEnvelope(t, ToolCall{
+		Tool: toolPull, Path: pathB,
+		Expect: CallExpectation{
+			OK:      true,
+			Success: &SuccessExpectation{Generation: 2, FilesChanged: 150, Insertions: 150, Files: files},
+		},
+	}, res)
+	if text := res.Content[0].(*sdk.TextContent).Text; text != pathB {
+		t.Fatalf("text item = %q, want the bare path", text)
+	}
+}
 
 // TestScenarioPullDeltaStat proves the pull success envelope carries the
 // on-disk delta: the diffstat between the visible state the pull observed
