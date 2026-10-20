@@ -64,7 +64,7 @@ One line per `internal/` package.
 | `app` | Process body: flag/env resolution (`config.go`), storage selection (`storage.go`), login, logout and space (`login.go`, `space.go`), minted space tokens (`minted.go`), startup order (`app.go`), `Service` path-to-notebook map (`service.go`), CLI report rendering (`command.go`), logging, `DEBUG_PERF` profiling |
 | `cli` | The command map (`serve|s`, `pull|p`, `commit|c`, `status`, `log`, `login`, `logout`, `space`, `version|v`), usage text, `Run` and its `router` (help, the one-line error, the home screen) |
 | `tui` | The terminal presentation every command renders through: palette, status marks, columns, the progress spinner, the table picker; plain off a terminal. See [tui.md](./tui.md) |
-| `sitelogin` | Client of the site's CLI login routes (start, key polling, spaces, space-token minting, revoke) that validates every answer and never follows a redirect. See [login.md](./login.md) |
+| `sitelogin` | Client of the site's CLI login routes (start, key polling, spaces, space creation, space-token minting, revoke) that validates every answer and never follows a redirect. See [login.md](./login.md) |
 | `sitelogin/sitetest` | Test-only reference server of the site's CLI login routes with scripted approvals |
 | `git` | Go-facing engine seam (`Engine`, `Repository`) and all Git policy: trees, snapshots, merge structuring, packs, history validation, path/content rules, read-only/writable `PathPolicy`, diffstat. See [git-engine.md](./git-engine.md) |
 | `git/gittest` | Deterministic fake object hashing shared by fakes in higher packages (test-only) |
@@ -79,7 +79,7 @@ One line per `internal/` package.
 | `httpstore/gatewaytest` | Test-only reference server of the hosted API over `storage/fake` |
 | `mcp` | stdio MCP server: two strict tool schemas, strict decoding, error/success envelopes, redaction, `mcpReqID` logging |
 | `credentials` | The stored account logins of `slivingdoc login` and their default spaces, the strict versioned `credentials.json`. See [login.md](./login.md) |
-| `settings` | The scoped settings registry: the strict versioned `workspaces.json`, one record per directory, sharing the credentials file's hardened handling. `pull`, `commit`, `status` and `log` read the remembered hosted notebook of their directory from it, and a successful `pull` or `commit` writes it. See [config.md](./config.md) |
+| `settings` | The scoped settings registry: the strict versioned `workspaces.json`, one backend-aware target per directory and one default per store key, sharing the credentials file's hardened handling. `pull`, `commit`, `status` and `log` read the remembered hosted notebook of their directory from it, `space` reads every entry for its directory column, and a successful `pull` or `commit` writes it. See [config.md](./config.md) |
 | `strictjson` | Strict JSON value tree shared by the manifest and `state.json` (rejects unknown, duplicate, missing, null) |
 | `pathutil` | `ExpandHome` for `~/` request paths |
 | `scratch` | Test-only: `Use` moves a test binary's temporary directory onto a memory filesystem so fsync-heavy packages fit the 30 s gate. See [testing.md](./testing.md) |

@@ -93,7 +93,7 @@ An unmapped pairing is a programming error: `actionFor` returns `RETRY` plus `er
 
 **Fallback.** Any non-domain, non-cancellation error maps to retryable `STORAGE_FAILURE`/`INTERNAL` with a fixed message, so an unexpected internal error never leaks text.
 
-**CLI exit codes.** The process exit code comes from `cli.Run`, which returns `router.run`'s code (`internal/cli/route.go`): 0 on success and for help, exactly 1 for everything else, including any `Setup` or `Run` error.
+**CLI exit codes.** The process exit code comes from `cli.Run`, which returns `router.run`'s code (`internal/cli/route.go`): 0 on success and for help, exactly 1 for everything else, including any `Setup` or `Run` error. A `space` refusal is plain CLI text outside this taxonomy: it carries no code, reason, or action token, because those belong to MCP results only. Its S3 refusals name the denied action, `s3:ListAllMyBuckets` or `s3:CreateBucket`, so an operator can fix the policy ([login.md](./login.md)).
 
 | Situation | Exit | Output |
 |---|---|---|

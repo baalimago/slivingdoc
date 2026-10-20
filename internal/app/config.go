@@ -33,6 +33,7 @@ type config struct {
 	bucket   string
 	prefix   string
 	region   string
+	profile  string
 	endpoint string
 	token    string
 	// login is the stored login whose key mints the space tokens, when
@@ -122,6 +123,7 @@ type Flags struct {
 	space               stringFlag
 	prefix              stringFlag
 	region              stringFlag
+	profile             stringFlag
 	endpoint            stringFlag
 	workspaceRoot       stringFlag
 	privateRoot         stringFlag
@@ -148,6 +150,7 @@ func (f *Flags) Bind(fs *flag.FlagSet) {
 	fs.Var(&f.space, "space", "hosted space, the hosted name of --bucket (default: with SLIVINGDOC_TOKEN the token's own, else the login's default space)")
 	fs.Var(&f.prefix, "prefix", "S3 object prefix")
 	fs.Var(&f.region, "region", "S3 region")
+	fs.Var(&f.profile, "profile", "AWS shared-config profile (S3 only)")
 	fs.Var(&f.endpoint, "endpoint", "S3 or hosted API endpoint URL")
 	fs.Var(&f.pathStyle, "path-style", "force S3 path-style addressing")
 	fs.Var(&f.workspaceRoot, "workspace-root", "visible workspace root")
@@ -161,6 +164,10 @@ func (f *Flags) Bind(fs *flag.FlagSet) {
 	fs.Var(&f.logLevel, "log-level", "per-module log levels (LOG_LEVEL grammar)")
 	fs.Var(&f.logTimestamp, "log-timestamp", "include the time= field in log records")
 }
+
+func (f *Flags) regionSet() bool    { return f.region.set }
+func (f *Flags) pathStyleSet() bool { return f.pathStyle.set }
+func (f *Flags) profileSet() bool   { return f.profile.set }
 
 // The documented numeric bounds and defaults (architecture/config.md).
 // The ranges come from the notebook package, which owns them, so the flag
@@ -250,8 +257,7 @@ func (f *Flags) resolve(environment []string, cwd, cacheDir string, ephemeral bo
 		// they never redirect a token.
 		cfg.endpoint = sel.endpoint
 	} else {
-		cfg.region = resolveString(&f.region, env["AWS_REGION"], "us-east-1")
-		cfg.endpoint = resolveString(&f.endpoint, env["AWS_ENDPOINT_URL_S3"], "")
+		cfg.region, cfg.profile, cfg.endpoint = resolveS3Store(f, env)
 	}
 	cfg.sessionDir, cfg.workspaceRoot, cfg.privateRoot = roots.session, roots.workspaceRoot, roots.privateRoot
 	if cfg.pathStyle, err = resolveBool(&f.pathStyle, env["SLIVINGDOC_PATH_STYLE"], false); err != nil {
@@ -346,7 +352,7 @@ func (cfg config) finish(cwd string) (config, error) {
 	// it owns the prefix whenever the resolved space is that one, whether
 	// the record or a flag named the space. A flag naming another space
 	// leaves the record alone: that run addresses another notebook.
-	if cfg.remembered.Space != "" && cfg.remembered.Space == cfg.bucket {
+	if cfg.remembered.Name != "" && cfg.remembered.Name == cfg.bucket {
 		if err := cfg.applyRememberedPrefix(); err != nil {
 			return config{}, err
 		}
@@ -363,8 +369,6 @@ func (cfg config) finish(cwd string) (config, error) {
 		if err := validateHosted(cfg); err != nil {
 			return config{}, err
 		}
-	} else if cfg.region == "" {
-		return config{}, errors.New("region is required")
 	}
 
 	if cfg.workspaceRoot, err = absolute(cwd, cfg.workspaceRoot); err != nil {
@@ -431,7 +435,7 @@ func (cfg *config) applyRememberedPrefix() error {
 		return nil
 	}
 	if cfg.remembered.Prefix != "" && cfg.prefix != cfg.remembered.Prefix {
-		return prefixMismatch(cfg.remembered.Space, cfg.prefix, cfg.remembered.Prefix)
+		return prefixMismatch(cfg.remembered.Name, cfg.prefix, cfg.remembered.Prefix)
 	}
 	return nil
 }
@@ -515,6 +519,34 @@ func resolveString(f *stringFlag, env, def string) string {
 		return env
 	}
 	return def
+}
+
+// resolveS3Store resolves the three S3 store settings that share a precedence
+// rule: the region (the flag, then AWS_REGION, then AWS_DEFAULT_REGION, then
+// the selected profile's region through the SDK, then us-east-1 in the
+// adapter), the profile (its flag, then AWS_PROFILE, else the ambient chain),
+// and the endpoint (its flag, then AWS_ENDPOINT_URL_S3). An explicitly empty
+// flag does not fall back (architecture/config.md).
+func resolveS3Store(f *Flags, env map[string]string) (region, profile, endpoint string) {
+	region = resolveString(&f.region, env["AWS_REGION"], env["AWS_DEFAULT_REGION"])
+	profile = resolveString(&f.profile, env["AWS_PROFILE"], "")
+	endpoint = resolveString(&f.endpoint, env["AWS_ENDPOINT_URL_S3"], "")
+	return region, profile, endpoint
+}
+
+// effectiveRegion is the region an S3 store addresses: the configured one, or
+// us-east-1 when nothing named one, which is what s3store.New applies to the
+// loaded AWS configuration. The notebook identity and the store proof bind it,
+// so a process that named no region keeps the identity it had when us-east-1
+// was the flag default.
+func (cfg config) effectiveRegion() string {
+	if cfg.hosted() {
+		return cfg.region
+	}
+	if cfg.region == "" {
+		return "us-east-1"
+	}
+	return cfg.region
 }
 
 // resolvePrefixSource says which layer named the object prefix, so the
@@ -761,8 +793,14 @@ const FlagReference = `  --storage string              storage backend: auto, ho
                                 different values are refused)
   --prefix string               object prefix in the bucket or hosted space  SLIVINGDOC_PREFIX
                                 (default "slivingdoc")
-  --region string               S3 region (default "us-east-1"; unused       AWS_REGION
-                                with a token)
+  --region string               S3 region: --region, then AWS_REGION, then   AWS_REGION
+                                AWS_DEFAULT_REGION, then the profile's       AWS_DEFAULT_REGION
+                                region, then us-east-1 (empty when unset;
+                                unused with a token)
+  --profile string              AWS shared-config profile: a [profile <name>] AWS_PROFILE
+                                section of ~/.aws/config, and a selector,
+                                never a secret; empty uses the ambient AWS
+                                chain (S3 only; unused with a token)
   --endpoint string             S3-compatible endpoint URL (empty for AWS)   AWS_ENDPOINT_URL_S3
                                 or, in hosted mode, the hosted storage API   SLIVINGDOC_ENDPOINT
                                 URL (default "https://api.slivingdoc.dev",

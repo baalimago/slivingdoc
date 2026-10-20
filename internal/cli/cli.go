@@ -40,9 +40,10 @@ changed locally and 'slivingdoc log' the recent publications.
 
 For hosted storage, 'slivingdoc login' logs in to your account through the
 browser, so serve, pull and commit need no SLIVINGDOC_TOKEN; 'slivingdoc
-space' lists the login's spaces and 'slivingdoc space <name>' sets the
-default one; --storage auto|hosted|s3 chooses between a login and S3
-explicitly. 'slivingdoc logout' revokes the login.
+space' lists the login's spaces, 'slivingdoc space <name>' sets the default
+one, and 'slivingdoc space new <name>' creates one; --storage
+auto|hosted|s3 chooses between a login and S3 explicitly. 'slivingdoc
+logout' revokes the login.
 
 Logging is configured by the environment; serve, pull, commit, status and log
 also take --log-level and --log-timestamp, which override it:

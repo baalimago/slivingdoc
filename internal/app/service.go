@@ -56,7 +56,7 @@ func (cfg config) probeProofs(now func() time.Time) probeProofStore {
 	return probeProofStore{
 		dir:     filepath.Join(cfg.packCacheRoot, workspace.SharedCacheDirName(cfg.serviceConfig().identity())),
 		version: Version,
-		store:   probedStore{cfg.endpoint, cfg.region, cfg.bucket, cfg.prefix, cfg.pathStyle},
+		store:   probedStore{cfg.endpoint, cfg.effectiveRegion(), cfg.bucket, cfg.prefix, cfg.pathStyle},
 		now:     now,
 	}
 }
@@ -68,7 +68,7 @@ func (cfg config) serviceConfig() ServiceConfig {
 		Bucket:              cfg.bucket,
 		SpaceID:             string(cfg.spaceID),
 		Prefix:              cfg.prefix,
-		Region:              cfg.region,
+		Region:              cfg.effectiveRegion(),
 		Endpoint:            cfg.endpoint,
 		PathStyle:           cfg.pathStyle,
 		WorkspaceRoot:       cfg.workspaceRoot,

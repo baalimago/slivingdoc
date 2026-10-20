@@ -65,6 +65,12 @@ type ProcessOptions struct {
 	StoreFactory     StoreFactory
 	ShutdownDeadline time.Duration
 
+	// newS3Admin builds the administration client of one S3 identity and its
+	// effective values. Nil builds the real one (s3store.Resolve and
+	// s3store.NewAdmin); the space tests inject a fake so no AWS
+	// configuration is read (architecture/login.md, The space command).
+	newS3Admin s3AdminFactory
+
 	// Ephemeral asks for process-owned temporary roots when neither the
 	// workspace root nor the private root is configured
 	// (architecture/config.md). The serve command sets it; the one-shot
@@ -704,6 +710,7 @@ func realStoreFactory(ctx context.Context, cfg config) (storage.ObjectStore, err
 		Bucket:   cfg.bucket,
 		Prefix:   cfg.prefix,
 		Region:   cfg.region,
+		Profile:  cfg.profile,
 		Endpoint: cfg.endpoint,
 	}, s3store.Options{ForcePathStyle: cfg.pathStyle})
 	if err != nil {

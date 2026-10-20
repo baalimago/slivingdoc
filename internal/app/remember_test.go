@@ -169,7 +169,7 @@ func (r *rigs) replaceSettings(t *testing.T, body string) {
 
 // remembered is the record of the directory at path.
 func remembered(path, space, prefix string) settings.Entry {
-	return settings.Entry{Path: path, Target: settings.Target{Space: space, Prefix: prefix}}
+	return settings.Entry{Path: path, Target: settings.Target{Kind: settings.KindHosted, Name: space, Prefix: prefix}}
 }
 
 // TestRecordsSpaceAfterPull proves a successful pull records the notebook it
@@ -434,7 +434,7 @@ func TestSecondDirectoryReplacesOnlyItsOwnEntry(t *testing.T) {
 		t.Fatalf("the settings file after an unchanged record = %s, want it unchanged (%s)", after, before)
 	}
 	moved := first
-	moved.Target.Space = rememberedSpace
+	moved.Target.Name = rememberedSpace
 	if err := store(context.Background(), moved); err != nil {
 		t.Fatalf("record the moved notebook = %v", err)
 	}
@@ -448,8 +448,10 @@ func TestSecondDirectoryReplacesOnlyItsOwnEntry(t *testing.T) {
 }
 
 // TestRecordedFileHoldsNoCredential proves the file the recorder writes
-// carries the version, the paths, the spaces and the prefixes only: no key,
-// no token and no endpoint, in any spelling.
+// carries the version, the paths, the hosted target and the prefix only: no
+// account key, no token, no account and no site endpoint in any value. The
+// hosted target's endpoint is empty in this build, because the selected
+// login supplies the site when the record is resolved.
 func TestRecordedFileHoldsNoCredential(t *testing.T) {
 	rig := hostedRigs(t)
 	if _, err := rig.runtime(t, nil, "", "--space", rememberedSpace).Pull(context.Background(), ""); err != nil {
@@ -457,16 +459,19 @@ func TestRecordedFileHoldsNoCredential(t *testing.T) {
 	}
 	body := rig.readSettings(t)
 	for _, want := range []string{
-		`"version":1`,
+		`"version":2`,
 		`"path":"` + rig.root + `"`,
-		`"space":"` + rememberedSpace + `"`,
+		`"kind":"hosted"`,
+		`"endpoint":""`,
+		`"name":"` + rememberedSpace + `"`,
 		`"prefix":"slivingdoc"`,
+		`"defaults":[]`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("the settings file = %s, want it to contain %s", body, want)
 		}
 	}
-	for _, forbidden := range []string{"sld_", loginToken, hostedTestToken, "token", "key", "endpoint", "site", "account"} {
+	for _, forbidden := range []string{"sld_", strings.ToLower(loginToken), strings.ToLower(hostedTestToken), "@", "http"} {
 		if strings.Contains(strings.ToLower(body), forbidden) {
 			t.Fatalf("the settings file = %s, want no %q in it", body, forbidden)
 		}

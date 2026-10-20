@@ -16,7 +16,7 @@ import (
 // recorded is one directory's remembered notebook, keyed by the notebook path
 // the command resolved.
 func recorded(path, space string) settings.Entry {
-	return settings.Entry{Path: path, Target: settings.Target{Space: space, Prefix: hostedPrefix}}
+	return settings.Entry{Path: path, Target: settings.Target{Kind: settings.KindHosted, Name: space, Prefix: hostedPrefix}}
 }
 
 // assertRecords proves the settings file of env's processes holds exactly
@@ -32,15 +32,20 @@ func assertRecords(t *testing.T, env []string, want ...settings.Entry) {
 	}
 }
 
-// assertRecordedFileNamesNoCredential proves the recorded file names the
-// notebook and nothing that opens it.
+// assertRecordedFileNamesNoCredential proves the recorded file names no
+// value that opens the notebook: no account key, no token, no account and no
+// site endpoint. The version-2 field names are not values, and the hosted
+// target's endpoint is empty in this build.
 func assertRecordedFileNamesNoCredential(t *testing.T, env []string) {
 	t.Helper()
 	body := strings.ToLower(readSettings(t, env))
-	for _, forbidden := range []string{loginKey, secondKey, "token", "key", "endpoint", "account", "site"} {
+	for _, forbidden := range []string{"sld_", strings.ToLower(loginKey), strings.ToLower(secondKey), "@", "http"} {
 		if strings.Contains(body, forbidden) {
 			t.Fatalf("the settings file = %s, want no %q in it", readSettings(t, env), forbidden)
 		}
+	}
+	if !strings.Contains(body, `"kind":"hosted","endpoint":""`) {
+		t.Fatalf("the settings file = %s, want a hosted target with an empty endpoint", body)
 	}
 }
 

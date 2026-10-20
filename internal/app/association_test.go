@@ -25,7 +25,7 @@ const (
 
 // remembers is the one entry of the fixtures.
 func remembers(space, prefix string) settings.Entry {
-	return settings.Entry{Path: rememberedPath, Target: settings.Target{Space: space, Prefix: prefix}}
+	return settings.Entry{Path: rememberedPath, Target: settings.Target{Kind: settings.KindHosted, Name: space, Prefix: prefix}}
 }
 
 // storeEntries writes the entries into the settings file of the configuration
@@ -43,7 +43,7 @@ func storeEntries(t *testing.T, env []string, entries ...settings.Entry) {
 	}
 	set := settings.Set{}
 	for _, e := range entries {
-		if e.Target.Space == "" {
+		if e.Target.Name == "" {
 			continue
 		}
 		set = set.Put(e)
@@ -412,7 +412,7 @@ func TestAssociationReadsTheSettingsOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the settings file = %v", err)
 	}
-	if target, ok := first.Lookup(rememberedPath); !ok || target.Space != rememberedSpace {
+	if target, ok := first.Lookup(rememberedPath); !ok || target.Name != rememberedSpace {
 		t.Fatalf("the first read holds %+v, %v; want the remembered notebook", target, ok)
 	}
 	storeEntries(t, env, remembers(rememberedSpace, "another-prefix"))

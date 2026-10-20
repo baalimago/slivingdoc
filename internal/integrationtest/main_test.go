@@ -176,9 +176,10 @@ type helperProc struct {
 
 	// waitOnce makes reaping idempotent: waitExit and the spawn cleanup both
 	// reap, and a second os.Process.Wait on a reaped child fails.
-	waitOnce sync.Once
-	waitCode int
-	waitErr  error
+	waitOnce  sync.Once
+	waitCode  int
+	waitErr   error
+	waitState *os.ProcessState
 }
 
 // spawnHelper starts the test binary as the process body with the given
@@ -328,6 +329,7 @@ func (h *helperProc) reap() (int, error) {
 			h.waitCode, h.waitErr = -1, err
 			return
 		}
+		h.waitState = state
 		h.waitCode = state.ExitCode()
 	})
 	return h.waitCode, h.waitErr

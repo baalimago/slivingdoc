@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -226,6 +227,59 @@ func TestConcurrentCAS(t *testing.T) {
 	}
 	if wins != 1 {
 		t.Fatalf("winners = %d, want exactly 1", wins)
+	}
+}
+
+// TestAdminIntegration proves bucket administration against the pinned
+// backend: ListBuckets reaches the test bucket, CreateBucket makes one, an
+// identity reports the configured key id, and no live AWS endpoint is reached.
+func TestAdminIntegration(t *testing.T) {
+	suite := tests3.Ensure(t)
+	mc := suite.StoreConfig()
+	ctx := context.Background()
+	admin, err := NewAdmin(ctx, Config{
+		Region: mc.Region, Endpoint: mc.Endpoint, AccessKey: mc.AccessKey, SecretKey: mc.SecretKey,
+	})
+	if err != nil {
+		t.Fatalf("NewAdmin() = %v", err)
+	}
+
+	identity, err := admin.Identity(ctx)
+	if err != nil {
+		t.Fatalf("Identity() = %v", err)
+	}
+	want := Identity{AccessKeyID: tests3.User, Endpoint: mc.Endpoint, Region: mc.Region}
+	if identity != want {
+		t.Fatalf("Identity() = %+v, want %+v", identity, want)
+	}
+
+	buckets, err := admin.ListBuckets(ctx)
+	if err != nil {
+		t.Fatalf("ListBuckets() = %v", err)
+	}
+	if !slices.ContainsFunc(buckets, func(b Bucket) bool { return b.Name == tests3.Bucket }) {
+		t.Fatalf("ListBuckets() = %v, want the test bucket %q", buckets, tests3.Bucket)
+	}
+
+	id, err := storage.NewUUIDv7()
+	if err != nil {
+		t.Fatalf("NewUUIDv7() = %v", err)
+	}
+	name := "slivingdoc-admin-" + id.String()
+	t.Cleanup(func() {
+		if _, err := suite.Raw.DeleteBucket(context.Background(), &s3.DeleteBucketInput{Bucket: aws.String(name)}); err != nil {
+			t.Errorf("delete test bucket %q: %v", name, err)
+		}
+	})
+	if err := admin.CreateBucket(ctx, name); err != nil {
+		t.Fatalf("CreateBucket(%q) = %v", name, err)
+	}
+	buckets, err = admin.ListBuckets(ctx)
+	if err != nil {
+		t.Fatalf("ListBuckets() after create = %v", err)
+	}
+	if !slices.ContainsFunc(buckets, func(b Bucket) bool { return b.Name == name }) {
+		t.Fatalf("ListBuckets() after create = %v, want %q", buckets, name)
 	}
 }
 

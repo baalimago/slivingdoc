@@ -49,7 +49,7 @@ func remember(t *testing.T, env []string, path, space, prefix string) string {
 	if err != nil {
 		t.Fatalf("load the settings file: %v", err)
 	}
-	entry := settings.Entry{Path: path, Target: settings.Target{Space: space, Prefix: prefix}}
+	entry := settings.Entry{Path: path, Target: settings.Target{Kind: settings.KindHosted, Name: space, Prefix: prefix}}
 	if err := file.Save(set.Put(entry)); err != nil {
 		t.Fatalf("save the settings file: %v", err)
 	}

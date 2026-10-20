@@ -2,9 +2,10 @@
 // (architecture/login.md): POST /cli/v1/start opens a device approval,
 // POST /cli/v1/token polls it until a person approves or denies it in the
 // browser and then returns the account CLI key, GET /cli/v1/spaces lists
-// the spaces that key reaches, POST /cli/v1/space-token trades the key
-// for a short-lived token of one space, and POST /cli/v1/revoke withdraws
-// a key with every token minted from it. The client validates everything
+// the spaces that key reaches, POST /cli/v1/spaces creates one,
+// POST /cli/v1/space-token trades the key for a short-lived token of one
+// space, and POST /cli/v1/revoke withdraws a key with every token minted
+// from it. The client validates everything
 // the site answers before a caller prints it, opens it in a browser,
 // stores it, or sends it on, and never follows a redirect.
 package sitelogin
@@ -25,6 +26,7 @@ import (
 
 	"github.com/baalimago/slivingdoc/internal/credentials"
 	"github.com/baalimago/slivingdoc/internal/httpstore"
+	"github.com/baalimago/slivingdoc/internal/storage"
 )
 
 // DefaultSite is the site a login uses when none is configured.
@@ -35,6 +37,7 @@ const (
 	startPath  = "/cli/v1/start"
 	tokenPath  = "/cli/v1/token"
 	spacesPath = "/cli/v1/spaces"
+	createPath = "/cli/v1/spaces"
 	mintPath   = "/cli/v1/space-token"
 	revokePath = "/cli/v1/revoke"
 )
@@ -535,6 +538,51 @@ func (c *Client) Spaces(ctx context.Context, key string) ([]Space, error) {
 	return spaces, nil
 }
 
+// CreateSpace creates one space for the account key belongs to. The key and
+// the name are validated before anything is sent, so an invalid name never
+// reaches the site. A key the site no longer knows is a *Refusal with Status
+// 401; the other refusals are 403 access_denied or space_limit, 409
+// name_taken, 429 busy, and 503 pool_empty. The answer must name the space
+// that was asked for, carry a usable owner (empty for a team-owned space),
+// and carry write access; anything else is ErrProtocol.
+func (c *Client) CreateSpace(ctx context.Context, key, name string) (Space, error) {
+	if err := httpstore.ValidateToken(key); err != nil {
+		return Space{}, fmt.Errorf("sitelogin: the stored key cannot be sent: %w", err)
+	}
+	if err := storage.ValidateNewSpaceName(name); err != nil {
+		return Space{}, err
+	}
+	var ans createAnswer
+	if err := c.call(ctx, http.MethodPost, createPath, key, createBody{Name: name}, &ans); err != nil {
+		return Space{}, err
+	}
+	if ans.Space == nil {
+		return Space{}, fmt.Errorf("%w: no space in the answer", ErrProtocol)
+	}
+	if ans.Space.Name != name {
+		return Space{}, fmt.Errorf("%w: the answer names another space", ErrProtocol)
+	}
+	if !usableOwner(ans.Space.Owner) {
+		return Space{}, fmt.Errorf("%w: no usable owner", ErrProtocol)
+	}
+	access, err := credentials.ParseAccess(ans.Space.Access)
+	if err != nil {
+		return Space{}, fmt.Errorf("%w: %w", ErrProtocol, err)
+	}
+	if access != credentials.AccessWrite {
+		return Space{}, fmt.Errorf("%w: the created space is not writable", ErrProtocol)
+	}
+	return Space{Name: ans.Space.Name, Owner: ans.Space.Owner, Access: access}, nil
+}
+
+type createBody struct {
+	Name string `json:"name"`
+}
+
+type createAnswer struct {
+	Space *spaceAnswer `json:"space"`
+}
+
 // Minted is a short-lived token of one space, traded for an account CLI
 // key. It is sent only to Endpoint and never stored.
 type Minted struct {
@@ -656,7 +704,9 @@ type errorAnswer struct {
 }
 
 // call sends one request with an optional JSON body. A non-empty bearer
-// authenticates it; a nil out expects 204 and no body.
+// authenticates it. Any 2xx answer is a success: with an out target its body
+// is decoded as JSON, and without one the body is ignored, though a body
+// over the route's bound is refused either way.
 func (c *Client) call(ctx context.Context, method, path, bearer string, in, out any) error {
 	var body io.Reader
 	if in != nil {
@@ -692,7 +742,7 @@ func (c *Client) call(ctx context.Context, method, path, bearer string, in, out 
 	}
 	defer resp.Body.Close()
 	limit := bodyLimit
-	if path == spacesPath {
+	if method == http.MethodGet && path == spacesPath {
 		limit = spacesLimit
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, int64(limit)+1))
@@ -708,11 +758,11 @@ func (c *Client) call(ctx context.Context, method, path, bearer string, in, out 
 		}
 	}
 	switch {
+	case resp.StatusCode >= 200 && resp.StatusCode < 300 && len(data) > limit:
+		return fmt.Errorf("%w: the answer is larger than %d bytes", ErrProtocol, limit)
 	case resp.StatusCode >= 200 && resp.StatusCode < 300 && out == nil:
 		return nil
-	case resp.StatusCode == http.StatusOK && len(data) > limit:
-		return fmt.Errorf("%w: the answer is larger than %d bytes", ErrProtocol, limit)
-	case resp.StatusCode == http.StatusOK:
+	case resp.StatusCode >= 200 && resp.StatusCode < 300:
 		if err := json.Unmarshal(data, out); err != nil {
 			return fmt.Errorf("%w: the body is not the expected JSON", ErrProtocol)
 		}

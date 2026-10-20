@@ -69,7 +69,7 @@ func (r *Runtime) rememberSpace(ctx context.Context, err error) {
 	// read of this directory always agree.
 	entry := settings.Entry{
 		Path:   r.p.association.key(r.cfg.workspaceRoot),
-		Target: settings.Target{Space: r.cfg.bucket, Prefix: r.cfg.prefix},
+		Target: settings.Target{Kind: settings.KindHosted, Name: r.cfg.bucket, Prefix: r.cfg.prefix},
 	}
 	if storeErr := r.p.association.record(ctx, entry); storeErr != nil {
 		Module(r.base, ModuleNotebook).Warn("remembering the hosted notebook failed", "path", entry.Path, "error", storeErr.Error())
@@ -96,7 +96,7 @@ func (r *Runtime) recordsSpace() bool {
 	case r.p.association.record == nil, !r.cfg.hosted(), r.cfg.bucket == "":
 		return false
 	case r.cfg.bucketFrom.kind() != kindOther:
-		return r.cfg.remembered.Space == ""
+		return r.cfg.remembered.Name == ""
 	default:
 		return r.cfg.bucketFrom == bucketFromRemembered
 	}

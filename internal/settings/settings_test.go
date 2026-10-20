@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -22,8 +23,13 @@ func lookup(env map[string]string) func(string) string {
 	return func(name string) string { return env[name] }
 }
 
+// hosted is a hosted target of the name space and the prefix prefix.
+func hosted(space, prefix string) Target {
+	return Target{Kind: KindHosted, Name: space, Prefix: prefix}
+}
+
 func entry(path, space, prefix string) Entry {
-	return Entry{Path: path, Target: Target{Space: space, Prefix: prefix}}
+	return Entry{Path: path, Target: hosted(space, prefix)}
 }
 
 func testFile(t *testing.T) File {
@@ -84,7 +90,7 @@ func TestLoadSaveRoundTrip(t *testing.T) {
 	if target, ok := got.Lookup("/notes/one"); !ok || target != want.Target {
 		t.Fatalf("Lookup(one) = %+v, %v; want %+v", target, ok, want.Target)
 	}
-	if target, ok := got.Lookup("/notes/two"); !ok || target != (Target{Space: "team"}) {
+	if target, ok := got.Lookup("/notes/two"); !ok || target != hosted("team", "") {
 		t.Fatalf("Lookup(two) = %+v, %v", target, ok)
 	}
 	if _, ok := got.Lookup("/notes/One"); ok {
@@ -97,18 +103,267 @@ func TestLoadSaveRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	file := `{"version":1,"entries":[{"path":"/notes/one","target":{"space":"notes","prefix":"personal"}},` +
-		`{"path":"/notes/two","target":{"space":"team","prefix":""}}]}`
+	file := `{"version":2,"entries":[` +
+		`{"path":"/notes/one","target":{"kind":"hosted","endpoint":"","region":"","profile":"","name":"notes","prefix":"personal","pathStyle":false}},` +
+		`{"path":"/notes/two","target":{"kind":"hosted","endpoint":"","region":"","profile":"","name":"team","prefix":"","pathStyle":false}}],"defaults":[]}`
 	if string(raw) != file {
 		t.Fatalf("file = %s, want %s", raw, file)
 	}
 }
 
-func TestDecodeRejectsStrictViolations(t *testing.T) {
-	const valid = `{"version":1,"entries":[{"path":"/n","target":{"space":"notes","prefix":"p"}}]}`
-	with := func(old, new string) string {
-		return strings.Replace(valid, old, new, 1)
+// v1File is a version-1 settings file: one hosted space and prefix per
+// directory, and no defaults.
+const v1File = `{"version":1,"entries":[{"path":"/n","target":{"space":"notes","prefix":"p"}}]}`
+
+// TestV1ReadsAsHostedTarget proves the version-1 read path: the record reads
+// as a hosted target whose endpoint is empty, because the selected login
+// supplies the site when the record is resolved.
+func TestV1ReadsAsHostedTarget(t *testing.T) {
+	f := testFile(t)
+	writeRaw(t, f, v1File)
+	set, err := f.Load()
+	if err != nil {
+		t.Fatalf("Load() = %v", err)
 	}
+	target, ok := set.Lookup("/n")
+	if want := hosted("notes", "p"); !ok || target != want {
+		t.Fatalf("Lookup() = %+v, %v; want %+v", target, ok, want)
+	}
+	if defaults := set.Defaults(); len(defaults) != 0 {
+		t.Fatalf("Defaults() = %v, want none in a version-1 file", defaults)
+	}
+}
+
+// TestV1ReadDoesNotRewrite proves reading never rewrites: a version-1 file is
+// returned as it is, byte for byte, and the next write is the one that
+// upgrades it.
+func TestV1ReadDoesNotRewrite(t *testing.T) {
+	f := testFile(t)
+	writeRaw(t, f, v1File)
+	for range 2 {
+		if _, err := f.Load(); err != nil {
+			t.Fatalf("Load() = %v", err)
+		}
+	}
+	raw, err := os.ReadFile(f.Path())
+	if err != nil || string(raw) != v1File {
+		t.Fatalf("the file after two reads = %q, %v; want it byte-identical", raw, err)
+	}
+}
+
+// TestV1WriteBecomesV2 proves the next successful save writes version 2 and
+// stores the same hosted target in the version-2 shape: an empty endpoint, the
+// same name, and the same prefix, so it reads back exactly as before.
+func TestV1WriteBecomesV2(t *testing.T) {
+	f := testFile(t)
+	writeRaw(t, f, v1File)
+	set, err := f.Load()
+	if err != nil {
+		t.Fatalf("Load() = %v", err)
+	}
+	if err := f.Save(set); err != nil {
+		t.Fatalf("Save() = %v", err)
+	}
+	raw, err := os.ReadFile(f.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"version":2,"entries":[{"path":"/n","target":` +
+		`{"kind":"hosted","endpoint":"","region":"","profile":"","name":"notes","prefix":"p","pathStyle":false}}],"defaults":[]}`
+	if string(raw) != want {
+		t.Fatalf("the upgraded file = %s, want %s", raw, want)
+	}
+	reloaded, err := f.Load()
+	if err != nil {
+		t.Fatalf("Load() of the upgraded file = %v", err)
+	}
+	if target, ok := reloaded.Lookup("/n"); !ok || target != hosted("notes", "p") {
+		t.Fatalf("Lookup() = %+v, %v; want the same hosted target", target, ok)
+	}
+}
+
+// TestV2RoundTrip proves the version-2 shape survives a save and a load: the
+// entries in file order, the defaults in file order, and every target field.
+func TestV2RoundTrip(t *testing.T) {
+	hostedTarget := hosted("notes", "personal")
+	s3Target := Target{
+		Kind:      KindS3,
+		Endpoint:  "https://acc.r2.cloudflarestorage.com",
+		Region:    "auto",
+		Profile:   "r2",
+		Name:      "team-notes",
+		Prefix:    "",
+		PathStyle: true,
+	}
+	set := Set{}.Put(Entry{Path: "/notes", Target: hostedTarget}).Put(Entry{Path: "/archive", Target: s3Target})
+	set = set.PutDefault(s3Target).PutDefault(Target{Kind: KindS3, Endpoint: "", Region: "eu-north-1", Profile: "prod", Name: "analytics"})
+	f := testFile(t)
+	if err := f.Save(set); err != nil {
+		t.Fatalf("Save() = %v", err)
+	}
+	got, err := f.Load()
+	if err != nil {
+		t.Fatalf("Load() = %v", err)
+	}
+	if entries := got.Entries(); !slices.Equal(entries, set.Entries()) {
+		t.Fatalf("Entries() = %v, want %v", entries, set.Entries())
+	}
+	if defaults := got.Defaults(); !slices.Equal(defaults, set.Defaults()) {
+		t.Fatalf("Defaults() = %v, want %v", defaults, set.Defaults())
+	}
+}
+
+// TestDefaultsAlwaysEncoded proves the encoder writes the defaults list even
+// when it is empty and preserves a stored default.
+func TestDefaultsAlwaysEncoded(t *testing.T) {
+	f := testFile(t)
+	if err := f.Save(Set{}); err != nil {
+		t.Fatalf("Save() = %v", err)
+	}
+	if raw, err := os.ReadFile(f.Path()); err != nil || string(raw) != `{"version":2,"entries":[],"defaults":[]}` {
+		t.Fatalf("an empty file = %q, %v; want an empty defaults list", raw, err)
+	}
+	s3 := Target{Kind: KindS3, Endpoint: "", Region: "eu-north-1", Profile: "dev", Name: "analytics"}
+	if err := f.Save(Set{}.PutDefault(s3)); err != nil {
+		t.Fatalf("Save() = %v", err)
+	}
+	got, err := f.Load()
+	if err != nil {
+		t.Fatalf("Load() = %v", err)
+	}
+	if want := []Target{s3}; !slices.Equal(got.Defaults(), want) {
+		t.Fatalf("Defaults() = %v, want %v", got.Defaults(), want)
+	}
+}
+
+// TestDefaultByStoreKey proves a default is found by exactly its store key:
+// the name, the prefix, and a different endpoint, region or profile are not
+// part of it.
+func TestDefaultByStoreKey(t *testing.T) {
+	s3 := Target{Kind: KindS3, Endpoint: "https://s3.example", Region: "eu-north-1", Profile: "dev", Name: "analytics"}
+	set := Set{}.PutDefault(s3)
+	if got, ok := set.Default(s3.Key()); !ok || got != s3 {
+		t.Fatalf("Default() = %+v, %v; want %+v", got, ok, s3)
+	}
+	renamed := s3
+	renamed.Name, renamed.Prefix = "team", "personal"
+	if got, ok := set.Default(renamed.Key()); !ok || got != s3 {
+		t.Fatalf("Default() of the same store = %+v, %v; want %+v", got, ok, s3)
+	}
+	for _, other := range []Target{
+		{Kind: KindHosted, Endpoint: s3.Endpoint, Region: s3.Region, Profile: s3.Profile},
+		{Kind: KindS3, Endpoint: "https://other.example", Region: s3.Region, Profile: s3.Profile},
+		{Kind: KindS3, Endpoint: s3.Endpoint, Region: "us-east-1", Profile: s3.Profile},
+		{Kind: KindS3, Endpoint: s3.Endpoint, Region: s3.Region, Profile: "prod"},
+	} {
+		if got, ok := set.Default(other.Key()); ok {
+			t.Fatalf("Default(%+v) = %+v, want no default for another store", other.Key(), got)
+		}
+	}
+}
+
+// TestPutDefaultReplacesAndAppends proves a default for an existing store key
+// is replaced where it stands and a new key is appended, while neither an
+// entry write nor a default write drops the other list.
+func TestPutDefaultReplacesAndAppends(t *testing.T) {
+	first := Target{Kind: KindS3, Endpoint: "https://a.example", Name: "one"}
+	second := Target{Kind: KindS3, Endpoint: "https://b.example", Name: "two"}
+	set := Set{}.PutDefault(first).PutDefault(second).PutDefault(Target{Kind: KindS3, Endpoint: first.Endpoint, Name: "renamed"})
+	want := []Target{{Kind: KindS3, Endpoint: first.Endpoint, Name: "renamed"}, second}
+	if got := set.Defaults(); !slices.Equal(got, want) {
+		t.Fatalf("Defaults() = %v, want the replacement in place and the append last: %v", got, want)
+	}
+	entry := Entry{Path: "/n", Target: hosted("notes", "")}
+	withEntry := set.Put(entry)
+	if got := withEntry.Defaults(); !slices.Equal(got, want) {
+		t.Fatalf("Defaults() after Put() = %v, want %v", got, want)
+	}
+	if got := set.PutDefault(Target{Kind: KindS3, Endpoint: "https://c.example", Name: "three"}).Defaults(); len(got) != 3 {
+		t.Fatalf("Defaults() = %v, want the third store appended", got)
+	}
+	if got := withEntry.PutDefault(first).Entries(); !slices.Equal(got, []Entry{entry}) {
+		t.Fatalf("Entries() after PutDefault() = %v, want the entry kept", got)
+	}
+}
+
+func TestDecodeRejectsDuplicatePaths(t *testing.T) {
+	data := `{"version":2,"entries":[` +
+		`{"path":"/n","target":` + v2Target + `},` +
+		`{"path":"/n","target":` + v2Target + `}],"defaults":[]}`
+	assertMalformed(t, data)
+}
+
+func TestDecodeRejectsDuplicateDefaultKeys(t *testing.T) {
+	data := `{"version":2,"entries":[],"defaults":[` + s3Target("one") + `,` + s3Target("two") + `]}`
+	assertMalformed(t, data)
+}
+
+func TestDecodeRejectsHostedDefault(t *testing.T) {
+	data := `{"version":2,"entries":[],"defaults":[` + v2Target + `]}`
+	assertMalformed(t, data)
+}
+
+func TestDecodeRejectsHostedS3Fields(t *testing.T) {
+	for _, row := range []struct{ name, target string }{
+		{"region", `{"kind":"hosted","endpoint":"","region":"eu-north-1","profile":"","name":"notes","prefix":"","pathStyle":false}`},
+		{"profile", `{"kind":"hosted","endpoint":"","region":"","profile":"dev","name":"notes","prefix":"","pathStyle":false}`},
+		{"path style", `{"kind":"hosted","endpoint":"","region":"","profile":"","name":"notes","prefix":"","pathStyle":true}`},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			assertMalformed(t, `{"version":2,"entries":[{"path":"/n","target":`+row.target+`}],"defaults":[]}`)
+		})
+	}
+}
+
+func TestDecodeRejectsUnknownKind(t *testing.T) {
+	data := `{"version":2,"entries":[{"path":"/n","target":` +
+		`{"kind":"r2","endpoint":"","region":"","profile":"","name":"notes","prefix":"","pathStyle":false}}],"defaults":[]}`
+	assertMalformed(t, data)
+}
+
+func TestDecodeRejectsInvalidPrefix(t *testing.T) {
+	for _, prefix := range []string{"/leading", "trailing/", "a//b", "../x", `a\\b`} {
+		t.Run(prefix, func(t *testing.T) {
+			assertMalformed(t, `{"version":2,"entries":[{"path":"/n","target":`+
+				`{"kind":"hosted","endpoint":"","region":"","profile":"","name":"notes","prefix":"`+prefix+`","pathStyle":false}}],"defaults":[]}`)
+		})
+	}
+}
+
+func TestDecodeRequiresDefaults(t *testing.T) {
+	assertMalformed(t, `{"version":2,"entries":[]}`)
+	assertMalformed(t, `{"version":2,"entries":[],"defaults":{}}`)
+}
+
+// v2Target is one well-formed hosted target.
+const v2Target = `{"kind":"hosted","endpoint":"","region":"","profile":"","name":"notes","prefix":"","pathStyle":false}`
+
+// s3Target is one well-formed S3 target of the store that all of them share,
+// named name.
+func s3Target(name string) string {
+	return `{"kind":"s3","endpoint":"https://s3.example","region":"eu-north-1","profile":"dev","name":"` + name + `","prefix":"","pathStyle":false}`
+}
+
+// assertMalformed proves the file is refused as malformed and names no value.
+func assertMalformed(t *testing.T, data string) {
+	t.Helper()
+	f := testFile(t)
+	writeRaw(t, f, data)
+	if _, err := f.Load(); !errors.Is(err, ErrMalformed) {
+		t.Fatalf("Load(%s) = %v, want ErrMalformed", data, err)
+	}
+}
+
+// v2Valid is one well-formed version-2 file: one hosted entry and no
+// default. Each strictness row replaces one part of it.
+const v2Valid = `{"version":2,"entries":[{"path":"/n","target":` +
+	`{"kind":"hosted","endpoint":"","region":"","profile":"","name":"notes","prefix":"p","pathStyle":false}}],"defaults":[]}`
+
+func TestDecodeRejectsStrictViolations(t *testing.T) {
+	with := func(old, new string) string {
+		return strings.Replace(v2Valid, old, new, 1)
+	}
+	target := `{"kind":"hosted","endpoint":"","region":"","profile":"","name":"notes","prefix":"p","pathStyle":false}`
 	tests := []struct {
 		name string
 		data string
@@ -116,24 +371,30 @@ func TestDecodeRejectsStrictViolations(t *testing.T) {
 		{"not json", `{`},
 		{"array", `[]`},
 		{"unknown top field", with(`"entries"`, `"extra":1,"entries"`)},
-		{"missing version", `{"entries":[]}`},
-		{"missing entries", `{"version":1}`},
-		{"entries not an array", `{"version":1,"entries":{}}`},
-		{"duplicate version", `{"version":1,"version":1,"entries":[]}`},
-		{"null field", with(`"space"`, `"space":null`)},
-		{"entry not an object", `{"version":1,"entries":[1]}`},
+		{"missing version", `{"entries":[],"defaults":[]}`},
+		{"missing entries", `{"version":2,"defaults":[]}`},
+		{"entries not an array", `{"version":2,"entries":{},"defaults":[]}`},
+		{"duplicate version", `{"version":2,"version":2,"entries":[],"defaults":[]}`},
+		{"null top field", with(`"defaults":[]`, `"defaults":null`)},
+		{"null target field", with(`"name":"notes"`, `"name":null`)},
+		{"entry not an object", with(`{"path":"/n","target":`+target+`}`, `1`)},
 		{"unknown entry field", with(`"path"`, `"token":"sld_secret","path"`)},
 		{"missing path", with(`"path":"/n",`, "")},
 		{"empty path", with(`"/n"`, `""`)},
 		{"numeric path", with(`"/n"`, `7`)},
-		{"missing target", with(`,"target":{"space":"notes","prefix":"p"}`, "")},
-		{"target not an object", with(`{"space":"notes","prefix":"p"}`, `"notes"`)},
+		{"missing target", with(`,"target":`+target, "")},
+		{"target not an object", with(target, `"notes"`)},
 		{"unknown target field", with(`"prefix"`, `"key":"sld_secret","prefix"`)},
-		{"missing space", with(`"space":"notes",`, "")},
-		{"empty space", with(`"notes"`, `""`)},
-		{"missing prefix", with(`,"prefix":"p"`, "")},
-		{"numeric prefix", with(`"p"`, `3`)},
-		{"duplicate entry", strings.Replace(valid, `]}`, `,{"path":"/n","target":{"space":"o","prefix":""}}]}`, 1)},
+		{"missing kind", with(`"kind":"hosted",`, "")},
+		{"missing name", with(`"name":"notes",`, "")},
+		{"empty name", with(`"notes"`, `""`)},
+		{"missing prefix", with(`"prefix":"p",`, "")},
+		{"numeric prefix", with(`"prefix":"p"`, `"prefix":3`)},
+		{"missing endpoint", with(`"endpoint":"",`, "")},
+		{"missing region", with(`"region":"",`, "")},
+		{"missing profile", with(`"profile":"",`, "")},
+		{"missing path style", with(`,"pathStyle":false`, "")},
+		{"path style not a bool", with(`"pathStyle":false`, `"pathStyle":"no"`)},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -151,12 +412,15 @@ func TestDecodeRejectsStrictViolations(t *testing.T) {
 }
 
 // TestDecodeRejectsCredentialField proves the record holds no credential:
-// the schema names a space and a prefix, so a token or a key beside them
-// is an unknown field and the whole file is refused.
+// the target names backend fields only, so a token or a key beside them is an
+// unknown field and the whole file is refused. The version-1 shape is held to
+// the same rule.
 func TestDecodeRejectsCredentialField(t *testing.T) {
 	for _, data := range []string{
+		`{"version":2,"entries":[{"path":"/n","target":{"kind":"hosted","endpoint":"","region":"","profile":"","name":"notes","prefix":"","pathStyle":false,"token":"sld_secret"}}],"defaults":[]}`,
+		`{"version":2,"entries":[{"path":"/n","target":{"kind":"hosted","endpoint":"","region":"","profile":"","name":"notes","prefix":"","pathStyle":false,"key":"sld_secret"}}],"defaults":[]}`,
+		`{"version":2,"entries":[{"path":"/n","space":"notes","key":"sld_secret"}],"defaults":[]}`,
 		`{"version":1,"entries":[{"path":"/n","target":{"space":"notes","prefix":"","token":"sld_secret"}}]}`,
-		`{"version":1,"entries":[{"path":"/n","target":{"space":"notes","prefix":"","key":"sld_secret"}}]}`,
 		`{"version":1,"entries":[{"path":"/n","space":"notes","key":"sld_secret"}]}`,
 	} {
 		f := testFile(t)
@@ -169,7 +433,7 @@ func TestDecodeRejectsCredentialField(t *testing.T) {
 
 func TestDecodeRejectsMalformedJSON(t *testing.T) {
 	f := testFile(t)
-	writeRaw(t, f, `{"version":1,"entries":[`)
+	writeRaw(t, f, `{"version":2,"entries":[`)
 	if _, err := f.Load(); !errors.Is(err, ErrMalformed) {
 		t.Fatalf("Load() = %v, want ErrMalformed", err)
 	}
@@ -185,14 +449,14 @@ func TestUnsupportedVersionIsRefusedUnwritten(t *testing.T) {
 		data, fix, not string
 	}{
 		{`{"version":0,"entries":[]}`, older, "update slivingdoc"},
-		{`{"version":2,"entries":[],"extra":"sld_secret"}`, newer, "remove "},
+		{`{"version":3,"entries":[],"extra":"sld_secret"}`, newer, "remove "},
 	} {
 		f := testFile(t)
 		writeRaw(t, f, row.data)
 		_, err := f.Load()
 		if !errors.Is(err, ErrUnsupportedVersion) || errors.Is(err, ErrMalformed) ||
 			!strings.Contains(err.Error(), strings.Replace(row.fix, "%s", f.Path(), 1)) ||
-			strings.Contains(err.Error(), row.not) || !strings.Contains(err.Error(), "reads version 1 only") ||
+			strings.Contains(err.Error(), row.not) || !strings.Contains(err.Error(), "reads version 2 only") ||
 			strings.Contains(err.Error(), "sld_secret") {
 			t.Fatalf("Load(%s) = %v, want ErrUnsupportedVersion with %q", row.data, err, row.fix)
 		}
@@ -231,7 +495,7 @@ func TestPutReplacesAndAppends(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load() = %v", err)
 	}
-	if target, _ := got.Lookup("/b"); target != (Target{Space: "team", Prefix: "shared"}) {
+	if target, _ := got.Lookup("/b"); target != hosted("team", "shared") {
 		t.Fatalf("Lookup(b) = %+v, want the untouched sibling entry", target)
 	}
 }
@@ -475,7 +739,7 @@ func TestConfigInjectedLoadSkipsTheFile(t *testing.T) {
 	if calls != 1 {
 		t.Fatalf("the injected reader ran %d times, want once", calls)
 	}
-	if target, ok := got.Lookup("/injected"); !ok || target != (Target{Space: "notes", Prefix: "injected"}) {
+	if target, ok := got.Lookup("/injected"); !ok || target != hosted("notes", "injected") {
 		t.Fatalf("Lookup() = %+v, %v; want the injected set", target, ok)
 	}
 	if _, err := (Config{}).Read(env, runtime.GOOS); !errors.Is(err, ErrMalformed) {
@@ -579,7 +843,7 @@ func TestConcurrentSavesKeepBothEntries(t *testing.T) {
 	}
 	for _, want := range []Entry{entry("/first", "alpha", ""), entry("/second", "beta", ""), entry("/third", "gamma", "")} {
 		target, ok := set.Lookup(want.Path)
-		if !ok || target.Space != want.Target.Space {
+		if !ok || target != want.Target {
 			t.Fatalf("Lookup(%s) = %+v, %v; the concurrent writer lost its entry", want.Path, target, ok)
 		}
 	}

@@ -43,7 +43,7 @@ flag.
 | `status`        | Show what a directory changed locally, without changing it.   |
 | `log`           | List the recent publications of a notebook (`--limit <n>`).   |
 | `login`         | Log in to a hosted account through the browser.               |
-| `space`         | List the login's spaces, or set the default one (`space <n>`).|
+| `space`         | List every stored login's spaces and every reachable S3 bucket, set a default (`space <n>`), or create one (`space new <n>`). |
 | `logout`        | Revoke the stored login key and its tokens, and remove it.    |
 | `version` (`v`) | Print `slivingdoc <semver>` and exit, touching nothing else. `slivingdoc --version` does the same. |
 
@@ -171,7 +171,8 @@ makes the choice explicit ([Choosing the storage](#choosing-the-storage)).
 | Storage backend                   | `--storage`              | `SLIVINGDOC_STORAGE`              | `auto`                       |
 | Bucket or hosted space            | `--bucket` or `--space`  | `SLIVINGDOC_BUCKET` or `SLIVINGDOC_SPACE` | S3: none (required); hosted: the token's (`SLIVINGDOC_TOKEN`), else the space the directory remembers, else the login's default space |
 | Object prefix                     | `--prefix`               | `SLIVINGDOC_PREFIX`               | `slivingdoc`                 |
-| S3 region                         | `--region`               | `AWS_REGION`                      | `us-east-1`                  |
+| S3 region                         | `--region`               | `AWS_REGION`, then `AWS_DEFAULT_REGION` | empty (the profile's region, else `us-east-1`) |
+| S3 profile                        | `--profile`              | `AWS_PROFILE`                     | empty (the ambient chain)    |
 | S3 endpoint                       | `--endpoint`             | `AWS_ENDPOINT_URL_S3`             | empty (AWS resolution)       |
 | S3 path-style access              | `--path-style`           | `SLIVINGDOC_PATH_STYLE`           | `false`                      |
 | Hosted API token                  | none                     | `SLIVINGDOC_TOKEN`                | empty (S3 mode)              |
@@ -422,19 +423,22 @@ startup:
 1. Environment variables: `AWS_ACCESS_KEY_ID`,
    `AWS_SECRET_ACCESS_KEY` (plus `AWS_SESSION_TOKEN`).
 2. The shared config and credentials files (`~/.aws/credentials`,
-   `~/.aws/config`), honoring `AWS_PROFILE`.
+   `~/.aws/config`), honoring `--profile` or `AWS_PROFILE`.
 3. Ambient identity: SSO sessions, ECS/EKS task roles, and the EC2
    instance metadata service.
 
 slivingdoc's own flags shape _where_ the client points (`--bucket`/`--space`,
-`--prefix`, `--region`, `--endpoint`), never _who it is_. No flag
-carries a credential, and a `--endpoint` URL with user information is
-refused, so a secret can never echo into a diagnostic.
+`--prefix`, `--region`, `--endpoint`) and which shared configuration section
+supplies the credential chain (`--profile`), never _who it is_. A profile names
+a section, never a secret. No flag carries a credential, and a `--endpoint` URL
+with user information is refused, so a secret can never echo into a
+diagnostic.
 
-The region is always explicit. slivingdoc passes `--region` (or
-`AWS_REGION`, default `us-east-1`) to the SDK on every run, so
-`AWS_DEFAULT_REGION` and a profile's `region` setting are ignored; set
-`--region` or `AWS_REGION` when the bucket lives elsewhere.
+The region resolves in one order: `--region`, then `AWS_REGION`, then
+`AWS_DEFAULT_REGION`, then the selected profile's `region`, then `us-east-1`
+(the S3 default). The flag has an empty default, so a profile's region applies
+when neither the flag nor an environment variable names one, and an explicitly
+empty `--region` is legal.
 
 There are three ways to deliver credentials, and the choice is a
 deployment decision:
@@ -526,11 +530,11 @@ non-empty `SLIVINGDOC_TOKEN`, or a stored login
   `https://api.slivingdoc.dev` (with a stored login: the endpoint it was
   issued for). It must be `https`, except to a loopback
   address. `AWS_ENDPOINT_URL_S3`, `AWS_REGION`, and the AWS credential
-  chain are not used, and `--path-style` is validated, then unused. Beside
-  `SLIVINGDOC_TOKEN` a region, AWS credentials and the `~/.aws` files are
-  simply ignored; `--region` counts only against a stored login used
-  with a space you named as `--space` or `SLIVINGDOC_SPACE` (see
-  [Choosing the storage](#choosing-the-storage)).
+  chain are not used, and `--profile` and `--path-style` are parsed, then
+  unused. Beside `SLIVINGDOC_TOKEN` a region, AWS credentials, `--profile`
+  and the `~/.aws` files are simply ignored; `--profile` and `--region` count
+  only against a stored login used with a space you named as `--space` or
+  `SLIVINGDOC_SPACE` (see [Choosing the storage](#choosing-the-storage)).
   When the token selects hosted mode, `--endpoint` names the hosted API and
   S3 endpoint settings are ignored; use `--storage s3` to select S3.
 - The token is read from the environment, or minted from the stored
@@ -650,18 +654,44 @@ revoked and nothing is stored.
 
 ```text
 $ slivingdoc space
-* notes (read and write), owned by ada@example.com
-  team (read only), owned by bob@example.com
+HOSTED  https://api.slivingdoc.dev  ada@example.com
+* notes (/home/ada/notes)  write  ada@example.com
+  team  read  bob@example.com
 $ slivingdoc space team
-The default space is now team (read only), owned by bob@example.com
+The default space is now team (read, bob@example.com).
 ```
 
-`slivingdoc space` lists the spaces the login reaches and marks the
-default with `*`; when stdin, stdout and stderr are all a terminal it
-shows them as a numbered picker with the default marked instead, and the
-number you type becomes the default (`q` changes nothing). `slivingdoc space <name>` makes a listed space the
-default; a name the login does not reach changes nothing. With logins for
-several endpoints, `--endpoint` (or `SLIVINGDOC_ENDPOINT`) picks one.
+`slivingdoc space` lists every stored login as its own `HOSTED` group and
+marks each group's default with `*`; a row shows the directories that
+remember the space (three, then `+N`), its access (`write` or `read`), and
+its owner (`a team` when the space has none). A recorded or default space
+the listing did not return stays visible marked `!`, with a hint on
+stderr, and a login that cannot list is degraded the same way instead of
+failing the command. When stdin, stdout and stderr are all a terminal, the
+targets of every configured backend and one create row per backend appear
+as a numbered picker with the default in the last column instead; the
+number you type becomes that target's default, and a create row asks for a
+name, creates the target, and makes it the default (`q` changes nothing).
+`slivingdoc space <name>` makes one listed space the default;
+`slivingdoc space new <name>` creates a hosted space and leaves the
+default unchanged; a name no login reaches changes nothing. With logins
+for several endpoints, `--endpoint` (or `SLIVINGDOC_ENDPOINT`) picks one.
+
+With S3, `space` adds one `S3` group per resolved identity: the current
+chain and every profile a record or an S3 default names. A header names
+the resolved endpoint, region, and profile, plus the access key id (display
+only); a bucket is listed with `ListBuckets` and never probed. `--profile`
+chooses the shared-config section, and `--region`, `--endpoint`, and
+`--path-style` complete the identity. `slivingdoc space <bucket>` stores
+the default under that identity's store key, and
+`slivingdoc space new <bucket>` creates the bucket on the identity the
+flags select. A bucket the listing did not return but a record or default
+names stays visible marked `!`, and only a reachable row can become the
+default. An identity that the environment selects and `auto` cannot
+resolve is degraded like a failed listing; `--storage s3` or a flag that
+names the identity refuses.
+The store-keyed S3 default and `--profile` are described in
+[login.md](./login.md).
 
 `--site` (or `SLIVINGDOC_SITE`) names another site, such as a development
 deployment, whose logins then talk to that site's own storage API; the
@@ -705,8 +735,10 @@ After a successful `pull` or `commit` into a directory, that directory
 remembers the hosted notebook it reached. The record is one line per
 directory in `workspaces.json`, beside `credentials.json` in the
 configuration directory (`SLIVINGDOC_CONFIG_DIR`, else
-`<user-config-dir>/slivingdoc`), and it holds the space and the prefix
-only: no token and no key ([config.md](./config.md)).
+`<user-config-dir>/slivingdoc`), and it holds a version-2 target: the
+hosted space, its prefix and an empty endpoint, because the
+selected login supplies the site. It holds no token and no key
+([config.md](./config.md)).
 
 After that first pull, `slivingdoc pull`, `slivingdoc commit`,
 `slivingdoc status` and `slivingdoc log` in the same directory reach the
@@ -743,7 +775,7 @@ stored login: any of
 `AWS_SHARED_CREDENTIALS_FILE`, `AWS_ROLE_ARN`,
 `AWS_WEB_IDENTITY_TOKEN_FILE`, `AWS_ENDPOINT_URL`, `AWS_ENDPOINT_URL_S3`,
 `AWS_CONTAINER_CREDENTIALS_*` or `SLIVINGDOC_PATH_STYLE` set; the
-`--region` or `--path-style` flag given; or an existing
+`--profile`, `--region` or `--path-style` flag given; or an existing
 `~/.aws/credentials` or `~/.aws/config`. Then, in order:
 
 1. `SLIVINGDOC_TOKEN` is set: with the `--endpoint` flag,

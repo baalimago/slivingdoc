@@ -227,13 +227,15 @@ func TestScenarioAccountLoginLifecycle(t *testing.T) {
 		t.Fatalf("pull without a default space = exit %d, stdout %q, stderr %s", code, stdout, stderr)
 	}
 
-	runCLIExact(t, "real", env,
-		"  team-notes (read and write), owned by ada@example.test\n  second-space (read only), owned by bob@example.test\n",
-		"space")
-	runCLIExact(t, "real", env, "The default space is now team-notes (read and write), owned by ada@example.test\n", "space", hostedSpace)
-	runCLIExact(t, "real", env,
-		"* team-notes (read and write), owned by ada@example.test\n  second-space (read only), owned by bob@example.test\n",
-		"space")
+	listing := "HOSTED  " + g.URL() + "  " + loginAccount + "\n" +
+		"  second-space  read  bob@example.test\n" +
+		"  team-notes  write  " + loginAccount + "\n"
+	runCLIExact(t, "real", env, listing, "space")
+	runCLIExact(t, "real", env, "The default space is now team-notes (write, ada@example.test).\n", "space", hostedSpace)
+	marked := "HOSTED  " + g.URL() + "  " + loginAccount + "\n" +
+		"  second-space  read  bob@example.test\n" +
+		"* team-notes  write  " + loginAccount + "\n"
+	runCLIExact(t, "real", env, marked, "space")
 	// The space of another owner is reachable too, read only.
 	runCLIOK(t, "real", env, nil, "pull", "--space", second, filepath.Join(root, "second"))
 
@@ -677,7 +679,7 @@ func TestScenarioTwoLoginsNeedAnEndpoint(t *testing.T) {
 		t.Fatalf("pull with two logins = exit %d, stdout %q, stderr %s", code, stdout, stderr)
 	}
 	runCLIOK(t, "real", env, nil, "pull", "--endpoint", g2.URL(), filepath.Join(root, "second"))
-	runCLIExact(t, "real", env, "* team-notes (read only), owned by ada@example.test\n", "space", "--endpoint", g2.URL())
+	runCLIExact(t, "real", env, "HOSTED  "+g2.URL()+"  "+loginAccount+"\n* team-notes  read  "+loginAccount+"\n", "space", "--endpoint", g2.URL())
 	if mints := site.Mints(); len(mints) != 1 || mints[0].Key != secondKey || mints[0].Endpoint != g2.URL() || mints[0].Access != "read" {
 		t.Fatalf("mints = %+v, want one read token of the second login", mints)
 	}

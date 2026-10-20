@@ -119,7 +119,7 @@ func TestScenarioCLIHomeOnTerminal(t *testing.T) {
 	t.Run("command help", func(t *testing.T) {
 		t.Parallel()
 		code, stdout := runCLITTY(t, "fake", nil, "space", "-h")
-		if code != 0 || !strings.HasPrefix(stdout, "\x1b[34m◆\x1b[0m \x1b[34mslivingdoc\x1b[0m \x1b[1mspace\x1b[0m \x1b[2m· list the login's spaces") ||
+		if code != 0 || !strings.HasPrefix(stdout, "\x1b[34m◆\x1b[0m \x1b[34mslivingdoc\x1b[0m \x1b[1mspace\x1b[0m \x1b[2m· list, create, or set the default of a hosted space") ||
 			!strings.Contains(stdout, "\x1b[34mUsage:\x1b[0m\n") {
 			t.Fatalf("space -h on a terminal = exit %d stdout %q", code, stdout)
 		}

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/baalimago/slivingdoc/cmd/login"
 	"github.com/baalimago/slivingdoc/internal/app"
 	"github.com/baalimago/slivingdoc/internal/git"
 )
@@ -258,6 +259,30 @@ func TestHelpTextNamesTheOrder(t *testing.T) {
 				t.Fatalf("%s -h does not name %q", row.key, want)
 			}
 		}
+	}
+}
+
+// TestSpaceUsageNamesTheModes proves 'slivingdoc space -h' teaches every
+// positional form and every flag, including the ones this build refuses,
+// so an operator learns the create form from the command itself.
+func TestSpaceUsageNamesTheModes(t *testing.T) {
+	t.Parallel()
+	command := login.SpaceCommand(app.ProcessOptions{})
+	if got := command.Describe(); got != "list, create, or set the default of a hosted space or S3 bucket" {
+		t.Fatalf("describe = %q", got)
+	}
+	help := strings.Join(strings.Fields(command.Help()), " ")
+	for _, want := range []string{
+		"slivingdoc space", "new <name>", "bare 'new'", "--storage", "--endpoint", "--profile",
+		"--region", "--path-style", "--prefix", "auto|hosted|s3", "S3 bucket", "s3:CreateBucket",
+		"an existing ~/.aws/credentials or ~/.aws/config file, or a recorded S3 target; shared AWS files alone do not select S3 for 'space new'",
+	} {
+		if !strings.Contains(help, want) {
+			t.Fatalf("space -h does not name %q", want)
+		}
+	}
+	if !strings.Contains(Usage, "slivingdoc space new <name>") {
+		t.Fatal("the usage does not name the create form")
 	}
 }
 

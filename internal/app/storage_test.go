@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"io/fs"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/baalimago/slivingdoc/internal/credentials"
+	"github.com/baalimago/slivingdoc/internal/settings"
 )
 
 const (
@@ -255,10 +257,38 @@ func TestResolveStorage(t *testing.T) {
 					cfg.hosted(), cfg.tokenOrigin, cfg.bucket, cfg.bucketFrom, cfg.endpoint, cfg.token != "", key != "",
 					tt.wantHosted, tt.wantOrigin, tt.wantBucket, tt.wantFrom, tt.wantEndpoint)
 			}
-			if !tt.wantHosted && cfg.region == "" {
-				t.Fatal("an S3 configuration has no region")
+			if !tt.wantHosted && cfg.effectiveRegion() == "" {
+				t.Fatal("an S3 configuration has no effective region")
 			}
 		})
+	}
+}
+
+// TestRememberedTargetKeepsOnlyAHostedRecord proves that a version-2 record of
+// another kind names no hosted space: the hosted resolver ignores it, and the
+// directory-binding worklog owns how the commands resolve it.
+func TestRememberedTargetKeepsOnlyAHostedRecord(t *testing.T) {
+	hosted := settings.Target{Kind: settings.KindHosted, Name: "notes"}
+	s3 := settings.Target{Kind: settings.KindS3, Endpoint: "https://s3.example", Name: "bucket"}
+	for _, row := range []struct {
+		name string
+		in   settings.Target
+		want settings.Target
+	}{
+		{"a hosted record", hosted, hosted},
+		{"an S3 record", s3, settings.Target{}},
+		{"no record", settings.Target{}, settings.Target{}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			got, err := rememberedTarget(storageInputs{remembered: func() (settings.Target, error) { return row.in, nil }})
+			if err != nil || got != row.want {
+				t.Fatalf("rememberedTarget() = %+v, %v; want %+v", got, err, row.want)
+			}
+		})
+	}
+	want := os.ErrNotExist
+	if _, err := rememberedTarget(storageInputs{remembered: func() (settings.Target, error) { return settings.Target{}, want }}); !errors.Is(err, want) {
+		t.Fatalf("rememberedTarget() = %v, want the reader's error", err)
 	}
 }
 
@@ -478,6 +508,32 @@ func TestS3SignalsFindTheSharedAWSFiles(t *testing.T) {
 				t.Fatalf("s3Signals() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+// TestS3SignalsIncludeProfile proves --profile is an S3 signal like --region
+// and --path-style: it appears in the signal list, it makes a stored login for
+// a space named as --space ambiguous, and the --bucket spelling still selects
+// S3 beside it.
+func TestS3SignalsIncludeProfile(t *testing.T) {
+	f := NewFlags()
+	fs := flag.NewFlagSet("test", flag.ContinueOnError)
+	f.Bind(fs)
+	if err := fs.Parse([]string{"--profile", "dev"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := s3Signals(f, map[string]string{}, storageInputs{goos: "linux"}); !slices.Equal(got, []string{"--profile"}) {
+		t.Fatalf("s3Signals() = %v, want [--profile]", got)
+	}
+
+	notes := writeLogins(t, defaults(DefaultHostedEndpoint, "notes"), entry(DefaultHostedEndpoint, loginToken))
+	_, err := loadConfig(testProcess([]string{notes, "SLIVINGDOC_SPACE=notes"}, "--profile", "dev"))
+	if err == nil || !strings.Contains(err.Error(), "(--profile)") || !strings.Contains(err.Error(), "--storage hosted") {
+		t.Fatalf("loadConfig(login, --space, --profile) = %v, want the ambiguity refusal naming --profile", err)
+	}
+	cfg, err := loadConfig(testProcess([]string{notes, "SLIVINGDOC_BUCKET=notes"}, "--profile", "dev"))
+	if err != nil || cfg.hosted() {
+		t.Fatalf("loadConfig(login, --bucket, --profile) = hosted %v, %v; want S3", cfg.hosted(), err)
 	}
 }
 

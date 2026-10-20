@@ -8,10 +8,13 @@ Read this when: changing S3 request shape, addressing, multipart thresholds, err
 
 | File | Purpose |
 |------|---------|
-| `internal/s3store/store.go` | `Store`, `Config` (`Bucket`, `Prefix`, `Region`, `Endpoint`, `AccessKey`, `SecretKey`, test-only `httpClient`, `retryMaxAttempts`), `Options` (`MultipartThreshold`, `MultipartPartSize`, `ForcePathStyle`), `New`, `ReadObject`, `PutObject`, `putSingle`, `putMultipart`, `abortTimeout`, `CreateObject`, `ReplaceObject`, `ListObjects`, `DeleteObjects`, `mapError`, `apiDetail`, `errDetail`, `httpErrorDetail`, `bodySnippet` |
+| `internal/s3store/store.go` | `Store`, `Config` (`Bucket`, `Prefix`, `Region`, `Profile`, `Endpoint`, `AccessKey`, `SecretKey`, test-only `httpClient`, `retryMaxAttempts`), `Options` (`MultipartThreshold`, `MultipartPartSize`, `ForcePathStyle`), `DefaultRegion`, `New`, `Store.Resolved`, `loadAWSConfig`, `withDefaultRegion`, `newClient`, `ReadObject`, `PutObject`, `putSingle`, `putMultipart`, `abortTimeout`, `CreateObject`, `ReplaceObject`, `ListObjects`, `DeleteObjects`, `mapError`, `apiDetail`, `errDetail`, `httpErrorDetail`, `bodySnippet` |
+| `internal/s3store/resolve.go` | `Resolved` (`Profile`, `Endpoint`, `Region`, `PathStyle`), `Resolve` |
+| `internal/s3store/admin.go` | `Admin`, `NewAdmin`, `ListBuckets`, `CreateBucket`, `Identity`, `Bucket`, `ErrBucketExists`, `ErrBucketOwned`, `ErrProfileNotFound`, `mapCreateError` |
 | `internal/s3store/store_test.go` | No-network unit tests: validation, `withDefaults`, key join, `mapError`, non-JSON error pages, `TestAddressingProvesPathStyle`, `TestConfiguredEndpointBeatsServiceEndpointSettings`, `TestMultipartAbortsOnEveryFailure` (recording HTTP client) |
+| `internal/s3store/admin_test.go` | No-network unit tests of the profile, region, and administrative surface: profile selection and precedence, profile region, the shared-config section form, resolved values, `TestResolveDoesNotRetrieveCredentials`, the create request shape and error mapping, `ListBuckets`, `Identity`, and `TestAdminNeverCreates` |
 | `internal/storage/metadata.go` | `Metadata.Fields` and `ParseMetadata`, the metadata encoding this adapter shares with `httpstore` (round trip in `internal/storage/metadata_test.go`) |
-| `internal/s3store/integration_test.go` | Real-S3 tests: `TestContractSuite` (runs `contract.Run`), `TestMultipartUpload`, `TestPrefixIsolation`, `TestConcurrentCAS`; `TestMain` calls `tests3.Terminate` |
+| `internal/s3store/integration_test.go` | Real-S3 tests: `TestContractSuite` (runs `contract.Run`), `TestMultipartUpload`, `TestPrefixIsolation`, `TestConcurrentCAS`, `TestAdminIntegration`; `TestMain` calls `tests3.Terminate` |
 | `internal/tests3/s3.go` | `Image` (`chrislusf/seaweedfs:4.42`), `User`/`Pass`/`Bucket`/`Region`, `EndpointEnv`, `EndpointFileEnv`, `Suite`, `StoreConfig`, `Start`, `Ensure`, `Endpoint`, `Terminate`, `FreshPrefix`, `attach`, `attachFromFile`, `endpointFromFile`, `loopbackEndpoint`, `isLoopbackHost`, `require`, `dockerAvailable`, `startTimeout`, `suiteLabel`, `start`, `createBucket`, `bucketCreated`, `newRawClient` |
 | `internal/tests3/lease/main.go` | `tests3-lease`: owns one container for the whole `make test` run and writes its endpoint to `--ready-file` |
 | `internal/app/app.go` | `realStoreFactory`: the only production caller of `s3store.New` |
@@ -22,10 +25,19 @@ Read this when: changing S3 request shape, addressing, multipart thresholds, err
 
 ```text
 app.realStoreFactory(cfg)
-  → s3store.New(ctx, Config{Bucket, Prefix, Region, Endpoint}, Options{ForcePathStyle})
+  → s3store.New(ctx, Config{Bucket, Prefix, Region, Profile, Endpoint}, Options{ForcePathStyle})
       validate bucket, storage.ValidatePrefix, Options.withDefaults
-      awsconfig.LoadDefaultConfig(WithRegion, WithBaseEndpoint, [static creds])
-      s3.NewFromConfig(BaseEndpoint = Endpoint when set; UsePathStyle = Endpoint != "" || ForcePathStyle)
+      loadAWSConfig(WithSharedConfigProfile, WithRegion, WithBaseEndpoint, [static creds], [test client and retry])
+      withDefaultRegion → us-east-1 when neither the configuration nor the shared AWS configuration named one
+      newClient: BaseEndpoint = Endpoint when set; UsePathStyle = a resolved BaseEndpoint or ForcePathStyle
+      Store.Resolved = {Profile, Endpoint, Region, PathStyle}
+
+Resolve(ctx, Config, opts)  → loadAWSConfig → newClient → {Profile, Endpoint, Region, PathStyle}
+                              no bucket, no request, no credential retrieval, no region fallback
+NewAdmin(ctx, Config, opts) → loadAWSConfig → withDefaultRegion → newClient → Admin{client, credentials, Resolved}
+  ListBuckets      → ListBuckets                                (one request)
+  CreateBucket(n)  → CreateBucket (+ CreateBucketConfiguration on the default endpoint outside us-east-1)
+  Identity         → Credentials.Retrieve → {Profile, AccessKeyID, Endpoint, Region}
 
 ReadObject(key)     → GetObject(bucket, prefix/key)           → storage.ParseMetadata
 PutObject(key,r,m)  → size < threshold ? putSingle (PutObject + m.Fields())
@@ -43,11 +55,17 @@ tests:  make test → tests3-lease --ready-file F → SLIVINGDOC_TESTS3_ENDPOINT
 
 ## Behavior
 
-**Boundary.** No AWS SDK type crosses `internal/s3store`; `Config` holds plain strings, and every returned error wraps a `storage` sentinel. All AWS SDK use in production stays in this package (an AGENTS invariant). The adapter never creates or configures the bucket.
+**Boundary.** No AWS SDK type crosses `internal/s3store`; `Config` holds plain strings, and every returned error wraps a `storage` sentinel (the two bucket-create refusals wrap `ErrBucketExists` and `ErrBucketOwned` instead, because they are not storage categories). All AWS SDK use in production stays in this package (an AGENTS invariant). The adapter never creates or configures the bucket except through `Admin.CreateBucket`.
 
-**Addressing.** A custom endpoint always uses path style (SeaweedFS and similar resolve buckets only that way); `ForcePathStyle` (`--path-style`) requests it for the default AWS endpoint. `TestAddressingProvesPathStyle` proves the request URL shape without a network, and `TestConfiguredEndpointBeatsServiceEndpointSettings` proves a configured endpoint addresses the request even when `AWS_ENDPOINT_URL_S3` or a profile `endpoint_url` names another, or `AWS_IGNORE_CONFIGURED_ENDPOINT_URLS` / `ignore_configured_endpoint_urls` would drop it: `New` sets the endpoint both as a load option and as the client's `BaseEndpoint` ([config.md](./config.md)). The unit tests that inject `httpClient` call `isolateAWSEnv` first, which unsets `AWS_CA_BUNDLE` (the SDK refuses a custom CA bundle with a non-default HTTP client), the profile variables, `AWS_USE_FIPS_ENDPOINT`, `AWS_USE_DUALSTACK_ENDPOINT`, and every `AWS_ENDPOINT_URL*`, and points the config and credentials files at a missing path.
+**Addressing.** A custom endpoint always uses path style (SeaweedFS and similar resolve buckets only that way), and so does any resolved base endpoint, which covers `AWS_ENDPOINT_URL_S3`, `AWS_ENDPOINT_URL`, and a profile's `services s3 endpoint_url`; `ForcePathStyle` (`--path-style`) requests it for the default AWS endpoint. `TestAddressingProvesPathStyle` proves the request URL shape without a network, and `TestConfiguredEndpointBeatsServiceEndpointSettings` proves a configured endpoint addresses the request even when `AWS_ENDPOINT_URL_S3` or a profile `endpoint_url` names another, or `AWS_IGNORE_CONFIGURED_ENDPOINT_URLS` / `ignore_configured_endpoint_urls` would drop it: `New` sets the endpoint both as a load option and as the client's `BaseEndpoint`, so `o.BaseEndpoint` is also the resolved value the store reports ([config.md](./config.md)). The unit tests that inject `httpClient` call `isolateAWSEnv` first, which unsets `AWS_CA_BUNDLE` (the SDK refuses a custom CA bundle with a non-default HTTP client), the profile and region variables, `AWS_USE_FIPS_ENDPOINT`, `AWS_USE_DUALSTACK_ENDPOINT`, and every `AWS_ENDPOINT_URL*`, and points the config and credentials files at a missing path.
 
-**Credentials.** Production passes no `AccessKey`/`SecretKey`, so `LoadDefaultConfig` uses the AWS default credential chain. Static credentials are used only when both fields are set, which only test code does (values from `tests3.Suite.StoreConfig`); `app.realStoreFactory` never sets them. A credential-resolution failure surfaces through the startup probe as a redacted `S3 storage refused the credentials or the bucket` refusal naming the reason ([config.md](./config.md)), except when a recorded proof in the shared pack cache is reused ([storage.md](./storage.md)): the proof does not bind credentials, so a process whose credentials fail then starts and refuses the first request as `STORAGE_FAILURE`.
+**Credentials.** Production passes no `AccessKey`/`SecretKey`, so `loadAWSConfig` uses the AWS default credential chain, and `Config.Profile` selects a shared-config profile (`WithSharedConfigProfile`) ahead of `AWS_PROFILE`; a profile name is a selector, never a secret. Static credentials are used only when both fields are set, which only test code does (values from `tests3.Suite.StoreConfig`); `app.realStoreFactory` never sets them. A credential-resolution failure surfaces through the startup probe as a redacted `S3 storage refused the credentials or the bucket` refusal naming the reason ([config.md](./config.md)), except when a recorded proof in the shared pack cache is reused ([storage.md](./storage.md)): the proof does not bind credentials, so a process whose credentials fail then starts and refuses the first request as `STORAGE_FAILURE`. `Admin.Identity` is the one explicit retrieval: it returns the access key id with the resolved values and never the secret. The key id is display only; `space` prints it in its S3 group header, and it is never stored, logged, or returned over MCP ([security.md](./security.md)).
+
+**Profile and the effective region.** `Resolve`, `New`, and `NewAdmin` share `loadAWSConfig`: `WithSharedConfigProfile` when `Config.Profile` is set, `WithRegion` when `Config.Region` is set (an empty region leaves the profile's `region` and the SDK environment order in charge), `WithBaseEndpoint` when the endpoint is set, the static credentials, and the test-only HTTP client and retry bound. `Resolve` builds a throwaway `s3.Client` and reads `Options().BaseEndpoint`, `Options().Region`, and `Options().UsePathStyle`, so it follows the SDK's own endpoint order without reimplementing it; it sends no request and retrieves no credential. Its `Region` is the value as loaded, which may be empty: the `space` backend normalizes an empty one to `us-east-1` for display and for a stored target. `New` and `NewAdmin` apply `us-east-1` instead (`withDefaultRegion`), before the client is built. `Store.Resolved()` reports the values the store was built with, and its `Endpoint` and `Region` are the same values `Resolve` reports for the same configuration, except for the fallback. A named profile is a `[profile <name>]` section of `~/.aws/config`; the SDK reads no other section of that file as a profile, but a `[<name>]` section of `~/.aws/credentials` still defines the name and supplies the key, so such a profile resolves with an empty region and `space` displays and stores `us-east-1` (`TestBareConfigSectionSuppliesNoRegion`).
+
+**Bucket administration.** `NewAdmin` deliberately ignores `Config.Bucket` and `Config.Prefix`, so listing and creating need no notebook configuration; it validates neither. `ListBuckets` sends one request and maps the answer to `Bucket{Name, Created}`. `CreateBucket` sends `CreateBucketConfiguration` only when the effective endpoint is the default AWS endpoint and the effective region is not `us-east-1` (that region rejects the configuration, and a custom endpoint names its own location); it refuses an empty name before any request. `Identity` retrieves the credential once and returns `{Profile, AccessKeyID, Endpoint, Region}`. No other call creates a bucket or validates one: `New`, `NewAdmin`, and `Resolve` send no request at all (`TestAdminNeverCreates`).
+
+**Create refusals.** `mapCreateError` maps S3 code `BucketAlreadyExists` to `ErrBucketExists` and `BucketAlreadyOwnedByYou` to `ErrBucketOwned`, checking the owned answer first when a service names both; every other create failure goes through `mapError`, so a denial is `storage.ErrAccessDenied` and a transport failure `storage.ErrTransport`. The `space` command owns the refusal text (architecture/login.md).
 
 **Uploads.** Single PUT below `MultipartThreshold` (default 64 MiB), multipart above it with `MultipartPartSize` (default 16 MiB, minimum 5 MiB, enforced by `withDefaults`). Multipart calls a best-effort `AbortMultipartUpload` (error ignored) on a part, source-read, length-mismatch, or `CompleteMultipartUpload` failure. The abort runs on `context.WithoutCancel(ctx)` bounded by `abortTimeout` (10 s), so a cancelled request still sends it (`TestMultipartAbortsOnEveryFailure`). The call does not return until the abort answers or times out, so a caller whose request was cancelled mid-upload can wait up to 10 s more for its result. An abort after a Complete whose response was lost finds the upload already completed and leaves the object alone. An incomplete upload can still remain when the abort itself fails or the process dies mid-upload (nothing in slivingdoc or the Terraform module removes it; an operator can add an `AbortIncompleteMultipartUpload` lifecycle rule). A body shorter or longer than `Metadata.Size` is `ErrTransport`. Packs are `application/octet-stream`; the manifest and probe objects are `application/json`.
 
@@ -68,7 +86,8 @@ tests:  make test → tests3-lease --ready-file F → SLIVINGDOC_TESTS3_ENDPOINT
 ## Gotchas
 
 - The SeaweedFS image is pinned in two places: `tests3.Image` and `S3_IMAGE` (plus the `prerun-step-cmd`) in `.github/workflows/ci.yml`. Change both.
-- `Config.httpClient` and `retryMaxAttempts` are unexported test seams; production cannot set them.
+- `Config.httpClient` and `retryMaxAttempts` are unexported test seams; production cannot set them. `Resolve`, `New`, and `NewAdmin` all honour them, so a unit test proves the whole administrative surface without a network.
+- `Resolve` does not apply the `us-east-1` fallback and does not validate a bucket or prefix; a caller that displays or stores its answer normalizes an empty region itself. `New` and `NewAdmin` do apply it, so `Store.Resolved().Region` is never empty.
 - A `ReadObject` metadata error closes the body before returning; any new early return must do the same.
 - `mapError` must never downgrade a semantic code to `ErrTransport` or upgrade a transport failure to a precondition failure; the CAS and ambiguity logic depend on the distinction.
 - Bucket versioning, replication, object lock and lifecycle rules are deployment policy; nothing here depends on them.
@@ -76,6 +95,6 @@ tests:  make test → tests3-lease --ready-file F → SLIVINGDOC_TESTS3_ENDPOINT
 ## Related
 
 - [storage.md](./storage.md): the interface, protocol, contract suite and fake.
-- [config.md](./config.md): where bucket, prefix, region, endpoint and path style come from.
+- [config.md](./config.md): where bucket, prefix, region, profile, endpoint and path style come from.
 - [testing.md](./testing.md): how the real-S3 suites fit the test layers.
 - [running.md, S3 requirements](./running.md#s3-requirements).

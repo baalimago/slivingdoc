@@ -48,7 +48,8 @@ const (
 // configured S3 on purpose. In auto mode they make a stored login beside an
 // explicit bucket a refusal rather than a guess. Any variable starting
 // with awsContainerPrefix counts too, and so do the shared AWS files
-// (awsFiles) and the S3-only flags --region and --path-style (s3Signals).
+// (awsFiles) and the S3-only flags --profile, --region and --path-style
+// (s3Signals).
 func awsSignals() []string {
 	return []string{
 		"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_PROFILE",
@@ -300,20 +301,20 @@ func resolveStorage(f *Flags, env map[string]string, in storageInputs) (storageS
 	case errors.Is(err, credentials.ErrAmbiguous):
 		return storageSelection{}, fmt.Errorf("%w; pass --endpoint to choose one, or --storage s3", err)
 	case errors.Is(err, credentials.ErrNoLogin) && mode == storageAuto:
-		if sel.remembered.Space != "" {
-			return storageSelection{}, noCredentialRefusal(logins, explicit, sel.remembered.Space)
+		if sel.remembered.Name != "" {
+			return storageSelection{}, noCredentialRefusal(logins, explicit, sel.remembered.Name)
 		}
 		return sel, nil
 	case errors.Is(err, credentials.ErrNoLogin):
-		if sel.remembered.Space != "" {
-			return storageSelection{}, noCredentialRefusal(logins, explicit, sel.remembered.Space)
+		if sel.remembered.Name != "" {
+			return storageSelection{}, noCredentialRefusal(logins, explicit, sel.remembered.Name)
 		}
 		return storageSelection{}, noLoginRefusal(logins, explicit)
 	case err != nil:
 		return storageSelection{}, err
 	}
-	if sel.bucket == "" && sel.remembered.Space != "" {
-		sel.bucket, sel.bucketFrom = sel.remembered.Space, bucketFromRemembered
+	if sel.bucket == "" && sel.remembered.Name != "" {
+		sel.bucket, sel.bucketFrom = sel.remembered.Name, bucketFromRemembered
 	}
 	if sel.bucket == "" {
 		if space, err := logins.DefaultSpace(login.Endpoint); err == nil {
@@ -348,15 +349,21 @@ func resolveStorage(f *Flags, env map[string]string, in storageInputs) (storageS
 	return sel, nil
 }
 
-// rememberedTarget is the notebook this directory remembers in the scoped
-// settings (architecture/config.md, The scoped settings store). A process that
-// consults no association has none, and a directory with no record has none
-// either.
+// rememberedTarget is the hosted notebook this directory remembers in the
+// scoped settings (architecture/config.md, The scoped settings store). A
+// process that consults no association has none, and a directory with no
+// record has none either. A record of another kind names no hosted space:
+// how the commands resolve an S3 record belongs to the directory-binding
+// worklog (26-10-18-directory-bindings).
 func rememberedTarget(in storageInputs) (settings.Target, error) {
 	if in.remembered == nil {
 		return settings.Target{}, nil
 	}
-	return in.remembered()
+	target, err := in.remembered()
+	if err != nil || target.Kind != settings.KindHosted {
+		return settings.Target{}, err
+	}
+	return target, nil
 }
 
 // loadLogins reads the stored logins. A process whose environment names
@@ -393,11 +400,19 @@ func noLoginRefusal(logins credentials.Set, explicit string) error {
 	return fmt.Errorf("%s; run 'slivingdoc login'", msg)
 }
 
+// s3FlagSignals is the narrow view of a flag holder that s3Signals reads:
+// the three S3-only flags, in both the shared and the space flag sets.
+type s3FlagSignals interface {
+	regionSet() bool
+	pathStyleSet() bool
+	profileSet() bool
+}
+
 // s3Signals returns what configures S3 on purpose, in a fixed order: the
 // awsSignals variables that are set, the container credential variables,
 // the S3-only flags, and the shared AWS files that exist under the home
 // directory.
-func s3Signals(f *Flags, env map[string]string, in storageInputs) []string {
+func s3Signals(f s3FlagSignals, env map[string]string, in storageInputs) []string {
 	var set []string
 	for _, name := range awsSignals() {
 		if env[name] != "" {
@@ -412,10 +427,13 @@ func s3Signals(f *Flags, env map[string]string, in storageInputs) []string {
 	}
 	slices.Sort(container)
 	set = append(set, container...)
-	if f.region.set {
+	if f.profileSet() {
+		set = append(set, "--profile")
+	}
+	if f.regionSet() {
 		set = append(set, "--region")
 	}
-	if f.pathStyle.set {
+	if f.pathStyleSet() {
 		set = append(set, "--path-style")
 	}
 	home := env["HOME"]
