@@ -152,15 +152,21 @@ or network dependency is touched.
 
 ## Configuration
 
-`serve`, `pull`, and `commit` read the same flags and environment
-variables. Flags override environment variables, and the environment
-overrides defaults.
-`--bucket` is required for S3. `--space` (and `SLIVINGDOC_SPACE`) is the
+`serve`, `pull`, `commit`, `status` and `log` read the same flags and environment
+variables. Flags override environment variables, the environment
+overrides defaults, and each target field takes its flag or slivingdoc
+variable, then the directory record of the resolved kind, then the one
+global default, then the ambient AWS configuration. The same layers name
+the target a bare command uses ([a directory remembers its target](#a-directory-remembers-its-target),
+[config.md](./config.md)).
+`--bucket` is required for S3 only when neither a record nor the S3
+default names one. `--space` (and `SLIVINGDOC_SPACE`) is the
 same setting under its hosted name; passing both spellings with different
 values refuses startup. In hosted mode the space defaults, with
-`SLIVINGDOC_TOKEN`, to the token's own space, and otherwise to the stored
-login's default space when `--storage` is not `s3`; a space that is given
-must be the token's space, or one the login reaches. `-h` on any of the three
+`SLIVINGDOC_TOKEN`, to the token's own space, and otherwise to a hosted
+record of the directory, then the stored login's default space when
+`--storage` is not `s3`; a space that is given
+must be the token's space, or one the login reaches. `-h` on any of them
 prints the same reference. A non-empty `SLIVINGDOC_TOKEN`, or a stored
 login, switches to [hosted storage](#hosted-storage), which
 changes the meaning of `--bucket`/`--space` and `--endpoint` as noted; `--storage`
@@ -169,7 +175,7 @@ makes the choice explicit ([Choosing the storage](#choosing-the-storage)).
 | Function                          | Flag                     | Environment variable              | Default                      |
 | --------------------------------- | ------------------------ | --------------------------------- | ---------------------------- |
 | Storage backend                   | `--storage`              | `SLIVINGDOC_STORAGE`              | `auto`                       |
-| Bucket or hosted space            | `--bucket` or `--space`  | `SLIVINGDOC_BUCKET` or `SLIVINGDOC_SPACE` | S3: none (required); hosted: the token's (`SLIVINGDOC_TOKEN`), else the space the directory remembers, else the login's default space |
+| Bucket or hosted space            | `--bucket` or `--space`  | `SLIVINGDOC_BUCKET` or `SLIVINGDOC_SPACE` | S3: the directory record, then the S3 default; neither: none (required). Hosted: the token's (`SLIVINGDOC_TOKEN`), else the directory record, else the login's default space |
 | Object prefix                     | `--prefix`               | `SLIVINGDOC_PREFIX`               | `slivingdoc`                 |
 | S3 region                         | `--region`               | `AWS_REGION`, then `AWS_DEFAULT_REGION` | empty (the profile's region, else `us-east-1`) |
 | S3 profile                        | `--profile`              | `AWS_PROFILE`                     | empty (the ambient chain)    |
@@ -189,11 +195,11 @@ makes the choice explicit ([Choosing the storage](#choosing-the-storage)).
 | Log levels                        | `--log-level`            | `LOG_LEVEL`                       | `info`                       |
 | Log timestamps                    | `--log-timestamp`        | `SLIVINGDOC_LOG_TIMESTAMP`        | `true`                       |
 
-`--workspace-root` is the root below which request paths may live, and is
-also the notebook directory an omitted path resolves to. The private root
-holds the internal Git repository, the state record, and the operation
-locks. It must not be at or below the workspace root. Both roots become
-absolute before startup.
+`--workspace-root` is the notebook directory `serve` serves and the root an
+omitted one-shot path resolves to; a one-shot path must stay at or below it.
+The private root holds the internal Git repository, the state record, and the
+operation locks. It must not be at or below the workspace root. Both roots
+become absolute before startup.
 
 ### The session directory
 
@@ -522,8 +528,8 @@ non-empty `SLIVINGDOC_TOKEN`, or a stored login
   (`GET /v1/token`) and uses it. A `--space` that names a different
   space refuses startup, naming both; one that names the same space
   changes nothing. With a stored login, the space is `--space`, else
-  `SLIVINGDOC_SPACE`, else the space the notebook directory remembers,
-  else the default space. When given, it is 1 to 63 lowercase letters, digits,
+  `SLIVINGDOC_SPACE`, else the hosted space the notebook directory
+  remembers, else the default space. When given, it is 1 to 63 lowercase letters, digits,
   and inner hyphens. `--prefix` still separates notebooks inside the
   space.
 - The endpoint is `--endpoint`, else `SLIVINGDOC_ENDPOINT`, else
@@ -662,7 +668,9 @@ The default space is now team (read, bob@example.com).
 ```
 
 `slivingdoc space` lists every stored login as its own `HOSTED` group and
-marks each group's default with `*`; a row shows the directories that
+marks the one active default with `*`: the stored S3 default when one exists,
+else the selected login's default space, so a hosted default beside an active
+S3 default is shown without the mark. A row shows the directories that
 remember the space (three, then `+N`), its access (`write` or `read`), and
 its owner (`a team` when the space has none). A recorded or default space
 the listing did not return stays visible marked `!`, with a hint on
@@ -670,11 +678,14 @@ stderr, and a login that cannot list is degraded the same way instead of
 failing the command. When stdin, stdout and stderr are all a terminal, the
 targets of every configured backend and one create row per backend appear
 as a numbered picker with the default in the last column instead; the
-number you type becomes that target's default, and a create row asks for a
-name, creates the target, and makes it the default (`q` changes nothing).
-`slivingdoc space <name>` makes one listed space the default;
+number you type becomes that target's default and clears the other
+backend's, and a create row asks for a name, creates the target, and makes
+it the default (`q` changes nothing).
+`slivingdoc space <name>` makes one listed space the default and clears
+every stored S3 default;
 `slivingdoc space new <name>` creates a hosted space and leaves the
-default unchanged; a name no login reaches changes nothing. With logins
+default unchanged; a name no login reaches, and a bare `space new`, change
+nothing. With logins
 for several endpoints, `--endpoint` (or `SLIVINGDOC_ENDPOINT`) picks one.
 
 With S3, `space` adds one `S3` group per resolved identity: the current
@@ -682,15 +693,19 @@ chain and every profile a record or an S3 default names. A header names
 the resolved endpoint, region, and profile, plus the access key id (display
 only); a bucket is listed with `ListBuckets` and never probed. `--profile`
 chooses the shared-config section, and `--region`, `--endpoint`, and
-`--path-style` complete the identity. `slivingdoc space <bucket>` stores
-the default under that identity's store key, and
+`--path-style` complete the identity. `slivingdoc space <bucket>` stores one
+S3 default target — its kind, endpoint, region, profile, name, prefix, and
+path style — replacing every earlier S3 default, and
 `slivingdoc space new <bucket>` creates the bucket on the identity the
-flags select. A bucket the listing did not return but a record or default
-names stays visible marked `!`, and only a reachable row can become the
-default. An identity that the environment selects and `auto` cannot
-resolve is degraded like a failed listing; `--storage s3` or a flag that
-names the identity refuses.
-The store-keyed S3 default and `--profile` are described in
+flags select and changes no default. A bucket the listing did not return but a
+record or the stored default names stays visible marked `!`, and only a
+reachable row can become the default. An identity that the environment selects
+and `auto` cannot resolve is degraded like a failed listing; `--storage s3` or
+a flag that names the identity refuses.
+A hosted selection makes a space the login's default and clears every stored
+S3 default, so the two never compete; a bare `space` lists S3 with the stored
+default's own profile, endpoint, and region when no flag or variable names one.
+The one global default and `--profile` are described in
 [login.md](./login.md).
 
 `--site` (or `SLIVINGDOC_SITE`) names another site, such as a development
@@ -729,20 +744,11 @@ backend=hosted endpoint=... space=... token=login` (or `env`, or
 with the variable's name, and none at all as `aws-default (SDK: env or
 profile)`).
 
-### A directory remembers its space
+### A directory remembers its target
 
-After a successful `pull` or `commit` into a directory, that directory
-remembers the hosted notebook it reached. The record is one line per
-directory in `workspaces.json`, beside `credentials.json` in the
-configuration directory (`SLIVINGDOC_CONFIG_DIR`, else
-`<user-config-dir>/slivingdoc`), and it holds a version-2 target: the
-hosted space, its prefix and an empty endpoint, because the
-selected login supplies the site. It holds no token and no key
-([config.md](./config.md)).
+After a successful `pull`, `commit`, or tool call of a `serve` with a durable directory, that directory remembers the target it reached. The record is one line per directory in `workspaces.json`, beside `credentials.json` in the configuration directory (`SLIVINGDOC_CONFIG_DIR`, else `<user-config-dir>/slivingdoc`), and it holds a version-2 target: a hosted target names the space and prefix and keeps an empty endpoint, because the selected login supplies the site, while an S3 target names its endpoint, region, profile, bucket, prefix and path style. It holds no token and no key ([config.md](./config.md)).
 
-After that first pull, `slivingdoc pull`, `slivingdoc commit`,
-`slivingdoc status` and `slivingdoc log` in the same directory reach the
-same notebook with no flag and no `SLIVINGDOC_TOKEN`:
+After that first pull, `slivingdoc pull`, `slivingdoc commit`, `slivingdoc status` and `slivingdoc log` in the same directory reach the same notebook with no target flag and no `SLIVINGDOC_TOKEN`:
 
 ```text
 slivingdoc pull --space team ~/work/team   # the first pull, with the space named
@@ -751,19 +757,20 @@ slivingdoc pull                            # the same space, no flag
 slivingdoc status                          # ... space: remembered space
 ```
 
-To see which space a directory uses and where it came from, run
-`slivingdoc status` there: the first line names the store, and a space the
-directory remembered is followed by `space: remembered space`.
+The same holds for an S3 target, whose complete identity the record keeps:
 
-To change it, pass `--space` (or set `SLIVINGDOC_SPACE`) for that run, or
-change the login's default with `slivingdoc space <name>`. A flag, a
-variable or a token always wins for its own run and changes nothing that
-is recorded; `--storage s3` and `serve` ignore the file completely.
-Deleting the line for a directory from `workspaces.json`, or the file
-itself, makes that directory use the login's default space again. A
-remembered space the credentials no longer reach refuses startup and
-names the space and `slivingdoc login`, so notes are never pulled into
-another notebook silently ([login.md](./login.md)).
+```text
+slivingdoc pull --bucket notes --endpoint https://s3.example --region eu-north-1 --prefix team ~/work/notes
+cd ~/work/notes
+slivingdoc pull                            # the same bucket, endpoint, region and prefix
+slivingdoc status                          # ... bucket: remembered bucket
+```
+
+To see which target a directory uses and where it came from, run `slivingdoc status` there: the first line names the store, and a target the directory remembered is followed by `space: remembered space` or `bucket: remembered bucket`. A target named by a flag, a variable or the global default gets no trailer, because the operator can see that choice already.
+
+A durable `serve` uses the same record: with `--workspace-root` (or `SLIVINGDOC_WORKSPACE_ROOT`, or the working directory when the other root is configured) it reads the record before the transport starts and records the target a successful tool call proved. A server with no root configured owns a per-process scratch directory, so it neither reads nor writes the file.
+
+To change a directory's target, pass the target flag (or set its variable) for that run, or change the global default with `slivingdoc space <name>`. A flag, a variable or a token always wins for its own run and changes nothing that is recorded; a record-sourced run leaves the file byte-identical. Deleting the line for a directory from `workspaces.json`, or the file itself, makes that directory use the global default again. A remembered hosted space the credentials no longer reach refuses startup and names the space and `slivingdoc login`, so notes are never pulled into another notebook silently ([login.md](./login.md)).
 
 ### Choosing the storage
 
@@ -776,40 +783,37 @@ stored login: any of
 `AWS_WEB_IDENTITY_TOKEN_FILE`, `AWS_ENDPOINT_URL`, `AWS_ENDPOINT_URL_S3`,
 `AWS_CONTAINER_CREDENTIALS_*` or `SLIVINGDOC_PATH_STYLE` set; the
 `--profile`, `--region` or `--path-style` flag given; or an existing
-`~/.aws/credentials` or `~/.aws/config`. Then, in order:
+`~/.aws/credentials` or `~/.aws/config`. Backend selection then follows this
+order:
 
-1. `SLIVINGDOC_TOKEN` is set: with the `--endpoint` flag,
-   `AWS_ENDPOINT_URL` or `AWS_ENDPOINT_URL_S3` (you pointed S3 at a
-   host), startup is refused, naming them, rather than guess the store;
-   pass `--storage hosted` to use hosted storage (the token goes only to
-   the hosted endpoint; hosted mode never reads the AWS endpoint
-   variables) or `--storage s3`. Otherwise
-   hosted storage with that token, whatever other S3 settings exist: a
-   region, AWS credentials and `~/.aws` files are not read in hosted mode. It
-   wins over a stored login and never reads the credentials file, so a
-   read-only token in one MCP entry and a login in another can sit side by
-   side.
-2. A login is stored and no space is given: hosted storage with the
-   space the notebook directory remembers, else the login's default
-   space, whatever S3 settings exist (S3 would have no
-   bucket); with neither, startup is refused, naming
-   `slivingdoc space <name>`.
-3. A login is stored and the space is given as `--space` or
-   `SLIVINGDOC_SPACE`: with S3 settings, startup is refused, naming them;
-   pass `--storage hosted` or `--storage s3`. Otherwise hosted storage
-   with the login.
-4. A login is stored and the same setting is given in its S3 spelling,
-   `--bucket` or `SLIVINGDOC_BUCKET`: with S3 settings, that is a bucket,
-   so S3; pass `--storage hosted` to use the login for that space
-   instead. Without S3 settings it is the space of hosted storage with
-   the login, as in 3. Both spellings given with one value count as
-   `--space`.
-5. Otherwise: S3.
+1. `--storage s3` or `SLIVINGDOC_STORAGE=s3` selects S3 and ignores the
+   token and stored logins. A record of another kind supplies no field.
+2. Otherwise, `SLIVINGDOC_TOKEN` selects hosted storage, even beside S3
+   settings or a directory record. `--endpoint` or `SLIVINGDOC_ENDPOINT`
+   names the hosted API; AWS endpoint variables are ignored. The process
+   never reads the credentials file for this selection.
+3. Otherwise, `--storage hosted` or `SLIVINGDOC_STORAGE=hosted` selects
+   hosted storage and ignores S3 settings and an S3 record. It uses the
+   stored login and refuses startup if no login reaches the endpoint.
+4. Otherwise, in `auto`, `--bucket` or `SLIVINGDOC_BUCKET` selects S3 only
+   beside an S3 signal. A hosted space named with `--space` or
+   `SLIVINGDOC_SPACE` beside S3 settings and a stored login is refused until
+   `--storage hosted` or `--storage s3` chooses.
+5. Otherwise, the directory record selects its kind. An S3 record supplies
+   its endpoint, region, profile, bucket, prefix and path style; a hosted
+   record uses a login for its space. Flags and variables still override
+   fields for that run. A `--space` or `SLIVINGDOC_SPACE` name beside an S3
+   record is refused as ambiguous.
+6. Otherwise, an S3 default selects S3 with its complete target. A
+   `--space` or `SLIVINGDOC_SPACE` name beside it is refused as ambiguous.
+7. Otherwise, a usable stored login selects hosted storage with its default
+   space, even when S3 settings exist. An explicit hosted space beside S3
+   settings is refused; the S3 spelling `--bucket` or `SLIVINGDOC_BUCKET`
+   selects S3 instead. With no usable login, S3 is the final choice.
 
-`--storage s3` uses the AWS credential chain only; `SLIVINGDOC_TOKEN` and
-stored logins are ignored, so a token can never reach an S3 endpoint.
-`--storage hosted` uses `SLIVINGDOC_TOKEN`, else the stored login, and
-refuses to start without either; it never looks at S3 settings.
+Thus `--storage s3` takes priority over a token, while a token takes priority
+over every other choice unless S3 mode is explicit. `--storage hosted` takes
+priority over a record, a default and S3 settings when no token is set.
 
 A stored login is only used for the storage endpoint it was issued for. An
 explicit `--endpoint` or `SLIVINGDOC_ENDPOINT` that differs means the login
@@ -841,8 +845,8 @@ JSON-RPC over stdio. A typical client configuration is:
 ```
 
 With no `--workspace-root`, the server takes its own session directory. The
-agent omits `path` or sends an empty string when it calls `notes_pull` and
-`notes_commit`. Add
+agent calls `notes_pull` with no arguments and `notes_commit` with only
+`message`; neither tool takes a path. Add
 `"--workspace-root", "/srv/notes"` to the args when humans and agents should
 share one fixed directory instead.
 
@@ -861,7 +865,7 @@ block uses the stored login and its default space, and `"--space",
 Stdout carries only protocol messages; logs go to stderr. The host and
 the server share the visible directory: agents and humans edit files
 there, and the server scans them at each call. A human edit made with
-any editor is published by the next `notes_commit` for that path, or
+any editor is published by the server's next `notes_commit`, or
 directly with `slivingdoc commit [path] -m <message>`. This sharing needs
 `--workspace-root`: a session directory is private to the server process.
 

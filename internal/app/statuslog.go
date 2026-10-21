@@ -12,8 +12,9 @@ import (
 
 // ReportStatus prints the status of the notebook at path and returns nil, or
 // renders a domain error like Report does. source is the setting that named
-// the space, as Runtime.SpaceSource words it; only the remembered space adds
-// a trailer, because a source the operator set by hand needs no explanation.
+// the target, as Runtime.SpaceSource words it; only a remembered target adds a
+// trailer, because a source the operator set by hand needs no explanation
+// (architecture/config.md, The operator surface of the record).
 func ReportStatus(out io.Writer, st notebook.Status, err error, path, target, source string, env []string, readOnly, writable []string) error {
 	p := tui.Detect(out, EnvLookup(env))
 	if err != nil {
@@ -21,8 +22,11 @@ func ReportStatus(out io.Writer, st notebook.Status, err error, path, target, so
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s%s  %s\n", p.Mark(tui.Done), p.Brand(path), p.Dim(target))
-	if source == rememberedSource {
+	switch source {
+	case rememberedSource:
 		b.WriteString(p.Dim("space: "+source) + "\n")
+	case rememberedBucketSource:
+		b.WriteString(p.Dim("bucket: "+source) + "\n")
 	}
 	switch {
 	case st.Generation == 0 && !st.Pulled:

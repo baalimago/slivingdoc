@@ -40,10 +40,10 @@ func OperationPath(fs *flag.FlagSet, cwd string) (string, error) {
 
 // OperationSetup is the startup every path-taking command performs: resolve
 // the positional notebook path against name, then configure the process over
-// the association of that path, so a directory whose hosted space it
-// remembers selects it with no flag (architecture/config.md, The remembered
-// notebook of a directory). The empty path of a bare command is the workspace
-// root, which the resolution itself already consults.
+// the association of that path, so a directory whose target it remembers
+// selects it with no flag (architecture/config.md, The remembered target of a
+// directory). The empty path of a bare command is the workspace root, which
+// the resolution itself already consults.
 func OperationSetup(name string, fs *flag.FlagSet, engine git.Engine, flags *Flags, opts ProcessOptions) (string, *Runtime, error) {
 	path, err := OperationPath(fs, opts.Cwd)
 	if err != nil {

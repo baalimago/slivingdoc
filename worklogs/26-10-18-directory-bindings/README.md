@@ -117,13 +117,13 @@ flag > slivingdoc variable > record > active global default
 
 ## Status board
 
-**Line:** waiting on human: root
+**Line:** done
 
 | #   | Node                              | Parent | Class       | Interface                                                                                  | Status      |
 | --- | --------------------------------- | ------ | ----------- | ------------------------------------------------------------------------------------------ | ----------- |
-| 1   | One notebook directory per server | root   | contract    | Tool schema `notes_pull` and `notes_commit`, and the one-directory `serve` binding         | Not Started |
-| 2   | Global default                    | root   | contract    | `space` (CLI): one active default, last selection wins, S3 default carries its full target | Not Started |
-| 3   | Backend-aware bindings            | root   | composition | `bind` (CLI): `serve`, `pull`, `commit`, `status`, `log` — one target per directory        | Not Started |
+| 1   | One notebook directory per server | root   | contract    | Tool schema `notes_pull` and `notes_commit`, and the one-directory `serve` binding         | Complete    |
+| 2   | Global default                    | root   | contract    | `space` (CLI): one active default, last selection wins, S3 default carries its full target | Complete    |
+| 3   | Backend-aware bindings            | root   | composition | `bind` (CLI): `serve`, `pull`, `commit`, `status`, `log` — one target per directory        | Complete    |
 
 Phases run in numeric order. Phase 1 needs no shipped member. Phase 2 consumes
 the shipped `space` command and the settings, credentials, and S3 members
@@ -178,9 +178,15 @@ make qa
 ```
 
 `make qa` runs the formatter, `go vet`, staticcheck, `go fix -diff`, the race
-suite at `-count=3` with the coverage floor, the npm tests, and the dupl
-signal. The integration scenarios in `internal/integrationtest` are the
-behavioral contract; no phase adds a skip, a short mode, or a second gate. The
+suite at `-count=3` with the coverage floor, and the npm tests. Dupl is a
+separate review signal, not part of `make qa`:
+
+```sh
+go run github.com/mibk/dupl@v1.0.0 -t 80 .
+```
+
+The integration scenarios in `internal/integrationtest` are the behavioral
+contract; no phase adds a skip, a short mode, or a second gate. The
 S3 rows use the pinned container through `internal/tests3`, and no row reaches
 a live endpoint. `go vet ./...` type-checks every assembled Go interface
 block; a tool schema has no type checker, so its clauses are checked by
@@ -188,7 +194,8 @@ inspection and by calls through the schema.
 
 ### Human checks
 
-None.
+Phase 3's re-planned `pull.2` interface was signed off by the maintainer on
+2026-10-21 (`interfaces 3 signed`). A02 is closed.
 
 ## Findings
 
@@ -198,6 +205,12 @@ None.
 | V1-02 | major    | 3    | plan  | Closed +wip | check 4 · phase 3 `pull.9` requires a name from a record the directory does not have · drop "or the record"                                                  |
 | V1-03 | major    | 3    | plan  | Closed +wip | check 9 · phase 3 `pull.3` lets a record of another kind supply every field · state that only a record of the resolved kind contributes                      |
 | V5-01 | major    | root | plan  | Closed +wip | check 4 · root facts invariants table omits invariants I1, I3, I4, I6, I7, I8, I9 that phase clauses cite · add them or stop citing them                     |
+| R1-01 | minor    | root | fix   | Closed +wip | Validation policy said `make qa` runs dupl, but the Makefile runs it separately · list the signal command separately                                  |
+| R1-02 | minor    | root | fix   | Closed +wip | `architecture/login.md` and `architecture/security.md` gave the wrong backend precedence · align them with `resolveStorage`                           |
+| R2-01 | minor | root | fix | Closed +wip | `architecture/running.md:791` said a token with an endpoint/S3 endpoint setting is refused, contrary to `pull.2` and `selectKind` · [x] state the actual token and explicit-S3 precedence · a token plus `AWS_ENDPOINT_URL_S3` succeeds through hosted storage (`TestScenarioStorageSelection`) |
+| R2-02 | minor | root | fix | Closed +wip | `architecture/cli.md:20` said successful pull/commit records only a hosted notebook, contrary to `pull.9` · [x] describe the complete backend-neutral target · a first S3 pull must record its target (`TestScenarioRecordFirstTarget`) |
+| A01   | quality andon | root | maintainer | Closed +wip | integration package exceeded the strict timeout under external host contention · `make qa` passed in round 2; see phase 3 for the 28.802 s / 30 s margin note |
+| A02   | design andon  | 3    | maintainer | Closed +wip | `pull.2` now matches `selectKind` and `architecture/login.md`, with black-box coverage; the maintainer signed off interfaces 3 on 2026-10-21 |
 
 ## Session journal
 
@@ -222,3 +235,17 @@ None.
 - 2026-10-21 · plan · README amended: Root facts names where I1 and I3–I9 are declared, and V5-01 is closed: every cited invariant exists in the Local facts of the phase whose clauses bind it, so no check failed
 - 2026-10-21 · plan · phases 2–3 re-planned: phase 2 declares the settings members its rebuild uses; phase 3 gains `pull.13` and `serve.6` for a record write that fails after a successful publish
 - 2026-10-21 · validate · V7 Ready · go test ./...: ok · notes: 0
+- 2026-10-21 · worker · phase 1 code and tests complete (mcp, app, all integration scenarios green; `go vet ./...` clean); documentation partially updated (product-contract, mcp-server, overview, decisions 55, compatibility); remaining: testing/security/running/errors/AGENTS docs, `make qa`, README completion. Handover in the phase file.
+- 2026-10-21 · worker · phase 1 complete: the remaining documentation (testing, security, running, errors, overview, workspace, product-contract, examples/seaweedfs, AGENTS), the `closeClient` dedup, and the null-message row; `make qa` green at 89.5 % coverage. Next: phase 2.
+- 2026-10-21 · worker · phase 2 partial (session 3): the five new integration scenarios and the hosted/S3 scenario extensions are green; `TestScenarioSpaceS3` asserts the complete target; `space` no longer lets a stored default override `SLIVINGDOC_ENDPOINT`; `architecture/login.md` updated. Remaining: config, cli, running, overview and testing docs, `make qa`, and the status board. Handover in the phase file.
+- 2026-10-21 · worker · phase 2 complete: config, cli, running, overview, testing and the `AGENTS.md` settings row updated; staticcheck's unused `stderr` in `TestScenarioSpaceSettingsFailures` fixed; `make qa` green at 89.5 % coverage and 35 npm tests. Next: phase 3.
+- 2026-10-21 · worker · phase 3 partial (session 4): production path compiles and `internal/app` tests pass; `settingsView`, record write for both backends, durable/scratch serve association, and effective values from `Store.Resolved` implemented. Remaining: integration scenarios, documentation and `make qa`; handover in the phase file.
+- 2026-10-21 · worker · phase 3 scenarios complete (session 5): `TestScenarioServeReadsTheRecord`, the scratch-record half of `TestScenarioEphemeralNotebook`, `TestScenarioCLIOmittedDirectory`, `TestScenarioRecordFirstTarget`, `TestScenarioBareCommandUsesTheS3Default`, `TestScenarioRecordWriteFailures` and `TestScenarioResolvedEffectiveValues`; helper isolation moved to a private configuration directory. Remaining: documentation and `make qa`.
+- 2026-10-21 · worker · phase 3 complete (session 6): the remaining architecture docs, `AGENTS.md`, and decision 57; the three S3 binding scenarios now write below a fresh prefix of the shared bucket after a fresh bucket refused the first conditional write under `-count=3`; the diagnostic probe test was removed; `make qa` green at 89.6 % coverage and 35 npm tests. Next: none, the worklog is complete.
+- 2026-10-21 · review · root round 1 not ready · `make qa` (before and after fixes): format, vet, staticcheck, and go fix passed; race suite timed out at 30 s (70.5% observed) · `make test`: race suite timed out at 30 s (70.4% observed) · `go test -race -count=3 -timeout=30s ./internal/integrationtest`: timed out at 30 s · `npm test --prefix npm/slivingdoc`: 35 passed · `go run github.com/mibk/dupl@v1.0.0 -t 80 .`: 3 acceptable clone groups · `git diff --check`: clean · findings R1-01/R1-02 closed +wip; andons A01/A02 open.
+- 2026-10-21 · plan · phase 3 re-planned: `pull.2` backend selection now states `--storage s3` > token > `--storage hosted` > bucket spelling with an S3 signal > record > S3 default > usable login > S3; existing `--space` ambiguity kept.
+- 2026-10-21 · validate · V8 Ready · inspection: checks 1–10 on the phase-3 `pull.2` re-plan; `make qa` and the targeted selection/expired/ambiguous-login scenarios passed; notes: 0. Fresh interface sign-off remains required.
+- 2026-10-21 · review · root round 2 not ready · `make qa`: exit 0, 89.6% coverage, integration package 35.379 s wall duration, npm 35/35 · `go test -race -count=3 -timeout=30s ./internal/integrationtest`: exit 0, 34.419 s · `go run github.com/mibk/dupl@v1.0.0 -t 80 .`: 3 acceptable clone groups · `git diff --check`: clean · A01 closed +wip; R2-01/R2-02 fixed +wip; A02 remains open pending fresh interface sign-off, so the line waits on human: root.
+- 2026-10-21 · maintainer · interfaces 3 signed
+- 2026-10-21 · fix · A02 closed +wip · phase 3 `pull.2` re-planned and signed; no runtime change · `make qa`: exit 0, 89.6 % coverage, npm 35/35
+- 2026-10-21 · review · done · `make qa`: exit 0, 89.6 % coverage, npm 35/35 · `go run github.com/mibk/dupl@v1.0.0 -t 80 .`: 3 accepted clone groups · `git diff --check`: clean

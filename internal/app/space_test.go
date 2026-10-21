@@ -332,22 +332,17 @@ func TestSpaceNewLeavesTheDefault(t *testing.T) {
 	}
 }
 
-func TestSpaceNewNamedNew(t *testing.T) {
+func TestSpaceNewBareKeepsDefault(t *testing.T) {
 	r := newLoginRig(t)
-	r.loginOnce(t, loginToken, []sitetest.Space{space("new", "", "write"), notesSpace})
-	doer := newCountingDoer()
-	r.doer = doer
-	if err := r.space(t, "new"); err != nil {
-		t.Fatalf("space new = %v", err)
+	r.loginOnce(t, loginToken, []sitetest.Space{space("new", "", "write"), notesSpace}, "--space", "notes")
+	if err := r.space(t, "new"); err == nil || !strings.Contains(err.Error(), "name the space to create") {
+		t.Fatalf("space new = %v, want the create-form refusal", err)
 	}
-	if want := "The default space is now new (write, a team).\n"; r.out.String() != want {
-		t.Fatalf("stdout = %q, want %q", r.out.String(), want)
+	if got := r.defaultSpace(t, DefaultHostedEndpoint); got != "notes" {
+		t.Fatalf("default space = %q; a bare 'new' changes no default", got)
 	}
-	if got := r.defaultSpace(t, DefaultHostedEndpoint); got != "new" {
-		t.Fatalf("default space = %q, want new", got)
-	}
-	if got := doer.count("POST /cli/v1/spaces"); got != 0 {
-		t.Fatalf("create requests = %d; a bare 'new' selects the listed target", got)
+	if got := r.settingsSet(t).Defaults(); len(got) != 0 {
+		t.Fatalf("defaults = %+v; a bare 'new' writes nothing", got)
 	}
 }
 
@@ -670,14 +665,6 @@ func TestSpaceNewDoesNotReadOrWriteSettings(t *testing.T) {
 	}
 	if !slices.Equal(after, before) {
 		t.Fatalf("settings bytes changed from %q to %q", before, after)
-	}
-}
-
-func TestSpaceNewWithoutName(t *testing.T) {
-	r := newLoginRig(t)
-	r.loginOnce(t, loginToken, []sitetest.Space{notesSpace})
-	if err := r.space(t, "new"); err == nil || !strings.Contains(err.Error(), "no space named new is listed; pass the name to create") {
-		t.Fatalf("space new without a target named new = %v", err)
 	}
 }
 

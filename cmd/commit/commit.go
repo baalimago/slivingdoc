@@ -86,10 +86,14 @@ func (c *command) Run(ctx context.Context) error {
 		return errors.New("commit: Setup must run before Run")
 	}
 	defer c.runtime.Close()
-	result, err := c.runtime.WithProgress("Publishing", c.path, func() (notebook.Result, error) {
-		return c.runtime.Commit(ctx, c.path, c.message)
+	path := c.path
+	if path == "" {
+		path = c.runtime.NotebookDirectory()
+	}
+	result, err := c.runtime.WithProgress("Publishing", path, func() (notebook.Result, error) {
+		return c.runtime.Commit(ctx, path, c.message)
 	})
-	return app.Report(c.opts.Out(), result, err, c.path, c.opts.Env, c.runtime.ReadOnlyPaths(), c.runtime.WritablePaths())
+	return app.Report(c.opts.Out(), result, err, path, c.opts.Env, c.runtime.ReadOnlyPaths(), c.runtime.WritablePaths())
 }
 
 const helpText = `slivingdoc commit - publish the changes at a notebook directory
@@ -125,8 +129,8 @@ terminal, and any non-empty NO_COLOR disables it.
 
 Flags take precedence over environment variables, which override defaults.
 An explicitly empty flag value does not fall back to an environment value.
-A notebook directory that already pulled a hosted space remembers it, so
-committing there needs no --space and no --storage hosted; a flag or
-SLIVINGDOC_SPACE still wins for one run and changes nothing recorded.
+A notebook directory that already pulled a notebook remembers its target,
+hosted or S3, so committing there needs no target flag; a flag or a
+slivingdoc variable still wins for one run and changes nothing recorded.
 
 ` + app.FlagReference

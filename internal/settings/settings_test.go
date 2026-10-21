@@ -197,6 +197,9 @@ func TestV2RoundTrip(t *testing.T) {
 	}
 	set := Set{}.Put(Entry{Path: "/notes", Target: hostedTarget}).Put(Entry{Path: "/archive", Target: s3Target})
 	set = set.PutDefault(s3Target).PutDefault(Target{Kind: KindS3, Endpoint: "", Region: "eu-north-1", Profile: "prod", Name: "analytics"})
+	if got := set.Defaults(); len(got) != 1 {
+		t.Fatalf("Defaults() = %v; the last selection leaves one default", got)
+	}
 	f := testFile(t)
 	if err := f.Save(set); err != nil {
 		t.Fatalf("Save() = %v", err)
@@ -236,53 +239,50 @@ func TestDefaultsAlwaysEncoded(t *testing.T) {
 	}
 }
 
-// TestDefaultByStoreKey proves a default is found by exactly its store key:
-// the name, the prefix, and a different endpoint, region or profile are not
-// part of it.
-func TestDefaultByStoreKey(t *testing.T) {
-	s3 := Target{Kind: KindS3, Endpoint: "https://s3.example", Region: "eu-north-1", Profile: "dev", Name: "analytics"}
-	set := Set{}.PutDefault(s3)
-	if got, ok := set.Default(s3.Key()); !ok || got != s3 {
-		t.Fatalf("Default() = %+v, %v; want %+v", got, ok, s3)
+// TestS3DefaultIsTheLastStored proves a version-2 file with several
+// defaults is read in file order and only the last one is active.
+func TestS3DefaultIsTheLastStored(t *testing.T) {
+	first := `{"kind":"s3","endpoint":"https://a.example","region":"","profile":"","name":"one","prefix":"","pathStyle":false}`
+	second := `{"kind":"s3","endpoint":"https://b.example","region":"","profile":"","name":"two","prefix":"","pathStyle":false}`
+	set, err := decode([]byte(`{"version":2,"entries":[],"defaults":[` + first + `,` + second + `]}`))
+	if err != nil {
+		t.Fatalf("decode() = %v", err)
 	}
-	renamed := s3
-	renamed.Name, renamed.Prefix = "team", "personal"
-	if got, ok := set.Default(renamed.Key()); !ok || got != s3 {
-		t.Fatalf("Default() of the same store = %+v, %v; want %+v", got, ok, s3)
+	if got := set.Defaults(); len(got) != 2 || got[0].Name != "one" || got[1].Name != "two" {
+		t.Fatalf("Defaults() = %v, want both in file order", got)
 	}
-	for _, other := range []Target{
-		{Kind: KindHosted, Endpoint: s3.Endpoint, Region: s3.Region, Profile: s3.Profile},
-		{Kind: KindS3, Endpoint: "https://other.example", Region: s3.Region, Profile: s3.Profile},
-		{Kind: KindS3, Endpoint: s3.Endpoint, Region: "us-east-1", Profile: s3.Profile},
-		{Kind: KindS3, Endpoint: s3.Endpoint, Region: s3.Region, Profile: "prod"},
-	} {
-		if got, ok := set.Default(other.Key()); ok {
-			t.Fatalf("Default(%+v) = %+v, want no default for another store", other.Key(), got)
-		}
+	active, ok := set.S3Default()
+	if !ok || active.Name != "two" {
+		t.Fatalf("S3Default() = %+v, %v; want the last stored default", active, ok)
 	}
 }
 
-// TestPutDefaultReplacesAndAppends proves a default for an existing store key
-// is replaced where it stands and a new key is appended, while neither an
-// entry write nor a default write drops the other list.
-func TestPutDefaultReplacesAndAppends(t *testing.T) {
+// TestPutDefaultLeavesOne proves each selection replaces every stored
+// default and keeps every directory entry.
+func TestPutDefaultLeavesOne(t *testing.T) {
 	first := Target{Kind: KindS3, Endpoint: "https://a.example", Name: "one"}
 	second := Target{Kind: KindS3, Endpoint: "https://b.example", Name: "two"}
-	set := Set{}.PutDefault(first).PutDefault(second).PutDefault(Target{Kind: KindS3, Endpoint: first.Endpoint, Name: "renamed"})
-	want := []Target{{Kind: KindS3, Endpoint: first.Endpoint, Name: "renamed"}, second}
-	if got := set.Defaults(); !slices.Equal(got, want) {
-		t.Fatalf("Defaults() = %v, want the replacement in place and the append last: %v", got, want)
+	set := Set{}.PutDefault(first).PutDefault(second)
+	if got := set.Defaults(); !slices.Equal(got, []Target{second}) {
+		t.Fatalf("Defaults() = %v, want only the last selection", got)
 	}
 	entry := Entry{Path: "/n", Target: hosted("notes", "")}
 	withEntry := set.Put(entry)
-	if got := withEntry.Defaults(); !slices.Equal(got, want) {
-		t.Fatalf("Defaults() after Put() = %v, want %v", got, want)
-	}
-	if got := set.PutDefault(Target{Kind: KindS3, Endpoint: "https://c.example", Name: "three"}).Defaults(); len(got) != 3 {
-		t.Fatalf("Defaults() = %v, want the third store appended", got)
-	}
 	if got := withEntry.PutDefault(first).Entries(); !slices.Equal(got, []Entry{entry}) {
 		t.Fatalf("Entries() after PutDefault() = %v, want the entry kept", got)
+	}
+	if got := withEntry.PutDefault(first).Defaults(); !slices.Equal(got, []Target{first}) {
+		t.Fatalf("Defaults() after PutDefault() = %v, want %+v", got, first)
+	}
+}
+
+// TestClearDefaults proves a hosted selection leaves no stored default and
+// keeps every directory entry.
+func TestClearDefaults(t *testing.T) {
+	entry := Entry{Path: "/n", Target: hosted("notes", "")}
+	set := Set{}.Put(entry).PutDefault(Target{Kind: KindS3, Name: "bucket"})
+	if got := set.ClearDefaults(); len(got.Defaults()) != 0 || !slices.Equal(got.Entries(), []Entry{entry}) {
+		t.Fatalf("ClearDefaults() = %v, %v; want the entry and no default", got.Entries(), got.Defaults())
 	}
 }
 
@@ -293,9 +293,20 @@ func TestDecodeRejectsDuplicatePaths(t *testing.T) {
 	assertMalformed(t, data)
 }
 
-func TestDecodeRejectsDuplicateDefaultKeys(t *testing.T) {
+func TestDecodeReadsSeveralDefaults(t *testing.T) {
 	data := `{"version":2,"entries":[],"defaults":[` + s3Target("one") + `,` + s3Target("two") + `]}`
-	assertMalformed(t, data)
+	f := testFile(t)
+	writeRaw(t, f, data)
+	set, err := f.Load()
+	if err != nil {
+		t.Fatalf("Load() = %v; a file with several defaults stays readable", err)
+	}
+	if got := set.Defaults(); len(got) != 2 {
+		t.Fatalf("Defaults() = %v, want both", got)
+	}
+	if got, ok := set.S3Default(); !ok || got.Name != "two" {
+		t.Fatalf("S3Default() = %+v, %v; want the last", got, ok)
+	}
 }
 
 func TestDecodeRejectsHostedDefault(t *testing.T) {

@@ -53,10 +53,10 @@ type config struct {
 	// so a space mismatch or a refused token names the right fix.
 	bucketFrom bucketSource
 	// remembered is the target the notebook directory of this command
-	// remembers in the scoped settings file, and prefixFrom says whether a
-	// flag or the environment named the prefix (architecture/config.md).
+	// remembers in the scoped settings file, and recorded says whether it
+	// has one at all (architecture/config.md).
 	remembered          settings.Target
-	prefixFrom          settingKind
+	recorded            bool
 	pathStyle           bool
 	workspaceRoot       string
 	privateRoot         string
@@ -234,35 +234,37 @@ func (f *Flags) resolve(environment []string, cwd, cacheDir string, ephemeral bo
 	if roots.workspaceRoot, err = absolute(cwd, roots.workspaceRoot); err != nil {
 		return config{}, fmt.Errorf("workspace root: %w", err)
 	}
+	// A scratch server owns a directory that does not survive it, so it
+	// consults no record and no stored default (I8). Every other process
+	// reads both, keyed by its notebook directory, which the resolution
+	// above made absolute.
+	var remembered func() (settingsView, error)
+	if roots.session == "" {
+		remembered = func() (settingsView, error) { return assoc.read(roots.workspaceRoot) }
+	}
 	sel, err := resolveStorage(f, env, storageInputs{
 		goos:       runtime.GOOS,
 		now:        time.Now(),
-		remembered: func() (settings.Target, error) { return assoc.read(roots.workspaceRoot) },
+		remembered: remembered,
 	})
 	if err != nil {
 		return config{}, err
 	}
 	cfg := config{
 		bucket:      sel.bucket,
-		prefix:      resolveString(&f.prefix, env["SLIVINGDOC_PREFIX"], defaultPrefix),
-		prefixFrom:  resolvePrefixSource(&f.prefix, env["SLIVINGDOC_PREFIX"]),
+		prefix:      sel.prefix,
+		region:      sel.region,
+		profile:     sel.profile,
+		endpoint:    sel.endpoint,
+		pathStyle:   sel.pathStyle,
 		remembered:  sel.remembered,
+		recorded:    sel.recorded,
 		token:       sel.token,
 		login:       sel.login,
 		tokenOrigin: sel.origin,
 		bucketFrom:  sel.bucketFrom,
 	}
-	if sel.hosted() {
-		// The AWS variables describe an S3 account, not the hosted API, so
-		// they never redirect a token.
-		cfg.endpoint = sel.endpoint
-	} else {
-		cfg.region, cfg.profile, cfg.endpoint = resolveS3Store(f, env)
-	}
 	cfg.sessionDir, cfg.workspaceRoot, cfg.privateRoot = roots.session, roots.workspaceRoot, roots.privateRoot
-	if cfg.pathStyle, err = resolveBool(&f.pathStyle, env["SLIVINGDOC_PATH_STYLE"], false); err != nil {
-		return config{}, err
-	}
 	// The shared pack cache is always on when the host has a user cache
 	// directory; without one, every workspace keeps its private cache
 	// (architecture/config.md).
@@ -348,15 +350,6 @@ func (cfg config) finish(cwd string) (config, error) {
 	if cfg.bucket == "" && !cfg.hosted() {
 		return config{}, errors.New("bucket is required (pass --bucket for S3, or --space or 'slivingdoc login' for hosted storage)")
 	}
-	// The record says which notebook of the space this directory holds, so
-	// it owns the prefix whenever the resolved space is that one, whether
-	// the record or a flag named the space. A flag naming another space
-	// leaves the record alone: that run addresses another notebook.
-	if cfg.remembered.Name != "" && cfg.remembered.Name == cfg.bucket {
-		if err := cfg.applyRememberedPrefix(); err != nil {
-			return config{}, err
-		}
-	}
 	if err := storage.ValidatePrefix(cfg.prefix); err != nil {
 		return config{}, err
 	}
@@ -415,29 +408,6 @@ func (cfg config) finish(cwd string) (config, error) {
 		return config{}, fmt.Errorf("--ignore: %w", err)
 	}
 	return cfg, nil
-}
-
-// applyRememberedPrefix applies the remembered prefix of a process whose
-// resolved space is the one its notebook directory remembers
-// (architecture/config.md), whether the record or a flag named that space:
-// the record says which notebook of the space this directory holds, so a flag
-// naming the same space and no prefix addresses that notebook too. A prefix
-// the flag or the environment named wins, and one that differs from the
-// remembered one is a refusal naming both. A remembered record with no prefix
-// names none, so the default stands.
-func (cfg *config) applyRememberedPrefix() error {
-	if cfg.prefixFrom == kindOther {
-		// A record without a prefix names none, so the default stands.
-		cfg.prefix = cfg.remembered.Prefix
-		if cfg.prefix == "" {
-			cfg.prefix = defaultPrefix
-		}
-		return nil
-	}
-	if cfg.remembered.Prefix != "" && cfg.prefix != cfg.remembered.Prefix {
-		return prefixMismatch(cfg.remembered.Name, cfg.prefix, cfg.remembered.Prefix)
-	}
-	return nil
 }
 
 // resolvePolicy normalizes both entry sets and composes them into the
@@ -519,19 +489,6 @@ func resolveString(f *stringFlag, env, def string) string {
 		return env
 	}
 	return def
-}
-
-// resolveS3Store resolves the three S3 store settings that share a precedence
-// rule: the region (the flag, then AWS_REGION, then AWS_DEFAULT_REGION, then
-// the selected profile's region through the SDK, then us-east-1 in the
-// adapter), the profile (its flag, then AWS_PROFILE, else the ambient chain),
-// and the endpoint (its flag, then AWS_ENDPOINT_URL_S3). An explicitly empty
-// flag does not fall back (architecture/config.md).
-func resolveS3Store(f *Flags, env map[string]string) (region, profile, endpoint string) {
-	region = resolveString(&f.region, env["AWS_REGION"], env["AWS_DEFAULT_REGION"])
-	profile = resolveString(&f.profile, env["AWS_PROFILE"], "")
-	endpoint = resolveString(&f.endpoint, env["AWS_ENDPOINT_URL_S3"], "")
-	return region, profile, endpoint
 }
 
 // effectiveRegion is the region an S3 store addresses: the configured one, or
@@ -845,12 +802,15 @@ const FlagReference = `  --storage string              storage backend: auto, ho
                                 (default true; pass =false when the host
                                 stamps log lines itself)
 
-The hosted space of a notebook is resolved in this order: --space or
---bucket, then SLIVINGDOC_SPACE or SLIVINGDOC_BUCKET, then the space the
-notebook directory remembers, then the default space of the stored login.
-A successful pull or commit remembers the space it reached in workspaces.json
-beside credentials.json, so a later command in that directory needs no space
-flag; pull, commit, status and log read that file, and serve never does.
+The hosted space or S3 bucket of a notebook is resolved in this order:
+--space or --bucket, then SLIVINGDOC_SPACE or SLIVINGDOC_BUCKET, then the
+target the notebook directory remembers, then the one global default (the
+stored S3 default, else the default space of the stored login). A successful
+pull or commit remembers the complete target it reached in workspaces.json
+beside credentials.json, so a later command in that directory needs no target
+flag; pull, commit, status, log and a serve with a durable directory read
+that file and record what they prove, while a serve with a temporary
+directory uses neither.
 `
 
 // HelpText is the serve-command help (architecture/config.md).

@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -195,6 +196,21 @@ func TestSpaceS3Header(t *testing.T) {
 	}
 }
 
+// TestSpaceS3EndpointVariableWinsOverDefault proves a variable that names an
+// S3 endpoint selects it instead of the active default's identity.
+func TestSpaceS3EndpointVariableWinsOverDefault(t *testing.T) {
+	r := newLoginRig(t)
+	r.addS3("", "us-east-1", "ambient-bucket")
+	r.plantDefaults(t, settings.Target{Kind: settings.KindS3, Region: "eu-north-1", Profile: "dev", Name: "analytics"})
+	r.extraEnv = []string{"SLIVINGDOC_ENDPOINT=http://127.0.0.1:9000"}
+	if err := r.space(t); err != nil {
+		t.Fatalf("space = %v", err)
+	}
+	if len(r.s3Configs) == 0 || r.s3Configs[0].Endpoint != "http://127.0.0.1:9000" {
+		t.Fatalf("resolved identities = %+v, want the endpoint variable first", r.s3Configs)
+	}
+}
+
 func TestSpaceS3UsesListBucketsOnly(t *testing.T) {
 	r := newLoginRig(t)
 	admin := r.addS3("dev", "eu-north-1", "analytics", "research")
@@ -321,7 +337,7 @@ func TestSpaceS3DegradedList(t *testing.T) {
 	if err := r.space(t, "--profile", "dev"); err != nil {
 		t.Fatalf("space over a failed list = %v; a degraded list exits zero", err)
 	}
-	want := hostedHost + "* notes  write  ada@example.test\n\n" +
+	want := hostedHost + "  notes  write  ada@example.test\n\n" +
 		s3HeaderLine("(AWS)", "eu-north-1", "dev") + "*! archive\n ! notes (/d)\n"
 	if r.out.String() != want {
 		t.Fatalf("stdout = %q, want %q", r.out.String(), want)
@@ -367,7 +383,7 @@ func TestSpaceS3IdentityDenied(t *testing.T) {
 	admin.identityErr = fmt.Errorf("s3store: identity: %w", storage.ErrAccessDenied)
 	r.plantSettings(t, s3Record("/d", "notes", "", "eu-north-1", "dev"))
 	r.plantDefaults(t, settings.Target{Kind: settings.KindS3, Region: "eu-north-1", Profile: "dev", Name: "archive"})
-	if err := r.space(t); err != nil {
+	if err := r.space(t, "--region", "us-east-1"); err != nil {
 		t.Fatalf("space beside a denied identity = %v; a recorded identity degrades", err)
 	}
 	want := s3HeaderLine("(AWS)", "us-east-1", "(ambient)") +
@@ -623,9 +639,9 @@ func TestSpaceS3SetDefault(t *testing.T) {
 	if r.out.String() != want {
 		t.Fatalf("stdout = %q, want %q", r.out.String(), want)
 	}
-	target, ok := r.settingsSet(t).Default(settings.StoreKey{Kind: settings.KindS3, Region: "eu-north-1", Profile: "dev"})
+	target, ok := r.settingsSet(t).S3Default()
 	if !ok {
-		t.Fatal("no default stored for the resolved store key")
+		t.Fatal("no default stored")
 	}
 	wantTarget := settings.Target{Kind: settings.KindS3, Region: "eu-north-1", Profile: "dev", Name: "analytics"}
 	if target != wantTarget {
@@ -639,7 +655,7 @@ func TestSpaceS3SetDefaultPrefix(t *testing.T) {
 	if err := r.space(t, "--profile", "dev", "--prefix", "team", "analytics"); err != nil {
 		t.Fatalf("space --prefix team analytics = %v", err)
 	}
-	target, ok := r.settingsSet(t).Default(settings.StoreKey{Kind: settings.KindS3, Region: "eu-north-1", Profile: "dev"})
+	target, ok := r.settingsSet(t).S3Default()
 	if !ok || target.Prefix != "team" {
 		t.Fatalf("stored default = %+v, %v; want the validated prefix", target, ok)
 	}
@@ -651,7 +667,7 @@ func TestSpaceS3DottedBucketPathStyle(t *testing.T) {
 	if err := r.space(t, "--profile", "dev", "legacy.example.com"); err != nil {
 		t.Fatalf("space --profile dev legacy.example.com = %v", err)
 	}
-	target, ok := r.settingsSet(t).Default(settings.StoreKey{Kind: settings.KindS3, Region: "eu-north-1", Profile: "dev"})
+	target, ok := r.settingsSet(t).S3Default()
 	if !ok || !target.PathStyle {
 		t.Fatalf("stored default = %+v, %v; a dotted legacy bucket records path style", target, ok)
 	}
@@ -679,11 +695,10 @@ func TestSpaceS3FailedIdentityKeepsCustomEndpointPathStyle(t *testing.T) {
 	if err := degraded.SetDefault(ctx, "analytics"); err != nil {
 		t.Fatalf("SetDefault = %v", err)
 	}
-	target, ok := r.settingsSet(t).Default(settings.StoreKey{
-		Kind: settings.KindS3, Endpoint: "https://other.example.test", Region: "us-east-1", Profile: "remote",
-	})
-	if !ok || !target.PathStyle {
-		t.Fatalf("stored default = %+v, %v; a custom endpoint requires path style", target, ok)
+	target, ok := r.settingsSet(t).S3Default()
+	if !ok || !target.PathStyle || target.Endpoint != "https://other.example.test" ||
+		target.Region != "us-east-1" || target.Profile != "remote" {
+		t.Fatalf("stored default = %+v, %v; a custom endpoint requires path style and its identity", target, ok)
 	}
 }
 
@@ -748,6 +763,61 @@ func TestSpaceS3SetDefaultWriteFailure(t *testing.T) {
 	}
 	if err := op.Run(context.Background()); err == nil || !strings.Contains(err.Error(), "space:") {
 		t.Fatalf("space over an unusable settings directory = %v, want the write refusal", err)
+	}
+}
+
+// TestSpaceS3ListsTheDefaultIdentity proves a bare listing uses the active
+// S3 default's own profile, endpoint, and region, not the ambient chain.
+func TestSpaceS3ListsTheDefaultIdentity(t *testing.T) {
+	r := newLoginRig(t)
+	r.addS3("dev", "eu-north-1", "analytics")
+	r.plantDefaults(t, settings.Target{Kind: settings.KindS3, Region: "eu-north-1", Profile: "dev", Name: "analytics"})
+	if err := r.space(t); err != nil {
+		t.Fatalf("space = %v", err)
+	}
+	want := s3HeaderLine("(AWS)", "eu-north-1", "dev") + "* analytics\n"
+	if r.out.String() != want {
+		t.Fatalf("stdout = %q, want %q", r.out.String(), want)
+	}
+}
+
+// TestSpaceHostedSetDefaultClearsS3Default proves a hosted selection leaves
+// no S3 default behind.
+func TestSpaceHostedSetDefaultClearsS3Default(t *testing.T) {
+	r := newLoginRig(t)
+	r.addS3("", "us-east-1", "bucket")
+	r.loginOnce(t, loginToken, []sitetest.Space{notesSpace, space("team", "", "write")}, "--space", "notes")
+	r.plantDefaults(t, settings.Target{Kind: settings.KindS3, Region: "us-east-1", Name: "bucket"})
+	if err := r.space(t, "team"); err != nil {
+		t.Fatalf("space team = %v", err)
+	}
+	if got := r.defaultSpace(t, DefaultHostedEndpoint); got != "team" {
+		t.Fatalf("default space = %q, want team", got)
+	}
+	if got := r.settingsSet(t).Defaults(); len(got) != 0 {
+		t.Fatalf("defaults = %+v; a hosted selection clears the S3 default", got)
+	}
+}
+
+// TestSpaceHostedSetDefaultClearFailure proves a failed clear leaves the
+// previous S3 default active while the hosted default it already wrote stays
+// stored.
+func TestSpaceHostedSetDefaultClearFailure(t *testing.T) {
+	r := newLoginRig(t)
+	r.addS3("", "us-east-1", "bucket")
+	r.loginOnce(t, loginToken, []sitetest.Space{notesSpace, space("team", "", "write")}, "--space", "notes")
+	r.plantDefaults(t, settings.Target{Kind: settings.KindS3, Region: "us-east-1", Name: "bucket"})
+	if err := os.Mkdir(filepath.Join(r.dir, settings.LockName), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.space(t, "team"); err == nil || !strings.Contains(err.Error(), "lock") {
+		t.Fatalf("space team with an unusable settings lock = %v", err)
+	}
+	if got := r.defaultSpace(t, DefaultHostedEndpoint); got != "team" {
+		t.Fatalf("default space = %q; the stored login's default was written before the clear", got)
+	}
+	if def, ok := r.settingsSet(t).S3Default(); !ok || def.Name != "bucket" {
+		t.Fatalf("S3 default = %+v, %v; the failed clear must leave the previous default active", def, ok)
 	}
 }
 

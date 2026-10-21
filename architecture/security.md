@@ -2,14 +2,14 @@
 
 The trust model: a local stdio child process, a filesystem boundary the caller cannot escape, private state the caller cannot address, credentials that never leave the process, and caller-facing text that never carries protected values. It answers "what can an MCP caller reach, and what keeps secrets and private state out of its view?"
 
-Read this when: changing the transport, request path handling, symlink or special-file handling, the private directory layout, credential loading, the hosted API token, endpoint validation, redaction, or anything that puts new text into a tool result, the CLI report, or a startup diagnostic.
+Read this when: changing the transport, the one notebook directory the server binds, the one-shot command's path handling, symlink or special-file handling, the private directory layout, credential loading, the hosted API token, endpoint validation, redaction, or anything that puts new text into a tool result, the CLI report, or a startup diagnostic.
 
 ## Key files
 
 | File | Purpose |
 |------|---------|
 | `internal/app/app.go` | `serve` over `sdk.StdioTransport` (no network listener); `closeTransport` |
-| `internal/mcp/decode.go` | `validatePath` (absolute, UTF-8, no U+0000, at most 4,096 bytes, `~/` expansion) |
+| `internal/mcp/decode.go` | `decodePull`, `decodeCommit`, `parseArguments`, `rejectPath`: a strict object with no field, or only `message`; a present `path` is refused |
 | `internal/workspace/path.go` | `canonicalize` (clean, `filepath.Rel` to the root, reject escape), `PathEscapeError`, `ErrInvalidPath`, `RootsOverlap` |
 | `internal/workspace/workspace.go` | `Open` (canonical path, private dir `0o700`, `os.OpenRoot`), `rejectSymlinkComponents` |
 | `internal/workspace/scan.go` | `scanWalk`/`readVisibleFile` (Lstat semantics; `ErrSymlink`, `ErrUnsupportedFile`, `ErrInvalidContent`) |
@@ -18,7 +18,7 @@ Read this when: changing the transport, request path handling, symlink or specia
 | `internal/git/path.go` | `ValidatePath` (the notebook path rules), `ValidateContent`, `ValidateSnapshot` |
 | `internal/git/readonly.go`, `policy.go` | `NormalizeEntries`, `NewPolicy` (path-set entries obey `ValidatePath`) |
 | `internal/app/config.go` | `normalizeEndpoint` (refuses user information), `validateHosted` (token grammar, https unless loopback), `resolvePolicy`, `RootsOverlap` checks |
-| `internal/app/storage.go` | `resolveStorage`: a stored login only for its own endpoint, `--storage s3` never reads a token or the file, `auto` refuses a login for a space named as `--space`/`SLIVINGDOC_SPACE`, or `SLIVINGDOC_TOKEN`, beside S3 signals (`s3Signals`), and takes S3 for the `--bucket`/`SLIVINGDOC_BUCKET` spelling ([login.md](./login.md)) |
+| `internal/app/storage.go` | `resolveStorage`: `--storage s3` selects S3 and does not read a token or login; otherwise a token selects hosted before records and ignores S3 settings; in `auto`, a bucket spelling selects S3 beside an S3 signal, while a login and hosted spelling beside S3 signals is refused ([login.md](./login.md)) |
 | `internal/app/minted.go` | `mintedTokens`: the account key goes only to its site's `space-token` route; the minted token, held in memory only, goes only to the login's endpoint; a token for another space or endpoint, or with more access than asked, is revoked |
 | `internal/credentials/credentials.go`, `privatefile.go`, `platform_unix.go` | Every slivingdoc configuration file: `PrivateFile.Read` (`O_NOFOLLOW`, regular files only, the directory's owner and mode, the file's owner and mode, a bound; `ErrExposed` throughout), `CheckDir`, `Write` (directory 0700, file 0600, temp file and rename, refused over the bound), `Lock`, `ConfigDir` (the one configuration directory rule). The credentials file adds `File.Load`'s strict schema (an endpoint or site with user information, a query or a fragment is `ErrMalformed` (`plainURL`); a file of another version is `ErrUnsupportedVersion`, parsed no further, and a newer build's is never advised removed, so its keys are not orphaned; errors never echo a key or such a URL) and `File.Lock` (`credentials.lock`). The settings file adds a schema with no credential field at all, so a token or a key beside a space is an unknown field ([config.md](./config.md)) |
 | `internal/sitelogin/client.go` | The login site client: `parseSite` (https unless loopback), `Start` (builds the approval pages from the site origin, code in the fragment, `userCodePattern`, the timing bounds), `issued` (validates the key, endpoint and account), `Spaces`, `Mint` (validates the space, access, endpoint and owner; `RejectedError` carries a sendable credential for revocation), `TokenHint`, `Revoke` (only 401 `invalid_token` is done), no redirects |
@@ -32,9 +32,9 @@ Read this when: changing the transport, request path handling, symlink or specia
 ```text
 MCP host spawns: npx -y slivingdoc serve ...      (or the native binary directly)
   stdin/stdout = MCP JSON-RPC; stderr = logs
-tools/call {path}
-  decodePull/decodeCommit → path omitted or "" → workspace root
-                          else validatePath        # absolute, bounded, UTF-8, no NUL
+tools/call {} | {message}
+  decodePull/decodeCommit → strict object; a present path is MALFORMED_INPUT
+  Service.Pull/Commit → Service.Root()             # the one notebook directory
   Service.notebookFor → workspace.Open
     canonicalize(root, path)                       # PathEscapeError when outside the root
     DerivedKey(canonical, identity) → <privateRoot>/<64-hex>   (0o700)
@@ -52,11 +52,13 @@ tools/call {path}
 { "command": "npx", "args": ["-y", "slivingdoc", "serve"] }
 ```
 
-**Request paths.** An omitted or empty path means the workspace root (`decodeOptionalPath` skips `validatePath`). Otherwise `validatePath` requires an absolute UTF-8 host path of 1 through 4,096 bytes without U+0000 after `~/` expansion. `workspace.canonicalize` cleans it and requires it at or below the workspace root; an escape is `PathEscapeError`, reported as `INVALID_REQUEST`/`PATH_OUTSIDE_ROOT` with a message that names the root but never echoes the rejected path (it may be a guess at private state). A symlink in the requested path (`ErrSymlink`) and any other `ErrInvalidPath` from `workspace.Open` get the same `PATH_OUTSIDE_ROOT` code with a generic message (`invalidPathMessage`).
+**One notebook directory.** A `serve` process binds exactly one notebook directory before the transport starts: `--workspace-root`, its variable, the working directory when any root is configured, or a per-process session directory when neither root is. `Service.Root` is that directory, and both tools operate at it for the life of the process; a tool call cannot name another one. `notes_pull` takes no field and `notes_commit` takes only `message`; a present `path` member of any JSON type is `INVALID_REQUEST`/`MALFORMED_INPUT` before an unknown field, naming `--workspace-root` and echoing no path (`rejectPath`).
+
+**The CLI path.** The one-shot `pull`, `commit`, `status` and `log` keep a positional notebook path, and `app.resolvePath` expands a leading `~/`. `workspace.canonicalize` cleans it and requires it at or below the workspace root; an escape is `PathEscapeError`, reported as `INVALID_REQUEST`/`PATH_OUTSIDE_ROOT` with a message that names the root but never echoes the rejected path (it may be a guess at private state). A symlink in that path (`ErrSymlink`) and any other `ErrInvalidPath` from `workspace.Open` get the same `PATH_OUTSIDE_ROOT` code with a generic message (`invalidPathMessage`).
 
 **Lexical checks.** The escape check (`canonicalize`) and the root overlap checks (`RootsOverlap`) are lexical (`filepath.Clean`/`filepath.Rel`); they do not resolve symlinks. Operators must not alias roots through symlinks. The workspace root itself may be a symlink, since `os.OpenRoot` follows it.
 
-**Symlinks and special files.** `rejectSymlinkComponents` refuses a symlink in any existing component of the requested path. Scans use Lstat semantics, so a symlink is never followed and is rejected (unless an ignore rule names it), as are devices, sockets and named pipes. Visible files are read and replaced through an `os.Root`, so replacement and cleanup do not follow links out of the root. Details are in [workspace.md](./workspace.md).
+**Symlinks and special files.** `rejectSymlinkComponents` refuses a symlink in any existing component of the notebook directory below the workspace root. Scans use Lstat semantics, so a symlink is never followed and is rejected (unless an ignore rule names it), as are devices, sockets and named pipes. Visible files are read and replaced through an `os.Root`, so replacement and cleanup do not follow links out of the root. Details are in [workspace.md](./workspace.md).
 
 **Notebook path rules.** Every notebook-relative path (files, and `--read-only-paths`/`--writable-paths` entries) passes `git.ValidatePath`: UTF-8 in NFC, relative slash segments, bounded length, no control or reserved characters, no trailing space or dot, no `.`, `..` or `.git` segment, no Windows device names. A malformed path-set entry refuses startup instead of silently protecting nothing.
 

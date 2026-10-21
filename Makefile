@@ -74,14 +74,18 @@ build: $(BIN)
 # test binary; Docker and the pinned libgit2 remain prerequisites, so no run
 # can silently omit the storage protocol.
 #
-# Packages run concurrently. The timeout is per package, and measurement on a
-# four-core runner puts the slowest package near 20 s either way, so bounding
-# package parallelism bought no headroom and cost roughly 3x wall clock.
+# The timeout is per package, and the five integration test binaries each have
+# a 30 s deadline of their own. Bound how many packages and tests run at once
+# so the race-built, process-heavy suites do not compete for every core: two
+# packages, and twice the core count of parallel tests per package.
 #
 # Coverage uses -coverpkg=./... because the black-box scenario suite exercises
 # packages other than its own; per-package coverage would understate it badly.
 #
 # Do not weaken -race, -count, or -timeout.
+TEST_CPUS := $(shell nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+TEST_PACKAGES := 2
+TEST_PARALLEL := $(shell echo $$((2 * $(TEST_CPUS))))
 test: $(BIN) $(TEST_S3_LEASE)
 	@lease_dir=$$(mktemp -d "$(abspath $(BUILD_DIR))/tests3.XXXXXX"); \
 	 ready_file="$$lease_dir/endpoint"; \
@@ -94,7 +98,7 @@ test: $(BIN) $(TEST_S3_LEASE)
 	 }; \
 	 trap cleanup EXIT; \
 	 trap 'exit 130' HUP INT TERM; \
-	 SLIVINGDOC_TESTS3_ENDPOINT_FILE="$$ready_file" $(GO) test -race -count=3 -timeout=30s -coverpkg=./... -coverprofile=$(COVER_PROFILE) ./...
+	 SLIVINGDOC_TESTS3_ENDPOINT_FILE="$$ready_file" $(GO) test -p $(TEST_PACKAGES) -parallel $(TEST_PARALLEL) -race -count=3 -timeout=30s -coverpkg=./... -coverprofile=$(COVER_PROFILE) ./...
 	@total=$$($(GO) tool cover -func=$(COVER_PROFILE) | tail -1 | awk '{print $$3}'); \
 	 echo "== coverage: $$total (floor $(COVER_FLOOR)%) =="; \
 	 awk -v got="$${total%\%}" -v floor=$(COVER_FLOOR) 'BEGIN { \

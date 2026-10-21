@@ -226,17 +226,17 @@ func TestCommandsCoverTheDocumentedSurface(t *testing.T) {
 }
 
 // TestHelpTextNamesTheOrder proves the help an operator reads carries the
-// one thing the flag table cannot: which setting wins over which, and that a
-// notebook directory remembers the hosted space it pulled. The order lives
-// in the shared reference; each path-taking command names the consequence in
-// its own words, and serve carries the order alone because it never reads
-// the file.
+// one thing the flag table cannot: which setting wins over which, that a
+// notebook directory remembers the target it pulled on either backend, and
+// which commands read and write that record. The order lives in the shared
+// reference; each command that reads the record names the consequence in its
+// own words, and serve names the durable/scratch split.
 func TestHelpTextNamesTheOrder(t *testing.T) {
 	t.Parallel()
 	for _, want := range []string{
-		"then the space the\nnotebook directory remembers, then the default space of the stored login",
+		"then the\ntarget the notebook directory remembers, then the one global default",
 		"workspaces.json",
-		"pull, commit, status and log read that file, and serve never does",
+		"pull, commit, status, log and a serve with a durable directory read\nthat file and record what they prove",
 	} {
 		if !strings.Contains(app.FlagReference, want) {
 			t.Fatalf("the shared flag reference does not name %q", want)
@@ -247,11 +247,11 @@ func TestHelpTextNamesTheOrder(t *testing.T) {
 		key  string
 		want []string
 	}{
-		{key: "serve|s", want: []string{"slivingdoc serve", "workspaces.json"}},
-		{key: "pull|p", want: []string{"slivingdoc pull", "remembers it", "--storage hosted"}},
-		{key: "commit|c", want: []string{"slivingdoc commit", "remembers it", "--storage hosted"}},
-		{key: "status", want: []string{"slivingdoc status", "remembers it", "source of a space"}},
-		{key: "log", want: []string{"slivingdoc log", "remembers it", "--storage hosted"}},
+		{key: "serve|s", want: []string{"slivingdoc serve", "workspaces.json", "a serve with a durable directory"}},
+		{key: "pull|p", want: []string{"slivingdoc pull", "remembers its target", "slivingdoc variable still wins"}},
+		{key: "commit|c", want: []string{"slivingdoc commit", "remembers its target", "slivingdoc variable still wins"}},
+		{key: "status", want: []string{"slivingdoc status", "remembers its target", "source of a target the directory remembered"}},
+		{key: "log", want: []string{"slivingdoc log", "remembers its target"}},
 	} {
 		help := commands[row.key].Help()
 		for _, want := range row.want {

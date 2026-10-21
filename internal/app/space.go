@@ -75,7 +75,12 @@ type spaceBackend interface {
 	Header() SpaceHeader
 	List(ctx context.Context) ([]SpaceRow, error)
 	Create(ctx context.Context, name string) (SpaceRow, error)
+	// Default is the backend's active default, which only the global S3
+	// default can carry when it exists.
 	Default() (settings.Target, bool)
+	// HasDefault reports a stored default even when another backend's
+	// default is active, so the listing does not claim there is none.
+	HasDefault() bool
 	SetDefault(ctx context.Context, name string) error
 }
 
@@ -111,10 +116,6 @@ const (
 	spaceListMode spaceMode = iota
 	spaceSetMode
 	spaceCreateMode
-	// spaceSetOrCreateMode is a bare "new": a target named new is made
-	// the default when one is listed, and otherwise the command refuses
-	// and names how to create one.
-	spaceSetOrCreateMode
 )
 
 // parseSpaceArgs reads the positional words. Flags precede them, because
@@ -125,7 +126,7 @@ func parseSpaceArgs(args []string) (spaceMode, string, error) {
 		return spaceListMode, "", nil
 	case 1:
 		if args[0] == "new" {
-			return spaceSetOrCreateMode, "new", nil
+			return 0, "", errors.New("space new: name the space to create, as in 'slivingdoc space new research'")
 		}
 		return spaceSetMode, args[0], nil
 	case 2:
@@ -328,7 +329,11 @@ func (s *Space) resolveBackends(f *SpaceFlags, env map[string]string, mode stora
 	}
 	if useS3 {
 		s.useS3 = true
-		s.s3Current = s.s3IdentityOf(endpointLogin, mode == storageS3 || s.s3IdentityFlagSelected(f, endpointLogin))
+		identityFlag := s.s3IdentityFlagSelected(f, endpointLogin)
+		// The active default supplies the identity only where no flag or
+		// variable named one: an endpoint variable is a naming too.
+		useDefault := !identityFlag && !s.s3EnvSelected(env) && !s.s3EndpointSelected(endpointLogin)
+		s.s3Current = s.s3IdentityOf(endpointLogin, mode == storageS3 || identityFlag, useDefault)
 		s.s3Recorded = s.recordedS3Keys()
 	}
 	return nil
@@ -438,8 +443,8 @@ func (s *Space) s3IdentityFlagSelected(f *SpaceFlags, endpointLogin bool) bool {
 }
 
 func (s *Space) hasS3Record() bool {
-	return slices.ContainsFunc(s.set.Defaults(), func(t settings.Target) bool { return t.Kind == settings.KindS3 }) ||
-		slices.ContainsFunc(s.set.Entries(), func(e settings.Entry) bool { return e.Target.Kind == settings.KindS3 })
+	_, ok := s.set.S3Default()
+	return ok || slices.ContainsFunc(s.set.Entries(), func(e settings.Entry) bool { return e.Target.Kind == settings.KindS3 })
 }
 
 // resolveCreate chooses the one identity a create addresses. An S3 create
@@ -454,7 +459,7 @@ func (s *Space) resolveCreate(f *SpaceFlags, env map[string]string, mode storage
 		}
 		s.useS3 = true
 		s.useS3Create = true
-		s.s3Current = s.s3IdentityOf(endpointLogin, true)
+		s.s3Current = s.s3IdentityOf(endpointLogin, true, false)
 		return nil
 	}
 	if len(logins) == 0 {
@@ -494,16 +499,20 @@ type s3Identity struct {
 	explicit bool
 }
 
-func (s *Space) s3IdentityOf(endpointLogin, explicit bool) s3Identity {
-	return s3Identity{
-		cfg: s3store.Config{
-			Region:   s.s3.region,
-			Profile:  s.s3.profile,
-			Endpoint: s.s3Endpoint(endpointLogin),
-		},
-		opts:     s3store.Options{ForcePathStyle: s.s3.pathStyle},
-		explicit: explicit,
+func (s *Space) s3IdentityOf(endpointLogin, explicit, useDefault bool) s3Identity {
+	cfg := s3store.Config{
+		Region:   s.s3.region,
+		Profile:  s.s3.profile,
+		Endpoint: s.s3Endpoint(endpointLogin),
 	}
+	opts := s3store.Options{ForcePathStyle: s.s3.pathStyle}
+	if useDefault {
+		if def, ok := s.set.S3Default(); ok {
+			cfg = s3store.Config{Region: regionDefault(def.Region), Profile: def.Profile, Endpoint: def.Endpoint}
+			opts = s3store.Options{ForcePathStyle: def.PathStyle}
+		}
+	}
+	return s3Identity{cfg: cfg, opts: opts, explicit: explicit}
 }
 
 func (s *Space) s3Endpoint(endpointLogin bool) string {
@@ -615,7 +624,7 @@ func s3HeaderOf(cfg s3store.Config) SpaceHeader {
 	return SpaceHeader{Kind: settings.KindS3, Endpoint: cfg.Endpoint, Region: region, Profile: cfg.Profile}
 }
 
-// storeKey is the identity a default is stored and looked up by.
+// storeKey is the identity of the S3 group a header names.
 func (h SpaceHeader) storeKey() settings.StoreKey {
 	return settings.StoreKey{Kind: h.Kind, Endpoint: h.Endpoint, Region: h.Region, Profile: h.Profile}
 }
@@ -696,8 +705,6 @@ func (s *Space) Run(ctx context.Context) error {
 		return s.create(ctx)
 	case spaceSetMode:
 		return s.setDefault(ctx, s.name)
-	case spaceSetOrCreateMode:
-		return s.setNew(ctx)
 	default:
 		return s.list(ctx)
 	}
@@ -774,19 +781,6 @@ func (s *Space) createHintParts() []string {
 		parts = append(parts, "--endpoint", s.explicit)
 	}
 	return parts
-}
-
-// setNew makes a target named new the default when one is listed, and
-// otherwise refuses and names the target to create.
-func (s *Space) setNew(ctx context.Context) error {
-	groups, err := s.listing(ctx)
-	if err != nil {
-		return err
-	}
-	if s.hasName(groups, s.name) {
-		return s.setDefaultFrom(ctx, groups, s.name)
-	}
-	return errors.New("space new: no space named new is listed; pass the name to create, as in 'slivingdoc space new research'")
 }
 
 // list renders every backend's group, the default marked, and hints for a
@@ -1039,15 +1033,6 @@ func (s *Space) printDefault(header SpaceHeader, row SpaceRow) {
 	fmt.Fprintf(s.opts.Out(), "The default space is now %s (%s, %s).\n", row.Name, spaceAccess(row), spaceOwner(row))
 }
 
-func (s *Space) hasName(groups []spaceGroup, name string) bool {
-	for _, group := range groups {
-		if slices.ContainsFunc(group.rows, func(row SpaceRow) bool { return row.Name == name && row.Reachable }) {
-			return true
-		}
-	}
-	return false
-}
-
 // listing collects every backend's rows with their hints. A backend that
 // cannot list keeps its default and remembered rows, marked unreachable,
 // and its hint, without stopping another backend. An error that is not a
@@ -1058,7 +1043,10 @@ func (s *Space) listing(ctx context.Context) ([]spaceGroup, error) {
 	for _, backend := range s.backends {
 		rows, err := backend.List(ctx)
 		def, _ := backend.Default()
-		group := spaceGroup{backend: backend, header: backend.Header(), rows: rows, defaultName: def.Name}
+		group := spaceGroup{
+			backend: backend, header: backend.Header(), rows: rows,
+			defaultName: def.Name, hasDefault: backend.HasDefault(),
+		}
 		if err != nil {
 			var hint *spaceListError
 			if !errors.As(err, &hint) {
@@ -1067,7 +1055,7 @@ func (s *Space) listing(ctx context.Context) ([]spaceGroup, error) {
 			group.hints = hint.hints
 			s.listingFailed = s.listingFailed || hint.failed
 		}
-		if len(rows) > 0 && group.defaultName == "" {
+		if len(rows) > 0 && !group.hasDefault {
 			group.noDefault = true
 		}
 		groups = append(groups, group)
@@ -1131,6 +1119,7 @@ type spaceGroup struct {
 	header      SpaceHeader
 	rows        []SpaceRow
 	defaultName string
+	hasDefault  bool
 	hints       []string
 	noDefault   bool
 }
@@ -1175,8 +1164,14 @@ func (h *s3Space) Kind() settings.Kind { return settings.KindS3 }
 func (h *s3Space) Header() SpaceHeader { return h.header }
 
 func (h *s3Space) Default() (settings.Target, bool) {
-	return h.s.set.Default(h.key)
+	def, ok := h.s.set.S3Default()
+	if !ok || def.Key() != h.key {
+		return settings.Target{}, false
+	}
+	return def, true
 }
+
+func (h *s3Space) HasDefault() bool { return len(h.s.set.Defaults()) > 0 }
 
 // List reads the buckets of one identity and adds the configured default
 // and the recorded targets the answer did not return, marked unreachable
@@ -1252,17 +1247,36 @@ func (h *s3Space) SetDefault(ctx context.Context, name string) error {
 		Region: h.header.Region, Profile: h.header.Profile,
 		Name: name, Prefix: h.s.s3.prefix, PathStyle: h.pathStyleFor(name),
 	}
-	return h.s.storeS3Default(ctx, h.s.opts.Env, target)
+	return h.s.storeS3Default(ctx, target)
 }
 
 func (h *s3Space) pathStyleFor(name string) bool {
 	return h.resolved.PathStyle || h.header.Endpoint != "" || strings.Contains(name, ".")
 }
 
-// storeS3Default writes the default under the settings lock, so another
-// process's entry or default survives the read-modify-write.
-func (s *Space) storeS3Default(ctx context.Context, env []string, target settings.Target) (errOut error) {
-	file, err := settings.Locate(EnvLookup(env), runtime.GOOS)
+// storeS3Default writes the one S3 default under the settings lock, so
+// another process's entry or selection survives the read-modify-write.
+func (s *Space) storeS3Default(ctx context.Context, target settings.Target) error {
+	return s.editDefaults(ctx, func(set settings.Set) (settings.Set, bool) {
+		return set.PutDefault(target), true
+	})
+}
+
+// clearS3Defaults writes a hosted selection's effect on the settings file:
+// no stored default remains, so the login's default space is active.
+func (s *Space) clearS3Defaults(ctx context.Context) error {
+	return s.editDefaults(ctx, func(set settings.Set) (settings.Set, bool) {
+		if _, ok := set.S3Default(); !ok {
+			return set, false
+		}
+		return set.ClearDefaults(), true
+	})
+}
+
+// editDefaults applies edit to the settings file under its lock. An edit
+// that reports no write leaves the file untouched.
+func (s *Space) editDefaults(ctx context.Context, edit func(settings.Set) (settings.Set, bool)) (errOut error) {
+	file, err := settings.Locate(EnvLookup(s.opts.Env), runtime.GOOS)
 	if err != nil {
 		return fmt.Errorf("space: %w", err)
 	}
@@ -1279,14 +1293,18 @@ func (s *Space) storeS3Default(ctx context.Context, env []string, target setting
 	if err != nil {
 		return fmt.Errorf("space: %w", err)
 	}
-	if err := file.Save(set.PutDefault(target)); err != nil {
+	changed, write := edit(set)
+	if !write {
+		return nil
+	}
+	if err := file.Save(changed); err != nil {
 		return fmt.Errorf("space: %w", err)
 	}
 	return nil
 }
 
 func (h *s3Space) defaultName() string {
-	t, ok := h.s.set.Default(h.key)
+	t, ok := h.Default()
 	if !ok {
 		return ""
 	}
@@ -1405,8 +1423,13 @@ func (h *hostedSpace) Default() (settings.Target, bool) {
 	if h.prior == "" {
 		return settings.Target{}, false
 	}
+	if _, ok := h.s.set.S3Default(); ok {
+		return settings.Target{}, false
+	}
 	return settings.Target{Kind: settings.KindHosted, Name: h.prior}, true
 }
+
+func (h *hostedSpace) HasDefault() bool { return h.prior != "" }
 
 // List reads the spaces the login reaches and adds the default and the
 // remembered targets the answer did not return, marked unreachable so they
@@ -1452,9 +1475,12 @@ func (h *hostedSpace) Create(ctx context.Context, name string) (SpaceRow, error)
 
 // SetDefault stores the space as the login's default under the
 // credentials lock, provided the login it was listed with is still the one
-// stored.
+// stored, then clears the S3 default that would otherwise stay active.
 func (h *hostedSpace) SetDefault(ctx context.Context, name string) error {
-	return storeDefault(ctx, h.s.file, h.login, name)
+	if err := storeDefault(ctx, h.s.file, h.login, name); err != nil {
+		return err
+	}
+	return h.s.clearS3Defaults(ctx)
 }
 
 // storeDefault stores space as the login's default under the credentials

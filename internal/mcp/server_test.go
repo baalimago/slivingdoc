@@ -24,8 +24,8 @@ import (
 // a no-op synchronization.
 type fakeService struct {
 	mu        sync.Mutex
-	pulls     []string
-	commits   []commitCall
+	pulls     int
+	commits   []string
 	result    notebook.Result
 	pullErr   error
 	commitErr error
@@ -35,13 +35,8 @@ type fakeService struct {
 	writable  []string
 }
 
-type commitCall struct {
-	path    string
-	message string
-}
-
-// fakeRoot is the notebook directory an omitted request path resolves to.
-const fakeRoot = "/fake/notebook"
+// fakeRoot is the one notebook directory the fake service serves.
+const fakeRoot = "/abs/notes"
 
 func (f *fakeService) Root() string {
 	if f.root == "" {
@@ -66,9 +61,9 @@ func (f *fakeService) WritablePaths() []string {
 	return f.writable
 }
 
-func (f *fakeService) Pull(ctx context.Context, path string) (notebook.Result, error) {
+func (f *fakeService) Pull(ctx context.Context) (notebook.Result, error) {
 	f.mu.Lock()
-	f.pulls = append(f.pulls, path)
+	f.pulls++
 	result := f.result
 	err := f.pullErr
 	block := f.block
@@ -83,9 +78,9 @@ func (f *fakeService) Pull(ctx context.Context, path string) (notebook.Result, e
 	return result, err
 }
 
-func (f *fakeService) Commit(ctx context.Context, path, message string) (notebook.Result, error) {
+func (f *fakeService) Commit(ctx context.Context, message string) (notebook.Result, error) {
 	f.mu.Lock()
-	f.commits = append(f.commits, commitCall{path: path, message: message})
+	f.commits = append(f.commits, message)
 	result := f.result
 	err := f.commitErr
 	f.mu.Unlock()
@@ -115,9 +110,10 @@ func newTestPair(t *testing.T, svc Service) (*sdk.ClientSession, *fakeService) {
 	return clientSession, svc.(*fakeService)
 }
 
-// requiredFields is the documented required set of each tool schema. path
-// is optional on both tools: an omitted path is the server's notebook root.
-var requiredFields = map[string][]string{
+// toolFields is the exact documented property set of each tool schema.
+// notes_pull takes no field and notes_commit takes only its message: the
+// server serves one notebook directory, so no tool takes a per-call target.
+var toolFields = map[string][]string{
 	toolPull:   {},
 	toolCommit: {"message"},
 }
@@ -162,17 +158,18 @@ func TestListToolsExactlyTwo(t *testing.T) {
 		for _, field := range required {
 			got = append(got, field.(string))
 		}
-		if !slices.Equal(got, requiredFields[name]) {
-			t.Fatalf("tool %q required = %v, want %v", name, got, requiredFields[name])
+		want := toolFields[name]
+		if !slices.Equal(got, want) {
+			t.Fatalf("tool %q required = %v, want %v", name, got, want)
 		}
 		properties, ok := schema["properties"].(map[string]any)
 		if !ok {
 			t.Fatalf("tool %q schema has no properties", name)
 		}
-		if _, ok := properties["path"]; !ok {
-			t.Fatalf("tool %q schema must declare the optional path", name)
+		if len(properties) != len(want) {
+			t.Fatalf("tool %q properties = %v, want exactly %v", name, properties, want)
 		}
-		for _, field := range got {
+		for _, field := range want {
 			if _, ok := properties[field]; !ok {
 				t.Fatalf("tool %q requires %q but does not declare it", name, field)
 			}
@@ -182,13 +179,12 @@ func TestListToolsExactlyTwo(t *testing.T) {
 
 // TestPullSuccessReturnsOK proves the success envelope of a clean pull:
 // one text item carrying the resolved notebook path, a structured
-// SuccessInfo with code OK, no error, and the exact request path reaching
-// the service.
+// SuccessInfo with code OK, no error, and one service call.
 func TestPullSuccessReturnsOK(t *testing.T) {
 	client, svc := newTestPair(t, nil)
 	res, err := client.CallTool(context.Background(), &sdk.CallToolParams{
 		Name:      toolPull,
-		Arguments: map[string]any{"path": "/abs/notes"},
+		Arguments: map[string]any{},
 	})
 	if err != nil {
 		t.Fatalf("CallTool() = %v", err)
@@ -196,8 +192,8 @@ func TestPullSuccessReturnsOK(t *testing.T) {
 	assertOKResult(t, res)
 	svc.mu.Lock()
 	defer svc.mu.Unlock()
-	if len(svc.pulls) != 1 || svc.pulls[0] != "/abs/notes" {
-		t.Fatalf("service pulls = %v, want the exact absolute path", svc.pulls)
+	if svc.pulls != 1 {
+		t.Fatalf("service pulls = %d, want one call", svc.pulls)
 	}
 }
 
@@ -208,7 +204,7 @@ func TestCommitSuccessReturnsOK(t *testing.T) {
 	client, svc := newTestPair(t, nil)
 	res, err := client.CallTool(context.Background(), &sdk.CallToolParams{
 		Name:      toolCommit,
-		Arguments: map[string]any{"path": "/abs/notes", "message": "update notes"},
+		Arguments: map[string]any{"message": "update notes"},
 	})
 	if err != nil {
 		t.Fatalf("CallTool() = %v", err)
@@ -216,8 +212,8 @@ func TestCommitSuccessReturnsOK(t *testing.T) {
 	assertOKResult(t, res)
 	svc.mu.Lock()
 	defer svc.mu.Unlock()
-	if len(svc.commits) != 1 || svc.commits[0] != (commitCall{path: "/abs/notes", message: "update notes"}) {
-		t.Fatalf("service commits = %v, want the exact path and message", svc.commits)
+	if len(svc.commits) != 1 || svc.commits[0] != "update notes" {
+		t.Fatalf("service commits = %v, want the exact message", svc.commits)
 	}
 }
 
@@ -229,7 +225,7 @@ func TestPullSuccessEnvelope(t *testing.T) {
 	client, _ := newTestPair(t, svc)
 	res, err := client.CallTool(context.Background(), &sdk.CallToolParams{
 		Name:      toolPull,
-		Arguments: map[string]any{"path": "/abs/notes"},
+		Arguments: map[string]any{},
 	})
 	if err != nil {
 		t.Fatalf("CallTool() = %v", err)
@@ -258,7 +254,7 @@ func TestCommitSuccessEnvelope(t *testing.T) {
 	client, _ := newTestPair(t, svc)
 	res, err := client.CallTool(context.Background(), &sdk.CallToolParams{
 		Name:      toolCommit,
-		Arguments: map[string]any{"path": "/abs/notes", "message": "update notes"},
+		Arguments: map[string]any{"message": "update notes"},
 	})
 	if err != nil {
 		t.Fatalf("CallTool() = %v", err)
@@ -299,7 +295,7 @@ func TestNoOpCommitReturnsEmptyStatEnvelope(t *testing.T) {
 	client, _ := newTestPair(t, svc)
 	res, err := client.CallTool(context.Background(), &sdk.CallToolParams{
 		Name:      toolCommit,
-		Arguments: map[string]any{"path": "/abs/notes", "message": "no changes"},
+		Arguments: map[string]any{"message": "no changes"},
 	})
 	if err != nil {
 		t.Fatalf("CallTool() = %v", err)
@@ -351,7 +347,7 @@ func TestPullMaterializationEnvelope(t *testing.T) {
 			client, _ := newTestPair(t, &fakeService{result: materializedResult(), readOnly: tt.readOnly})
 			res, err := client.CallTool(context.Background(), &sdk.CallToolParams{
 				Name:      toolPull,
-				Arguments: map[string]any{"path": "/abs/notes"},
+				Arguments: map[string]any{},
 			})
 			if err != nil {
 				t.Fatalf("CallTool() = %v", err)
@@ -384,7 +380,7 @@ func TestInitializedPullListsEveryChangedFile(t *testing.T) {
 	client, _ := newTestPair(t, &fakeService{result: result})
 	res, err := client.CallTool(context.Background(), &sdk.CallToolParams{
 		Name:      toolPull,
-		Arguments: map[string]any{"path": "/abs/notes"},
+		Arguments: map[string]any{},
 	})
 	if err != nil {
 		t.Fatalf("CallTool() = %v", err)
@@ -403,7 +399,7 @@ func TestZeroResultWithNoErrorNeverPanics(t *testing.T) {
 	client, _ := newTestPair(t, nil) // the fake returns the zero result
 	res, err := client.CallTool(context.Background(), &sdk.CallToolParams{
 		Name:      toolPull,
-		Arguments: map[string]any{"path": "/abs/notes"},
+		Arguments: map[string]any{},
 	})
 	if err != nil {
 		t.Fatalf("CallTool() = %v", err)
@@ -423,7 +419,7 @@ func TestPullBlankCommitMessageMapsToInvalidRequest(t *testing.T) {
 	for _, message := range []string{"", "   ", "\u00a0"} {
 		res, err := client.CallTool(context.Background(), &sdk.CallToolParams{
 			Name:      toolCommit,
-			Arguments: map[string]any{"path": "/abs/notes", "message": message},
+			Arguments: map[string]any{"message": message},
 		})
 		if err != nil {
 			t.Fatalf("CallTool(%q) = %v", message, err)
@@ -446,7 +442,7 @@ func TestConflictDataSurvivesSDKEnvelope(t *testing.T) {
 	client, _ := newTestPair(t, svc)
 	res, err := client.CallTool(context.Background(), &sdk.CallToolParams{
 		Name:      toolCommit,
-		Arguments: map[string]any{"path": "/abs/notes", "message": "conflicted"},
+		Arguments: map[string]any{"message": "conflicted"},
 	})
 	if err != nil {
 		t.Fatalf("CallTool() = %v", err)
@@ -507,7 +503,7 @@ func TestRecoveryFailureSurvivesSDKEnvelope(t *testing.T) {
 	client, _ := newTestPair(t, svc)
 	res, err := client.CallTool(context.Background(), &sdk.CallToolParams{
 		Name:      toolPull,
-		Arguments: map[string]any{"path": "/abs/notes"},
+		Arguments: map[string]any{},
 	})
 	if err != nil {
 		t.Fatalf("CallTool() = %v", err)
@@ -541,7 +537,7 @@ func TestErrorMessagesAreRedacted(t *testing.T) {
 	client, _ := newTestPair(t, svc)
 	res, err := client.CallTool(context.Background(), &sdk.CallToolParams{
 		Name:      toolCommit,
-		Arguments: map[string]any{"path": "/abs/notes", "message": "m"},
+		Arguments: map[string]any{"message": "m"},
 	})
 	if err != nil {
 		t.Fatalf("CallTool() = %v", err)
@@ -583,11 +579,11 @@ func TestOmittedPathResolvesToNotebookRoot(t *testing.T) {
 	})
 	svc.mu.Lock()
 	defer svc.mu.Unlock()
-	if len(svc.pulls) != 1 || svc.pulls[0] != "/session/notebook" {
-		t.Fatalf("service pulls = %v, want the notebook root", svc.pulls)
+	if svc.pulls != 1 {
+		t.Fatalf("service pulls = %d, want one call at the notebook root", svc.pulls)
 	}
-	if len(svc.commits) != 1 || svc.commits[0].path != "/session/notebook" {
-		t.Fatalf("service commits = %v, want the notebook root", svc.commits)
+	if len(svc.commits) != 1 || svc.commits[0] != "notes" {
+		t.Fatalf("service commits = %v, want the message", svc.commits)
 	}
 }
 
@@ -614,8 +610,8 @@ func TestAbsentOrNullArgumentsAreTheEmptyObject(t *testing.T) {
 			assertErrorCode(t, commitRes, codeInvalidRequest, false)
 			svc.mu.Lock()
 			defer svc.mu.Unlock()
-			if len(svc.pulls) != 1 || svc.pulls[0] != "/session/notebook" {
-				t.Fatalf("service pulls = %v, want the notebook root", svc.pulls)
+			if svc.pulls != 1 {
+				t.Fatalf("service pulls = %d, want one call at the notebook root", svc.pulls)
 			}
 			if len(svc.commits) != 0 {
 				t.Fatalf("service commits = %v, want none", svc.commits)
@@ -635,19 +631,21 @@ func TestInstructionsNameNotebookRoot(t *testing.T) {
 	}
 }
 
-// TestToolDescriptionsAdvertiseEmptyPathDefault keeps the MCP discovery text
-// aligned with the accepted empty-string request behavior.
-func TestToolDescriptionsAdvertiseEmptyPathDefault(t *testing.T) {
+// TestDiscoveryTextNamesNoPerCallPath keeps the MCP discovery text aligned
+// with the one-directory server: the instructions and both descriptions
+// name no per-call path.
+func TestDiscoveryTextNamesNoPerCallPath(t *testing.T) {
+	instructionText := instructions("/session/notebook", nil, nil)
+	if strings.Contains(instructionText, "path") {
+		t.Errorf("instructions = %q, want no per-call path", instructionText)
+	}
 	for name, description := range map[string]string{
 		toolPull:   pullDescription,
 		toolCommit: commitDescription,
 	} {
-		if !strings.Contains(description, "empty string") {
-			t.Errorf("%s description = %q, want empty-path guidance", name, description)
+		if strings.Contains(description, "path") {
+			t.Errorf("%s description = %q, want no per-call path", name, description)
 		}
-	}
-	if got := pathProperty["minLength"]; got != 0 {
-		t.Fatalf("path schema minLength = %v, want 0", got)
 	}
 }
 
@@ -661,9 +659,9 @@ func TestInvalidInputsNeverReachService(t *testing.T) {
 		tool      string
 		arguments map[string]any
 	}{
-		{name: "unknown field", tool: toolPull, arguments: map[string]any{"path": "/abs/n", "extra": 1}},
+		{name: "unknown field", tool: toolPull, arguments: map[string]any{"extra": 1}},
 		{name: "relative path", tool: toolPull, arguments: map[string]any{"path": "notes"}},
-		{name: "missing message", tool: toolCommit, arguments: map[string]any{"path": "/abs/n"}},
+		{name: "missing message", tool: toolCommit, arguments: map[string]any{}},
 		{name: "null path", tool: toolPull, arguments: map[string]any{"path": nil}},
 	}
 	for _, call := range calls {
@@ -677,8 +675,53 @@ func TestInvalidInputsNeverReachService(t *testing.T) {
 	}
 	svc.mu.Lock()
 	defer svc.mu.Unlock()
-	if len(svc.pulls) != 0 || len(svc.commits) != 0 {
-		t.Fatalf("service calls = %v/%v, want none", svc.pulls, svc.commits)
+	if svc.pulls != 0 || len(svc.commits) != 0 {
+		t.Fatalf("service calls = %d/%v, want none", svc.pulls, svc.commits)
+	}
+}
+
+// TestPathIsRefusedNamingWorkspaceRoot proves the one-directory contract at
+// the schema boundary: any present path member, of any JSON type and null
+// included, is MALFORMED_INPUT whose message names --workspace-root, is
+// refused before an unknown member is considered, and never reaches the
+// service.
+func TestPathIsRefusedNamingWorkspaceRoot(t *testing.T) {
+	svc := &fakeService{}
+	client, _ := newTestPair(t, svc)
+	rows := []struct {
+		name string
+		args map[string]any
+	}{
+		{name: "string", args: map[string]any{"path": "/abs/notes"}},
+		{name: "null", args: map[string]any{"path": nil}},
+		{name: "number", args: map[string]any{"path": 5}},
+		{name: "bool", args: map[string]any{"path": true}},
+		{name: "object", args: map[string]any{"path": map[string]any{"a": 1}}},
+		{name: "array", args: map[string]any{"path": []any{"/abs/notes"}}},
+		{name: "before an unknown member", args: map[string]any{"path": "/abs/notes", "extra": 1}},
+		{name: "beside a message", args: map[string]any{"path": "/abs/notes", "message": "m"}},
+	}
+	for _, tool := range []string{toolPull, toolCommit} {
+		for _, row := range rows {
+			t.Run(tool+" "+row.name, func(t *testing.T) {
+				res, err := client.CallTool(context.Background(), &sdk.CallToolParams{Name: tool, Arguments: row.args})
+				if err != nil {
+					t.Fatalf("CallTool() = %v", err)
+				}
+				got := decodeToolError(t, res)
+				if got.Code != codeInvalidRequest || got.Reason != reasonMalformedInput || got.Action != actionFixInput {
+					t.Fatalf("structured = %+v, want INVALID_REQUEST/MALFORMED_INPUT/FIX_INPUT", got)
+				}
+				if !strings.Contains(got.Message, "--workspace-root") {
+					t.Fatalf("message = %q, want the --workspace-root remedy", got.Message)
+				}
+			})
+		}
+	}
+	svc.mu.Lock()
+	defer svc.mu.Unlock()
+	if svc.pulls != 0 || len(svc.commits) != 0 {
+		t.Fatalf("service calls = %d/%v, want none", svc.pulls, svc.commits)
 	}
 }
 
@@ -708,8 +751,8 @@ func TestMalformedArgumentsJSONReturnsProtocolError(t *testing.T) {
 	}
 	svc.mu.Lock()
 	defer svc.mu.Unlock()
-	if len(svc.pulls) != 0 {
-		t.Fatalf("service pulls = %v, want none", svc.pulls)
+	if svc.pulls != 0 {
+		t.Fatalf("service pulls = %d, want none", svc.pulls)
 	}
 }
 
@@ -735,7 +778,7 @@ func TestCancellationPropagatesToService(t *testing.T) {
 	defer cancel()
 	_, err = clientSession.CallTool(ctx, &sdk.CallToolParams{
 		Name:      toolPull,
-		Arguments: map[string]any{"path": "/abs/notes"},
+		Arguments: map[string]any{},
 	})
 	if err == nil {
 		t.Fatal("CallTool() with a blocked service = nil, want an error")
@@ -916,7 +959,7 @@ func surfacesOf(t *testing.T, svc *fakeService) advertisedSurfaces {
 	}
 	res, err := client.CallTool(context.Background(), &sdk.CallToolParams{
 		Name:      toolPull,
-		Arguments: map[string]any{"path": "/abs/notes"},
+		Arguments: map[string]any{},
 	})
 	if err != nil {
 		t.Fatalf("CallTool() = %v", err)
@@ -1055,7 +1098,7 @@ func errorTextOf(t *testing.T, svc *fakeService) string {
 	client, _ := newTestPair(t, svc)
 	res, err := client.CallTool(context.Background(), &sdk.CallToolParams{
 		Name:      toolCommit,
-		Arguments: map[string]any{"path": "/abs/notes", "message": "conflicted"},
+		Arguments: map[string]any{"message": "conflicted"},
 	})
 	if err != nil {
 		t.Fatalf("CallTool() = %v", err)
@@ -1099,8 +1142,7 @@ func TestAdvertisementUnconfiguredTextUnchanged(t *testing.T) {
 	got := surfacesOf(t, &fakeService{})
 	wantInstructions := "The notebook directory is " + fakeRoot + ". Call notes_pull, edit " +
 		"UTF-8 text files (without U+0000) there, then call notes_commit to " +
-		"publish. Both tools default to that directory; pass path only to " +
-		"address a subdirectory of it."
+		"publish. Both tools operate at that one directory."
 	if got.instructions != wantInstructions {
 		t.Fatalf("instructions = %q, want the bare form %q", got.instructions, wantInstructions)
 	}
@@ -1140,7 +1182,7 @@ func TestAdvertisementOneSetEmpty(t *testing.T) {
 			client, _ := newTestPair(t, row.svc)
 			res, err := client.CallTool(context.Background(), &sdk.CallToolParams{
 				Name:      toolPull,
-				Arguments: map[string]any{"path": "/abs/notes"},
+				Arguments: map[string]any{},
 			})
 			if err != nil {
 				t.Fatalf("CallTool() = %v", err)
@@ -1167,7 +1209,7 @@ func TestSuccessTextWritableForm(t *testing.T) {
 	client, _ := newTestPair(t, &fakeService{writable: []string{"notes"}})
 	res, err := client.CallTool(context.Background(), &sdk.CallToolParams{
 		Name:      toolCommit,
-		Arguments: map[string]any{"path": "/abs/notes", "message": "m"},
+		Arguments: map[string]any{"message": "m"},
 	})
 	if err != nil {
 		t.Fatalf("CallTool() = %v", err)
@@ -1186,8 +1228,8 @@ func TestSuccessResultCarriesWritableArray(t *testing.T) {
 	svc := &fakeService{result: sampleResult(), readOnly: []string{"docs"}, writable: []string{"notes", "team.md"}}
 	client, _ := newTestPair(t, svc)
 	for _, call := range []*sdk.CallToolParams{
-		{Name: toolPull, Arguments: map[string]any{"path": "/abs/notes"}},
-		{Name: toolCommit, Arguments: map[string]any{"path": "/abs/notes", "message": "m"}},
+		{Name: toolPull, Arguments: map[string]any{}},
+		{Name: toolCommit, Arguments: map[string]any{"message": "m"}},
 	} {
 		res, err := client.CallTool(context.Background(), call)
 		if err != nil {
@@ -1206,9 +1248,9 @@ func TestErrorResultCarriesWritableArray(t *testing.T) {
 	svc := &fakeService{commitErr: conflictError(), readOnly: []string{"docs"}, writable: []string{"notes", "team.md"}}
 	client, _ := newTestPair(t, svc)
 	for _, call := range []*sdk.CallToolParams{
-		{Name: toolCommit, Arguments: map[string]any{"path": "/abs/notes", "message": "conflicted"}},
+		{Name: toolCommit, Arguments: map[string]any{"message": "conflicted"}},
 		{Name: toolPull, Arguments: map[string]any{"path": "notes"}},
-		{Name: toolCommit, Arguments: map[string]any{"path": "/abs/notes", "message": "  "}},
+		{Name: toolCommit, Arguments: map[string]any{"message": "  "}},
 	} {
 		res, err := client.CallTool(context.Background(), call)
 		if err != nil {
@@ -1229,7 +1271,7 @@ func TestErrorResultArraysOnEarlyFailure(t *testing.T) {
 	client, _ := newTestPair(t, svc)
 	res, err := client.CallTool(context.Background(), &sdk.CallToolParams{
 		Name:      toolPull,
-		Arguments: map[string]any{"path": "/abs/notes", "extra": 1},
+		Arguments: map[string]any{"extra": 1},
 	})
 	if err != nil {
 		t.Fatalf("CallTool() = %v", err)
@@ -1243,8 +1285,8 @@ func TestErrorResultArraysOnEarlyFailure(t *testing.T) {
 	}
 	svc.mu.Lock()
 	defer svc.mu.Unlock()
-	if len(svc.pulls) != 0 {
-		t.Fatalf("service pulls = %v, want none for a decode failure", svc.pulls)
+	if svc.pulls != 0 {
+		t.Fatalf("service pulls = %d, want none for a decode failure", svc.pulls)
 	}
 }
 
@@ -1255,7 +1297,7 @@ func TestErrorResultArraysOnRecoveryFailure(t *testing.T) {
 	client, _ := newTestPair(t, svc)
 	res, err := client.CallTool(context.Background(), &sdk.CallToolParams{
 		Name:      toolPull,
-		Arguments: map[string]any{"path": "/abs/notes"},
+		Arguments: map[string]any{},
 	})
 	if err != nil {
 		t.Fatalf("CallTool() = %v", err)
@@ -1276,7 +1318,7 @@ func TestResultsArraysEmptyWhenUnconfigured(t *testing.T) {
 	client, _ := newTestPair(t, svc)
 	res, err := client.CallTool(context.Background(), &sdk.CallToolParams{
 		Name:      toolPull,
-		Arguments: map[string]any{"path": "/abs/notes"},
+		Arguments: map[string]any{},
 	})
 	if err != nil {
 		t.Fatalf("CallTool(pull) = %v", err)
@@ -1284,7 +1326,7 @@ func TestResultsArraysEmptyWhenUnconfigured(t *testing.T) {
 	assertEmptyArrays(t, res, decodeSuccess(t, res).ReadOnly, decodeSuccess(t, res).Writable)
 	errRes, err := client.CallTool(context.Background(), &sdk.CallToolParams{
 		Name:      toolCommit,
-		Arguments: map[string]any{"path": "/abs/notes", "message": "conflicted"},
+		Arguments: map[string]any{"message": "conflicted"},
 	})
 	if err != nil {
 		t.Fatalf("CallTool(commit) = %v", err)
@@ -1324,7 +1366,7 @@ func TestResultsReadOnlyArrayKeepsMeaning(t *testing.T) {
 	client, _ := newTestPair(t, svc)
 	res, err := client.CallTool(context.Background(), &sdk.CallToolParams{
 		Name:      toolPull,
-		Arguments: map[string]any{"path": "/abs/notes"},
+		Arguments: map[string]any{},
 	})
 	if err != nil {
 		t.Fatalf("CallTool(pull) = %v", err)
@@ -1334,7 +1376,7 @@ func TestResultsReadOnlyArrayKeepsMeaning(t *testing.T) {
 	}
 	errRes, err := client.CallTool(context.Background(), &sdk.CallToolParams{
 		Name:      toolCommit,
-		Arguments: map[string]any{"path": "/abs/notes", "message": "conflicted"},
+		Arguments: map[string]any{"message": "conflicted"},
 	})
 	if err != nil {
 		t.Fatalf("CallTool(commit) = %v", err)

@@ -49,7 +49,7 @@ func TestSuccessTextItemCarriesReadOnly(t *testing.T) {
 	client, _ := newTestPair(t, svc)
 	res, err := client.CallTool(context.Background(), &sdk.CallToolParams{
 		Name:      toolPull,
-		Arguments: map[string]any{"path": "/abs/notes"},
+		Arguments: map[string]any{},
 	})
 	if err != nil {
 		t.Fatalf("CallTool() = %v", err)
@@ -63,7 +63,7 @@ func TestSuccessTextItemCarriesReadOnly(t *testing.T) {
 	empty, _ := newTestPair(t, &fakeService{})
 	res, err = empty.CallTool(context.Background(), &sdk.CallToolParams{
 		Name:      toolPull,
-		Arguments: map[string]any{"path": "/abs/notes"},
+		Arguments: map[string]any{},
 	})
 	if err != nil {
 		t.Fatalf("CallTool() = %v", err)
@@ -82,7 +82,7 @@ func TestEnvelopesCarryReadOnlyAlways(t *testing.T) {
 
 	res, err := client.CallTool(context.Background(), &sdk.CallToolParams{
 		Name:      toolPull,
-		Arguments: map[string]any{"path": "/abs/notes"},
+		Arguments: map[string]any{},
 	})
 	if err != nil {
 		t.Fatalf("CallTool(pull) = %v", err)
@@ -94,7 +94,7 @@ func TestEnvelopesCarryReadOnlyAlways(t *testing.T) {
 
 	errRes, err := client.CallTool(context.Background(), &sdk.CallToolParams{
 		Name:      toolCommit,
-		Arguments: map[string]any{"path": "/abs/notes", "message": "conflicted"},
+		Arguments: map[string]any{"message": "conflicted"},
 	})
 	if err != nil {
 		t.Fatalf("CallTool(commit) = %v", err)
@@ -108,7 +108,7 @@ func TestEnvelopesCarryReadOnlyAlways(t *testing.T) {
 	emptyClient, _ := newTestPair(t, emptySvc)
 	res, err = emptyClient.CallTool(context.Background(), &sdk.CallToolParams{
 		Name:      toolPull,
-		Arguments: map[string]any{"path": "/abs/notes"},
+		Arguments: map[string]any{},
 	})
 	if err != nil {
 		t.Fatalf("CallTool(pull, empty) = %v", err)
@@ -119,7 +119,7 @@ func TestEnvelopesCarryReadOnlyAlways(t *testing.T) {
 	}
 	errRes, err = emptyClient.CallTool(context.Background(), &sdk.CallToolParams{
 		Name:      toolCommit,
-		Arguments: map[string]any{"path": "/abs/notes", "message": "conflicted"},
+		Arguments: map[string]any{"message": "conflicted"},
 	})
 	if err != nil {
 		t.Fatalf("CallTool(commit, empty) = %v", err)

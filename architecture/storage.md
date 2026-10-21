@@ -139,7 +139,7 @@ Prove it by calling `contract.Run(t, factory)` from the backend's tests with a f
 - `Key.String()` returns `""` for an invalid kind; always build keys from validated descriptors or `ParseKey`.
 - The fake's ETag is the quoted MD5 of the bytes, like a single-part S3 PUT. Tests must not depend on that; it is a token.
 - `fake.Store.DeleteObjects` barriers and failures key on `""`, not on the deleted keys.
-- `internal/integrationtest/faults.go` (`faultStore`) reuses `fake.Injector` around any base store, including the real S3 adapter ([testing.md](./testing.md)).
+- `internal/integrationtest/itest/faults.go` (`FaultStore`) reuses `fake.Injector` around any base store, including the real S3 adapter ([testing.md](./testing.md)).
 
 ## Related
 

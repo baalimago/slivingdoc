@@ -29,23 +29,23 @@ const (
 	toolCommit = "notes_commit"
 )
 
-// Service is the notebook view consumed by the tools: one requested
-// visible path resolves to one notebook inside the implementation. Each
-// method returns the operation result, which the handler maps into the
-// structured success envelope.
+// Service is the notebook view consumed by the tools: the server serves
+// exactly one notebook directory for the life of the process, and both
+// tools operate at it. Each method returns the operation result, which the
+// handler maps into the structured success envelope.
 type Service interface {
-	// Root is the notebook directory an omitted request path resolves to.
+	// Root is the one notebook directory the server serves.
 	Root() string
 	// ReadOnlyPaths is the normalized, sorted read-only set; never nil.
 	ReadOnlyPaths() []string
 	// WritablePaths is the normalized, sorted writable set; never nil. A
 	// non-empty set makes every path it does not cover read-only.
 	WritablePaths() []string
-	// Pull writes the current notebook into the resolved path.
-	Pull(ctx context.Context, path string) (notebook.Result, error)
-	// Commit publishes the caller's changes at the resolved path with the
-	// given message.
-	Commit(ctx context.Context, path, message string) (notebook.Result, error)
+	// Pull writes the current notebook into the server's directory.
+	Pull(ctx context.Context) (notebook.Result, error)
+	// Commit publishes the caller's changes at the server's directory with
+	// the given message.
+	Commit(ctx context.Context, message string) (notebook.Result, error)
 }
 
 // Server is the slivingdoc MCP server. It registers exactly two tools and
@@ -109,51 +109,39 @@ type handler struct {
 	logger *slog.Logger
 }
 
-// path resolves an omitted request path to the server's notebook root, so
-// the service always receives one absolute directory.
-func (h *handler) path(requested string) string {
-	if requested == "" {
-		return h.svc.Root()
-	}
-	return requested
-}
-
 func (h *handler) pull(ctx context.Context, req *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
 	logger, ctx, reqID := h.requestLogger(ctx, toolPull)
 	start := time.Now()
 	logger.Info("tool call started")
-	requested, err := decodePull(req.Params.Arguments)
-	if err != nil {
+	if err := decodePull(req.Params.Arguments); err != nil {
 		logger.Warn("tool call completed", "outcome", "invalid_request", "duration", time.Since(start))
 		return h.errorResult(decodeFailureError(err), reqID), nil
 	}
-	path := h.path(requested)
-	result, err := h.svc.Pull(ctx, path)
+	result, err := h.svc.Pull(ctx)
 	if err != nil {
 		logger.Warn("tool call completed", "outcome", "error", "duration", time.Since(start), "cause", redactValues(err.Error()))
 		return h.resultFor(err, reqID)
 	}
 	logger.Info("tool call completed", "outcome", "ok", "duration", time.Since(start))
-	return h.successResult(result, path), nil
+	return h.successResult(result), nil
 }
 
 func (h *handler) commit(ctx context.Context, req *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
 	logger, ctx, reqID := h.requestLogger(ctx, toolCommit)
 	start := time.Now()
 	logger.Info("tool call started")
-	requested, message, err := decodeCommit(req.Params.Arguments)
+	message, err := decodeCommit(req.Params.Arguments)
 	if err != nil {
 		logger.Warn("tool call completed", "outcome", "invalid_request", "duration", time.Since(start))
 		return h.errorResult(decodeFailureError(err), reqID), nil
 	}
-	path := h.path(requested)
-	result, err := h.svc.Commit(ctx, path, message)
+	result, err := h.svc.Commit(ctx, message)
 	if err != nil {
 		logger.Warn("tool call completed", "outcome", "error", "duration", time.Since(start), "cause", redactValues(err.Error()))
 		return h.resultFor(err, reqID)
 	}
 	logger.Info("tool call completed", "outcome", "ok", "duration", time.Since(start))
-	return h.successResult(result, path), nil
+	return h.successResult(result), nil
 }
 
 // requestLogger derives the request-scoped logger from the server logger:
@@ -194,8 +182,8 @@ func (h *handler) resultFor(err error, diagnosticID string) (*sdk.CallToolResult
 // SuccessInfo object (architecture/product-contract.md). The text item is
 // often the only part a client forwards to its model, so it names the
 // directory, the configured path sets, and a materialization's header and tree.
-func (h *handler) successResult(result notebook.Result, path string) *sdk.CallToolResult {
-	info := MapSuccess(result, path)
+func (h *handler) successResult(result notebook.Result) *sdk.CallToolResult {
+	info := MapSuccess(result, h.svc.Root())
 	info.ReadOnly = h.svc.ReadOnlyPaths()
 	info.Writable = h.svc.WritablePaths()
 	return &sdk.CallToolResult{
@@ -237,8 +225,7 @@ func successText(info *SuccessInfo) string {
 func instructions(root string, entries, writable []string) string {
 	base := "The notebook directory is " + root + ". Call notes_pull, edit " +
 		"UTF-8 text files (without U+0000) there, then call notes_commit to " +
-		"publish. Both tools default to that directory; pass path only to " +
-		"address a subdirectory of it."
+		"publish. Both tools operate at that one directory."
 	if len(writable) > 0 {
 		base += " Writable paths: " + strings.Join(writable, notebook.ReadOnlyListSeparator) +
 			". notes_commit refuses any change elsewhere, resets those files, and reports READ_ONLY_PATH; write only under them."
@@ -341,48 +328,35 @@ func errorText(te *ToolError) string {
 // Tool descriptions tell the caller to edit UTF-8 text files between pull
 // and commit (architecture/product-contract.md).
 const (
-	pullDescription = "Write the current notebook into the notebook directory " +
-		"and record the accepted state. Omit path or pass an empty string to use the server's notebook " +
-		"directory, which the result reports. Edit UTF-8 text files (without " +
-		"U+0000) there between notes_pull and notes_commit; notes_commit " +
-		"publishes the changes and incorporates concurrent non-conflicting changes."
+	pullDescription = "Write the current notebook into the server's notebook " +
+		"directory and record the accepted state. The result reports that " +
+		"directory. Edit UTF-8 text files (without U+0000) there between " +
+		"notes_pull and notes_commit; notes_commit publishes the changes and " +
+		"incorporates concurrent non-conflicting changes."
 
-	commitDescription = "Publish the caller's changes in the notebook directory " +
-		"and incorporate concurrent non-conflicting changes. Omit path or pass an empty string to use " +
-		"the server's notebook directory, which the result reports. message must " +
-		"be non-blank UTF-8 without U+0000, at most 16,384 bytes; it is retained " +
-		"in recent internal history only."
+	commitDescription = "Publish the caller's changes in the server's notebook " +
+		"directory and incorporate concurrent non-conflicting changes. message " +
+		"must be non-blank UTF-8 without U+0000, at most 16,384 bytes; it is " +
+		"retained in recent internal history only."
 )
 
 // The strict input schemas advertise the documented fields and reject
-// unknown ones. The byte bounds are documented in the schema description;
-// the exact 4,096/16,384-byte limits are enforced by the strict decode,
-// because JSON Schema maxLength counts code points, not bytes.
+// unknown ones. notes_pull takes no field; notes_commit takes only its
+// message. The exact 16,384-byte message limit is enforced by the strict
+// decode, because JSON Schema maxLength counts code points, not bytes.
 var (
 	pullSchema = map[string]any{
 		"type":                 "object",
-		"properties":           map[string]any{"path": pathProperty},
+		"properties":           map[string]any{},
 		"required":             []string{},
 		"additionalProperties": false,
 	}
 
 	commitSchema = map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"path":    pathProperty,
-			"message": messageProperty,
-		},
+		"type":                 "object",
+		"properties":           map[string]any{"message": messageProperty},
 		"required":             []string{"message"},
 		"additionalProperties": false,
-	}
-
-	pathProperty = map[string]any{
-		"type": "string",
-		"description": "Optional absolute UTF-8 host path of the notebook " +
-			"directory, 1 through 4,096 bytes. Omit it or pass an empty string to use the server's " +
-			"notebook directory.",
-		"minLength": 0,
-		"maxLength": maxPathBytes,
 	}
 
 	messageProperty = map[string]any{

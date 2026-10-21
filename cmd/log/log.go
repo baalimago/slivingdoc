@@ -64,8 +64,12 @@ func (c *command) Run(ctx context.Context) error {
 		return errors.New("log: Setup must run before Run")
 	}
 	defer c.runtime.Close()
-	h, err := c.runtime.Log(ctx, c.path, c.limit)
-	return app.ReportLog(c.opts.Out(), h, err, c.path, c.opts.Env)
+	path := c.path
+	if path == "" {
+		path = c.runtime.NotebookDirectory()
+	}
+	h, err := c.runtime.Log(ctx, path, c.limit)
+	return app.ReportLog(c.opts.Out(), h, err, path, c.opts.Env)
 }
 
 const helpText = `slivingdoc log - list the recent publications of a notebook
@@ -80,8 +84,8 @@ publications exist.
 
   --limit int    how many publications to show (default 20)
 
-A notebook directory that already pulled a hosted space remembers it, so
-log there needs no --space and no --storage hosted.
+A notebook directory that already pulled a notebook remembers its target,
+hosted or S3, so log there needs no target flag.
 
 Takes the same flags as pull.
 

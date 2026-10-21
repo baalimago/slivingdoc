@@ -150,9 +150,11 @@ func decodeV1Target(v strictjson.Value) (Target, error) {
 	return Target{Kind: KindHosted, Name: space, Prefix: prefix}, nil
 }
 
-// decodeV2 reads the backend-aware shape: entries and one target per store
-// key in defaults. A hosted default is refused, because a hosted default
-// lives in credentials.json and two sources must not disagree.
+// decodeV2 reads the backend-aware shape: entries and the stored defaults.
+// A file written by an earlier build may list one default per store key;
+// they are kept in order, and the last is active. A hosted default is
+// refused, because a hosted default lives in credentials.json and two
+// sources must not disagree.
 func decodeV2(root strictjson.Value) (Set, error) {
 	if err := root.RejectUnknown(fieldVersion, fieldEntries, fieldDefaults); err != nil {
 		return Set{}, err
@@ -172,9 +174,6 @@ func decodeV2(root strictjson.Value) (Set, error) {
 		}
 		if target.Kind == KindHosted {
 			return Set{}, fmt.Errorf("defaults[%d]: a hosted default belongs in credentials.json", i)
-		}
-		if _, dup := set.Default(target.Key()); dup {
-			return Set{}, fmt.Errorf("defaults[%d]: a second default for the same store", i)
 		}
 		set.defaults = append(set.defaults, target)
 	}

@@ -82,16 +82,16 @@ type ProcessOptions struct {
 	// workspace root. With Load it forms the association of that directory.
 	NotebookPath string
 
-	// Load reads the scoped settings of every directory, so the space this
-	// directory remembers can name the hosted store
-	// (architecture/config.md, The scoped settings store). Nil consults no
-	// association, which is what serve and every in-process test use.
+	// Load reads the scoped settings of every directory, so the target this
+	// directory remembers can name its store (architecture/config.md, The
+	// scoped settings store). Nil consults no association, which is what a
+	// scratch serve and every in-process test use.
 	Load func() (settings.Set, error)
 
-	// Record stores the notebook a successful pull or commit of this
-	// process proved its directory holds (architecture/config.md, The
-	// remembered notebook of a directory). Nil records nothing, which is
-	// what serve and every in-process test use.
+	// Record stores the target a successful pull or commit of this process
+	// proved its directory holds (architecture/config.md, The remembered
+	// target of a directory). Nil records nothing, which is what a scratch
+	// serve and every in-process test use.
 	Record func(context.Context, settings.Entry) error
 
 	// NewSessionDir creates the ephemeral session directory. Nil uses the
@@ -285,7 +285,7 @@ func (r *Runtime) Serve(ctx context.Context) error {
 		"hosted", r.cfg.hosted(),
 		"notebookRoot", r.cfg.workspaceRoot,
 		"ephemeral", r.cfg.sessionDir != "")
-	srv := mcp.NewServer(r.svc, Version, Module(r.base, ModuleMCP))
+	srv := mcp.NewServer(rememberingService{r}, Version, Module(r.base, ModuleMCP))
 	// A person who starts serve in a terminal sees that it is ready and
 	// where it syncs; an MCP host's stderr is not a terminal and gets
 	// nothing new (architecture/tui.md). Stdout stays the protocol's.
@@ -300,7 +300,7 @@ func (r *Runtime) Serve(ctx context.Context) error {
 // next command there needs no space flag.
 func (r *Runtime) Pull(ctx context.Context, path string) (notebook.Result, error) {
 	ctx = notebook.WithLogger(ctx, Module(r.base, ModuleNotebook))
-	res, err := r.svc.Pull(ctx, r.resolve(path))
+	res, err := r.svc.PullAt(ctx, r.resolve(path))
 	r.rememberSpace(ctx, err)
 	return res, err
 }
@@ -311,7 +311,7 @@ func (r *Runtime) Pull(ctx context.Context, path string) (notebook.Result, error
 // the pull that must have come first.
 func (r *Runtime) Commit(ctx context.Context, path, message string) (notebook.Result, error) {
 	ctx = notebook.WithLogger(ctx, Module(r.base, ModuleNotebook))
-	res, err := r.svc.Commit(ctx, r.resolve(path), message)
+	res, err := r.svc.CommitAt(ctx, r.resolve(path), message)
 	r.rememberSpace(ctx, err)
 	return res, err
 }
@@ -341,9 +341,21 @@ func (r *Runtime) Space() string { return r.cfg.bucket }
 // SpaceSource names the setting that named the space, in the spelling an
 // operator would change it by: --bucket, --space, SLIVINGDOC_BUCKET,
 // SLIVINGDOC_SPACE, the login's default space, the token's own space, the
-// remembered space, or "none". An S3 process names its bucket by the flag or
-// variable too, so the pair is always read together.
-func (r *Runtime) SpaceSource() string { return r.cfg.bucketFrom.String() }
+// remembered space or bucket, the S3 default, or "none". An S3 process names
+// its bucket by the flag or variable too, so the pair is always read together.
+// The record has one source word per backend, because the source itself
+// carries no kind (architecture/config.md, The operator surface of the
+// record).
+func (r *Runtime) SpaceSource() string {
+	if r.cfg.bucketFrom == bucketFromRemembered && !r.cfg.hosted() {
+		return rememberedBucketSource
+	}
+	return r.cfg.bucketFrom.String()
+}
+
+// NotebookDirectory is the workspace root every omitted command path means,
+// so a report can name the directory the process really addressed.
+func (r *Runtime) NotebookDirectory() string { return r.cfg.workspaceRoot }
 
 // resolve maps an omitted CLI path to the workspace root.
 func (r *Runtime) resolve(path string) string {
@@ -467,6 +479,9 @@ func buildService(p process, cfg config) (*Service, config, storeCheckReport, er
 	}
 	store, err := storeFactory(context.Background(), cfg)
 	if err != nil {
+		return nil, config{}, storeCheckReport{}, err
+	}
+	if cfg, err = cfg.withStoreResolution(store); err != nil {
 		return nil, config{}, storeCheckReport{}, err
 	}
 	check, err := checkStoreWithProof(probeCtx, store, cfg, cfg.probeProofs(time.Now))
@@ -681,6 +696,33 @@ func (t *closeTransport) Close() error {
 		return nil
 	}
 	return conn.Close()
+}
+
+// resolvedStore is a store that reports the values it really addresses. The
+// S3 adapter reports the SDK's effective endpoint, region, profile, and path
+// style, which a profile or an endpoint variable may have supplied after the
+// configuration resolved; a hosted store reports none, because the selected
+// login or token supplies its site (architecture/config.md).
+type resolvedStore interface {
+	Resolved() s3store.Resolved
+}
+
+// withStoreResolution applies the values the built store reports, so the
+// notebook identity, the probe proof, and the record all name the store the
+// process really uses. A store that reports none leaves the configuration as
+// it resolved.
+func (cfg config) withStoreResolution(store storage.ObjectStore) (config, error) {
+	resolved, ok := store.(resolvedStore)
+	if !ok {
+		return cfg, nil
+	}
+	values := resolved.Resolved()
+	endpoint, err := normalizeEndpoint(values.Endpoint)
+	if err != nil {
+		return config{}, fmt.Errorf("app: object store endpoint: %w", err)
+	}
+	cfg.endpoint, cfg.region, cfg.profile, cfg.pathStyle = endpoint, values.Region, values.Profile, values.PathStyle
+	return cfg, nil
 }
 
 // realStoreFactory builds the object store from the resolved

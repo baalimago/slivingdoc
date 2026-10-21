@@ -229,6 +229,11 @@ func TestResolveStorage(t *testing.T) {
 			wantBucket: "notes", wantFrom: bucketFromEnv,
 		},
 		{
+			name: "s3: --space names the bucket with no hosted alternative", env: []string{credentials.DirEnv + "=" + t.TempDir()},
+			args:       []string{"--storage", "s3", "--space", "notes"},
+			wantBucket: "notes", wantFrom: bucketFromSpaceFlag,
+		},
+		{
 			name: "s3 from the environment", env: []string{token, notes, "SLIVINGDOC_BUCKET=notes", "SLIVINGDOC_STORAGE=s3"},
 			wantBucket: "notes", wantFrom: bucketFromEnv,
 		},
@@ -264,31 +269,49 @@ func TestResolveStorage(t *testing.T) {
 	}
 }
 
-// TestRememberedTargetKeepsOnlyAHostedRecord proves that a version-2 record of
-// another kind names no hosted space: the hosted resolver ignores it, and the
-// directory-binding worklog owns how the commands resolve it.
-func TestRememberedTargetKeepsOnlyAHostedRecord(t *testing.T) {
-	hosted := settings.Target{Kind: settings.KindHosted, Name: "notes"}
-	s3 := settings.Target{Kind: settings.KindS3, Endpoint: "https://s3.example", Name: "bucket"}
+// TestSettingsViewReadsTheRecordAndDefault proves the one read a process
+// makes of its scoped settings: the record of its own directory and the one
+// active S3 default, or neither. A file that cannot be read is the refusal
+// that names it.
+func TestSettingsViewReadsTheRecordAndDefault(t *testing.T) {
+	hosted := settings.Target{Kind: settings.KindHosted, Name: "notes", Prefix: "team"}
+	s3 := settings.Target{Kind: settings.KindS3, Endpoint: "https://s3.example", Region: "eu-north-1", Name: "bucket"}
 	for _, row := range []struct {
 		name string
-		in   settings.Target
-		want settings.Target
+		set  settings.Set
+		want settingsView
 	}{
-		{"a hosted record", hosted, hosted},
-		{"an S3 record", s3, settings.Target{}},
-		{"no record", settings.Target{}, settings.Target{}},
+		{
+			name: "a record and an S3 default",
+			set:  settings.Set{}.Put(settings.Entry{Path: rememberedPath, Target: hosted}).PutDefault(s3),
+			want: settingsView{record: hosted, recorded: true, s3Default: s3, defaultFound: true},
+		},
+		{
+			name: "the record of another directory is not this directory's",
+			set:  settings.Set{}.Put(settings.Entry{Path: "/work/other", Target: hosted}),
+			want: settingsView{},
+		},
+		{
+			name: "an S3 default alone",
+			set:  settings.Set{}.PutDefault(s3),
+			want: settingsView{s3Default: s3, defaultFound: true},
+		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			got, err := rememberedTarget(storageInputs{remembered: func() (settings.Target, error) { return row.in, nil }})
+			a := settingsAssociation{path: rememberedPath, load: func() (settings.Set, error) { return row.set, nil }}
+			got, err := a.read("/work")
 			if err != nil || got != row.want {
-				t.Fatalf("rememberedTarget() = %+v, %v; want %+v", got, err, row.want)
+				t.Fatalf("read() = %+v, %v; want %+v", got, err, row.want)
 			}
 		})
 	}
 	want := os.ErrNotExist
-	if _, err := rememberedTarget(storageInputs{remembered: func() (settings.Target, error) { return settings.Target{}, want }}); !errors.Is(err, want) {
-		t.Fatalf("rememberedTarget() = %v, want the reader's error", err)
+	a := settingsAssociation{path: rememberedPath, load: func() (settings.Set, error) { return settings.Set{}, want }}
+	if _, err := a.read("/work"); !errors.Is(err, want) {
+		t.Fatalf("read() = %v, want the reader's error", err)
+	}
+	if got, err := (settingsAssociation{}).read("/work"); err != nil || got != (settingsView{}) {
+		t.Fatalf("read() without an association = %+v, %v; want the empty view", got, err)
 	}
 }
 

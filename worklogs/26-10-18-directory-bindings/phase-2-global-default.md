@@ -119,8 +119,107 @@ None.
 
 ## Implementation notes
 
-Not started.
+Complete. Sessions 2–4, 2026-10-21.
+
+### Production
+
+- `internal/settings`: `Set.PutDefault` stores exactly one default,
+  `Set.ClearDefaults` stores none, `Set.S3Default` returns the last stored
+  default, the strict decoder no longer refuses several defaults, and
+  `Set.Default(StoreKey)` is gone.
+- `internal/app/space.go`: a hosted selection sets the login's default space
+  and then clears every stored S3 default under the settings lock, and an S3
+  selection writes the complete target as the only default. Only the active
+  default carries the mark; a hosted default beside an active S3 default is
+  listed without it and still suppresses the no-default hint. A bare listing
+  uses the stored default's own endpoint, region, profile, and path style
+  unless a flag, `--endpoint`/`SLIVINGDOC_ENDPOINT`, or an AWS variable names
+  an identity. A bare `space new` refuses with the create form and changes
+  nothing. A failed write keeps the previous default active.
+- `cmd/login/login.go`: `spaceHelp` states the one global default, the create
+  form, and the identity rule of a bare listing.
+
+### Tests
+
+- `internal/integrationtest/scenario_space_default_test.go` (new):
+  `TestScenarioSpaceActiveMark`, `TestScenarioSpaceNewKeepsDefault`,
+  `TestScenarioSpaceSettingsFailures` (two subtests),
+  `TestScenarioSpaceLegacyDefaults`, `TestScenarioSpaceRedaction`; helpers
+  `s3DefaultEnv`, `s3Credentials`, `s3DefaultTarget`, `freshS3Bucket`,
+  `createS3Bucket`, `newS3Bucket`, `privateRootOf`. Listing assertions use
+  containment because the shared SeaweedFS suite holds buckets from parallel
+  scenarios.
+- `TestScenarioSpaceHosted` plants an S3 default with the closed endpoint and
+  proves `space --storage hosted team-notes` clears it.
+- `TestScenarioSpaceS3` asserts the stored default's endpoint and region.
+- Unit tests in `internal/settings/settings_test.go`, `internal/app/space_test.go`,
+  `internal/app/space_s3_test.go`.
+
+### Decisions worth keeping
+
+- `Space.HasDefault` reports a stored default even while another backend's
+  default is active, so an inactive default suppresses the "No default" hint
+  without carrying a mark.
+- `settings.Set.S3Default` is the phase-3 entry point for the active global
+  default.
+- A target named `new` is reachable only through the picker, because
+  `space new` is the create form (`space.6`).
+- The S3 access key id stays a deliberate display (`architecture/security.md`);
+  the redaction scenario forbids the secret, the login key, `sld_` tokens, and
+  private paths instead.
+
+### Documentation
+
+`architecture/login.md`, `config.md`, `cli.md`, `running.md`, `overview.md`,
+`testing.md`, `decisions.md` (decision 56 supersedes decision 54's store-key
+rule, which is not rewritten), and the `settings` package row of `AGENTS.md`.
+
+### Commands and results
+
+```sh
+go test ./internal/settings ./internal/app -count=1
+# ok .../internal/settings 0.154s
+# ok .../internal/app 1.175s
+
+go test ./internal/integrationtest -run '^(TestScenarioSpaceHosted|TestScenarioSpaceS3|TestScenarioSpaceActiveMark|TestScenarioSpaceNewKeepsDefault|TestScenarioSpaceSettingsFailures|TestScenarioSpaceLegacyDefaults|TestScenarioSpaceRedaction)$' -count=1
+# ok .../internal/integrationtest 14.156s
+
+make qa
+# lint: gofumpt, go vet, staticcheck, go fix clean
+# test: every package ok, coverage 89.5 % (floor 70 %)
+# npm-test: 35 pass, 0 fail
+
+# One earlier `make qa` failed only on the 30 s package timeout while the host
+# carried a load average of 11.5 on 8 cores. The same integration package, run
+# alone against the shared S3 lease, took 20.2 s for -race -count=3, and the
+# next `make qa` passed. Treat that failure as host contention, not suite cost.
+
+go run github.com/mibk/dupl@v1.0.0 -t 80 .
+# 3 clone groups, all pre-existing and structural: two test-table bodies,
+# the per-flag Bind boilerplate of two flag sets, and two merge assertions
+```
 
 ## Review findings
 
-None.
+### Review 1, 2026-10-21
+
+No phase-2 `R` finding remains. Hosted selection clears the S3 default; S3
+selection stores one complete default. Listing marks only the active default.
+The legacy version-2 and failed-write scenarios exercise these paths.
+
+Root review filed R1-02 for backend-precedence text in
+`architecture/login.md`; that fix is in the shared architecture docs.
+
+### Review 2, 2026-10-21
+
+Verified good: every phase-2 acceptance row names its matching scenario, and
+every error row is exercised by `TestScenarioSpaceSettingsFailures` or
+`TestScenarioSpaceS3`. The scenarios cover hosted selection clearing S3,
+complete S3 target replacement, the single active mark, legacy version-2
+defaults, create-without-selection, failed writes, and redaction. The settings
+write order leaves the previous S3 default active if either hosted-default
+write fails.
+
+R1-01 and R1-02 remain closed; the gate policy lists `dupl` separately from
+`make qa`, and the storage-selection documents were checked against the
+implementation and the authoritative table in `architecture/login.md`.

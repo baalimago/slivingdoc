@@ -34,6 +34,9 @@ func Command(engine git.Engine, opts app.ProcessOptions) *command {
 	// With no configured root the server owns a temporary notebook
 	// directory: every agent gets a private one and the tools need no path.
 	opts.Ephemeral = true
+	// A durable directory reads and writes the record of its workspace
+	// root; the resolution skips the association for a scratch directory.
+	opts = opts.WithAssociation("")
 	return &command{engine: engine, opts: opts, flags: flags, flagset: fs}
 }
 

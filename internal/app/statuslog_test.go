@@ -70,19 +70,28 @@ func TestReportLog(t *testing.T) {
 	}
 }
 
-// TestStatusNamesRememberedSpaceSource proves the one source the status
-// report explains: a space the directory itself remembered gets a trailer
-// naming where it came from, so an operator who moved a directory reads why
-// it talks to that space.
-func TestStatusNamesRememberedSpaceSource(t *testing.T) {
+// TestStatusNamesRememberedSource proves the one kind of source the status
+// report explains: a target the directory itself remembered gets a trailer
+// naming where it came from, so an operator who moved a directory reads why it
+// talks to that space or bucket.
+func TestStatusNamesRememberedSource(t *testing.T) {
 	t.Parallel()
-	var out bytes.Buffer
-	if err := ReportStatus(&out, notebook.Status{Generation: 2, Pulled: true}, nil, "/n", "space notes", rememberedSource, nil, nil, nil); err != nil {
-		t.Fatalf("ReportStatus() = %v", err)
-	}
-	want := "/n  space notes\nspace: " + rememberedSource + "\ngeneration 2\n"
-	if !strings.HasPrefix(out.String(), want) {
-		t.Fatalf("status = %q, want it to start with %q", out.String(), want)
+	for _, row := range []struct {
+		name, target, source, want string
+	}{
+		{name: "a hosted record", target: "space notes", source: rememberedSource, want: "space: " + rememberedSource},
+		{name: "an S3 record", target: "bucket notes", source: rememberedBucketSource, want: "bucket: " + rememberedBucketSource},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			var out bytes.Buffer
+			if err := ReportStatus(&out, notebook.Status{Generation: 2, Pulled: true}, nil, "/n", row.target, row.source, nil, nil, nil); err != nil {
+				t.Fatalf("ReportStatus() = %v", err)
+			}
+			want := "/n  " + row.target + "\n" + row.want + "\ngeneration 2\n"
+			if !strings.HasPrefix(out.String(), want) {
+				t.Fatalf("status = %q, want it to start with %q", out.String(), want)
+			}
+		})
 	}
 }
 
@@ -91,12 +100,12 @@ func TestStatusNamesRememberedSpaceSource(t *testing.T) {
 // and an S3 process that named no bucket has none to name.
 func TestStatusOmitsSourceForExplicitChoices(t *testing.T) {
 	t.Parallel()
-	for _, source := range []string{"--space", "--bucket", bucketEnv, spaceEnv, "default space", "token", bucketNone.String()} {
+	for _, source := range []string{"--space", "--bucket", bucketEnv, spaceEnv, "default space", "token", defaultBucketSource, bucketNone.String()} {
 		var out bytes.Buffer
 		if err := ReportStatus(&out, notebook.Status{Generation: 1, Pulled: true}, nil, "/n", "bucket b", source, nil, nil, nil); err != nil {
 			t.Fatalf("ReportStatus(%s) = %v", source, err)
 		}
-		if strings.Contains(out.String(), "space: ") {
+		if strings.Contains(out.String(), "space: ") || strings.Contains(out.String(), "bucket: ") {
 			t.Fatalf("status with the %s source = %q, want no source trailer", source, out.String())
 		}
 	}

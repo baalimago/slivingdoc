@@ -160,26 +160,27 @@ Usage:
   slivingdoc space [flags] new <name>
 
 Without a positional word, lists the targets of every backend the mode
-selects, one group per identity, and marks the default of each group with
-*. A hosted group is one stored login and its spaces; an S3 group is one
+selects, one group per identity, and marks the active default with *. A
+hosted group is one stored login and its spaces; an S3 group is one
 resolved identity and its buckets. Rows carry the directories that
 remember them in parentheses; a hosted row also carries its access (write
 or read) and owner. A target the listing did not return, but a directory
-remembers or a layout stores as the default, stays visible marked ! and
-cannot be chosen as a default; its hint goes to stderr. When stdin, stdout
-and stderr are all a terminal, the targets appear as a numbered table with
-one create row after each backend instead: the number you type becomes that
-target's default, and a create row asks for a name, creates the target, and
-makes it the default (q changes nothing).
+remembers or the settings file stores as the default, stays visible marked
+! and cannot be chosen as a default; its hint goes to stderr. When stdin,
+stdout and stderr are all a terminal, the targets appear as a numbered
+table with one create row after each backend instead: the number you type
+becomes that target's default, and a create row asks for a name, creates
+the target, and makes it the default (q changes nothing).
 
 With a name, checks that one identity lists that target and stores it as
-that identity's default. A hosted default is what serve, pull and commit
-use when neither --space nor SLIVINGDOC_SPACE is given. With 'new <name>',
-creates a hosted space through the site or an S3 bucket through the S3
-API, on the identity the flags select, and leaves the default unchanged.
-A bare 'new' makes a target named new the default when one is listed, and
-otherwise says how to create one. A create refuses --prefix, because it
-makes a new store rather than a notebook inside one.
+the one global default. A hosted name sets the selected login's default
+space and clears every stored S3 default; an S3 name stores the complete
+target and replaces every earlier S3 default. The S3 default is active
+while one exists, and otherwise the selected login's default space is.
+With 'new <name>', creates a hosted space through the site or an S3 bucket
+through the S3 API, on the identity the flags select, and leaves the
+default unchanged. A bare 'new' says how to create one. A create refuses
+--prefix, because it makes a new store rather than a notebook inside one.
 
 In auto mode a hosted group needs a stored login, and an S3 group needs an
 S3 flag, an AWS variable, an existing ~/.aws/credentials or ~/.aws/config
@@ -190,9 +191,11 @@ its default and recorded targets visible, marked !, and reports the reason
 on stderr. An S3 identity that the environment selects and auto cannot
 resolve degrades the same way; --storage s3, or a flag that names the
 identity, refuses instead. An S3 target stores the resolved endpoint,
-region, profile, and the --prefix value under that identity's store key.
-A profile is a [profile <name>] section of ~/.aws/config; a bare [<name>]
-section there supplies no region, so the identity falls back to us-east-1.
+region, profile, path style, and the --prefix value. When no S3 flag or
+variable names an identity, the S3 group lists the active S3 default's
+own identity. A profile is a [profile <name>] section of ~/.aws/config; a
+bare [<name>] section there supplies no region, so the identity falls
+back to us-east-1.
 Listing an S3 account needs s3:ListAllMyBuckets and creating a bucket
 needs s3:CreateBucket. The login key goes only to the site that issued it.
 

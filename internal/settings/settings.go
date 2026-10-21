@@ -1,10 +1,11 @@
 // Package settings owns the scoped settings of slivingdoc: one strict,
 // versioned JSON file under the user configuration directory that maps a
-// directory to the settings of the notebook it holds and holds one default
-// target per store identity (architecture/config.md). A target names a
-// hosted space or an S3 bucket, its prefix, and the store identity around
-// them; the record names no credential, and the package reads and writes
-// that one file only.
+// directory to the settings of the notebook it holds and holds the one
+// global S3 default; a file written by an earlier build may hold one per
+// store key, of which the last is active (architecture/config.md). A target
+// names a hosted space or an S3 bucket, its prefix, and the store identity
+// around them; the record names no credential, and the package reads and
+// writes that one file only.
 //
 // The file is a registry of one record per directory, so further
 // per-directory settings can be stored beside the target without a
@@ -26,7 +27,7 @@ import (
 const FileName = "workspaces.json"
 
 // LockName is the lock file beside FileName that serializes the
-// read-modify-write of one directory's record.
+// read-modify-write of the settings file.
 const LockName = "workspaces.lock"
 
 // FormatVersion is the settings file version this build writes. A
@@ -76,9 +77,9 @@ const (
 	KindS3 Kind = "s3"
 )
 
-// Target is the remembered notebook of one directory, or a default: the
-// name of the hosted space or S3 bucket, the prefix that identifies the
-// notebook inside it, and the store identity around both. It names no
+// Target is the target one directory remembers, or a default: the name of
+// the hosted space or S3 bucket, the prefix that identifies the notebook
+// inside it, and the store identity around both. It names no
 // credential: Profile is a selector, never a secret. It is deliberately
 // not called Storage, which belongs to internal/storage.
 type Target struct {
@@ -92,7 +93,7 @@ type Target struct {
 }
 
 // StoreKey is the identity of a store before its notebook name is known.
-// A default is stored and looked up by exactly these fields.
+// One listing group is one store key.
 type StoreKey struct {
 	Kind     Kind
 	Endpoint string
@@ -105,15 +106,15 @@ func (t Target) Key() StoreKey {
 	return StoreKey{Kind: t.Kind, Endpoint: t.Endpoint, Region: t.Region, Profile: t.Profile}
 }
 
-// Entry is one directory's remembered notebook.
+// Entry is one directory's remembered target.
 type Entry struct {
 	Path   string
 	Target Target
 }
 
-// Set is the content of the settings file: one entry per directory and one
-// default per store key, in the order the file lists them. The zero value
-// is an empty file.
+// Set is the content of the settings file: one entry per directory and the
+// stored defaults, in the order the file lists them. The zero value is an
+// empty file.
 type Set struct {
 	entries  []Entry
 	defaults []Target
@@ -145,31 +146,30 @@ func (s Set) Put(entry Entry) Set {
 	return out
 }
 
-// Defaults returns a copy of the stored defaults in file order.
+// Defaults returns a copy of every stored default in file order. A file
+// written by an earlier build may hold one per store key; only the last is
+// active.
 func (s Set) Defaults() []Target { return slices.Clone(s.defaults) }
 
-// Default returns the default stored for exactly key.
-func (s Set) Default(key StoreKey) (Target, bool) {
-	for _, t := range s.defaults {
-		if t.Key() == key {
-			return t, true
+// S3Default returns the active stored S3 default: the last one in file
+// order, because the last selection wins.
+func (s Set) S3Default() (Target, bool) {
+	for i := len(s.defaults) - 1; i >= 0; i-- {
+		if s.defaults[i].Kind == KindS3 {
+			return s.defaults[i], true
 		}
 	}
 	return Target{}, false
 }
 
-// PutDefault returns the set with t stored as the default of its store
-// key: a default for the same key is replaced where it stands, so a
-// rewrite does not move it, while a new key is appended.
+// PutDefault returns the set with t as its only stored default, replacing
+// every default an earlier file or write stored. t names an S3 target.
 func (s Set) PutDefault(t Target) Set {
-	out := Set{entries: s.entries, defaults: slices.Clone(s.defaults)}
-	if i := slices.IndexFunc(out.defaults, func(d Target) bool { return d.Key() == t.Key() }); i >= 0 {
-		out.defaults[i] = t
-		return out
-	}
-	out.defaults = append(out.defaults, t)
-	return out
+	return Set{entries: s.entries, defaults: []Target{t}}
 }
+
+// ClearDefaults returns the set with no stored default.
+func (s Set) ClearDefaults() Set { return Set{entries: s.entries} }
 
 // Config is what a caller may change about the store: the bound one read
 // and one write accept, and the reader that answers instead of the file.
