@@ -3,9 +3,11 @@
 package cli
 
 import (
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	. "github.com/baalimago/slivingdoc/internal/integrationtest/itest"
 )
@@ -85,6 +87,51 @@ func TestScenarioCLIColourOnTerminal(t *testing.T) {
 			t.Fatalf("stripped read-only refusal = %q, want the plain report %q", plain, wantPlain)
 		}
 	})
+}
+
+// TestScenarioCLIOutlineFitsTheTerminalWidth proves a materialization's
+// outline is cut for the terminal that prints it: a narrow terminal gets a
+// strip and rows that stop at its edge instead of a fixed 150 columns
+// (architecture/running.md, The report). The first line is left out of the
+// bound because it reports the notebook path whole.
+func TestScenarioCLIOutlineFitsTheTerminalWidth(t *testing.T) {
+	t.Parallel()
+	const cols = 40
+	env, root, prefix := RealCLIEnv(t, "integrationtest-outline-width")
+	writer := NewHarness(t, HarnessConfig{Prefix: prefix})
+	seed := writer.WorkspaceRoot()
+	for i := range 6 {
+		writer.WriteFile(filepath.Join(seed, "docs", fmt.Sprintf("a-fairly-long-note-name-%02d.md", i)), "line\n")
+	}
+	writer.WriteFile(filepath.Join(seed, "a-top-level-name-that-outgrows-the-column", "a.md"), "line\n")
+	writer.AssertOK(t, writer.Pull(""))
+	writer.AssertOK(t, writer.Commit("", "seed"))
+
+	notes := filepath.Join(root, "notes")
+	code, out := RunCLIOnTTYSize(t, "real", env, StdoutOnly, TtySize{Cols: cols, Rows: 24}, "pull", notes)
+	if code != 0 {
+		t.Fatalf("pull on a %d-column terminal = exit %d; output %q", cols, code, out)
+	}
+	lines := strings.Split(StripANSI(out), "\n")
+	strip := false
+	for _, line := range lines[1:] {
+		if line == "" {
+			continue
+		}
+		width := utf8.RuneCountInString(line)
+		if width > cols {
+			t.Fatalf("report line is %d columns on a %d-column terminal: %q", width, cols, line)
+		}
+		if strings.Contains(line, "█") {
+			strip = true
+			if width != cols {
+				t.Fatalf("strip line is %d columns, want it to fill the %d-column terminal: %q", width, cols, line)
+			}
+		}
+	}
+	if !strip {
+		t.Fatalf("report %q carries no strip line", out)
+	}
 }
 
 // TestScenarioCLIHomeOnTerminal proves the router's terminal surface: a

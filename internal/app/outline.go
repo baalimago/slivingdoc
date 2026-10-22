@@ -9,8 +9,27 @@ import (
 	"github.com/baalimago/slivingdoc/internal/tui"
 )
 
-// outlineWidth is the terminal width a materialization's report is cut for.
+// outlineWidth is the widest a materialization's report is cut for, and the
+// width it uses when the stream reports none, as a pipe does.
 const outlineWidth = 150
+
+// outlineMinWidth is the narrowest the report renders: below it the entry
+// names would lose more than they tell, so a narrower terminal wraps it.
+const outlineMinWidth = 40
+
+// outlineRowMargin is what a row spends beside its name and largest-inside
+// columns: the indent, the box, the spaces and the count columns.
+const outlineRowMargin = 16
+
+// outlineWidthFor is the width a materialization's report is rendered for:
+// the stream's own when it reports one, held between the bounds the report
+// can render.
+func outlineWidthFor(width int) int {
+	if width < 1 {
+		return outlineWidth
+	}
+	return min(max(width, outlineMinWidth), outlineWidth)
+}
 
 // outlineRow is one entry of an outline as a report line.
 type outlineRow struct {
@@ -29,17 +48,33 @@ type outlineRow struct {
 // a box of each entry's colour leads its row; the plain form keeps the
 // totals, the header and the rows and drops the strip, its blank line and
 // the boxes, as it drops every other mark.
-func writeOutline(b *strings.Builder, o *mcp.Outline, p tui.Style) {
-	rows, nameWidth := outlineRows(o)
-	totals := quantity(o.Files, "file", "files") + " · " + quantity(o.Lines, "line", "lines")
-	header := fmt.Sprintf("%s%6s %4s %s", pad("entry", nameWidth), "files", "%", "largest inside, without a row of its own")
-	line := func(r outlineRow) string {
-		return strings.TrimRight(pad(r.name, nameWidth)+r.count+" "+r.peek, " ")
+func writeOutline(b *strings.Builder, o *mcp.Outline, p tui.Style, width int) {
+	width = outlineWidthFor(width)
+	rows, nameWidth := outlineRows(o, width)
+	room := width - outlineRowMargin - nameWidth
+	totals := cut(quantity(o.Files, "file", "files")+" · "+quantity(o.Lines, "line", "lines"), width-4)
+	header := fmt.Sprintf("%s%6s %4s %s", pad("entry", nameWidth), "files", "%", cut("largest inside, without a row of its own", room))
+	name := func(r outlineRow) string {
+		n := paint(p, r, pad(cut(r.name, nameWidth), nameWidth))
+		if r.top {
+			n = p.Bold(n)
+		}
+		return n
+	}
+	row := func(r outlineRow) string {
+		line := name(r) + r.count
+		if r.peek != "" {
+			line += " " + p.Dim(r.peek)
+		}
+		if p.Mode() != tui.Styled {
+			return "  " + strings.TrimRight(line, " ")
+		}
+		return strings.TrimRight("  "+paint(p, r, "■")+" "+line, " ")
 	}
 	if p.Mode() != tui.Styled {
 		fmt.Fprintf(b, "  %s\n  %s\n", totals, header)
 		for _, r := range rows {
-			fmt.Fprintf(b, "  %s\n", line(r))
+			fmt.Fprintf(b, "%s\n", row(r))
 		}
 		return
 	}
@@ -50,23 +85,21 @@ func writeOutline(b *strings.Builder, o *mcp.Outline, p tui.Style) {
 			tops = append(tops, r)
 		}
 	}
-	for i, w := range stripWidths(tops, outlineWidth-4-utf8.RuneCountInString(totals)) {
+	for i, w := range stripWidths(tops, width-4-utf8.RuneCountInString(totals)) {
 		strip.WriteString(paint(p, tops[i], strings.Repeat("█", w)))
 	}
 	fmt.Fprintf(b, "  %s  %s\n\n    %s\n", strip.String(), p.Dim(totals), p.Dim(header))
 	for _, r := range rows {
-		name := paint(p, r, pad(r.name, nameWidth))
-		if r.top {
-			name = p.Bold(name)
-		}
-		fmt.Fprintf(b, "%s\n", strings.TrimRight(fmt.Sprintf("  %s %s%s %s", paint(p, r, "■"), name, r.count, p.Dim(r.peek)), " "))
+		fmt.Fprintf(b, "%s\n", row(r))
 	}
 }
 
 // outlineRows turns the outline's entries into report lines: an entry
 // below the top level is indented two spaces per level under its parent,
-// and its group is the top-level entry it belongs to.
-func outlineRows(o *mcp.Outline) ([]outlineRow, int) {
+// and its group is the top-level entry it belongs to. The name column gives
+// way to the count columns when the width is narrow, so a long name is cut
+// rather than wrapped.
+func outlineRows(o *mcp.Outline, width int) ([]outlineRow, int) {
 	rows := make([]outlineRow, 0, len(o.Entries))
 	nameWidth, group := 14, -1
 	for _, e := range o.Entries {
@@ -84,8 +117,8 @@ func outlineRows(o *mcp.Outline) ([]outlineRow, int) {
 		nameWidth = max(nameWidth, utf8.RuneCountInString(r.name))
 		rows = append(rows, r)
 	}
-	nameWidth += 2
-	room := outlineWidth - 4 - nameWidth - 6 - 1 - 4 - 1
+	nameWidth = min(nameWidth+2, width-outlineRowMargin-1)
+	room := width - outlineRowMargin - nameWidth
 	for i, e := range o.Entries {
 		switch {
 		case e.Lines != nil:
@@ -122,16 +155,28 @@ func percent(share int) string {
 }
 
 // fit joins items with sep while they fit in room; the rest, and extra
-// more beyond them, become "+N more".
+// more beyond them, become "+N more". A room too narrow for even that leaves
+// the column empty rather than overflowing it.
 func fit(items []string, sep string, room, extra int) string {
+	if room < 1 {
+		return ""
+	}
 	used, sepWidth := 0, utf8.RuneCountInString(sep)
 	for i, item := range items {
+		rest := len(items) - i - 1 + extra
+		more := ""
+		if rest > 0 {
+			more = fmt.Sprintf("+%d more", rest)
+		}
 		need := utf8.RuneCountInString(item)
-		if rest := len(items) - i - 1 + extra; rest > 0 {
-			need += sepWidth + len(fmt.Sprintf("+%d more", rest))
+		if more != "" {
+			need += sepWidth + utf8.RuneCountInString(more)
 		}
 		if used+need > room {
-			return strings.Join(append(items[:i:i], fmt.Sprintf("+%d more", len(items)-i+extra)), sep)
+			if more == "" || (used == 0 && utf8.RuneCountInString(more) > room) {
+				return ""
+			}
+			return strings.Join(append(items[:i:i], more), sep)
 		}
 		used += utf8.RuneCountInString(item) + sepWidth
 	}
@@ -139,6 +184,19 @@ func fit(items []string, sep string, room, extra int) string {
 		items = append(items[:len(items):len(items)], fmt.Sprintf("+%d more", extra))
 	}
 	return strings.Join(items, sep)
+}
+
+// cut shortens s to width runes, ending it with "…" when it was longer; a
+// width below one leaves nothing of it.
+func cut(s string, width int) string {
+	if width < 1 {
+		return ""
+	}
+	runes := []rune(s)
+	if len(runes) <= width {
+		return s
+	}
+	return string(runes[:width-1]) + "…"
 }
 
 // paint gives a row's text its group's colour, or the dim grey of the
@@ -151,13 +209,18 @@ func paint(p tui.Style, r outlineRow, t string) string {
 }
 
 // stripWidths splits cols over the top-level rows by their files, each at
-// least one column wide; rounding is settled on the largest entries.
+// least one column wide when there is room for every row and never more
+// than cols in total; a row with no room left shows nothing. Rounding is
+// settled on the largest entries.
 func stripWidths(tops []outlineRow, cols int) []int {
+	widths := make([]int, len(tops))
 	total := 0
 	for _, r := range tops {
 		total += r.files
 	}
-	widths := make([]int, len(tops))
+	if cols < 1 || total < 1 {
+		return widths
+	}
 	used := 0
 	for i, r := range tops {
 		widths[i] = max(1, r.files*cols/total)

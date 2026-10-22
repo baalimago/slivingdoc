@@ -68,6 +68,20 @@ func IsTerminal(out io.Writer) bool {
 	return term.IsTerminal(int(f.Fd()))
 }
 
+// Width is out's width in columns, or 0 when it has none: a stream
+// without a file descriptor, or a device that reports no size.
+func Width(out io.Writer) int {
+	f, ok := out.(interface{ Fd() uintptr })
+	if !ok {
+		return 0
+	}
+	w, _, err := term.GetSize(int(f.Fd()))
+	if err != nil {
+		return 0
+	}
+	return w
+}
+
 // Mode reports whether the style renders styled or plain.
 func (s Style) Mode() Mode { return s.mode }
 

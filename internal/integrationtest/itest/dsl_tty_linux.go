@@ -45,8 +45,27 @@ const (
 // lines interleave with the report in the returned bytes.
 func RunCLIOnTTY(t *testing.T, mode string, env []string, streams TtyStreams, args ...string) (int, string) {
 	t.Helper()
+	return RunCLIOnTTYSize(t, mode, env, streams, TtySize{}, args...)
+}
+
+// TtySize is a terminal's window size in columns and rows; the zero value
+// keeps the pseudo-terminal's default, which reports no width at all.
+type TtySize struct {
+	Cols, Rows int
+}
+
+// RunCLIOnTTYSize is RunCLIOnTTY with the terminal's window size set, so a
+// scenario proves the rendering that adapts to it.
+func RunCLIOnTTYSize(t *testing.T, mode string, env []string, streams TtyStreams, size TtySize, args ...string) (int, string) {
+	t.Helper()
 	master, slave := OpenPTY(t)
 	defer master.Close()
+	if size != (TtySize{}) {
+		winsize := &unix.Winsize{Col: uint16(size.Cols), Row: uint16(size.Rows)}
+		if err := unix.IoctlSetWinsize(int(master.Fd()), unix.TIOCSWINSZ, winsize); err != nil {
+			t.Fatalf("set the terminal size: %v", err)
+		}
+	}
 
 	workspaceRoot := t.TempDir()
 	privateRoot := t.TempDir()

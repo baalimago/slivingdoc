@@ -8,7 +8,7 @@ Read this when: changing any line a command prints for a person, adding a comman
 
 | File | Purpose |
 |------|---------|
-| `internal/tui/style.go` | `Style` (`Mode`: `Plain`/`Styled`; `Depth`: `Basic`/`TrueColor`), `New`, `Detect`, `IsTerminal`, the palette (`Brand`, `Good`, `Warn`, `Bad`, `Dim`, `Bold`, and `Segment`, the strip colours of a materialization's outline), `Mark` (`Done` ✓, `Failed` ✗, `Caution` ▲, `Next` →, `Brand` ◆), `Header` |
+| `internal/tui/style.go` | `Style` (`Mode`: `Plain`/`Styled`; `Depth`: `Basic`/`TrueColor`), `New`, `Detect`, `IsTerminal`, `Width` (a stream's columns, 0 when it reports none), the palette (`Brand`, `Good`, `Warn`, `Bad`, `Dim`, `Bold`, and `Segment`, the strip colours of a materialization's outline), `Mark` (`Done` ✓, `Failed` ✗, `Caution` ▲, `Next` →, `Brand` ◆), `Header` |
 | `internal/tui/columns.go` | `Cell`, `Style.Columns` (left-aligned columns measured on the unpainted text; trailing empty cells dropped) |
 | `internal/tui/spinner.go` | `Style.Spin`, `Spinner.Stop`, `SpinnerInterval` |
 | `internal/tui/guard.go` | `Guard`, `NewGuard`: the stderr writer that the spinner and the logger share, so a log line first clears the progress line |

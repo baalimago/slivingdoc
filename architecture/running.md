@@ -109,7 +109,9 @@ OK  generation 7  /home/me/notes
 
 The outline has at most 8 entries, each listing its 6 largest children,
 so a notebook with many top-level entries folds the smallest into one
-`+N smaller` row; the report is at most 150 columns wide. On a
+`+N smaller` row. The report is cut for the width of the terminal that
+prints it, between 40 and 150 columns, and a pipe, which reports no width,
+gets 150 (`tui.Width`). On a
 terminal the totals line becomes a coloured strip that splits the width
 over the top-level entries by their files, a blank line sets it off from
 the column header, and each row starts with a box in its entry's colour. The files are on disk, so list or read them for

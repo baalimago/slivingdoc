@@ -348,3 +348,23 @@ func TestFit(t *testing.T) {
 		})
 	}
 }
+
+// TestWidth: a stream without a terminal reports no width, so a caller that
+// adapts to it keeps its own default.
+func TestWidth(t *testing.T) {
+	t.Parallel()
+	for _, row := range []struct {
+		name string
+		out  io.Writer
+	}{
+		{"a buffer", &bytes.Buffer{}},
+		{"a guarded buffer", NewGuard(&bytes.Buffer{})},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			if got := Width(row.out); got != 0 {
+				t.Fatalf("Width(%s) = %d, want 0", row.name, got)
+			}
+		})
+	}
+}

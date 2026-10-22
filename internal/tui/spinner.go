@@ -5,8 +5,6 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
-
-	"golang.org/x/term"
 )
 
 // spinnerFrames are the braille frames of the progress spinner.
@@ -43,7 +41,7 @@ func (sp *Spinner) run(out io.Writer, s Style, label func() string) {
 	defer ticker.Stop()
 	frame := 0
 	guard, guarded := out.(*Guard)
-	width := terminalWidth(out)
+	width := Width(out)
 	draw := func() error {
 		// A line wider than the terminal wraps, and clearLine clears only
 		// the last row of it, so each frame would leave a row behind.
@@ -83,19 +81,6 @@ func (sp *Spinner) run(out io.Writer, s Style, label func() string) {
 // spinnerPrefix is the width of the indent, the frame and the space
 // before the label, plus one column so the cursor never wraps.
 const spinnerPrefix = 5
-
-// terminalWidth is out's width in columns, or 0 when it has none.
-func terminalWidth(out io.Writer) int {
-	f, ok := out.(interface{ Fd() uintptr })
-	if !ok {
-		return 0
-	}
-	w, _, err := term.GetSize(int(f.Fd()))
-	if err != nil {
-		return 0
-	}
-	return w
-}
 
 // fit cuts label to width visible columns, ending it with "…"; escape
 // sequences are kept whole and take no column. A width below one leaves

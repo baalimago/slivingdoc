@@ -218,7 +218,7 @@ func writeSuccess(out io.Writer, info *mcp.SuccessInfo, p tui.Style) {
 		fmt.Fprintf(&b, "  %s  %s\n", f.Path, strings.Join(counts, " "))
 	}
 	if info.Outline != nil {
-		writeOutline(&b, info.Outline, p)
+		writeOutline(&b, info.Outline, p, tui.Width(out))
 	} else {
 		b.WriteString(p.Dim(fmt.Sprintf("%d files changed, %d insertions(+), %d deletions(-)",
 			info.FilesChanged, info.Insertions, info.Deletions)) + "\n")
