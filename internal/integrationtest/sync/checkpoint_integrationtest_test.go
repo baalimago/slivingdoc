@@ -1,0 +1,603 @@
+package sync
+
+import (
+	"fmt"
+	"strings"
+	"testing"
+
+	. "github.com/baalimago/slivingdoc/internal/integrationtest/itest"
+
+	"github.com/baalimago/slivingdoc/internal/storage"
+)
+
+// TestScenarioCheckpointThresholdTrigger proves that an accepted tail at
+// the configured threshold schedules one checkpoint: the manifest advances
+// to the compacted state with a fresh checkpoint ID, an empty tail, and
+// the new cutoff checkpoint pack, and no lock object ever appears
+// (architecture/checkpoints.md).
+func TestScenarioCheckpointThresholdTrigger(t *testing.T) {
+	t.Parallel()
+	h := NewFakeHarness(t, HarnessConfig{CheckpointPacks: new(2)})
+
+	CommitFirst(t, h, "f1.md", "v1", "c1")
+	m1 := h.Manifest()
+	CommitNext(t, h, "f2.md", "v2", "c2")
+	CommitNext(t, h, "f3.md", "v3", "c3")
+
+	m := h.Manifest()
+	if m.Generation != 4 {
+		t.Fatalf("manifest generation = %d, want the compacted 4", m.Generation)
+	}
+	if m.Checkpoint.ID.String() == m1.Checkpoint.ID.String() {
+		t.Fatal("checkpoint id did not change across the compaction")
+	}
+	if m.Checkpoint.ThroughGeneration != 3 {
+		t.Fatalf("checkpoint throughGeneration = %d, want the cutoff 3", m.Checkpoint.ThroughGeneration)
+	}
+	if len(m.Increments) != 0 {
+		t.Fatalf("manifest increments = %d, want the compacted empty tail", len(m.Increments))
+	}
+	// The pack the manifest names is present, and it was uploaded before
+	// any read of the manifest that references it.
+	if !h.ObjectExists(m.Checkpoint.Key.String()) {
+		t.Fatalf("the cutoff checkpoint pack %s is absent", m.Checkpoint.Key)
+	}
+	// No writer lock: every object in the bucket lives in the manifest key
+	// or one of the two pack namespaces. The namespaces are compared as
+	// literal prefixes rather than through the server's own key parser, so
+	// a self-consistently wrong key grammar cannot satisfy the assertion.
+	for _, key := range h.ListObjects("") {
+		switch {
+		case key == storage.CurrentKey:
+		case strings.HasPrefix(key, "packs/checkpoints/"):
+		case strings.HasPrefix(key, "packs/increments/"):
+		default:
+			t.Fatalf("unexpected object %q: the protocol has no lock or registry object", key)
+		}
+	}
+}
+
+// TestScenarioCheckpointWritersAdvanceDuringBuild proves that later
+// increments accepted while a checkpoint builds survive the compaction: the
+// checkpoint CAS replaces only its stable selected prefix and preserves the
+// later tail (architecture/checkpoints.md).
+func TestScenarioCheckpointWritersAdvanceDuringBuild(t *testing.T) {
+	t.Parallel()
+	a := NewFakeHarness(t, HarnessConfig{CheckpointPacks: new(2)})
+	b := NewSharedHarness(t, a.Raw(), a.Cfg.Prefix, HarnessConfig{CheckpointPacks: new(1024)})
+	pathA, pathB := a.WorkspaceRoot(), b.WorkspaceRoot()
+
+	CommitFirst(t, a, "f1.md", "v1", "c1")
+	CommitNext(t, a, "f2.md", "v2", "c2")
+	b.AssertOK(t, b.Pull(""))
+	b.WriteFile(pathB+"/b.md", "B")
+	a.WriteFile(pathA+"/f3.md", "v3")
+
+	// A's third commit publishes M3 and then blocks inside its checkpoint
+	// pack upload; the published M3 is the proof that B's later increment
+	// builds on the pre-checkpoint state.
+	a.Faults().BlockPrefix(OpPut, "packs/checkpoints/3-")
+	aCh := RunCall(t, a, "", ToolCommit, "c3")
+	a.Eventually(t, SettleTimeout, func() error {
+		if !a.Faults().WaitingPrefix(OpPut, "packs/checkpoints/3-") {
+			return fmt.Errorf("A is not blocked in the checkpoint upload")
+		}
+		if m := a.Manifest(); m.Generation != 3 {
+			return fmt.Errorf("M3 not yet published (generation %d)", m.Generation)
+		}
+		return nil
+	})
+
+	// B commits while A's checkpoint is blocked: B reads M3 and publishes
+	// increment I4 with no checkpoint of its own (tail 3 below 1024).
+	b.AssertOK(t, b.Commit("", "B advances"))
+	if m := a.Manifest(); m.Generation != 4 {
+		t.Fatalf("manifest generation = %d, want B's increment at 4", m.Generation)
+	}
+
+	a.Faults().ReleasePrefix(OpPut, "packs/checkpoints/3-")
+	a.AwaitCall(t, aCh, ToolCall{Tool: ToolCommit, Path: pathA, Message: "c3", Expect: CallExpectation{OK: true}})
+
+	m := a.Manifest()
+	if m.Generation != 5 {
+		t.Fatalf("manifest generation = %d, want the checkpoint CAS at 5", m.Generation)
+	}
+	if m.Checkpoint.ThroughGeneration != 3 {
+		t.Fatalf("checkpoint throughGeneration = %d, want 3", m.Checkpoint.ThroughGeneration)
+	}
+	if len(m.Increments) != 1 || m.Increments[0].Generation != 4 {
+		t.Fatalf("manifest increments = %+v, want B's I4 preserved after the compaction", m.Increments)
+	}
+	if got := b.FSSnapshot(pathB); got["b.md"] != "B" || got["f3.md"] != "v3" {
+		t.Fatalf("B L after the compaction = %v, want the later increment preserved", got)
+	}
+}
+
+// TestScenarioCheckpointCompetingWorkers proves that two workers compacting
+// the same prefix leave exactly one physical index: one CAS wins, the loser
+// discards its proposal after observing the prefix gone, and cleanup
+// deletes the unreferenced checkpoint pack (architecture/checkpoints.md).
+func TestScenarioCheckpointCompetingWorkers(t *testing.T) {
+	t.Parallel()
+	a := NewHarness(t, HarnessConfig{CheckpointPacks: new(2)})
+	b := NewSharedHarness(t, a.Raw(), a.Cfg.Prefix, HarnessConfig{CheckpointPacks: new(2)})
+	pathA, pathB := a.WorkspaceRoot(), b.WorkspaceRoot()
+
+	CommitFirst(t, a, "f1.md", "v1", "c1")
+	CommitNext(t, a, "f2.md", "v2", "c2")
+	b.AssertOK(t, b.Pull(""))
+	b.WriteFile(pathB+"/b.md", "B")
+	a.WriteFile(pathA+"/f3.md", "v3")
+
+	a.Faults().BlockPrefix(OpPut, "packs/checkpoints/3-")
+	b.Faults().BlockPrefix(OpPut, "packs/checkpoints/3-")
+	aCh := RunCall(t, a, "", ToolCommit, "c3")
+	a.Eventually(t, SettleTimeout, func() error {
+		if !a.Faults().WaitingPrefix(OpPut, "packs/checkpoints/3-") {
+			return fmt.Errorf("A is not blocked in the checkpoint upload")
+		}
+		return nil
+	})
+	bCh := RunCall(t, b, "", ToolCommit, "B competes")
+	b.Eventually(t, SettleTimeout, func() error {
+		if !b.Faults().WaitingPrefix(OpPut, "packs/checkpoints/3-") {
+			return fmt.Errorf("B is not blocked in the checkpoint upload")
+		}
+		return nil
+	})
+
+	// Both workers are now parked in the checkpoint upload, which means each
+	// has already published its own increment: B's next manifest CAS is its
+	// checkpoint CAS. Blocking it here makes A the compaction winner on
+	// every run. Without it, B can win and run its cleanup while A is
+	// still blocked in the upload, leaving A's proposal unreferenced with no
+	// later checkpoint to collect it. Cleanup is best-effort and generation
+	// fenced, so that outcome is permitted by the contract; the scenario has
+	// to pin the ordering rather than assume it.
+	b.Faults().BlockNext(OpReplace, storage.CurrentKey)
+
+	// Release B's upload and wait until its pack object exists and B has
+	// reached the blocked checkpoint CAS. The winner's CAS runs cleanup
+	// inline, which enumerates the checkpoint namespace, so both proposals
+	// must be visible before A is allowed to publish.
+	b.Faults().ReleasePrefix(OpPut, "packs/checkpoints/3-")
+	b.Eventually(t, SettleTimeout, func() error {
+		if got := len(b.ListObjects("packs/checkpoints/3-")); got != 1 {
+			return fmt.Errorf("B's checkpoint proposal is not uploaded yet (%d objects)", got)
+		}
+		if !b.Faults().Waiting(OpReplace, storage.CurrentKey) {
+			return fmt.Errorf("B has not reached its manifest CAS")
+		}
+		return nil
+	})
+	// A now publishes uncontested and collects B's unreferenced proposal;
+	// releasing B afterwards makes it lose on a stale ETag and retry.
+	a.Faults().ReleasePrefix(OpPut, "packs/checkpoints/3-")
+	a.AwaitCall(t, aCh, ToolCall{Tool: ToolCommit, Path: pathA, Message: "c3", Expect: CallExpectation{OK: true}})
+	b.Faults().Release(OpReplace, storage.CurrentKey)
+	b.AwaitCall(t, bCh, ToolCall{Tool: ToolCommit, Path: pathB, Message: "B competes", Expect: CallExpectation{OK: true}})
+
+	m := a.Manifest()
+	if m.Generation != 5 {
+		t.Fatalf("manifest generation = %d, want the winning compaction at 5", m.Generation)
+	}
+	if m.Checkpoint.ThroughGeneration != 3 || len(m.Increments) != 1 {
+		t.Fatalf("winning manifest = through %d, increments %d, want through 3 with I4", m.Checkpoint.ThroughGeneration, len(m.Increments))
+	}
+	// Both workers uploaded a gen-3 proposal, and exactly one physical
+	// index survives: the loser's object is unreferenced and collected.
+	if got := a.Recorder().CountKeyPrefix(OpPut, "packs/checkpoints/3-"); got != 1 {
+		t.Fatalf("A's gen-3 checkpoint uploads = %d, want one proposal", got)
+	}
+	if got := b.Recorder().CountKeyPrefix(OpPut, "packs/checkpoints/3-"); got != 1 {
+		t.Fatalf("B's gen-3 checkpoint uploads = %d, want one proposal", got)
+	}
+	a.Eventually(t, SettleTimeout, func() error {
+		cpKeys := a.ListObjects("packs/checkpoints/3-")
+		if len(cpKeys) != 1 {
+			return fmt.Errorf("gen-3 checkpoint objects = %v, want exactly the survivor", cpKeys)
+		}
+		if cpKeys[0] != m.Checkpoint.Key.String() {
+			return fmt.Errorf("surviving checkpoint object %q is not the referenced %q", cpKeys[0], m.Checkpoint.Key)
+		}
+		return nil
+	})
+	// No duplicate logical commit: the accepted state carries one gen-3
+	// compaction and one gen-4 increment, and a fresh reader reads it.
+	reader := NewSharedHarness(t, a.Raw(), a.Cfg.Prefix, HarnessConfig{})
+	reader.AssertOK(t, reader.Pull(""))
+	AssertVisibleFiles(t, reader, map[string]string{
+		"f1.md": "v1", "f2.md": "v2", "f3.md": "v3", "b.md": "B",
+	})
+}
+
+// TestScenarioCheckpointRetention proves the retention contract: after the
+// second checkpoint, the active checkpoint plus one retained previous
+// generation reconstruct the replaced state, and the older unretained
+// descriptors are deleted best-effort (architecture/checkpoints.md).
+func TestScenarioCheckpointRetention(t *testing.T) {
+	t.Parallel()
+	h := NewFakeHarness(t, HarnessConfig{CheckpointPacks: new(2)})
+
+	CommitFirst(t, h, "f1.md", "v1", "c1")
+	m1 := h.Manifest()
+	p1Key := m1.Checkpoint.Key.String()
+	CommitNext(t, h, "f2.md", "v2", "c2")
+	m2 := h.Manifest()
+	i2Key := m2.Increments[0].Key.String()
+	CommitNext(t, h, "f3.md", "v3", "c3")
+	// The c3 commit schedules the first checkpoint synchronously, so the
+	// current manifest is already the compacted state: the retained entry
+	// carries the replaced P1 and the compacted increments I2/I3.
+	m3 := h.Manifest()
+	retained := m3.Retained[0]
+	if retained.Checkpoint.Key.String() != p1Key || len(retained.Increments) != 2 {
+		t.Fatalf("retained after the first compaction = checkpoint %s, increments %d; want P1 and I2/I3", retained.Checkpoint.Key, len(retained.Increments))
+	}
+	i3Key := retained.Increments[1].Key.String()
+	CommitNext(t, h, "f4.md", "v4", "c4")
+	CommitNext(t, h, "f5.md", "v5", "c5")
+
+	m := h.Manifest()
+	if m.Generation != 7 || len(m.Increments) != 0 || len(m.Retained) != 1 {
+		t.Fatalf("final manifest = gen %d, increments %d, retained %d; want 7/0/1", m.Generation, len(m.Increments), len(m.Retained))
+	}
+	finalRetained := m.Retained[0]
+	roots := map[string]bool{
+		m.Checkpoint.Key.String():             true,
+		finalRetained.Checkpoint.Key.String(): true,
+	}
+	for _, inc := range finalRetained.Increments {
+		roots[inc.Key.String()] = true
+	}
+	// The retention contract keeps the active checkpoint plus one previous
+	// generation readable: the retained chain (P3 plus I4/I5) reconstructs
+	// the state P5 replaced, and the first compaction's P1/I2/I3 are
+	// unretained (architecture/checkpoints.md).
+	if len(roots) != 2+len(finalRetained.Increments) {
+		t.Fatalf("retained roots = %v, want active plus one previous generation", roots)
+	}
+	if roots[p1Key] || roots[i2Key] || roots[i3Key] {
+		t.Fatalf("retained roots = %v, want P1/I2/I3 unretained", roots)
+	}
+	h.Eventually(t, SettleTimeout, func() error {
+		for _, key := range []string{p1Key, i2Key, i3Key} {
+			gone, err := ObjectGone(h, key)
+			if err != nil {
+				return err
+			}
+			if !gone {
+				return fmt.Errorf("unretained descriptor %s still present", key)
+			}
+		}
+		for key := range roots {
+			if !h.ObjectExists(key) {
+				return fmt.Errorf("retained or active root %s was deleted", key)
+			}
+		}
+		return nil
+	})
+}
+
+// TestScenarioCheckpointCleanupAfterCAS proves the cleanup contract after a
+// successful checkpoint CAS over the real S3 backend
+// (architecture/checkpoints.md): unreferenced generations at or before the
+// cutoff are deleted best effort, the active and retained descriptors are
+// never deleted, the cleanup roots are reread from `current` before
+// deleting, and a cold reader still reconstructs the head.
+func TestScenarioCheckpointCleanupAfterCAS(t *testing.T) {
+	t.Parallel()
+	h := NewHarness(t, HarnessConfig{CheckpointPacks: new(2)})
+
+	CommitFirst(t, h, "f1.md", "v1", "c1")
+	CommitNext(t, h, "f2.md", "v2", "c2")
+	CommitNext(t, h, "f3.md", "v3", "c3")
+	first := h.Manifest() // the first compaction: its chain becomes retained
+	CommitNext(t, h, "f4.md", "v4", "c4")
+	CommitNext(t, h, "f5.md", "v5", "c5")
+
+	m := h.Manifest()
+	if m.Generation != 7 || len(m.Retained) != 1 {
+		t.Fatalf("final manifest = gen %d, retained %d; want 7/1", m.Generation, len(m.Retained))
+	}
+
+	// The active checkpoint and the whole retained chain survive: cleanup
+	// never deletes a live root, and never hands one to a delete batch.
+	live := []string{m.Checkpoint.Key.String(), m.Retained[0].Checkpoint.Key.String()}
+	for _, inc := range m.Retained[0].Increments {
+		live = append(live, inc.Key.String())
+	}
+	for _, key := range live {
+		if !h.ObjectExists(key) {
+			t.Fatalf("live root %s was deleted by cleanup", key)
+		}
+		if got := h.Recorder().CountKey(OpDelete, key); got != 0 {
+			t.Fatalf("live root %s was handed to %d delete batches", key, got)
+		}
+	}
+
+	// The chain the FIRST compaction retained (the root checkpoint and the
+	// two increments it replaced) fell out of retention when the second
+	// compaction replaced it, so it is now an unreferenced candidate at or
+	// before the cutoff and is collected.
+	stale := first.Retained[0]
+	staleKeys := []string{stale.Checkpoint.Key.String()}
+	for _, inc := range stale.Increments {
+		staleKeys = append(staleKeys, inc.Key.String())
+	}
+	if len(staleKeys) != 3 {
+		t.Fatalf("first retained chain = %v, want the root checkpoint and its two increments", staleKeys)
+	}
+	for _, key := range staleKeys {
+		RequireObjectGone(t, h, key)
+	}
+
+	// Cleanup rereads the roots from `current` before each delete batch, so
+	// the set it protects is never a stale snapshot. The rereads are visible
+	// as manifest reads beyond the ones the publications themselves need.
+	reads := h.Recorder().CountKey(OpGet, storage.CurrentKey)
+	writes := h.Recorder().CountKey(OpCreate, storage.CurrentKey) + h.Recorder().CountKey(OpReplace, storage.CurrentKey)
+	if reads <= writes {
+		t.Fatalf("manifest reads = %d for %d writes, want the cleanup rereads on top of the publication reads", reads, writes)
+	}
+
+	reader := NewSharedHarness(t, h.Raw(), h.Cfg.Prefix, HarnessConfig{})
+	reader.AssertOK(t, reader.Pull(""))
+	AssertVisibleFiles(t, reader, map[string]string{
+		"f1.md": "v1", "f2.md": "v2", "f3.md": "v3", "f4.md": "v4", "f5.md": "v5",
+	})
+}
+
+// TestScenarioCheckpointCleanupFence proves that cleanup considers only
+// candidate generations at or before the successful checkpoint cutoff: a
+// proposal after the cutoff is never touched (architecture/checkpoints.md).
+func TestScenarioCheckpointCleanupFence(t *testing.T) {
+	t.Parallel()
+	h := NewFakeHarness(t, HarnessConfig{CheckpointPacks: new(2)})
+
+	id1, _ := storage.NewUUIDv7()
+	id999, _ := storage.NewUUIDv7()
+	junkBefore := "packs/increments/1-" + id1.String() + ".pack"
+	junkAfter := "packs/increments/999-" + id999.String() + ".pack"
+	PutJunk(t, h, junkBefore)
+	PutJunk(t, h, junkAfter)
+
+	CommitFirst(t, h, "f1.md", "v1", "c1")
+	CommitNext(t, h, "f2.md", "v2", "c2")
+	CommitNext(t, h, "f3.md", "v3", "c3")
+
+	h.Eventually(t, SettleTimeout, func() error {
+		gone, err := ObjectGone(h, junkBefore)
+		if err != nil {
+			return err
+		}
+		if !gone {
+			return fmt.Errorf("candidate %s still present after cleanup", junkBefore)
+		}
+		return nil
+	})
+	if !h.ObjectExists(junkAfter) {
+		t.Fatalf("post-cutoff proposal %s was touched by cleanup", junkAfter)
+	}
+}
+
+// TestScenarioCheckpointMalformedKeys proves that malformed keys in the
+// pack namespaces are never parsed as cleanup candidates and stay untouched
+// (architecture/checkpoints.md).
+//
+// A well-formed unreferenced pre-cutoff pack is seeded beside the malformed
+// keys as a positive control: without it, a run in which cleanup never
+// happened at all satisfies the "untouched" assertion vacuously.
+func TestScenarioCheckpointMalformedKeys(t *testing.T) {
+	t.Parallel()
+	h := NewFakeHarness(t, HarnessConfig{CheckpointPacks: new(2)})
+
+	const junkCP = "packs/checkpoints/not-a-key"
+	const junkInc = "packs/increments/5-bad"
+	PutJunk(t, h, junkCP)
+	PutJunk(t, h, junkInc)
+	id, err := storage.NewUUIDv7()
+	if err != nil {
+		t.Fatalf("generate publication id: %v", err)
+	}
+	control := "packs/increments/1-" + id.String() + ".pack"
+	PutJunk(t, h, control)
+
+	CommitFirst(t, h, "f1.md", "v1", "c1")
+	CommitNext(t, h, "f2.md", "v2", "c2")
+	CommitNext(t, h, "f3.md", "v3", "c3")
+
+	// The control proves cleanup ran and collected a well-formed candidate.
+	RequireObjectGone(t, h, control)
+	if !h.ObjectExists(junkCP) || !h.ObjectExists(junkInc) {
+		t.Fatal("malformed keys were touched by cleanup")
+	}
+	for _, key := range []string{junkCP, junkInc} {
+		if got := h.Recorder().CountKey(OpDelete, key); got != 0 {
+			t.Fatalf("malformed key %s was handed to %d delete batches", key, got)
+		}
+	}
+}
+
+// TestScenarioCheckpointCleanupFailure proves that a failing cleanup batch
+// never changes the already accepted commit result: the commit returns OK,
+// the accepted manifest is the compacted one, and the failure is observable
+// as a warning naming the failed step (architecture/checkpoints.md).
+func TestScenarioCheckpointCleanupFailure(t *testing.T) {
+	t.Parallel()
+	h := NewFakeHarness(t, HarnessConfig{CheckpointPacks: new(2)})
+	path := h.WorkspaceRoot()
+
+	// Seed one unreferenced pre-cutoff pack so the checkpoint cleanup after
+	// the c3 commit has a delete candidate whose failure must be observable.
+	id, err := storage.NewUUIDv7()
+	if err != nil {
+		t.Fatalf("generate publication id: %v", err)
+	}
+	doomed := "packs/increments/1-" + id.String() + ".pack"
+	PutJunk(t, h, doomed)
+
+	CommitFirst(t, h, "f1.md", "v1", "c1")
+	CommitNext(t, h, "f2.md", "v2", "c2")
+
+	// The third commit must publish an increment so the tail reaches the
+	// threshold and schedules the checkpoint whose cleanup then fails.
+	h.WriteFile(path+"/f3.md", "v3")
+	h.Faults().FailDeletes(storage.ErrTransport)
+	h.AssertOK(t, h.Commit("", "c3"))
+
+	// The failure is the delete step, not a listing or reread regression:
+	// the notebook emits the same message for all three.
+	AssertWarning(t, h, "cleanup failed", "reason", "delete cleanup batch")
+
+	// The commit result stands: the compaction is accepted and the
+	// uncollected candidate waits for a later cleanup.
+	m := h.Manifest()
+	if m.Generation != 4 || len(m.Increments) != 0 {
+		t.Fatalf("accepted state = gen %d with %d increments, want the compaction at 4/0", m.Generation, len(m.Increments))
+	}
+	if !h.ObjectExists(doomed) {
+		t.Fatalf("candidate %s was deleted although every delete failed", doomed)
+	}
+}
+
+// TestScenarioCheckpointUploadFailure proves that a failed checkpoint pack
+// upload leaves the accepted state exactly as the commit published it: the
+// compaction is a best-effort background effort and can never undo or fail
+// an accepted commit (architecture/checkpoints.md).
+func TestScenarioCheckpointUploadFailure(t *testing.T) {
+	t.Parallel()
+	h := NewFakeHarness(t, HarnessConfig{CheckpointPacks: new(2)})
+	path := h.WorkspaceRoot()
+
+	CommitFirst(t, h, "f1.md", "v1", "c1")
+	CommitNext(t, h, "f2.md", "v2", "c2")
+
+	// The third commit reaches the threshold and schedules a checkpoint
+	// whose pack upload fails.
+	h.WriteFile(path+"/f3.md", "v3")
+	h.Faults().FailAlwaysPrefix(OpPut, "packs/checkpoints/3-", storage.ErrTransport)
+	h.AssertOK(t, h.Commit("", "c3"))
+	AssertWarning(t, h, "checkpoint failed", "reason", "upload checkpoint pack")
+
+	// The accepted state is the uncompacted increment chain: generation 3
+	// with the two-increment tail, and no gen-3 checkpoint object exists.
+	m := h.Manifest()
+	if m.Generation != 3 || len(m.Increments) != 2 {
+		t.Fatalf("accepted state = gen %d with %d increments, want the uncompacted 3/2", m.Generation, len(m.Increments))
+	}
+	if got := h.ListObjects("packs/checkpoints/3-"); len(got) != 0 {
+		t.Fatalf("gen-3 checkpoint objects = %v, want none after the failed upload", got)
+	}
+
+	// A later trigger retries the effort. The plan always selects the oldest
+	// threshold increments, so the retried cutoff is still generation 3; the
+	// later increment stays in the tail.
+	h.Faults().ClearFailures()
+	CommitNext(t, h, "f4.md", "v4", "c4")
+	m = h.Manifest()
+	if m.Checkpoint.ThroughGeneration != 3 || len(m.Increments) != 1 {
+		t.Fatalf("after the retry = through %d with %d increments, want the compaction through 3 with the later increment", m.Checkpoint.ThroughGeneration, len(m.Increments))
+	}
+	if !h.ObjectExists(m.Checkpoint.Key.String()) {
+		t.Fatalf("the retried checkpoint pack %s is absent", m.Checkpoint.Key)
+	}
+}
+
+// TestScenarioCheckpointCASExhaustion proves that a checkpoint whose CAS
+// loses every attempt gives up within the configured bound instead of
+// looping, leaves the accepted commit untouched, and compacts on a later
+// trigger once the contention passes (architecture/checkpoints.md).
+func TestScenarioCheckpointCASExhaustion(t *testing.T) {
+	t.Parallel()
+	const retries = 1
+	h := NewFakeHarness(t, HarnessConfig{CheckpointPacks: new(2), RetryLimit: new(retries)})
+	path := h.WorkspaceRoot()
+
+	CommitFirst(t, h, "f1.md", "v1", "c1")
+	CommitNext(t, h, "f2.md", "v2", "c2")
+
+	// Only the checkpoint's CAS can lose. The commit's own publication must
+	// succeed first. Blocking the checkpoint pack upload gives an exact
+	// point after the publication and before the checkpoint CAS at which to
+	// arm the permanent precondition failure.
+	h.WriteFile(path+"/f3.md", "v3")
+	h.Faults().BlockPrefix(OpPut, "packs/checkpoints/3-")
+	ch := RunCall(t, h, "", ToolCommit, "c3")
+	h.Eventually(t, SettleTimeout, func() error {
+		if !h.Faults().WaitingPrefix(OpPut, "packs/checkpoints/3-") {
+			return fmt.Errorf("the checkpoint upload has not started")
+		}
+		return nil
+	})
+	published := h.Recorder().CountKey(OpReplace, storage.CurrentKey)
+	h.Faults().FailAlways(OpReplace, storage.CurrentKey, storage.ErrPreconditionFailed)
+	h.Faults().ReleasePrefix(OpPut, "packs/checkpoints/3-")
+	h.AwaitCall(t, ch, ToolCall{Tool: ToolCommit, Path: path, Message: "c3", Expect: CallExpectation{OK: true}})
+
+	// The effort is bounded: retryLimit+1 attempts and then it gives up.
+	AssertWarning(t, h, "checkpoint failed", "reason", "checkpoint CAS lost all attempts")
+	if got := h.Recorder().CountKey(OpReplace, storage.CurrentKey) - published; got != retries+1 {
+		t.Fatalf("checkpoint CAS attempts = %d, want the bounded retryLimit+1 = %d", got, retries+1)
+	}
+
+	// The accepted commit stands, uncompacted.
+	m := h.Manifest()
+	if m.Generation != 3 || len(m.Increments) != 2 {
+		t.Fatalf("accepted state = gen %d with %d increments, want the uncompacted 3/2", m.Generation, len(m.Increments))
+	}
+
+	// A later trigger retries the effort once the contention passes. The
+	// plan selects the oldest threshold increments, so the cutoff is still
+	// generation 3 and the later increment stays in the tail.
+	h.Faults().ClearFailures()
+	CommitNext(t, h, "f4.md", "v4", "c4")
+	if m := h.Manifest(); m.Checkpoint.ThroughGeneration != 3 || len(m.Increments) != 1 {
+		t.Fatalf("after the retry = through %d with %d increments, want the compaction through 3 with the later increment", m.Checkpoint.ThroughGeneration, len(m.Increments))
+	}
+}
+
+// TestScenarioCommitAfterCheckpointMaterialization proves that a caller
+// materialized from a checkpoint publishes an increment in the process that
+// pulled it. Exporting the increment walks the parent chain of the remote
+// head, so the shallow boundary has to be visible to the handle that imported
+// the pack, not only to a freshly opened one (architecture/checkpoints.md).
+func TestScenarioCommitAfterCheckpointMaterialization(t *testing.T) {
+	t.Parallel()
+	a := NewFakeHarness(t, HarnessConfig{CheckpointPacks: new(2)})
+	pathA := a.WorkspaceRoot()
+	b, pathB := CompactedCaller(t, a, pathA)
+
+	b.WriteFile(pathB+"/b.md", "B")
+	b.AssertOK(t, b.Commit("", "cB"))
+
+	if m := b.Manifest(); len(m.Increments) != 1 {
+		t.Fatalf("manifest increments = %d, want the one published increment", len(m.Increments))
+	}
+	// The publication is a normal increment on the checkpoint: the new content
+	// arrives and the pre-checkpoint content survives it.
+	a.AssertOK(t, a.Pull(""))
+	if got := a.ReadFile(pathA + "/b.md"); got != "B" {
+		t.Fatalf("b.md = %q, want the content published from the shallow caller", got)
+	}
+	if got := a.ReadFile(pathA + "/f1.md"); got != "v1" {
+		t.Fatalf("f1.md = %q, want the pre-checkpoint content preserved", got)
+	}
+}
+
+// TestScenarioRepeatedCommitsAfterCheckpointMaterialization proves the shallow
+// boundary keeps holding for the rest of the session: one materialized caller
+// publishes several increments without reopening its repository.
+func TestScenarioRepeatedCommitsAfterCheckpointMaterialization(t *testing.T) {
+	t.Parallel()
+	a := NewFakeHarness(t, HarnessConfig{CheckpointPacks: new(2)})
+	b, pathB := CompactedCaller(t, a, a.WorkspaceRoot())
+
+	for _, name := range []string{"b1.md", "b2.md", "b3.md"} {
+		b.WriteFile(pathB+"/"+name, name)
+		b.AssertOK(t, b.Commit("", "commit "+name))
+	}
+	if m := b.Manifest(); len(m.Increments) != 3 {
+		t.Fatalf("manifest increments = %d, want the three published increments", len(m.Increments))
+	}
+}

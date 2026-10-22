@@ -33,6 +33,7 @@ type config struct {
 	bucket   string
 	prefix   string
 	region   string
+	profile  string
 	endpoint string
 	token    string
 	// login is the stored login whose key mints the space tokens, when
@@ -52,10 +53,10 @@ type config struct {
 	// so a space mismatch or a refused token names the right fix.
 	bucketFrom bucketSource
 	// remembered is the target the notebook directory of this command
-	// remembers in the scoped settings file, and prefixFrom says whether a
-	// flag or the environment named the prefix (architecture/config.md).
+	// remembers in the scoped settings file, and recorded says whether it
+	// has one at all (architecture/config.md).
 	remembered          settings.Target
-	prefixFrom          settingKind
+	recorded            bool
 	pathStyle           bool
 	workspaceRoot       string
 	privateRoot         string
@@ -122,6 +123,7 @@ type Flags struct {
 	space               stringFlag
 	prefix              stringFlag
 	region              stringFlag
+	profile             stringFlag
 	endpoint            stringFlag
 	workspaceRoot       stringFlag
 	privateRoot         stringFlag
@@ -148,6 +150,7 @@ func (f *Flags) Bind(fs *flag.FlagSet) {
 	fs.Var(&f.space, "space", "hosted space, the hosted name of --bucket (default: with SLIVINGDOC_TOKEN the token's own, else the login's default space)")
 	fs.Var(&f.prefix, "prefix", "S3 object prefix")
 	fs.Var(&f.region, "region", "S3 region")
+	fs.Var(&f.profile, "profile", "AWS shared-config profile (S3 only)")
 	fs.Var(&f.endpoint, "endpoint", "S3 or hosted API endpoint URL")
 	fs.Var(&f.pathStyle, "path-style", "force S3 path-style addressing")
 	fs.Var(&f.workspaceRoot, "workspace-root", "visible workspace root")
@@ -161,6 +164,10 @@ func (f *Flags) Bind(fs *flag.FlagSet) {
 	fs.Var(&f.logLevel, "log-level", "per-module log levels (LOG_LEVEL grammar)")
 	fs.Var(&f.logTimestamp, "log-timestamp", "include the time= field in log records")
 }
+
+func (f *Flags) regionSet() bool    { return f.region.set }
+func (f *Flags) pathStyleSet() bool { return f.pathStyle.set }
+func (f *Flags) profileSet() bool   { return f.profile.set }
 
 // The documented numeric bounds and defaults (architecture/config.md).
 // The ranges come from the notebook package, which owns them, so the flag
@@ -227,36 +234,37 @@ func (f *Flags) resolve(environment []string, cwd, cacheDir string, ephemeral bo
 	if roots.workspaceRoot, err = absolute(cwd, roots.workspaceRoot); err != nil {
 		return config{}, fmt.Errorf("workspace root: %w", err)
 	}
+	// A scratch server owns a directory that does not survive it, so it
+	// consults no record and no stored default (I8). Every other process
+	// reads both, keyed by its notebook directory, which the resolution
+	// above made absolute.
+	var remembered func() (settingsView, error)
+	if roots.session == "" {
+		remembered = func() (settingsView, error) { return assoc.read(roots.workspaceRoot) }
+	}
 	sel, err := resolveStorage(f, env, storageInputs{
 		goos:       runtime.GOOS,
 		now:        time.Now(),
-		remembered: func() (settings.Target, error) { return assoc.read(roots.workspaceRoot) },
+		remembered: remembered,
 	})
 	if err != nil {
 		return config{}, err
 	}
 	cfg := config{
 		bucket:      sel.bucket,
-		prefix:      resolveString(&f.prefix, env["SLIVINGDOC_PREFIX"], defaultPrefix),
-		prefixFrom:  resolvePrefixSource(&f.prefix, env["SLIVINGDOC_PREFIX"]),
+		prefix:      sel.prefix,
+		region:      sel.region,
+		profile:     sel.profile,
+		endpoint:    sel.endpoint,
+		pathStyle:   sel.pathStyle,
 		remembered:  sel.remembered,
+		recorded:    sel.recorded,
 		token:       sel.token,
 		login:       sel.login,
 		tokenOrigin: sel.origin,
 		bucketFrom:  sel.bucketFrom,
 	}
-	if sel.hosted() {
-		// The AWS variables describe an S3 account, not the hosted API, so
-		// they never redirect a token.
-		cfg.endpoint = sel.endpoint
-	} else {
-		cfg.region = resolveString(&f.region, env["AWS_REGION"], "us-east-1")
-		cfg.endpoint = resolveString(&f.endpoint, env["AWS_ENDPOINT_URL_S3"], "")
-	}
 	cfg.sessionDir, cfg.workspaceRoot, cfg.privateRoot = roots.session, roots.workspaceRoot, roots.privateRoot
-	if cfg.pathStyle, err = resolveBool(&f.pathStyle, env["SLIVINGDOC_PATH_STYLE"], false); err != nil {
-		return config{}, err
-	}
 	// The shared pack cache is always on when the host has a user cache
 	// directory; without one, every workspace keeps its private cache
 	// (architecture/config.md).
@@ -342,15 +350,6 @@ func (cfg config) finish(cwd string) (config, error) {
 	if cfg.bucket == "" && !cfg.hosted() {
 		return config{}, errors.New("bucket is required (pass --bucket for S3, or --space or 'slivingdoc login' for hosted storage)")
 	}
-	// The record says which notebook of the space this directory holds, so
-	// it owns the prefix whenever the resolved space is that one, whether
-	// the record or a flag named the space. A flag naming another space
-	// leaves the record alone: that run addresses another notebook.
-	if cfg.remembered.Space != "" && cfg.remembered.Space == cfg.bucket {
-		if err := cfg.applyRememberedPrefix(); err != nil {
-			return config{}, err
-		}
-	}
 	if err := storage.ValidatePrefix(cfg.prefix); err != nil {
 		return config{}, err
 	}
@@ -363,8 +362,6 @@ func (cfg config) finish(cwd string) (config, error) {
 		if err := validateHosted(cfg); err != nil {
 			return config{}, err
 		}
-	} else if cfg.region == "" {
-		return config{}, errors.New("region is required")
 	}
 
 	if cfg.workspaceRoot, err = absolute(cwd, cfg.workspaceRoot); err != nil {
@@ -411,29 +408,6 @@ func (cfg config) finish(cwd string) (config, error) {
 		return config{}, fmt.Errorf("--ignore: %w", err)
 	}
 	return cfg, nil
-}
-
-// applyRememberedPrefix applies the remembered prefix of a process whose
-// resolved space is the one its notebook directory remembers
-// (architecture/config.md), whether the record or a flag named that space:
-// the record says which notebook of the space this directory holds, so a flag
-// naming the same space and no prefix addresses that notebook too. A prefix
-// the flag or the environment named wins, and one that differs from the
-// remembered one is a refusal naming both. A remembered record with no prefix
-// names none, so the default stands.
-func (cfg *config) applyRememberedPrefix() error {
-	if cfg.prefixFrom == kindOther {
-		// A record without a prefix names none, so the default stands.
-		cfg.prefix = cfg.remembered.Prefix
-		if cfg.prefix == "" {
-			cfg.prefix = defaultPrefix
-		}
-		return nil
-	}
-	if cfg.remembered.Prefix != "" && cfg.prefix != cfg.remembered.Prefix {
-		return prefixMismatch(cfg.remembered.Space, cfg.prefix, cfg.remembered.Prefix)
-	}
-	return nil
 }
 
 // resolvePolicy normalizes both entry sets and composes them into the
@@ -515,6 +489,21 @@ func resolveString(f *stringFlag, env, def string) string {
 		return env
 	}
 	return def
+}
+
+// effectiveRegion is the region an S3 store addresses: the configured one, or
+// us-east-1 when nothing named one, which is what s3store.New applies to the
+// loaded AWS configuration. The notebook identity and the store proof bind it,
+// so a process that named no region keeps the identity it had when us-east-1
+// was the flag default.
+func (cfg config) effectiveRegion() string {
+	if cfg.hosted() {
+		return cfg.region
+	}
+	if cfg.region == "" {
+		return "us-east-1"
+	}
+	return cfg.region
 }
 
 // resolvePrefixSource says which layer named the object prefix, so the
@@ -761,8 +750,14 @@ const FlagReference = `  --storage string              storage backend: auto, ho
                                 different values are refused)
   --prefix string               object prefix in the bucket or hosted space  SLIVINGDOC_PREFIX
                                 (default "slivingdoc")
-  --region string               S3 region (default "us-east-1"; unused       AWS_REGION
-                                with a token)
+  --region string               S3 region: --region, then AWS_REGION, then   AWS_REGION
+                                AWS_DEFAULT_REGION, then the profile's       AWS_DEFAULT_REGION
+                                region, then us-east-1 (empty when unset;
+                                unused with a token)
+  --profile string              AWS shared-config profile: a [profile <name>] AWS_PROFILE
+                                section of ~/.aws/config, and a selector,
+                                never a secret; empty uses the ambient AWS
+                                chain (S3 only; unused with a token)
   --endpoint string             S3-compatible endpoint URL (empty for AWS)   AWS_ENDPOINT_URL_S3
                                 or, in hosted mode, the hosted storage API   SLIVINGDOC_ENDPOINT
                                 URL (default "https://api.slivingdoc.dev",
@@ -807,12 +802,15 @@ const FlagReference = `  --storage string              storage backend: auto, ho
                                 (default true; pass =false when the host
                                 stamps log lines itself)
 
-The hosted space of a notebook is resolved in this order: --space or
---bucket, then SLIVINGDOC_SPACE or SLIVINGDOC_BUCKET, then the space the
-notebook directory remembers, then the default space of the stored login.
-A successful pull or commit remembers the space it reached in workspaces.json
-beside credentials.json, so a later command in that directory needs no space
-flag; pull, commit, status and log read that file, and serve never does.
+The hosted space or S3 bucket of a notebook is resolved in this order:
+--space or --bucket, then SLIVINGDOC_SPACE or SLIVINGDOC_BUCKET, then the
+target the notebook directory remembers, then the one global default (the
+stored S3 default, else the default space of the stored login). A successful
+pull or commit remembers the complete target it reached in workspaces.json
+beside credentials.json, so a later command in that directory needs no target
+flag; pull, commit, status, log and a serve with a durable directory read
+that file and record what they prove, while a serve with a temporary
+directory uses neither.
 `
 
 // HelpText is the serve-command help (architecture/config.md).

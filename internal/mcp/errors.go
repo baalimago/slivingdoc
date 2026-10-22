@@ -36,8 +36,8 @@ const (
 // ToolError is the structured error object carried in the MCP tool result.
 // Code, reason, action, diagnostic ID, retryable, message, and files are always
 // present; detail and recovery are conditional (architecture/product-contract.md).
-// Request paths are absolute; every files[].path is relative to the
-// request path and uses the normalized internal slash form.
+// Every files[].path is relative to the notebook directory and uses the
+// normalized internal slash form.
 type ToolError struct {
 	Code         string        `json:"code"`
 	Reason       string        `json:"reason"`
@@ -201,16 +201,16 @@ func permanentRefusal(reason notebook.Reason) bool {
 	}
 }
 
-// invalidPathMessage explains why the request path was rejected. An
-// out-of-root path names the workspace root so the caller can correct the
-// request; every other case keeps the generic text. No message echoes the
-// rejected path, because it may be a guess at private state.
+// invalidPathMessage explains why a one-shot command's notebook path was
+// rejected. An out-of-root path names the workspace root so the caller can
+// correct the command; every other case keeps the generic text. No message
+// echoes the rejected path, because it may be a guess at private state.
 func invalidPathMessage(err error) string {
 	var esc *workspace.PathEscapeError
 	if errors.As(err, &esc) {
-		return fmt.Sprintf("the requested path must stay at or below the workspace root %q", esc.Root)
+		return fmt.Sprintf("the notebook path must stay at or below the workspace root %q", esc.Root)
 	}
-	return "the requested path is not a valid notebook path"
+	return "the notebook path is not valid"
 }
 
 // decodeFailureError maps a decode failure: a *notebook.Error (a rejected

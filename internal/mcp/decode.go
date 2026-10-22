@@ -5,41 +5,27 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"path/filepath"
-	"strings"
-	"unicode/utf8"
 
 	"github.com/baalimago/slivingdoc/internal/notebook"
-	"github.com/baalimago/slivingdoc/internal/pathutil"
 	"github.com/baalimago/slivingdoc/internal/strictjson"
 )
 
-// The documented byte bounds of the tool inputs
-// (architecture/product-contract.md): path holds 1 through 4,096 bytes
-// after a leading home abbreviation is expanded; message holds at most
-// 16,384 bytes.
-const (
-	maxPathBytes    = 4096
-	maxMessageBytes = notebook.MaxMessageBytes
-)
+// maxMessageBytes is the documented message bound
+// (architecture/product-contract.md).
+const maxMessageBytes = notebook.MaxMessageBytes
 
 // decodePull strictly decodes the raw notes_pull arguments: a JSON object
-// with an optional "path" field, a non-null string, an absolute UTF-8 host
-// path or a leading ~/ abbreviation, of at most 4,096 bytes without U+0000.
-// An omitted or empty path returns the empty string, which the handler resolves
-// to the server's notebook root. Unknown fields, duplicate fields, explicit
-// null inside the object, non-object arguments, and malformed JSON are
-// rejected by the strict parser before any semantic check; an absent or
-// null arguments member is the empty object (parseArguments).
-func decodePull(raw json.RawMessage) (string, error) {
+// with no fields. The server serves one notebook directory, so a present
+// path member is refused before any other member is considered.
+func decodePull(raw json.RawMessage) error {
+	if err := rejectPath(raw); err != nil {
+		return err
+	}
 	v, err := parseArguments(raw)
 	if err != nil {
-		return "", err
+		return err
 	}
-	if err := v.RejectUnknown("path"); err != nil {
-		return "", err
-	}
-	return decodeOptionalPath(v)
+	return v.RejectUnknown()
 }
 
 // emptyArguments is the argument object an absent or null arguments member
@@ -48,8 +34,8 @@ var emptyArguments = json.RawMessage("{}")
 
 // parseArguments strictly parses the raw arguments member into an object.
 // An absent or null member is the empty object (architecture/mcp-server.md):
-// notes_pull then pulls the notebook root, and notes_commit reports the
-// missing message.
+// notes_pull then pulls the server's notebook directory, and notes_commit
+// reports the missing message.
 func parseArguments(raw json.RawMessage) (strictjson.Value, error) {
 	if trimmed := bytes.TrimSpace(raw); len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
 		raw = emptyArguments
@@ -64,69 +50,50 @@ func parseArguments(raw json.RawMessage) (strictjson.Value, error) {
 	return v, nil
 }
 
-// decodeOptionalPath reads the optional "path" field of an already strictly
-// parsed argument object. An absent or empty field is the empty string; any
-// other present field must be a string that satisfies the path contract.
-func decodeOptionalPath(v strictjson.Value) (string, error) {
-	field, ok := v.Field("path")
-	if !ok {
-		return "", nil
+// rejectPath refuses a request that names the removed per-call path. The
+// check reads the raw document before the strict parser, because the
+// strict parser rejects an explicit null before any field can be named;
+// the refusal must also precede the unknown-member one. A document this
+// check cannot decode is left to parseArguments.
+func rejectPath(raw json.RawMessage) error {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return nil
 	}
-	if field.Kind != strictjson.String {
-		return "", errors.New("path must be a string")
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(trimmed, &fields); err != nil {
+		return nil
 	}
-	if field.Str == "" {
-		return "", nil
+	if _, ok := fields["path"]; !ok {
+		return nil
 	}
-	return validatePath(field.Str)
+	return errors.New("the notes tools take no path; this server serves the directory named by --workspace-root")
 }
 
 // decodeCommit strictly decodes the raw notes_commit arguments: a JSON
-// object with the required "message" and the optional "path", both non-null
-// strings. The message is checked by notebook.ValidateMessage so it fails
-// with the notebook's own reason. An omitted or empty path returns the
-// empty string, which the handler resolves to the server's notebook root.
-func decodeCommit(raw json.RawMessage) (path, message string, err error) {
+// object with the required "message" and no other field. The message is
+// checked by notebook.ValidateMessage so it fails with the notebook's own
+// reason.
+func decodeCommit(raw json.RawMessage) (string, error) {
+	if err := rejectPath(raw); err != nil {
+		return "", err
+	}
 	v, err := parseArguments(raw)
 	if err != nil {
-		return "", "", err
+		return "", err
 	}
-	if err := v.RejectUnknown("path", "message"); err != nil {
-		return "", "", err
+	if err := v.RejectUnknown("message"); err != nil {
+		return "", err
 	}
 	messageField, ok := v.Field("message")
 	if !ok {
-		return "", "", errors.New("message is required")
+		return "", errors.New("message is required")
 	}
 	if messageField.Kind != strictjson.String {
-		return "", "", errors.New("message must be a string")
-	}
-	if path, err = decodeOptionalPath(v); err != nil {
-		return "", "", err
+		return "", errors.New("message must be a string")
 	}
 	if err := notebook.ValidateMessage(messageField.Str); err != nil {
-		return "", "", err
-	}
-	return path, messageField.Str, nil
-}
-
-// validatePath applies the path contract: a leading home abbreviation is
-// expanded, then the result must be an absolute UTF-8 host path with 1 through
-// 4,096 bytes, without U+0000. The path must stay below the configured
-// workspace root; the service enforces that rule when it resolves the request.
-func validatePath(s string) (string, error) {
-	var err error
-	if s, err = pathutil.ExpandHome(s); err != nil {
 		return "", err
 	}
-	if len(s) > maxPathBytes {
-		return "", fmt.Errorf("path exceeds %d bytes", maxPathBytes)
-	}
-	if !utf8.ValidString(s) || strings.ContainsRune(s, 0) {
-		return "", errors.New("path must be valid UTF-8 without U+0000")
-	}
-	if !filepath.IsAbs(s) {
-		return "", errors.New("path must be absolute")
-	}
-	return s, nil
+	return messageField.Str, nil
 }

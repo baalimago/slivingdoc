@@ -28,7 +28,7 @@ func (e *PathEscapeError) Error() string {
 
 func (e *PathEscapeError) Unwrap() error { return ErrInvalidPath }
 
-// canonicalize validates the requested path against the workspace root and
+// canonicalize validates the notebook path against the workspace root and
 // returns the canonical host path and its slash-separated form relative to
 // the root ("." when the visible path is the root itself). The relative
 // form never contains ".." and never starts with a slash, so it is safe

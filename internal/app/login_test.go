@@ -17,6 +17,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/baalimago/slivingdoc/internal/credentials"
+	"github.com/baalimago/slivingdoc/internal/s3store"
 	"github.com/baalimago/slivingdoc/internal/sitelogin"
 	"github.com/baalimago/slivingdoc/internal/sitelogin/sitetest"
 	"github.com/baalimago/slivingdoc/internal/tui"
@@ -40,6 +41,13 @@ type loginRig struct {
 	doer sitelogin.Doer
 	// style, when set, renders the streams as a terminal would.
 	style func(io.Writer) tui.Style
+	// extraEnv is appended to the process environment, so a test can set a
+	// variable the login flow never writes.
+	extraEnv []string
+	// s3 is the fake administration of each S3 profile, and s3Configs is
+	// what the command resolved, so a test proves which identity it used.
+	s3        map[string]s3IdentityFixture
+	s3Configs []s3store.Config
 }
 
 func newLoginRig(t *testing.T) *loginRig {
@@ -66,7 +74,7 @@ func (r *loginRig) prepared(t *testing.T) *Login {
 
 func (r *loginRig) opts() ProcessOptions {
 	return ProcessOptions{
-		Env:    []string{credentials.DirEnv + "=" + r.dir, SiteEnv + "=" + r.site.URL()},
+		Env:    append([]string{credentials.DirEnv + "=" + r.dir, SiteEnv + "=" + r.site.URL()}, r.extraEnv...),
 		Stdout: &r.out,
 		Stderr: &r.errOut,
 		OpenBrowser: func(url string) error {
@@ -74,6 +82,7 @@ func (r *loginRig) opts() ProcessOptions {
 			return r.openErr
 		},
 		SiteClient: r.doer,
+		newS3Admin: r.newS3Admin,
 		Sleep:      func(ctx context.Context, _ time.Duration) error { return ctx.Err() },
 		Hostname:   func() (string, error) { return "laptop", nil },
 		Terminal:   func() TerminalState { return r.terminal },
@@ -165,11 +174,7 @@ func (r *loginRig) space(t *testing.T, args ...string) error {
 	t.Helper()
 	f := NewSpaceFlags()
 	return invoke(t, f, f.Bind, func(f *SpaceFlags, rest []string) (operation, error) {
-		name := ""
-		if len(rest) > 0 {
-			name = rest[0]
-		}
-		return PrepareSpace(f, name, r.opts())
+		return PrepareSpace(f, rest, r.opts())
 	}, args)
 }
 
@@ -530,7 +535,7 @@ func TestLoginRefusals(t *testing.T) {
 		if _, err := PrepareLogout(NewLogoutFlags(), opts); !errors.Is(err, credentials.ErrNoConfigDir) {
 			t.Fatalf("PrepareLogout() = %v, want ErrNoConfigDir", err)
 		}
-		if _, err := PrepareSpace(NewSpaceFlags(), "", opts); !errors.Is(err, credentials.ErrNoConfigDir) {
+		if _, err := PrepareSpace(NewSpaceFlags(), nil, opts); !errors.Is(err, credentials.ErrNoConfigDir) {
 			t.Fatalf("PrepareSpace() = %v, want ErrNoConfigDir", err)
 		}
 	})
@@ -1050,11 +1055,12 @@ func TestSpaceListsAndSetsTheDefault(t *testing.T) {
 	r := newLoginRig(t)
 	team := space("team", "bob@example.test", "read")
 	r.loginOnce(t, loginToken, []sitetest.Space{notesSpace, team})
+	header := "HOSTED  " + DefaultHostedEndpoint + "  ada@example.test\n"
 
 	if err := r.space(t); err != nil {
 		t.Fatalf("space = %v", err)
 	}
-	if want := "  notes (read and write), owned by ada@example.test\n  team (read only), owned by bob@example.test\n"; r.out.String() != want {
+	if want := header + "  notes  write  ada@example.test\n  team  read  bob@example.test\n"; r.out.String() != want {
 		t.Fatalf("stdout = %q, want %q", r.out.String(), want)
 	}
 	if !strings.Contains(r.errOut.String(), "No default space; run 'slivingdoc space <name>' to choose one.") {
@@ -1064,7 +1070,7 @@ func TestSpaceListsAndSetsTheDefault(t *testing.T) {
 	if err := r.space(t, "team"); err != nil {
 		t.Fatalf("space team = %v", err)
 	}
-	if want := "The default space is now team (read only), owned by bob@example.test\n"; r.out.String() != want {
+	if want := "The default space is now team (read, bob@example.test).\n"; r.out.String() != want {
 		t.Fatalf("stdout = %q, want %q", r.out.String(), want)
 	}
 	if got := r.defaultSpace(t, DefaultHostedEndpoint); got != "team" {
@@ -1075,50 +1081,60 @@ func TestSpaceListsAndSetsTheDefault(t *testing.T) {
 	if err := r.space(t); err != nil {
 		t.Fatalf("space = %v", err)
 	}
-	if want := "  notes (read and write), owned by ada@example.test\n* team (read only), owned by bob@example.test\n"; r.out.String() != want || r.errOut.String() != "" {
+	if want := header + "  notes  write  ada@example.test\n* team  read  bob@example.test\n"; r.out.String() != want || r.errOut.String() != "" {
 		t.Fatalf("stdout = %q, stderr = %q; want the default marked", r.out.String(), r.errOut.String())
 	}
 
 	err := r.space(t, "other")
-	if err == nil || !strings.Contains(err.Error(), `does not reach space "other" (it reaches notes, team); nothing was changed`) {
+	if err == nil || !strings.Contains(err.Error(), `no backend lists "other" (the listing has notes, team)`) {
 		t.Fatalf("space other = %v, want the refusal", err)
 	}
-	if err := r.space(t, "No_Space"); err == nil || !strings.Contains(err.Error(), "invalid space name") {
-		t.Fatalf("space with an invalid name = %v", err)
+	if err := r.space(t, "No_Space"); err == nil || !strings.Contains(err.Error(), `no backend lists "No_Space"`) {
+		t.Fatalf("space with an unlisted name = %v, want the listing refusal", err)
 	}
 
-	// The site dropped the default space: the listing says so.
+	// The site dropped the default space: the listing still shows it,
+	// marked unreachable.
 	r.site.SetSpaces(loginToken, notesSpace)
 	r.out.Reset()
 	r.errOut.Reset()
 	if err := r.space(t); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(r.errOut.String(), `The default space "team" is not among them`) {
-		t.Fatalf("stderr = %q", r.errOut.String())
+	if want := header + "  notes  write  ada@example.test\n*! team\n"; r.out.String() != want {
+		t.Fatalf("stdout = %q, want %q", r.out.String(), want)
 	}
-	r.site.SetSpaces(loginToken)
-	r.errOut.Reset()
-	if err := r.space(t); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(r.errOut.String(), "reaches no space yet") {
+	if !strings.Contains(r.errOut.String(), `the default space "team" is not among the spaces`) {
 		t.Fatalf("stderr = %q", r.errOut.String())
 	}
 
+	// A key the site revoked degrades the group instead of failing the
+	// command.
 	r.site.Revoke(loginToken)
-	if err := r.space(t); err == nil || !strings.Contains(err.Error(), "no longer accepts the stored login") || !strings.Contains(err.Error(), "'slivingdoc login' again") {
-		t.Fatalf("space with a revoked key = %v", err)
+	r.out.Reset()
+	r.errOut.Reset()
+	if err := r.space(t); err != nil {
+		t.Fatalf("space with a revoked key = %v; a degraded listing exits zero", err)
+	}
+	if want := header + "*! team\n"; r.out.String() != want {
+		t.Fatalf("stdout = %q, want %q", r.out.String(), want)
+	}
+	if !strings.HasPrefix(r.errOut.String(), "! the site no longer accepts the stored login") || strings.Contains(r.errOut.String(), loginToken) {
+		t.Fatalf("stderr = %q", r.errOut.String())
 	}
 	r.site.Close()
-	if err := r.space(t); err == nil || !strings.Contains(err.Error(), "list the spaces the login reaches") || strings.Contains(err.Error(), loginToken) {
-		t.Fatalf("space against a closed site = %v", err)
+	r.errOut.Reset()
+	if err := r.space(t); err != nil {
+		t.Fatalf("space against a closed site = %v; a degraded listing exits zero", err)
+	}
+	if !strings.HasPrefix(r.errOut.String(), "! could not list the spaces of "+DefaultHostedEndpoint) || strings.Contains(r.errOut.String(), loginToken) {
+		t.Fatalf("stderr = %q", r.errOut.String())
 	}
 }
 
 func TestSpaceChoosesTheLogin(t *testing.T) {
 	r := newLoginRig(t)
-	if err := r.space(t); err == nil || !strings.Contains(err.Error(), "not logged in") || !strings.Contains(err.Error(), "slivingdoc login") {
+	if err := r.space(t, "--storage", "hosted"); err == nil || !strings.Contains(err.Error(), "needs a stored login") || !strings.Contains(err.Error(), "slivingdoc login") {
 		t.Fatalf("space without a login = %v", err)
 	}
 	r.loginOnce(t, loginToken, []sitetest.Space{notesSpace})
@@ -1128,46 +1144,50 @@ func TestSpaceChoosesTheLogin(t *testing.T) {
 		t.Fatal(err)
 	}
 	r.out.Reset()
-	if err := r.space(t); err == nil || !strings.Contains(err.Error(), "several stored logins") || !strings.Contains(err.Error(), "pass --endpoint") {
-		t.Fatalf("space with two logins = %v", err)
+	if err := r.space(t); err != nil {
+		t.Fatalf("space with two logins = %v; a listing shows one group per login", err)
 	}
+	want := "HOSTED  " + DefaultHostedEndpoint + "  ada@example.test\n* notes  write  ada@example.test\n\n" +
+		"HOSTED  " + devEndpoint + "  ada@example.test\n* dev  write  ada@example.test\n"
+	if r.out.String() != want {
+		t.Fatalf("stdout = %q, want %q", r.out.String(), want)
+	}
+	r.out.Reset()
 	if err := r.space(t, "--endpoint", "https://API.dev.slivingdoc.dev/"); err != nil {
 		t.Fatalf("space --endpoint = %v", err)
 	}
-	if want := "* dev (read and write), owned by ada@example.test\n"; r.out.String() != want {
+	if want := "HOSTED  " + devEndpoint + "  ada@example.test\n* dev  write  ada@example.test\n"; r.out.String() != want {
 		t.Fatalf("stdout = %q, want %q", r.out.String(), want)
 	}
 	if err := r.space(t, "--endpoint", "ftp://x"); err == nil {
 		t.Fatal("space with an invalid endpoint = nil")
 	}
-	if err := r.space(t, "--endpoint", "https://other.example.test"); !errors.Is(err, credentials.ErrNoLogin) {
-		t.Fatalf("space for an endpoint without a login = %v, want ErrNoLogin", err)
+	r.out.Reset()
+	if err := r.space(t, "--endpoint", "https://other.example.test"); err != nil {
+		t.Fatalf("space for an endpoint without a login = %v, want the S3 group", err)
+	}
+	if want := "S3  endpoint=https://other.example.test  region=us-east-1  profile=(ambient)  key=" + s3AccessKeyID + "\n" +
+		"No buckets; run 'slivingdoc space new <name>' to create one.\n"; !strings.HasSuffix(r.out.String(), want) {
+		t.Fatalf("stdout = %q, want it to end with %q", r.out.String(), want)
+	}
+	if err := r.space(t, "--storage", "hosted", "--endpoint", "https://other.example.test"); err == nil || !strings.Contains(err.Error(), "needs a stored login for https://other.example.test") {
+		t.Fatalf("hosted space for an endpoint without a login = %v", err)
 	}
 }
 
-func TestSpaceRefusesAnExpiredOrChangedLogin(t *testing.T) {
+func TestSpaceRefusesAnExpiredLogin(t *testing.T) {
 	r := newLoginRig(t)
 	expired := entry(DefaultHostedEndpoint, loginToken)
 	expired.ExpiresAt = longAgo
 	r.dir = strings.TrimPrefix(writeLogins(t, nil, expired), credentials.DirEnv+"=")
-	if err := r.space(t); err == nil || !strings.Contains(err.Error(), "expired") || !strings.Contains(err.Error(), "'slivingdoc login' again") {
-		t.Fatalf("space with an expired login = %v", err)
+	if err := r.space(t); err != nil {
+		t.Fatalf("space with an expired login = %v; a listing degrades", err)
 	}
-
-	r = newLoginRig(t)
-	r.loginOnce(t, loginToken, []sitetest.Space{notesSpace})
-	f := NewSpaceFlags()
-	op, err := PrepareSpace(f, "notes", r.opts())
-	if err != nil {
-		t.Fatal(err)
+	if !strings.HasPrefix(r.errOut.String(), "! the stored login for "+DefaultHostedEndpoint+" expired") {
+		t.Fatalf("stderr = %q", r.errOut.String())
 	}
-	r.site.SetSpaces(otherToken, notesSpace)
-	r.site.Next(eve(otherToken))
-	if err := r.login(t, "--force"); err != nil {
-		t.Fatal(err)
-	}
-	if err := op.Run(context.Background()); err == nil || !strings.Contains(err.Error(), "the stored login changed") {
-		t.Fatalf("space after another login = %v, want the refusal", err)
+	if err := r.space(t, "--storage", "hosted"); err == nil || !strings.Contains(err.Error(), "expired") || !strings.Contains(err.Error(), "'slivingdoc login' again") {
+		t.Fatalf("hosted space with an expired login = %v", err)
 	}
 }
 

@@ -81,14 +81,14 @@ func TestServicePullCommitRoundTrip(t *testing.T) {
 	cfg := testServiceConfig(t)
 	_, srv := newTestService(t, cfg)
 	cs := connectClient(t, srv)
-	path := filepath.Join(cfg.workspaceRoot, "notes")
+	path := cfg.workspaceRoot
 
-	callPull(t, cs, path)
+	callPull(t, cs)
 	writeNote(t, path, "a.md", "hello service")
-	callCommit(t, cs, path, "first commit")
+	callCommit(t, cs, "first commit")
 
 	// An independent second pull must observe the published file.
-	callPull(t, cs, path)
+	callPull(t, cs)
 	data, err := os.ReadFile(filepath.Join(path, "a.md"))
 	if err != nil {
 		t.Fatalf("read a.md = %v", err)
@@ -98,32 +98,14 @@ func TestServicePullCommitRoundTrip(t *testing.T) {
 	}
 }
 
-// TestServiceRejectsPathOutsideRoot proves that a request path outside the
-// configured workspace root maps to INVALID_REQUEST with no remote or
-// local mutation.
-func TestServiceRejectsPathOutsideRoot(t *testing.T) {
-	cfg := testServiceConfig(t)
-	_, srv := newTestService(t, cfg)
-	cs := connectClient(t, srv)
-
-	res, err := cs.CallTool(context.Background(), &sdk.CallToolParams{
-		Name:      "notes_pull",
-		Arguments: map[string]any{"path": filepath.Join(t.TempDir(), "elsewhere")},
-	})
-	if err != nil {
-		t.Fatalf("CallTool() = %v", err)
-	}
-	assertErrorCodeValue(t, res, "INVALID_REQUEST", false)
-}
-
-// TestServiceConcurrentDistinctPaths proves that distinct requested paths
-// operate independently and concurrently: each path pulls, writes, and
-// commits its own note against the shared remote, and the CAS arbitration
-// converges both.
+// TestServiceConcurrentDistinctPaths proves that distinct directories
+// operate independently and concurrently at the service seam: each
+// directory pulls, writes, and commits its own note against the shared
+// remote, and the CAS arbitration converges both. The MCP server serves
+// one directory, so only the CLI passes a directory to the service.
 func TestServiceConcurrentDistinctPaths(t *testing.T) {
 	cfg := testServiceConfig(t)
-	_, srv := newTestService(t, cfg)
-	cs := connectClient(t, srv)
+	svc, _ := newTestService(t, cfg)
 
 	const paths = 4
 	var wg sync.WaitGroup
@@ -132,16 +114,9 @@ func TestServiceConcurrentDistinctPaths(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
+			ctx := context.Background()
 			path := filepath.Join(cfg.workspaceRoot, fmt.Sprintf("notes-%d", i))
-			res, err := cs.CallTool(context.Background(), &sdk.CallToolParams{
-				Name:      "notes_pull",
-				Arguments: map[string]any{"path": path},
-			})
-			if err != nil {
-				errs[i] = fmt.Errorf("pull: %w", err)
-				return
-			}
-			if err := resultOK(res); err != nil {
+			if _, err := svc.PullAt(ctx, path); err != nil {
 				errs[i] = fmt.Errorf("pull: %w", err)
 				return
 			}
@@ -154,15 +129,7 @@ func TestServiceConcurrentDistinctPaths(t *testing.T) {
 				errs[i] = fmt.Errorf("write: %w", err)
 				return
 			}
-			res, err = cs.CallTool(context.Background(), &sdk.CallToolParams{
-				Name:      "notes_commit",
-				Arguments: map[string]any{"path": path, "message": fmt.Sprintf("note %d", i)},
-			})
-			if err != nil {
-				errs[i] = fmt.Errorf("commit: %w", err)
-				return
-			}
-			errs[i] = resultOK(res)
+			_, errs[i] = svc.CommitAt(ctx, path, fmt.Sprintf("note %d", i))
 		}(i)
 	}
 	wg.Wait()
@@ -198,7 +165,7 @@ func TestServiceCloseIsIdempotent(t *testing.T) {
 	if err := svc.Close(); err != nil {
 		t.Fatalf("second Close() = %v", err)
 	}
-	if _, err := svc.Pull(context.Background(), filepath.Join(cfg.workspaceRoot, "notes")); err == nil {
+	if _, err := svc.PullAt(context.Background(), filepath.Join(cfg.workspaceRoot, "notes")); err == nil {
 		t.Fatal("Pull() on a closed service = nil, want a refusal")
 	}
 }
@@ -211,7 +178,7 @@ func TestServiceSharesOneNotebookPerDirectory(t *testing.T) {
 	svc, _ := newTestService(t, cfg)
 	path := filepath.Join(cfg.workspaceRoot, "notes")
 	for _, spelling := range []string{path, path + "/", path + "/./", filepath.Join(path, "sub") + "/.."} {
-		if _, err := svc.Pull(context.Background(), spelling); err != nil {
+		if _, err := svc.PullAt(context.Background(), spelling); err != nil {
 			t.Fatalf("Pull(%q) = %v", spelling, err)
 		}
 	}
@@ -234,7 +201,7 @@ func TestServiceForwardsResult(t *testing.T) {
 	path := filepath.Join(cfg.workspaceRoot, "notes")
 
 	writeNote(t, path, "a.md", "hello\n")
-	pullRes, err := svc.Pull(context.Background(), path)
+	pullRes, err := svc.PullAt(context.Background(), path)
 	if err != nil {
 		t.Fatalf("Pull() = %v", err)
 	}
@@ -243,7 +210,7 @@ func TestServiceForwardsResult(t *testing.T) {
 	}
 
 	writeNote(t, path, "a.md", "world\n")
-	commitRes, err := svc.Commit(context.Background(), path, "update")
+	commitRes, err := svc.CommitAt(context.Background(), path, "update")
 	if err != nil {
 		t.Fatalf("Commit() = %v", err)
 	}
@@ -259,11 +226,11 @@ func TestServiceForwardsResult(t *testing.T) {
 }
 
 // callPull calls notes_pull and asserts the OK envelope.
-func callPull(t *testing.T, cs *sdk.ClientSession, path string) {
+func callPull(t *testing.T, cs *sdk.ClientSession) {
 	t.Helper()
 	res, err := cs.CallTool(context.Background(), &sdk.CallToolParams{
 		Name:      "notes_pull",
-		Arguments: map[string]any{"path": path},
+		Arguments: map[string]any{},
 	})
 	if err != nil {
 		t.Fatalf("notes_pull = %v", err)
@@ -274,11 +241,11 @@ func callPull(t *testing.T, cs *sdk.ClientSession, path string) {
 }
 
 // callCommit calls notes_commit and asserts the OK envelope.
-func callCommit(t *testing.T, cs *sdk.ClientSession, path, message string) {
+func callCommit(t *testing.T, cs *sdk.ClientSession, message string) {
 	t.Helper()
 	res, err := cs.CallTool(context.Background(), &sdk.CallToolParams{
 		Name:      "notes_commit",
-		Arguments: map[string]any{"path": path, "message": message},
+		Arguments: map[string]any{"message": message},
 	})
 	if err != nil {
 		t.Fatalf("notes_commit = %v", err)
@@ -335,29 +302,6 @@ func resultOK(res *sdk.CallToolResult) error {
 		return fmt.Errorf("text item = %q, want the resolved notebook path %q first", text.Text, got.Path)
 	}
 	return nil
-}
-
-// assertErrorCodeValue asserts the structured error envelope of a tool
-// result.
-func assertErrorCodeValue(t *testing.T, res *sdk.CallToolResult, wantCode string, wantRetryable bool) {
-	t.Helper()
-	if !res.IsError {
-		t.Fatal("result must set isError")
-	}
-	data, err := json.Marshal(res.StructuredContent)
-	if err != nil {
-		t.Fatalf("marshal structured content: %v", err)
-	}
-	var m struct {
-		Code      string `json:"code"`
-		Retryable bool   `json:"retryable"`
-	}
-	if err := json.Unmarshal(data, &m); err != nil {
-		t.Fatalf("structured content = %s: %v", data, err)
-	}
-	if m.Code != wantCode || m.Retryable != wantRetryable {
-		t.Fatalf("structured = %s, want %s retryable=%v", data, wantCode, wantRetryable)
-	}
 }
 
 // Compile-time proof that Service satisfies the mcp.Service seam.

@@ -452,13 +452,13 @@ func TestStreamedUploadRefusedUnderAStoredLogin(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = svc.Close() })
 	path := filepath.Join(cfg.workspaceRoot, "notes")
-	if _, err := svc.Pull(context.Background(), path); err != nil {
+	if _, err := svc.PullAt(context.Background(), path); err != nil {
 		t.Fatalf("Pull() = %v", err)
 	}
 	writeNote(t, path, "a.md", "hello")
 
 	g.RefuseNext(http.MethodPut, http.StatusUnauthorized, "invalid_token")
-	_, err = svc.Commit(context.Background(), path, "first")
+	_, err = svc.CommitAt(context.Background(), path, "first")
 	var refused *notebook.Error
 	if !errors.As(err, &refused) || refused.Code != notebook.CodeStorageFailure || refused.Reason != notebook.ReasonPackUpload ||
 		refused.Action != notebook.ActionRetry || !errors.Is(err, storage.ErrCredentialRenewed) {
@@ -467,7 +467,7 @@ func TestStreamedUploadRefusedUnderAStoredLogin(t *testing.T) {
 	if !strings.Contains(refused.Message, "may have expired or been renewed") || strings.Contains(refused.Message, "SLIVINGDOC_TOKEN") {
 		t.Fatalf("message = %q, want the renewal hint without token advice", refused.Message)
 	}
-	if _, err := svc.Commit(context.Background(), path, "first"); err != nil {
+	if _, err := svc.CommitAt(context.Background(), path, "first"); err != nil {
 		t.Fatalf("Commit() retried = %v, want it published with a new token", err)
 	}
 	if mints := site.Mints(); len(mints) != 2 {

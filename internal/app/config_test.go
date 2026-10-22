@@ -50,7 +50,8 @@ func TestLoadConfigDefaults(t *testing.T) {
 		bucket:              "my-bucket",
 		bucketFrom:          bucketFromEnv,
 		prefix:              "slivingdoc",
-		region:              "us-east-1",
+		region:              "",
+		profile:             "",
 		endpoint:            "",
 		pathStyle:           false,
 		workspaceRoot:       "/work",
@@ -336,12 +337,124 @@ func TestLoadConfigBucketRequired(t *testing.T) {
 	}
 }
 
-func TestLoadConfigRegionRequired(t *testing.T) {
-	_, err := loadConfig(testProcess([]string{
-		"SLIVINGDOC_BUCKET=bucket",
-	}, "--region="))
-	if err == nil {
-		t.Fatal("loadConfig() = nil, want a region error")
+// regionFor loads one S3 configuration naming the bucket every S3 configuration
+// requires and returns its configured region.
+func regionFor(t *testing.T, env []string, args ...string) string {
+	t.Helper()
+	cfg, err := loadConfig(testProcess(append([]string{"SLIVINGDOC_BUCKET=bucket"}, env...), args...))
+	if err != nil {
+		t.Fatalf("loadConfig() = %v", err)
+	}
+	return cfg.region
+}
+
+// TestRegionDefaultIsEmpty proves the shared region flag has an empty default,
+// so a profile's region and the adapter's us-east-1 fallback apply.
+func TestRegionDefaultIsEmpty(t *testing.T) {
+	if got := regionFor(t, nil); got != "" {
+		t.Fatalf("region = %q, want the empty default", got)
+	}
+}
+
+// TestRegionReadsAWSDefaultRegion proves AWS_DEFAULT_REGION supplies the region
+// when neither the flag nor AWS_REGION names one.
+func TestRegionReadsAWSDefaultRegion(t *testing.T) {
+	if got := regionFor(t, []string{"AWS_DEFAULT_REGION=eu-central-1"}); got != "eu-central-1" {
+		t.Fatalf("region = %q, want AWS_DEFAULT_REGION", got)
+	}
+}
+
+// TestRegionFlagBeatsEnvironment proves an explicit flag wins over both
+// environment values.
+func TestRegionFlagBeatsEnvironment(t *testing.T) {
+	got := regionFor(t, []string{"AWS_REGION=eu-north-1", "AWS_DEFAULT_REGION=eu-central-1"}, "--region", "eu-west-1")
+	if got != "eu-west-1" {
+		t.Fatalf("region = %q, want the flag's eu-west-1", got)
+	}
+}
+
+// TestRegionResolution proves the remaining order: AWS_REGION, then
+// AWS_DEFAULT_REGION, and an explicitly empty flag that does not fall back.
+func TestRegionResolution(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		args []string
+		env  []string
+		want string
+	}{
+		{name: "AWS_REGION", env: []string{"AWS_REGION=eu-north-1"}, want: "eu-north-1"},
+		{
+			name: "AWS_REGION beats AWS_DEFAULT_REGION",
+			env:  []string{"AWS_REGION=eu-north-1", "AWS_DEFAULT_REGION=eu-central-1"},
+			want: "eu-north-1",
+		},
+		{
+			name: "an empty --region does not fall back",
+			args: []string{"--region="},
+			env:  []string{"AWS_REGION=eu-north-1", "AWS_DEFAULT_REGION=eu-central-1"},
+			want: "",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := regionFor(t, tt.env, tt.args...); got != tt.want {
+				t.Fatalf("region = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestEmptyRegionFlagIsLegal proves an empty S3 region is no startup refusal:
+// the adapter applies us-east-1, and the notebook identity and store proof
+// keep binding that value so a process that names no region keeps its private
+// state.
+func TestEmptyRegionFlagIsLegal(t *testing.T) {
+	cfg, err := loadConfig(testProcess([]string{"SLIVINGDOC_BUCKET=bucket"}, "--region="))
+	if err != nil {
+		t.Fatalf("loadConfig(--region=) = %v, want a legal empty region", err)
+	}
+	if cfg.region != "" || cfg.effectiveRegion() != "us-east-1" {
+		t.Fatalf("region = %q, effective = %q; want the adapter default", cfg.region, cfg.effectiveRegion())
+	}
+	if got := cfg.serviceConfig().Region; got != "us-east-1" {
+		t.Fatalf("identity region = %q, want the identity us-east-1 always bound", got)
+	}
+	cfg.region = "eu-north-1"
+	if got := cfg.effectiveRegion(); got != "eu-north-1" {
+		t.Fatalf("effective region = %q, want the configured region", got)
+	}
+}
+
+// TestProfileFlag proves the profile is a selector bound like every other
+// setting: the flag beats AWS_PROFILE, an explicitly empty flag clears it, and
+// the shared reference names both.
+func TestProfileFlag(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		args []string
+		env  []string
+		want string
+	}{
+		{name: "empty default", want: ""},
+		{name: "--profile", args: []string{"--profile", "dev"}, want: "dev"},
+		{name: "AWS_PROFILE", env: []string{"AWS_PROFILE=dev"}, want: "dev"},
+		{name: "the flag beats the variable", args: []string{"--profile", "prod"}, env: []string{"AWS_PROFILE=dev"}, want: "prod"},
+		{name: "an empty flag does not fall back", args: []string{"--profile="}, env: []string{"AWS_PROFILE=dev"}, want: ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			env := append([]string{"SLIVINGDOC_BUCKET=bucket"}, tt.env...)
+			cfg, err := loadConfig(testProcess(env, tt.args...))
+			if err != nil {
+				t.Fatalf("loadConfig() = %v", err)
+			}
+			if cfg.profile != tt.want {
+				t.Fatalf("profile = %q, want %q", cfg.profile, tt.want)
+			}
+		})
+	}
+	for _, want := range []string{"--profile string", "AWS_PROFILE", "never"} {
+		if !strings.Contains(FlagReference, want) {
+			t.Fatalf("FlagReference does not document %q", want)
+		}
 	}
 }
 

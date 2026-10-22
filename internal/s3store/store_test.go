@@ -270,15 +270,8 @@ func TestAddressingProvesPathStyle(t *testing.T) {
 // reorders the sources must fail here (architecture/config.md).
 func TestConfiguredEndpointBeatsServiceEndpointSettings(t *testing.T) {
 	dir := t.TempDir()
-	writeProfile := func(name, body string) string {
-		path := filepath.Join(dir, name)
-		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
-			t.Fatalf("write profile: %v", err)
-		}
-		return path
-	}
-	services := writeProfile("services", "[default]\nservices = elsewhere\n\n[services elsewhere]\ns3 =\n  endpoint_url = http://profile.invalid:9000\n")
-	ignoring := writeProfile("ignoring", "[default]\nignore_configured_endpoint_urls = true\n")
+	services := writeAWSFile(t, dir, "services", "[default]\nservices = elsewhere\n\n[services elsewhere]\ns3 =\n  endpoint_url = http://profile.invalid:9000\n")
+	ignoring := writeAWSFile(t, dir, "ignoring", "[default]\nignore_configured_endpoint_urls = true\n")
 	const configured = "http://configured.example:8333"
 	for _, tt := range []struct {
 		name     string
@@ -340,6 +333,7 @@ func isolateAWSEnv(t *testing.T) {
 	t.Helper()
 	names := []string{
 		"AWS_CA_BUNDLE", "AWS_PROFILE", "AWS_DEFAULT_PROFILE", "AWS_IGNORE_CONFIGURED_ENDPOINT_URLS",
+		"AWS_REGION", "AWS_DEFAULT_REGION",
 		"AWS_USE_FIPS_ENDPOINT", "AWS_USE_DUALSTACK_ENDPOINT",
 	}
 	for _, kv := range os.Environ() {

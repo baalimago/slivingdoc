@@ -17,6 +17,7 @@ Read this when: implementing a new `ObjectStore` backend (this is the seam), add
 | `internal/storage/upload.go` | `UploadUnique` (ambiguous-put resolution), `VerifyObject` (streamed size + SHA-256 proof) |
 | `internal/storage/sha256.go` | `SHA256`, `ParseSHA256` (canonical lowercase 64-hex), `ErrInvalidSHA256` |
 | `internal/storage/uuid.go` | `UUID`, `NewUUIDv7`, `ParseUUIDv7` (canonical lowercase v7, RFC 4122 variant), `ErrInvalidUUID` |
+| `internal/storage/name.go` | `ValidateNewSpaceName`, `ErrInvalidNewSpaceName`: the portable creation grammar hosted storage, S3 and R2 share |
 | `internal/strictjson/json.go` | `Parse`, `Value`, `Field`, `RejectUnknown` (strict tree shared with the workspace state record) |
 | `internal/storage/contract/suite.go` | `contract.Run(t, Factory)`: the behavioral contract every backend must pass; `createRecorder` |
 | `internal/storage/fake/fake.go` | `fake.New(prefix)`: in-memory `Store` with real conditional-write semantics; `Op`, `FailNext`, `FailNextKey`, `AmbiguousNext`, `BlockNext`, `Unblock`, `Waiting`, `Bump`, `Calls`, `ObjectCount`, `etagFor` |
@@ -68,6 +69,8 @@ S3 holds no bare repository and no `.git` directory. Protocol keys are relative 
 **Key grammar.** `Key{Kind, Generation, ID}` renders as above. `ParseKey` rejects any other namespace, a non-canonical generation (leading zeros), a malformed layout, and an ID that is not a canonical UUIDv7. Every pack key exposes its generation, which is what bounded cleanup filters on. Generation fields, not UUID ordering, define protocol order. One writer owns each key and accepted pack bytes never change.
 
 **IDs and digests.** Publication and checkpoint IDs are UUIDv7 in canonical lowercase `8-4-4-4-12` form with the RFC 4122 variant (`NewUUIDv7`, `ParseUUIDv7`). Pack checksums are the SHA-256 of the complete pack in canonical lowercase 64-hex (`ParseSHA256`). Git object IDs are SHA-1, 40 lowercase hex (`git.OID`). An ETag is only a concurrency token for `current`, never a content digest; multipart ETags are not digests either.
+
+**Portable creation grammar.** `ValidateNewSpaceName` is the one name rule for creating a target on hosted storage, S3 or R2: 3 to 63 characters, lowercase ASCII letters, digits and inner hyphens, a letter or digit at each end, and no S3 reserved name (`xn--` and `sthree-` prefixes, `-s3alias`, `--ol-s3`, `--x-s3` and `--table-s3` suffixes). A refusal wraps `ErrInvalidNewSpaceName` and names the fix. The rule covers creation only: listing, selecting and minting keep the wider hosted accept grammar (`httpstore.ValidateSpace`). It governs nothing in the notebook storage protocol; the object layout, key grammar, manifest and upload rules are unchanged.
 
 **Pack metadata.** Every pack upload carries `Metadata{SHA256, Size, Kind, Generation}`. `Metadata.Fields` renders it as four named string fields (`slivingdoc-sha256`, `slivingdoc-size`, `slivingdoc-kind`, `slivingdoc-generation`, the `Meta*` constants), which S3 stores as user metadata and the hosted API as HTTP headers of the same names. `ParseMetadata` reads them back: an absent field leaves the zero value, a present but malformed one is an error that both adapters wrap as `ErrIntegrity`. Metadata diagnoses and resumes uploads; the manifest descriptor is authoritative, and metadata alone never proves an object.
 
@@ -136,7 +139,7 @@ Prove it by calling `contract.Run(t, factory)` from the backend's tests with a f
 - `Key.String()` returns `""` for an invalid kind; always build keys from validated descriptors or `ParseKey`.
 - The fake's ETag is the quoted MD5 of the bytes, like a single-part S3 PUT. Tests must not depend on that; it is a token.
 - `fake.Store.DeleteObjects` barriers and failures key on `""`, not on the deleted keys.
-- `internal/integrationtest/faults.go` (`faultStore`) reuses `fake.Injector` around any base store, including the real S3 adapter ([testing.md](./testing.md)).
+- `internal/integrationtest/itest/faults.go` (`FaultStore`) reuses `fake.Injector` around any base store, including the real S3 adapter ([testing.md](./testing.md)).
 
 ## Related
 

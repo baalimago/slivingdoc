@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/baalimago/slivingdoc/cmd/login"
 	"github.com/baalimago/slivingdoc/internal/app"
 	"github.com/baalimago/slivingdoc/internal/git"
 )
@@ -225,17 +226,17 @@ func TestCommandsCoverTheDocumentedSurface(t *testing.T) {
 }
 
 // TestHelpTextNamesTheOrder proves the help an operator reads carries the
-// one thing the flag table cannot: which setting wins over which, and that a
-// notebook directory remembers the hosted space it pulled. The order lives
-// in the shared reference; each path-taking command names the consequence in
-// its own words, and serve carries the order alone because it never reads
-// the file.
+// one thing the flag table cannot: which setting wins over which, that a
+// notebook directory remembers the target it pulled on either backend, and
+// which commands read and write that record. The order lives in the shared
+// reference; each command that reads the record names the consequence in its
+// own words, and serve names the durable/scratch split.
 func TestHelpTextNamesTheOrder(t *testing.T) {
 	t.Parallel()
 	for _, want := range []string{
-		"then the space the\nnotebook directory remembers, then the default space of the stored login",
+		"then the\ntarget the notebook directory remembers, then the one global default",
 		"workspaces.json",
-		"pull, commit, status and log read that file, and serve never does",
+		"pull, commit, status, log and a serve with a durable directory read\nthat file and record what they prove",
 	} {
 		if !strings.Contains(app.FlagReference, want) {
 			t.Fatalf("the shared flag reference does not name %q", want)
@@ -246,11 +247,11 @@ func TestHelpTextNamesTheOrder(t *testing.T) {
 		key  string
 		want []string
 	}{
-		{key: "serve|s", want: []string{"slivingdoc serve", "workspaces.json"}},
-		{key: "pull|p", want: []string{"slivingdoc pull", "remembers it", "--storage hosted"}},
-		{key: "commit|c", want: []string{"slivingdoc commit", "remembers it", "--storage hosted"}},
-		{key: "status", want: []string{"slivingdoc status", "remembers it", "source of a space"}},
-		{key: "log", want: []string{"slivingdoc log", "remembers it", "--storage hosted"}},
+		{key: "serve|s", want: []string{"slivingdoc serve", "workspaces.json", "a serve with a durable directory"}},
+		{key: "pull|p", want: []string{"slivingdoc pull", "remembers its target", "slivingdoc variable still wins"}},
+		{key: "commit|c", want: []string{"slivingdoc commit", "remembers its target", "slivingdoc variable still wins"}},
+		{key: "status", want: []string{"slivingdoc status", "remembers its target", "source of a target the directory remembered"}},
+		{key: "log", want: []string{"slivingdoc log", "remembers its target"}},
 	} {
 		help := commands[row.key].Help()
 		for _, want := range row.want {
@@ -258,6 +259,30 @@ func TestHelpTextNamesTheOrder(t *testing.T) {
 				t.Fatalf("%s -h does not name %q", row.key, want)
 			}
 		}
+	}
+}
+
+// TestSpaceUsageNamesTheModes proves 'slivingdoc space -h' teaches every
+// positional form and every flag, including the ones this build refuses,
+// so an operator learns the create form from the command itself.
+func TestSpaceUsageNamesTheModes(t *testing.T) {
+	t.Parallel()
+	command := login.SpaceCommand(app.ProcessOptions{})
+	if got := command.Describe(); got != "list, create, or set the default of a hosted space or S3 bucket" {
+		t.Fatalf("describe = %q", got)
+	}
+	help := strings.Join(strings.Fields(command.Help()), " ")
+	for _, want := range []string{
+		"slivingdoc space", "new <name>", "bare 'new'", "--storage", "--endpoint", "--profile",
+		"--region", "--path-style", "--prefix", "auto|hosted|s3", "S3 bucket", "s3:CreateBucket",
+		"an existing ~/.aws/credentials or ~/.aws/config file, or a recorded S3 target; shared AWS files alone do not select S3 for 'space new'",
+	} {
+		if !strings.Contains(help, want) {
+			t.Fatalf("space -h does not name %q", want)
+		}
+	}
+	if !strings.Contains(Usage, "slivingdoc space new <name>") {
+		t.Fatal("the usage does not name the create form")
 	}
 }
 

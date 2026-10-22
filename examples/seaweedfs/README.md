@@ -47,12 +47,12 @@ on stdio for an MCP client. That is the expected state.
 
 ## 4. Connect an MCP host
 
-Register the server in your MCP client configuration. The
-`--workspace-root` is the only path that the tools can touch. The server
-creates `/tmp/notes` on first use. Both root flags are optional — without
-them the server takes its own temporary notebook directory and removes it
-at shutdown — but this walkthrough names them so you can open the files
-yourself while following along.
+Register the server in your MCP client configuration. The server serves the
+one directory named by `--workspace-root`; the tools take no path and cannot
+touch another directory. The server creates `/tmp/notes` on first use. Both
+root flags are optional — without them the server takes its own temporary
+notebook directory and removes it at shutdown — but this walkthrough names
+them so you can open the files yourself while following along.
 
 ```json
 {
@@ -84,8 +84,9 @@ yourself while following along.
 
 ## 5. Work with the notebook
 
-Call `notes_pull` with the path `/tmp/notes` (with no `--workspace-root`
-you would omit the path, and the result would tell you the directory).
+Call `notes_pull` with no arguments; it pulls into `/tmp/notes` and the result
+names that directory (with no `--workspace-root` the server would serve a
+session directory of its own, and the result would name it).
 Create a text file there.
 Then call `notes_commit` with a message. Pull again from a second agent
 (or a second configured server) and edit concurrently. Non-conflicting

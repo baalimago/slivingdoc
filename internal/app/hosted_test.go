@@ -216,8 +216,8 @@ func TestLoadConfigWithoutTokenKeepsS3(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadConfig() = %v", err)
 	}
-	if cfg.hosted() || cfg.endpoint != "" || cfg.region != "us-east-1" {
-		t.Fatalf("config = hosted %v endpoint %q region %q, want plain S3 defaults", cfg.hosted(), cfg.endpoint, cfg.region)
+	if cfg.hosted() || cfg.endpoint != "" || cfg.region != "" || cfg.profile != "" || cfg.effectiveRegion() != "us-east-1" {
+		t.Fatalf("config = hosted %v endpoint %q region %q profile %q, want plain S3 defaults", cfg.hosted(), cfg.endpoint, cfg.region, cfg.profile)
 	}
 }
 

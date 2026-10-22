@@ -67,10 +67,14 @@ func (c *command) Run(ctx context.Context) error {
 		return errors.New("pull: Setup must run before Run")
 	}
 	defer c.runtime.Close()
-	result, err := c.runtime.WithProgress("Pulling", c.path, func() (notebook.Result, error) {
-		return c.runtime.Pull(ctx, c.path)
+	path := c.path
+	if path == "" {
+		path = c.runtime.NotebookDirectory()
+	}
+	result, err := c.runtime.WithProgress("Pulling", path, func() (notebook.Result, error) {
+		return c.runtime.Pull(ctx, path)
 	})
-	return app.Report(c.opts.Out(), result, err, c.path, c.opts.Env, c.runtime.ReadOnlyPaths(), c.runtime.WritablePaths())
+	return app.Report(c.opts.Out(), result, err, path, c.opts.Env, c.runtime.ReadOnlyPaths(), c.runtime.WritablePaths())
 }
 
 const helpText = `slivingdoc pull - write the current notebook into a directory
@@ -101,8 +105,8 @@ terminal, and any non-empty NO_COLOR disables it.
 
 Flags take precedence over environment variables, which override defaults.
 An explicitly empty flag value does not fall back to an environment value.
-A notebook directory that already pulled a hosted space remembers it, so
-the next command there needs no --space and no --storage hosted; a flag or
-SLIVINGDOC_SPACE still wins for one run and changes nothing recorded.
+A notebook directory that already pulled a notebook remembers its target,
+hosted or S3, so the next command there needs no target flag; a flag or a
+slivingdoc variable still wins for one run and changes nothing recorded.
 
 ` + app.FlagReference

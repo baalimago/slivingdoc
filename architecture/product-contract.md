@@ -9,7 +9,7 @@ Read this when: changing a tool schema, a result field, an error token, the CLI 
 | File | Purpose |
 |------|---------|
 | `internal/mcp/server.go` | `NewServer` (registers exactly two tools), `handler.pull` / `handler.commit`, `successResult`, `successText`, `instructions`, `readOnlyDescriptionSuffix`, `writableDescriptionSuffix`, `errorResult`, `errorText` |
-| `internal/mcp/decode.go` | `decodePull`, `decodeCommit`, `validatePath`: strict input decoding and byte bounds |
+| `internal/mcp/decode.go` | `decodePull`, `decodeCommit`, `parseArguments`, `rejectPath`: strict input decoding and message byte bounds |
 | `internal/mcp/success.go` | `SuccessInfo`, `ChangeFile`, `MapSuccess` |
 | `internal/mcp/outline.go` | `Outline`, `OutlineEntry`, `OutlineItem`, `outline`: the outline of a materialization |
 | `internal/mcp/errors.go` | `ToolError`, `MapError`, `mapNotebookError`, `safeEngineDetail`, `retryable`, `Redact` |
@@ -27,8 +27,8 @@ Read this when: changing a tool schema, a result field, an error token, the CLI 
 ## Flow
 
 ```text
-MCP:  handler.pull/commit → decodePull/decodeCommit → handler.path (empty → Service.Root)
-        → Service.Pull/Commit → ok:  successResult(MapSuccess) + successText
+MCP:  handler.pull/commit → decodePull/decodeCommit → Service.Pull/Commit (the server's one directory)
+        → ok:  successResult(MapSuccess) + successText
         decode err: decodeFailureError → errorResult
         service err: MapError → errorResult(+diagnosticId, readOnly, writable) + errorText
 CLI:  cmd/pull, cmd/commit → Runtime.Pull/Commit → app.Report → writeSuccess | writeError
@@ -40,19 +40,19 @@ CLI:  cmd/pull, cmd/commit → Runtime.Pull/Commit → app.Report → writeSucce
 
 | Tool | Input | Effect |
 |------|-------|--------|
-| `notes_pull` | `path` (optional) | Write the current notebook into the directory, merging unpublished local edits. The first pull into a directory needs it empty or holding only files identical to the notebook's (a protected file need only exist in it), unless the notebook is empty and every file is unprotected (`DIRECTORY_NOT_EMPTY`, naming the files). See [pull.md](./pull.md). |
-| `notes_commit` | `message`, `path` (optional) | Publish local changes, incorporating concurrent non-conflicting changes. See [commit.md](./commit.md). |
+| `notes_pull` | none | Write the current notebook into the server's notebook directory, merging unpublished local edits. The first pull into a directory needs it empty or holding only files identical to the notebook's (a protected file need only exist in it), unless the notebook is empty and every file is unprotected (`DIRECTORY_NOT_EMPTY`, naming the files). See [pull.md](./pull.md). |
+| `notes_commit` | `message` | Publish local changes in the server's notebook directory, incorporating concurrent non-conflicting changes. See [commit.md](./commit.md). |
 
 Workflow: `notes_pull` once, edit UTF-8 files, `notes_commit(message)`; repeat.
 
-- An omitted or empty MCP `path` is the notebook root (`handler.path`, `Service.Root`): the configured workspace root; for `serve` with neither `--workspace-root` nor `--private-root`, a process-owned temporary session directory; otherwise the working directory (see [running.md](./running.md#the-session-directory)). Every success names the resolved directory, and so do the server `instructions`.
-- A supplied path must be at or below the workspace root; one server serves several notebook directories that way. Outside the root is `INVALID_REQUEST`/`PATH_OUTSIDE_ROOT`; the message names the root and never echoes the rejected path (`invalidPathMessage`).
-- CLI mirror: `slivingdoc pull [path]`, `slivingdoc commit [path] -m <message>`. The path may be relative (resolved against the working directory) and must stay below the workspace root; the one-shot commands never use a temporary directory.
+- One `serve` process binds exactly one notebook directory for its lifetime: the configured workspace root; with neither `--workspace-root` nor `--private-root`, a process-owned temporary session directory; otherwise the working directory (see [running.md](./running.md#the-session-directory)). A tool call cannot switch it.
+- Neither tool takes a path. A present `path` member of any JSON type, `null` included, is `INVALID_REQUEST`/`MALFORMED_INPUT` before an unknown member is considered; the refusal names `--workspace-root` and echoes no path (`rejectPath`). Every success names the server's directory, and so do the server `instructions`.
+- CLI mirror: `slivingdoc pull [path]`, `slivingdoc commit [path] -m <message>`. The path may be relative (resolved against the working directory) and must stay at or below the workspace root; the one-shot commands never use a temporary directory.
 
 ### Input rules (`internal/mcp/decode.go`, `notebook.ValidateMessage`)
 
 - Arguments are a strict JSON object: unknown fields, duplicate fields, and explicit `null` are `MALFORMED_INPUT`.
-- `path`: a string; a leading `~/` expands to the home directory (`pathutil.ExpandHome`), then it must be absolute, valid UTF-8 without U+0000, at most 4,096 bytes.
+- `path` is not an argument: a present `path` of any JSON type is `MALFORMED_INPUT` before an unknown member, naming `--workspace-root`.
 - `message` (commit only, required): at most 16,384 bytes (`MaxMessageBytes`, `MESSAGE_TOO_LONG`), not only Unicode white space (`MESSAGE_BLANK`), valid UTF-8 without U+0000 (`MESSAGE_INVALID`). Every other byte is preserved. The same `ValidateMessage` runs in the MCP decoder and in `Notebook.Commit`.
 
 ### Success envelope
@@ -62,7 +62,7 @@ One MCP text item plus the structured `SuccessInfo`:
 | Field | Meaning |
 |-------|---------|
 | `code` | Always `OK` |
-| `path` | The resolved notebook directory (the caller's own directory, never private state) |
+| `path` | The server's notebook directory (never private state) |
 | `generation` | Accepted remote generation after the operation (`notebook.Result.Generation`) |
 | `materialized` | `true` for a materialization (below), else `false`; always present |
 | `filesChanged`, `insertions`, `deletions` | Totals of the diffstat |
@@ -88,7 +88,7 @@ A materialization is the first pull (no pulled marker in P, [pull.md](./pull.md)
 
 `isError=true`, one candid text item (`errorText`), and a `ToolError` with `code`, `reason`, `action`, `diagnosticId` (fresh 16 lowercase hex, the same `mcpReqID` as the call's log records), `retryable`, `message`, `files[]` (`{path, reason, ranges[]}`), `readOnly`, `writable`; optional `detail` (only for `ENGINE_FAILED`, chosen by `safeEngineDetail` from a closed set of typed causes, else absent) and `recovery` (`{stage, remoteAccepted: yes|no|unknown, resynchronized}` for `RECOVERY_FAILURE`).
 
-- `files[].path` is relative to the request path in normalized slash form; ranges are one-based, inclusive, ordered, and non-overlapping; a file without markers has `ranges: []`.
+- `files[].path` is relative to the notebook directory in normalized slash form; ranges are one-based, inclusive, ordered, and non-overlapping; a file without markers has `ranges: []`.
 - The text item repeats code, reason, message, detail, files, action, retryable, diagnosticId, recovery, and both path sets (writable, read-only, then `path-rule:` when both are set), so a client that drops structured content keeps the full safe diagnostic.
 - `retryable` is true only for `REMOTE_BUSY`, `STORAGE_FAILURE`, `RECOVERY_FAILURE` (`mcp.retryable`), and false for the store refusals a retry cannot change, `STORAGE_FULL`, `REQUEST_LIMIT`, `ACCESS_DENIED`, `OBJECT_TOO_LARGE`, `UPGRADE_REQUIRED`, under either `STORAGE_FAILURE` or `RECOVERY_FAILURE`.
 - Message text may change between releases. `code`, `reason`, `action`, and every `files[].reason` may not.
@@ -103,7 +103,7 @@ The notebook emits every pairing below except `MALFORMED_INPUT` and `PATH_OUTSID
 | Code | Reason | Meaning | Action |
 |------|--------|---------|--------|
 | `INVALID_REQUEST` | `MALFORMED_INPUT` | Strict decode failure | `FIX_INPUT` |
-| `INVALID_REQUEST` | `PATH_OUTSIDE_ROOT` | Path escapes the workspace root, or a symlink component | `FIX_INPUT` |
+| `INVALID_REQUEST` | `PATH_OUTSIDE_ROOT` | A CLI path escapes the workspace root, or a symlink component | `FIX_INPUT` |
 | `INVALID_REQUEST` | `MESSAGE_BLANK` / `MESSAGE_TOO_LONG` / `MESSAGE_INVALID` | Message rules above | `FIX_INPUT` |
 | `INVALID_REQUEST` | `PULL_REQUIRED` | Commit before any pull on this P | `PULL` |
 | `INVALID_REQUEST` | `DIRECTORY_NOT_EMPTY` | First pull into a directory holding files the notebook lacks, or unprotected files it holds with other bytes (an empty notebook still refuses protected files); L, the pulled marker and `state.json` unchanged (P's repository and pack cache may hold R) | `FIX_INPUT` |

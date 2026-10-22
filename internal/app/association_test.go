@@ -14,7 +14,7 @@ import (
 	"github.com/baalimago/slivingdoc/internal/sitelogin/sitetest"
 )
 
-// The remembered notebook of the fixtures: another space of the same account,
+// The remembered target of the fixtures: another space of the same account,
 // and a prefix of its own, so every row can tell a remembered value from the
 // stored default space and the default prefix.
 const (
@@ -25,13 +25,12 @@ const (
 
 // remembers is the one entry of the fixtures.
 func remembers(space, prefix string) settings.Entry {
-	return settings.Entry{Path: rememberedPath, Target: settings.Target{Space: space, Prefix: prefix}}
+	return settings.Entry{Path: rememberedPath, Target: settings.Target{Kind: settings.KindHosted, Name: space, Prefix: prefix}}
 }
 
-// storeEntries writes the entries into the settings file of the configuration
-// directory env names, which is the directory its credentials file lives in, so
-// one environment selects both files.
-func storeEntries(t *testing.T, env []string, entries ...settings.Entry) {
+// settingsFileOf is the scoped settings file of the configuration directory
+// env names, whose directory it creates.
+func settingsFileOf(t *testing.T, env []string) settings.File {
 	t.Helper()
 	dir := configDirOf(t, env)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -41,14 +40,22 @@ func storeEntries(t *testing.T, env []string, entries ...settings.Entry) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	return file
+}
+
+// storeEntries writes the entries into the settings file of the configuration
+// directory env names, which is the directory its credentials file lives in, so
+// one environment selects both files.
+func storeEntries(t *testing.T, env []string, entries ...settings.Entry) {
+	t.Helper()
 	set := settings.Set{}
 	for _, e := range entries {
-		if e.Target.Space == "" {
+		if e.Target.Name == "" {
 			continue
 		}
 		set = set.Put(e)
 	}
-	if err := file.Save(set); err != nil {
+	if err := settingsFileOf(t, env).Save(set); err != nil {
 		t.Fatalf("save the settings file: %v", err)
 	}
 }
@@ -337,10 +344,10 @@ func TestUnusableSettingsFileRefusesStartup(t *testing.T) {
 	}
 }
 
-// TestServeNeverLooksUpTheAssociation proves the server consults no record: its
-// process carries no reader, so a settings file this build cannot read never
-// stops a running server.
-func TestServeNeverLooksUpTheAssociation(t *testing.T) {
+// TestScratchServeNeverLooksUpTheAssociation proves a server that owns a
+// scratch directory consults no record: its process carries no reader, so a
+// settings file this build cannot read never stops it.
+func TestScratchServeNeverLooksUpTheAssociation(t *testing.T) {
 	env := []string{"SLIVINGDOC_BUCKET=b"}
 	dir := configDirOf(t, env)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -399,6 +406,21 @@ func TestRuntimeSpaceAccessors(t *testing.T) {
 	}
 }
 
+// TestSpaceSourceNamesAnS3Record proves the record reports one source word per
+// backend: an S3 record is a remembered bucket, because the source itself
+// carries no kind (architecture/config.md, The operator surface of the record).
+func TestSpaceSourceNamesAnS3Record(t *testing.T) {
+	t.Parallel()
+	rt := &Runtime{cfg: config{bucket: "a-bucket", bucketFrom: bucketFromRemembered}}
+	if got := rt.SpaceSource(); got != rememberedBucketSource {
+		t.Fatalf("SpaceSource() = %q, want %q", got, rememberedBucketSource)
+	}
+	rt.cfg.login = &credentials.Login{}
+	if got := rt.SpaceSource(); got != rememberedSource {
+		t.Fatalf("SpaceSource() of a hosted record = %q, want %q", got, rememberedSource)
+	}
+}
+
 // TestAssociationReadsTheSettingsOnce proves the cost the read adds: a
 // process reads the settings file once, so every later resolution of that
 // process answers from the set of that first read even after the file
@@ -412,8 +434,8 @@ func TestAssociationReadsTheSettingsOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the settings file = %v", err)
 	}
-	if target, ok := first.Lookup(rememberedPath); !ok || target.Space != rememberedSpace {
-		t.Fatalf("the first read holds %+v, %v; want the remembered notebook", target, ok)
+	if target, ok := first.Lookup(rememberedPath); !ok || target.Name != rememberedSpace {
+		t.Fatalf("the first read holds %+v, %v; want the remembered target", target, ok)
 	}
 	storeEntries(t, env, remembers(rememberedSpace, "another-prefix"))
 	second, err := reader()
@@ -422,5 +444,116 @@ func TestAssociationReadsTheSettingsOnce(t *testing.T) {
 	}
 	if !slices.Equal(second.Entries(), first.Entries()) {
 		t.Fatalf("the second read holds %v, want the set of the first read %v", second.Entries(), first.Entries())
+	}
+}
+
+// s3Want is the target an S3 resolution row expects.
+type s3Want struct {
+	bucket    string
+	from      bucketSource
+	endpoint  string
+	region    string
+	profile   string
+	prefix    string
+	pathStyle bool
+}
+
+// TestResolveS3RecordFields proves the per-field order of an S3 target: the
+// flag or slivingdoc variable, then a record of the resolved kind, then the
+// one global S3 default, then the ambient AWS configuration. A record of
+// another kind supplies no field, and a named prefix that contradicts the
+// record is refused in the record's own words (I4, I5).
+func TestResolveS3RecordFields(t *testing.T) {
+	record := settings.Target{
+		Kind: settings.KindS3, Endpoint: "https://record.example.test", Region: "eu-north-1",
+		Profile: "record-profile", Name: "record-bucket", Prefix: "record-prefix", PathStyle: true,
+	}
+	def := settings.Target{
+		Kind: settings.KindS3, Endpoint: "https://default.example.test", Region: "us-west-2",
+		Profile: "default-profile", Name: "default-bucket", Prefix: "default-prefix",
+	}
+	recordTarget := s3Want{
+		bucket: "record-bucket", from: bucketFromRemembered, endpoint: "https://record.example.test",
+		region: "eu-north-1", profile: "record-profile", prefix: "record-prefix", pathStyle: true,
+	}
+	for _, row := range []struct {
+		name    string
+		record  *settings.Target
+		def     *settings.Target
+		args    []string
+		want    s3Want
+		wantErr string
+	}{
+		{
+			name:   "the record supplies every field",
+			record: &record,
+			want:   recordTarget,
+		},
+		{
+			name:   "a flag beats the record for its own run",
+			record: &record,
+			args:   []string{"--endpoint", "https://flag.example.test", "--region", "ap-south-1", "--profile", "flag-profile", "--path-style=false"},
+			want: s3Want{
+				bucket: "record-bucket", from: bucketFromRemembered, endpoint: "https://flag.example.test",
+				region: "ap-south-1", profile: "flag-profile", prefix: "record-prefix",
+			},
+		},
+		{
+			name: "the S3 default fills a directory that remembers nothing",
+			def:  &def,
+			want: s3Want{
+				bucket: "default-bucket", from: bucketFromDefault, endpoint: "https://default.example.test",
+				region: "us-west-2", profile: "default-profile", prefix: "default-prefix",
+			},
+		},
+		{
+			name:   "the record beats the S3 default",
+			record: &record,
+			def:    &def,
+			want:   recordTarget,
+		},
+		{
+			name:    "a named prefix that contradicts the record is refused",
+			record:  &record,
+			args:    []string{"--prefix", "another-prefix"},
+			wantErr: `remembers bucket "record-bucket"`,
+		},
+		{
+			name:    "a hosted record supplies no field to an S3 run",
+			record:  &settings.Target{Kind: settings.KindHosted, Name: "hosted-space", Prefix: "hosted-prefix"},
+			args:    []string{"--storage", "s3"},
+			wantErr: "bucket is required",
+		},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			env := []string{credentials.DirEnv + "=" + filepath.Join(t.TempDir(), "cfg"), "HOME=" + t.TempDir()}
+			set := settings.Set{}
+			if row.record != nil {
+				set = set.Put(settings.Entry{Path: rememberedPath, Target: *row.record})
+			}
+			if row.def != nil {
+				set = set.PutDefault(*row.def)
+			}
+			if err := settingsFileOf(t, env).Save(set); err != nil {
+				t.Fatalf("save the settings file: %v", err)
+			}
+			cfg, err := loadConfig(associatedProcess(env, rememberedPath, row.args...))
+			if row.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), row.wantErr) {
+					t.Fatalf("loadConfig() = %v, want it to contain %q", err, row.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("loadConfig() = %v", err)
+			}
+			got := s3Want{
+				bucket: cfg.bucket, from: cfg.bucketFrom, endpoint: cfg.endpoint,
+				region: cfg.region, profile: cfg.profile, prefix: cfg.prefix, pathStyle: cfg.pathStyle,
+			}
+			if got != row.want {
+				t.Fatalf("config = %+v, want %+v", got, row.want)
+			}
+		})
 	}
 }

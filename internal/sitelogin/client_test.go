@@ -15,7 +15,9 @@ import (
 	"time"
 
 	"github.com/baalimago/slivingdoc/internal/credentials"
+	"github.com/baalimago/slivingdoc/internal/httpstore"
 	"github.com/baalimago/slivingdoc/internal/sitelogin/sitetest"
+	"github.com/baalimago/slivingdoc/internal/storage"
 )
 
 const (
@@ -708,5 +710,231 @@ func TestReferenceSiteRefusesUnknownFields(t *testing.T) {
 		if resp.StatusCode != http.StatusBadRequest || !strings.Contains(string(data), `"error":"`+row.want+`"`) {
 			t.Fatalf("POST %s %s = %d %s, want 400 %s", row.path, row.body, resp.StatusCode, data, row.want)
 		}
+	}
+}
+
+// createRequest is one request a createRecorder saw.
+type createRequest struct {
+	method        string
+	path          string
+	contentType   string
+	authorization string
+	body          string
+}
+
+// createRecorder answers every request with one status and body, recording
+// what it saw.
+type createRecorder struct {
+	mu       sync.Mutex
+	requests []createRequest
+	status   int
+	body     string
+}
+
+func (r *createRecorder) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	data, err := io.ReadAll(req.Body)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	r.mu.Lock()
+	r.requests = append(r.requests, createRequest{
+		method: req.Method, path: req.URL.Path, contentType: req.Header.Get("Content-Type"),
+		authorization: req.Header.Get("Authorization"), body: string(data),
+	})
+	r.mu.Unlock()
+	w.WriteHeader(r.status)
+	_, _ = w.Write([]byte(r.body))
+}
+
+func (r *createRecorder) seen() []createRequest {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]createRequest(nil), r.requests...)
+}
+
+func newCreateRecorder(t *testing.T, status int, body string) (*createRecorder, *Client) {
+	t.Helper()
+	rec := &createRecorder{status: status, body: body}
+	srv := httptest.NewServer(rec)
+	t.Cleanup(srv.Close)
+	client, _ := newClient(t, srv.URL)
+	return rec, client
+}
+
+func TestCreateSpace(t *testing.T) {
+	site, client := keyedSite(t, "write")
+	got, err := client.CreateSpace(context.Background(), testToken, "team-notes")
+	want := Space{Name: "team-notes", Owner: "ada@example.test", Access: credentials.AccessWrite}
+	if err != nil || got != want {
+		t.Fatalf("CreateSpace() = %+v, %v; want %+v", got, err, want)
+	}
+	spaces, err := client.Spaces(context.Background(), testToken)
+	if err != nil || len(spaces) != 3 || spaces[2] != want {
+		t.Fatalf("Spaces() after CreateSpace() = %+v, %v; want the created space appended", spaces, err)
+	}
+	if mints := site.Mints(); len(mints) != 0 {
+		t.Fatalf("mints = %+v, want none: create mints no token", mints)
+	}
+}
+
+func TestCreateSpaceRequestBody(t *testing.T) {
+	rec, client := newCreateRecorder(t, http.StatusCreated, `{"space":{"name":"team-notes","owner":"ada@example.test","access":"write"}}`)
+	if _, err := client.CreateSpace(context.Background(), testToken, "team-notes"); err != nil {
+		t.Fatalf("CreateSpace() = %v", err)
+	}
+	requests := rec.seen()
+	if len(requests) != 1 {
+		t.Fatalf("requests = %+v, want one create", requests)
+	}
+	r := requests[0]
+	if r.method != http.MethodPost || r.path != createPath || r.contentType != "application/json" ||
+		r.authorization != "Bearer "+testToken || r.body != `{"name":"team-notes"}` {
+		t.Fatalf("create request = %+v, want POST %s with one name object", r, createPath)
+	}
+}
+
+func TestCreateSpaceRejectsInvalidNameBeforeSending(t *testing.T) {
+	rec, client := newCreateRecorder(t, http.StatusCreated, "")
+	if _, err := client.CreateSpace(context.Background(), testToken, "Not_Valid"); !errors.Is(err, storage.ErrInvalidNewSpaceName) {
+		t.Fatalf("CreateSpace() = %v, want ErrInvalidNewSpaceName", err)
+	}
+	if got := rec.seen(); len(got) != 0 {
+		t.Fatalf("requests = %+v, want none: an invalid name is refused before sending", got)
+	}
+}
+
+func TestCreateSpaceRejectsUnsendableKey(t *testing.T) {
+	rec, client := newCreateRecorder(t, http.StatusCreated, "")
+	if _, err := client.CreateSpace(context.Background(), "sld bad", "team-notes"); !errors.Is(err, httpstore.ErrInvalidToken) {
+		t.Fatalf("CreateSpace() = %v, want ErrInvalidToken", err)
+	}
+	if got := rec.seen(); len(got) != 0 {
+		t.Fatalf("requests = %+v, want none: an unsendable key is refused before sending", got)
+	}
+}
+
+func TestCreateSpaceRefusal(t *testing.T) {
+	site, client := keyedSite(t, "write")
+	for _, tt := range []struct {
+		status int
+		code   string
+	}{
+		{http.StatusUnauthorized, "invalid_token"},
+		{http.StatusForbidden, "access_denied"},
+		{http.StatusForbidden, "space_limit"},
+		{http.StatusConflict, "name_taken"},
+		{http.StatusTooManyRequests, "busy"},
+		{http.StatusServiceUnavailable, "pool_empty"},
+	} {
+		t.Run(tt.code, func(t *testing.T) {
+			site.RefuseCreate(tt.status, tt.code)
+			_, err := client.CreateSpace(context.Background(), testToken, "team-notes")
+			var refusal *Refusal
+			if !errors.As(err, &refusal) || refusal.Status != tt.status || refusal.Code != tt.code {
+				t.Fatalf("CreateSpace() = %v, want HTTP %d %s", err, tt.status, tt.code)
+			}
+			if spaces, err := client.Spaces(context.Background(), testToken); err != nil || len(spaces) != 2 {
+				t.Fatalf("Spaces() after a refusal = %+v, %v; want no stored space", spaces, err)
+			}
+		})
+	}
+}
+
+func TestCreateSpaceRejectsAnotherName(t *testing.T) {
+	client, _ := newClient(t, answer(t, http.StatusCreated, `{"space":{"name":"other","owner":"ada@example.test","access":"write"}}`))
+	if _, err := client.CreateSpace(context.Background(), testToken, "team-notes"); !errors.Is(err, ErrProtocol) {
+		t.Fatalf("CreateSpace() = %v, want ErrProtocol", err)
+	}
+}
+
+func TestCreateSpaceRejectsReadAccess(t *testing.T) {
+	client, _ := newClient(t, answer(t, http.StatusCreated, `{"space":{"name":"team-notes","owner":"ada@example.test","access":"read"}}`))
+	if _, err := client.CreateSpace(context.Background(), testToken, "team-notes"); !errors.Is(err, ErrProtocol) {
+		t.Fatalf("CreateSpace() = %v, want ErrProtocol", err)
+	}
+}
+
+func TestCreateSpaceAcceptsTeamOwner(t *testing.T) {
+	site := sitetest.Start(t)
+	site.Issued(testToken, endpoint)
+	client, _ := newClient(t, site.URL())
+	got, err := client.CreateSpace(context.Background(), testToken, "team-notes")
+	want := Space{Name: "team-notes", Access: credentials.AccessWrite}
+	if err != nil || got != want {
+		t.Fatalf("CreateSpace() = %+v, %v; want %+v without an owner", got, err, want)
+	}
+}
+
+func TestCreateSpaceRejectsEmptyAnswer(t *testing.T) {
+	for _, status := range []int{http.StatusCreated, http.StatusNoContent} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			client, _ := newClient(t, answer(t, status, ""))
+			if _, err := client.CreateSpace(context.Background(), testToken, "team-notes"); !errors.Is(err, ErrProtocol) {
+				t.Fatalf("CreateSpace() = %v, want ErrProtocol", err)
+			}
+		})
+	}
+}
+
+func TestCreateSpaceRejectsBadOwner(t *testing.T) {
+	client, _ := newClient(t, answer(t, http.StatusCreated, `{"space":{"name":"team-notes","owner":"ada\n@example.test","access":"write"}}`))
+	if _, err := client.CreateSpace(context.Background(), testToken, "team-notes"); !errors.Is(err, ErrProtocol) {
+		t.Fatalf("CreateSpace() = %v, want ErrProtocol", err)
+	}
+}
+
+func TestCreateSpaceRejectsBadAccess(t *testing.T) {
+	client, _ := newClient(t, answer(t, http.StatusCreated, `{"space":{"name":"team-notes","owner":"ada@example.test","access":"admin"}}`))
+	if _, err := client.CreateSpace(context.Background(), testToken, "team-notes"); !errors.Is(err, ErrProtocol) {
+		t.Fatalf("CreateSpace() = %v, want ErrProtocol", err)
+	}
+}
+
+func TestCallDecodesAny2xxBody(t *testing.T) {
+	client, _ := newClient(t, answer(t, http.StatusCreated, `{"name":"team-notes"}`))
+	var out struct {
+		Name string `json:"name"`
+	}
+	if err := client.call(context.Background(), http.MethodPost, createPath, "", nil, &out); err != nil {
+		t.Fatalf("call() = %v", err)
+	}
+	if out.Name != "team-notes" {
+		t.Fatalf("call() decoded %+v, want the 201 body", out)
+	}
+}
+
+func TestCallAcceptsAny2xxWithoutBody(t *testing.T) {
+	for _, tt := range []struct {
+		status int
+		body   string
+	}{
+		{http.StatusNoContent, ""},
+		{http.StatusCreated, `{"ignored":true}`},
+	} {
+		t.Run(http.StatusText(tt.status), func(t *testing.T) {
+			client, _ := newClient(t, answer(t, tt.status, tt.body))
+			if err := client.call(context.Background(), http.MethodPost, createPath, "", nil, nil); err != nil {
+				t.Fatalf("call() = %v, want a 2xx without an answer target accepted", err)
+			}
+		})
+	}
+}
+
+func TestCallRejectsOversized2xxBody(t *testing.T) {
+	client, _ := newClient(t, answer(t, http.StatusOK, `{"x":"`+strings.Repeat("x", bodyLimit)+`"}`))
+	var out struct {
+		X string `json:"x"`
+	}
+	err := client.call(context.Background(), http.MethodPost, createPath, "", nil, &out)
+	if !errors.Is(err, ErrProtocol) || !strings.Contains(err.Error(), "larger than") {
+		t.Fatalf("call() = %v, want ErrProtocol for an oversize body", err)
+	}
+}
+
+func TestCallRejectsOversized2xxWithoutBody(t *testing.T) {
+	client, _ := newClient(t, answer(t, http.StatusOK, strings.Repeat("x", bodyLimit+1)))
+	if err := client.call(context.Background(), http.MethodPost, createPath, "", nil, nil); !errors.Is(err, ErrProtocol) {
+		t.Fatalf("call() = %v, want ErrProtocol for an oversize body without an answer target", err)
 	}
 }

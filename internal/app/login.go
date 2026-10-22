@@ -239,7 +239,7 @@ func (l *Login) Run(ctx context.Context) error {
 		// handles an interrupt itself, as a skip.
 		stop()
 		ctx = context.WithoutCancel(ctx)
-		outcome.defaultSpace = l.offerDefault(ctx, stored, spaces, outcome.priorDefault)
+		outcome.defaultSpace = l.offerDefault(ctx, stored, spaces)
 	}
 	l.report(spaces, outcome)
 	io.WriteString(l.opts.Out(), loggedIn(l.opts.outStyle(), stored, outcome.defaultSpace))
@@ -364,32 +364,42 @@ func (l *Login) confirm(ctx context.Context, errOut io.Writer) (consent, error) 
 		prompt = "  " + l.opts.errStyle().Bold(prompt)
 	}
 	fmt.Fprint(errOut, prompt)
-	type answer struct {
-		line string
-		err  error
-	}
-	answered := make(chan answer, 1)
-	go func() {
-		line, err := bufio.NewReader(l.opts.stdin()).ReadString('\n')
-		answered <- answer{line, err}
-	}()
-	var got answer
-	select {
-	case <-ctx.Done():
+	line, answered, err := readLine(ctx, l.opts.stdin())
+	if !answered {
 		// An interrupt at the prompt is a no; the read is left to the
 		// process exit.
 		fmt.Fprintln(errOut)
 		return notConfirmed, nil
-	case got = <-answered:
 	}
-	if got.err != nil && !errors.Is(got.err, io.EOF) {
-		return notConfirmed, fmt.Errorf("login: read the answer: %w; nothing was stored", got.err)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return notConfirmed, fmt.Errorf("login: read the answer: %w; nothing was stored", err)
 	}
-	switch strings.ToLower(strings.TrimSpace(got.line)) {
+	switch strings.ToLower(strings.TrimSpace(line)) {
 	case "y", "yes":
 		return confirmed, nil
 	default:
 		return notConfirmed, nil
+	}
+}
+
+// readLine reads one line from in while ctx is live. answered is false
+// when ctx ended first; the blocked read stays with the process or the
+// test that supplied the reader.
+func readLine(ctx context.Context, in io.Reader) (line string, answered bool, err error) {
+	type answer struct {
+		line string
+		err  error
+	}
+	answeredCh := make(chan answer, 1)
+	go func() {
+		line, err := bufio.NewReader(in).ReadString('\n')
+		answeredCh <- answer{line, err}
+	}()
+	select {
+	case <-ctx.Done():
+		return "", false, nil
+	case got := <-answeredCh:
+		return got.line, true, got.err
 	}
 }
 
@@ -574,7 +584,7 @@ func loggedIn(s tui.Style, l credentials.Login, defaultSpace string) string {
 // could not be stored. The login itself is stored already, so a failure
 // here is told, not returned: the login stands and 'slivingdoc space'
 // can finish the choice.
-func (l *Login) offerDefault(ctx context.Context, stored credentials.Login, spaces []sitelogin.Space, prior string) string {
+func (l *Login) offerDefault(ctx context.Context, stored credentials.Login, spaces []sitelogin.Space) string {
 	errOut, es := l.opts.ErrOut(), l.opts.errStyle()
 	name, err := l.opts.pickSpace(spaces, "")
 	if skipped(err) {
@@ -584,8 +594,7 @@ func (l *Login) offerDefault(ctx context.Context, stored credentials.Login, spac
 		fmt.Fprintf(errOut, "%sThe space picker failed (%s).\n", es.Mark(tui.Caution), mcp.Redact(err.Error()))
 		return ""
 	}
-	sp := &Space{opts: l.opts, file: l.file, login: stored, prior: prior, name: name}
-	if err := sp.store(ctx); err != nil {
+	if err := storeDefault(ctx, l.file, stored, name); err != nil {
 		fmt.Fprintf(errOut, "%sThe default space was not stored (%s).\n", es.Mark(tui.Caution), mcp.Redact(err.Error()))
 		return ""
 	}

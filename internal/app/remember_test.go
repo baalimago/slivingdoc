@@ -2,7 +2,7 @@ package app
 
 // The recorder: what a successful pull or commit of a path-taking command
 // stores in the scoped settings file of the configuration directory
-// (architecture/config.md, The remembered notebook of a directory).
+// (architecture/config.md, The remembered target of a directory).
 
 import (
 	"context"
@@ -169,7 +169,7 @@ func (r *rigs) replaceSettings(t *testing.T, body string) {
 
 // remembered is the record of the directory at path.
 func remembered(path, space, prefix string) settings.Entry {
-	return settings.Entry{Path: path, Target: settings.Target{Space: space, Prefix: prefix}}
+	return settings.Entry{Path: path, Target: settings.Target{Kind: settings.KindHosted, Name: space, Prefix: prefix}}
 }
 
 // TestRecordsSpaceAfterPull proves a successful pull records the notebook it
@@ -285,9 +285,10 @@ func TestRememberedOnlyOnSuccess(t *testing.T) {
 	}
 }
 
-// TestS3ModeNeverRecords proves an S3 process records nothing: a bucket is
-// not a space, and the file holds hosted notebooks only.
-func TestS3ModeNeverRecords(t *testing.T) {
+// TestS3ModeRecordsTheTarget proves an S3 process records the same complete
+// target a hosted process does: the bucket and prefix named by a flag or a
+// variable, beside the effective store identity the built store reported.
+func TestS3ModeRecordsTheTarget(t *testing.T) {
 	rec := &recording{}
 	p := testProcess([]string{"SLIVINGDOC_BUCKET=a-bucket"})
 	p.cwd, p.cacheDir, p.engine = t.TempDir(), t.TempDir(), git2.New()
@@ -300,7 +301,12 @@ func TestS3ModeNeverRecords(t *testing.T) {
 	if _, err := rt.Pull(context.Background(), ""); err != nil {
 		t.Fatalf("Pull() = %v", err)
 	}
-	rec.recorded(t)
+	rec.recorded(t, settings.Entry{
+		Path: p.cwd,
+		Target: settings.Target{
+			Kind: settings.KindS3, Name: "a-bucket", Prefix: defaultPrefix,
+		},
+	})
 }
 
 // TestDefaultSpaceIsNotRecorded proves the login's default space is never
@@ -358,15 +364,17 @@ func TestExplicitChoiceRecordsAnEmptyDirectory(t *testing.T) {
 	rec.recorded(t, remembered(rig.root, rememberedSpace, defaultPrefix))
 }
 
-// TestServeNeverRecords proves a server records nothing: its process carries
-// no notebook path, so its store is fixed before any directory is known
-// (architecture/config.md).
-func TestServeNeverRecords(t *testing.T) {
-	rt := hostedRigs(t).runtime(t, nil, "")
-	rt.p.association = settingsAssociation{}
+// TestScratchServeNeverRecords proves a scratch server records nothing: it
+// owns no directory that survives it, so a later process cannot read the
+// record it would write (I8).
+func TestScratchServeNeverRecords(t *testing.T) {
+	rec := &recording{}
+	rt := hostedRigs(t).runtime(t, rec.record, "", "--space", rememberedSpace)
+	rt.cfg.sessionDir = t.TempDir()
 	if _, err := rt.Pull(context.Background(), ""); err != nil {
 		t.Fatalf("Pull() = %v", err)
 	}
+	rec.recorded(t)
 }
 
 // TestRecordedKeyIsTheResolvedPath proves the key over the file rather than
@@ -386,7 +394,7 @@ func TestRecordedKeyIsTheResolvedPath(t *testing.T) {
 	if _, err := next.Pull(context.Background(), ""); err != nil {
 		t.Fatalf("the bare pull that reads the record = %v", err)
 	}
-	rec.recorded(t, remembered(rig.root, rememberedSpace, defaultPrefix))
+	rec.recorded(t)
 }
 
 // TestRecordFailureChangesNoResult proves D8 and F23: a recorder that fails
@@ -399,7 +407,7 @@ func TestRecordFailureChangesNoResult(t *testing.T) {
 	if err != nil || res.Generation != 0 {
 		t.Fatalf("Pull() = %+v, %v; want the unchanged result of the pull", res, err)
 	}
-	if got := logs.String(); !strings.Contains(got, "remembering the hosted notebook failed") ||
+	if got := logs.String(); !strings.Contains(got, "remembering the notebook failed") ||
 		!strings.Contains(got, errRecordFailed.Error()) {
 		t.Fatalf("the warning = %s, want it to name the failed record", got)
 	}
@@ -434,7 +442,7 @@ func TestSecondDirectoryReplacesOnlyItsOwnEntry(t *testing.T) {
 		t.Fatalf("the settings file after an unchanged record = %s, want it unchanged (%s)", after, before)
 	}
 	moved := first
-	moved.Target.Space = rememberedSpace
+	moved.Target.Name = rememberedSpace
 	if err := store(context.Background(), moved); err != nil {
 		t.Fatalf("record the moved notebook = %v", err)
 	}
@@ -448,8 +456,10 @@ func TestSecondDirectoryReplacesOnlyItsOwnEntry(t *testing.T) {
 }
 
 // TestRecordedFileHoldsNoCredential proves the file the recorder writes
-// carries the version, the paths, the spaces and the prefixes only: no key,
-// no token and no endpoint, in any spelling.
+// carries the version, the paths, the hosted target and the prefix only: no
+// account key, no token, no account and no site endpoint in any value. The
+// hosted target's endpoint is empty in this build, because the selected
+// login supplies the site when the record is resolved.
 func TestRecordedFileHoldsNoCredential(t *testing.T) {
 	rig := hostedRigs(t)
 	if _, err := rig.runtime(t, nil, "", "--space", rememberedSpace).Pull(context.Background(), ""); err != nil {
@@ -457,16 +467,19 @@ func TestRecordedFileHoldsNoCredential(t *testing.T) {
 	}
 	body := rig.readSettings(t)
 	for _, want := range []string{
-		`"version":1`,
+		`"version":2`,
 		`"path":"` + rig.root + `"`,
-		`"space":"` + rememberedSpace + `"`,
+		`"kind":"hosted"`,
+		`"endpoint":""`,
+		`"name":"` + rememberedSpace + `"`,
 		`"prefix":"slivingdoc"`,
+		`"defaults":[]`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("the settings file = %s, want it to contain %s", body, want)
 		}
 	}
-	for _, forbidden := range []string{"sld_", loginToken, hostedTestToken, "token", "key", "endpoint", "site", "account"} {
+	for _, forbidden := range []string{"sld_", strings.ToLower(loginToken), strings.ToLower(hostedTestToken), "@", "http"} {
 		if strings.Contains(strings.ToLower(body), forbidden) {
 			t.Fatalf("the settings file = %s, want no %q in it", body, forbidden)
 		}
@@ -486,7 +499,7 @@ func TestRecordRefusedOverBoundChangesNoResult(t *testing.T) {
 	if err != nil || res.Generation != 0 {
 		t.Fatalf("Pull() = %+v, %v; want the unchanged result of the pull", res, err)
 	}
-	if got := logs.String(); !strings.Contains(got, "remembering the hosted notebook failed") ||
+	if got := logs.String(); !strings.Contains(got, "remembering the notebook failed") ||
 		!strings.Contains(got, "larger than") {
 		t.Fatalf("the warning = %s, want it to name the bound", got)
 	}
@@ -505,7 +518,7 @@ func TestUnreadableSettingsFileWarnsAndContinues(t *testing.T) {
 	if _, err := rt.Pull(context.Background(), ""); err != nil {
 		t.Fatalf("Pull() = %v", err)
 	}
-	if got := logs.String(); !strings.Contains(got, "remembering the hosted notebook failed") ||
+	if got := logs.String(); !strings.Contains(got, "remembering the notebook failed") ||
 		!strings.Contains(got, "chmod 600") {
 		t.Fatalf("the warning = %s, want it to name the file and the fix", got)
 	}

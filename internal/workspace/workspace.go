@@ -141,7 +141,7 @@ func Open(ctx context.Context, cfg Config) (*Workspace, error) {
 		}
 	}()
 
-	// Reject a symlink in any existing component of the requested path
+	// Reject a symlink in any existing component of the notebook path
 	// before the root-relative operations touch it (architecture 18.2).
 	if err := rejectSymlinkComponents(root, rel); err != nil {
 		return nil, err

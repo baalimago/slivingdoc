@@ -1,0 +1,886 @@
+package itest
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"reflect"
+	"regexp"
+	"slices"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/baalimago/slivingdoc/internal/app"
+	"github.com/baalimago/slivingdoc/internal/git"
+	"github.com/baalimago/slivingdoc/internal/git2"
+	"github.com/baalimago/slivingdoc/internal/mcp"
+	"github.com/baalimago/slivingdoc/internal/notebook"
+	"github.com/baalimago/slivingdoc/internal/s3store"
+	"github.com/baalimago/slivingdoc/internal/storage"
+	"github.com/baalimago/slivingdoc/internal/tests3"
+	"github.com/baalimago/slivingdoc/internal/workspace"
+	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
+)
+
+// codeRecoveryFailure is the only error category whose envelope may carry
+// the recovery report (architecture/product-contract.md).
+const CodeRecoveryFailure = "RECOVERY_FAILURE"
+
+// HarnessConfig wires one black-box harness. The zero store builds the
+// real s3store adapter against the shared S3-compatible suite on a fresh
+// per-test prefix; scenarios substitute the deterministic fake or the
+// fault wrappers through Store.
+type HarnessConfig struct {
+	// Store is the base object store. Nil builds the real S3 backend.
+	Store storage.ObjectStore
+	// Prefix is the S3 protocol prefix of the store. For the real backend
+	// the empty value uses a fresh per-test prefix; for an injected store
+	// the caller must set the prefix the store was built with.
+	Prefix string
+	// Bucket and Endpoint feed the storage identity; they default to the
+	// real-backend suite values when Store is nil and are required for an
+	// injected store (the fake uses "test-bucket" and no endpoint).
+	Bucket   string
+	Endpoint string
+	// Hooks are the service failpoints; nil leaves them disabled.
+	Hooks *app.ServiceHooks
+	// PackCacheRoot is the shared pack-cache root served to the app; empty
+	// keeps the private per-workspace cache.
+	PackCacheRoot string
+	// WorkspaceRoot and PrivateRoot reuse existing roots instead of fresh
+	// temporary ones, so a scenario can reopen the private state an earlier
+	// harness left behind, as a new process would. Empty creates fresh
+	// roots.
+	WorkspaceRoot string
+	PrivateRoot   string
+	// RetryLimit, CheckpointPacks, and RetainedCheckpoints override the
+	// documented defaults (8, 256, 1). They are pointers because zero is a
+	// documented value of two of them (no retries, no retained generation),
+	// which a plain int cannot distinguish from "unset".
+	RetryLimit       *int
+	CheckpointPacks  *int
+	RetainedCheckpts *int
+	// ReadOnlyPaths configures the service's read-only set.
+	ReadOnlyPaths []string
+	// WritablePaths configures the service's writable set; a non-empty set
+	// protects every unmatched path.
+	WritablePaths []string
+	// Ignore adds ignore patterns to the built-in defaults.
+	Ignore []string
+}
+
+// setting returns the pointed-to override, or def when the field is unset.
+func Setting(v *int, def int) int {
+	if v == nil {
+		return def
+	}
+	return *v
+}
+
+// Harness is one black-box server wiring: the real app service over the
+// recorded and fault-injecting store seam, one MCP server, named client
+// sessions, a scoped log capture, and per-test workspace and private
+// roots. The only entry into the server is MCP JSON-RPC; scenarios never
+// call notebook, git, workspace, or storage functions directly.
+type Harness struct {
+	t      *testing.T
+	engine git.Engine
+
+	raw    storage.ObjectStore // base store for assertions
+	faults *FaultStore         // injection and barrier layer
+	store  *Recorder           // the seam served to the app
+
+	Cfg   app.ServiceConfig
+	hooks *app.ServiceHooks
+	svc   *app.Service
+	srv   *mcp.Server
+	logs  *LogCapture
+
+	mu             sync.Mutex // guards sessions
+	sessions       map[string]*sdk.ClientSession
+	serverSessions []*sdk.ServerSession
+
+	workspaceRoot string
+	privateRoot   string
+}
+
+// NewHarness wires one harness: the engine, the store stack, the app
+// service, the MCP server, and the scoped logger. The startup compatibility
+// probe does not run here (it lives in the process body), so store counters
+// start at zero.
+func NewHarness(t *testing.T, cfg HarnessConfig) *Harness {
+	t.Helper()
+	eng := git2.New()
+	if err := eng.Open(); err != nil {
+		t.Fatalf("git2.Open() = %v", err)
+	}
+	t.Cleanup(func() { _ = eng.Close() })
+
+	var raw storage.ObjectStore
+	bucket := cfg.Bucket
+	endpoint := cfg.Endpoint
+	prefix := cfg.Prefix
+	if cfg.Store == nil {
+		suite := tests3.Ensure(t)
+		if prefix == "" {
+			prefix = suite.FreshPrefix("integrationtest")
+		}
+		if bucket == "" {
+			bucket = tests3.Bucket
+		}
+		if endpoint == "" {
+			endpoint = suite.Endpoint
+		}
+		mc := suite.StoreConfig()
+		st, err := s3store.New(context.Background(), s3store.Config{
+			Bucket: bucket, Prefix: prefix, Region: mc.Region,
+			Endpoint: mc.Endpoint, AccessKey: mc.AccessKey, SecretKey: mc.SecretKey,
+		})
+		if err != nil {
+			t.Fatalf("s3store.New(%q) = %v", prefix, err)
+		}
+		raw = st
+	} else {
+		raw = cfg.Store
+		if bucket == "" {
+			bucket = "test-bucket"
+		}
+	}
+	if prefix == "" {
+		t.Fatal("a protocol prefix is required for an injected store")
+	}
+
+	workspaceRoot := cfg.WorkspaceRoot
+	if workspaceRoot == "" {
+		workspaceRoot = t.TempDir()
+	}
+	privateRoot := cfg.PrivateRoot
+	if privateRoot == "" {
+		privateRoot = t.TempDir()
+	}
+	serviceCfg := app.ServiceConfig{
+		Bucket:              bucket,
+		Prefix:              prefix,
+		Region:              "us-east-1",
+		Endpoint:            endpoint,
+		WorkspaceRoot:       workspaceRoot,
+		PrivateRoot:         privateRoot,
+		PackCacheRoot:       cfg.PackCacheRoot,
+		CommitRetries:       Setting(cfg.RetryLimit, notebook.DefaultRetryLimit),
+		CheckpointPacks:     Setting(cfg.CheckpointPacks, notebook.DefaultCheckpointPacks),
+		RetainedCheckpoints: Setting(cfg.RetainedCheckpts, notebook.DefaultRetainedCheckpoints),
+		ReadOnlyPaths:       cfg.ReadOnlyPaths,
+		WritablePaths:       cfg.WritablePaths,
+		Ignore:              cfg.Ignore,
+	}
+	hooks := cfg.Hooks
+	if hooks == nil {
+		hooks = &app.ServiceHooks{}
+	}
+	faults := NewFaultStore(raw)
+	store := NewRecorder(faults)
+	svc, err := app.NewService(eng, store, serviceCfg, hooks)
+	if err != nil {
+		t.Fatalf("app.NewService() = %v", err)
+	}
+	t.Cleanup(func() { _ = svc.Close() })
+
+	logs := NewLogCapture()
+	h := &Harness{
+		t:             t,
+		engine:        eng,
+		raw:           raw,
+		faults:        faults,
+		store:         store,
+		Cfg:           serviceCfg,
+		hooks:         hooks,
+		svc:           svc,
+		logs:          logs,
+		sessions:      map[string]*sdk.ClientSession{},
+		workspaceRoot: workspaceRoot,
+		privateRoot:   privateRoot,
+	}
+	h.srv = mcp.NewServer(svc, app.Version, logs.Logger())
+	return h
+}
+
+// Client returns the named in-memory MCP client session, connecting it on
+// first use. The empty name is the "default" session. Sessions close with
+// the harness cleanup.
+func (h *Harness) Client(name string) *sdk.ClientSession {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if name == "" {
+		name = "default"
+	}
+	if cs, ok := h.sessions[name]; ok {
+		return cs
+	}
+	serverTransport, clientTransport := sdk.NewInMemoryTransports()
+	serverSession, err := h.srv.Connect(context.Background(), serverTransport)
+	if err != nil {
+		h.t.Fatalf("server Connect() = %v", err)
+	}
+	h.serverSessions = append(h.serverSessions, serverSession)
+	client := sdk.NewClient(&sdk.Implementation{Name: "integrationtest", Version: "test"}, nil)
+	cs, err := client.Connect(context.Background(), clientTransport, nil)
+	if err != nil {
+		h.t.Fatalf("client Connect() = %v", err)
+	}
+	h.sessions[name] = cs
+	return cs
+}
+
+// PrivateRoot returns the per-test configured private root.
+func (h *Harness) PrivateRoot() string { return h.privateRoot }
+
+// WorkspaceRoot returns the harness's visible workspace root.
+func (h *Harness) WorkspaceRoot() string { return h.workspaceRoot }
+
+// Recorder returns the store recorder served to the app.
+func (h *Harness) Recorder() *Recorder { return h.store }
+
+// Faults returns the fault-injecting store layer.
+func (h *Harness) Faults() *FaultStore { return h.faults }
+
+// Raw returns the base store, used for assertions that must not see
+// injected faults (corrupt reads, missing objects).
+func (h *Harness) Raw() storage.ObjectStore { return h.raw }
+
+// Logs returns the scoped log capture of this harness.
+func (h *Harness) Logs() *LogCapture { return h.logs }
+
+// WorkspaceFailpoints returns the workspace failpoint hooks of the
+// harness service.
+func (h *Harness) WorkspaceFailpoints() *workspace.Failpoints {
+	return h.hooks.Workspace
+}
+
+// NotebookFailpoints returns the notebook failpoint hooks of the harness
+// service.
+func (h *Harness) NotebookFailpoints() *notebook.Failpoints {
+	return h.hooks.Notebook
+}
+
+// Identity returns the storage identity of the harness service, for
+// derived-key assertions.
+func (h *Harness) Identity() workspace.Identity {
+	return workspace.Identity{
+		Endpoint:        h.Cfg.Endpoint,
+		Region:          h.Cfg.Region,
+		Bucket:          h.Cfg.Bucket,
+		Prefix:          h.Cfg.Prefix,
+		ManifestVersion: workspace.ManifestVersion,
+		SpaceID:         h.Cfg.SpaceID,
+	}
+}
+
+// PrivateDir returns the derived private directory of the server's
+// notebook directory.
+func (h *Harness) PrivateDir() string {
+	return filepath.Join(h.privateRoot, workspace.DerivedKey(h.WorkspaceRoot(), h.Identity()))
+}
+
+// CallTool performs one MCP tool call on the named session and returns the
+// raw result; a protocol error is a test failure. The harness server serves
+// one notebook directory, so a call names no path.
+func (h *Harness) CallTool(name, tool, message string) *sdk.CallToolResult {
+	cs := h.Client(name)
+	args := map[string]any{}
+	if tool == ToolCommit {
+		args["message"] = message
+	}
+	res, err := cs.CallTool(context.Background(), &sdk.CallToolParams{Name: tool, Arguments: args})
+	if err != nil {
+		h.t.Fatalf("%s = %v", tool, err)
+	}
+	return res
+}
+
+// Pull performs one notes_pull and returns the raw result.
+func (h *Harness) Pull(name string) *sdk.CallToolResult {
+	return h.CallTool(name, ToolPull, "")
+}
+
+// Commit performs one notes_commit and returns the raw result.
+func (h *Harness) Commit(name, message string) *sdk.CallToolResult {
+	return h.CallTool(name, ToolCommit, message)
+}
+
+// WriteFile writes one UTF-8 text file at an absolute host path.
+func (h *Harness) WriteFile(path, data string) {
+	h.t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		h.t.Fatalf("MkdirAll(%s) = %v", path, err)
+	}
+	if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
+		h.t.Fatalf("WriteFile(%s) = %v", path, err)
+	}
+}
+
+// ReadFile reads one file and fails the test when it is absent.
+func (h *Harness) ReadFile(path string) string {
+	h.t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		h.t.Fatalf("ReadFile(%s) = %v", path, err)
+	}
+	return string(data)
+}
+
+// RemoveFile removes one file.
+func (h *Harness) RemoveFile(path string) {
+	h.t.Helper()
+	if err := os.Remove(path); err != nil {
+		h.t.Fatalf("RemoveFile(%s) = %v", path, err)
+	}
+}
+
+// FSSnapshot returns every file under dir with its exact bytes, keyed by
+// slash-form path relative to dir. A walk failure fails the test: an empty
+// snapshot must mean "the directory is empty", never "the directory was
+// not readable". Otherwise an assertion of the form "no file was
+// imported" passes on a missing directory.
+func (h *Harness) FSSnapshot(dir string) map[string]string {
+	h.t.Helper()
+	return FSSnapshotDir(h.t, dir)
+}
+
+// FSSnapshotDir is FSSnapshot for scenarios without a harness, such as the
+// process scenarios that drive a spawned helper.
+func FSSnapshotDir(t *testing.T, dir string) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		key, rerr := filepath.Rel(dir, path)
+		if rerr != nil {
+			return rerr
+		}
+		data, rerr := os.ReadFile(path)
+		if rerr != nil {
+			return rerr
+		}
+		out[filepath.ToSlash(key)] = string(data)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("snapshot %s: %v", dir, err)
+	}
+	return out
+}
+
+// Manifest reads and decodes the authoritative current manifest through
+// the raw store, failing the test when it is absent or invalid.
+func (h *Harness) Manifest() storage.Manifest {
+	h.t.Helper()
+	data, err := h.ReadObject(storage.CurrentKey)
+	if err != nil {
+		h.t.Fatalf("read current manifest: %v", err)
+	}
+	m, err := storage.DecodeManifest(data)
+	if err != nil {
+		h.t.Fatalf("decode current manifest: %v", err)
+	}
+	return m
+}
+
+// ManifestAbsent reports whether the current manifest object is absent.
+func (h *Harness) ManifestAbsent() bool {
+	_, err := h.ReadObject(storage.CurrentKey)
+	return err != nil
+}
+
+// ReadObject reads one object through the raw store.
+func (h *Harness) ReadObject(key string) ([]byte, error) {
+	rc, _, err := h.raw.ReadObject(context.Background(), key)
+	if err != nil {
+		return nil, err
+	}
+	defer rc.Close()
+	return io.ReadAll(rc)
+}
+
+// ObjectExists reports whether an object exists in the raw store.
+func (h *Harness) ObjectExists(key string) bool {
+	rc, _, err := h.raw.ReadObject(context.Background(), key)
+	if err != nil {
+		return false
+	}
+	rc.Close()
+	return true
+}
+
+// ListObjects lists the protocol keys below a prefix through the raw
+// store.
+func (h *Harness) ListObjects(prefix string) []string {
+	var keys []string
+	if err := h.raw.ListObjects(context.Background(), prefix, func(key string) error {
+		keys = append(keys, key)
+		return nil
+	}); err != nil {
+		h.t.Fatalf("ListObjects(%q) = %v", prefix, err)
+	}
+	return keys
+}
+
+// settleTimeout bounds every polled assertion. Checkpoint and cleanup run
+// inline on the commit call path, so a correct scenario settles in
+// milliseconds; a bound well below the package test timeout turns a genuine
+// regression into one failed scenario instead of a whole-binary panic that
+// hides which scenario broke.
+const SettleTimeout = 3 * time.Second
+
+// eventually polls fn until it returns nil or the deadline passes, and
+// reports the last observed error. It must only be called from the test
+// goroutine it is given.
+func (h *Harness) Eventually(t *testing.T, timeout time.Duration, fn func() error) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		err := fn()
+		if err == nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("condition did not settle within %s (last error: %v)", timeout, err)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// assertOK asserts the success envelope: one text item carrying the
+// resolved notebook path and a structured SuccessInfo whose code is OK
+// with the files key always present. The exact generation and diffstat
+// values of each scenario are asserted by the Success expectation of
+// CallExpectation.
+func (h *Harness) AssertOK(t *testing.T, res *sdk.CallToolResult) {
+	t.Helper()
+	got := h.SuccessInfo(t, res)
+	if got.Code != "OK" {
+		t.Fatalf("success code = %q, want OK", got.Code)
+	}
+	if got.Files == nil {
+		t.Fatal("files must always be present")
+	}
+	if got.ReadOnly == nil {
+		t.Fatal("readOnly must always be present")
+	}
+	if got.Writable == nil {
+		t.Fatal("writable must always be present")
+	}
+	if got.Materialized != (got.Outline != nil) || (got.Materialized && len(got.Files) != 0) {
+		t.Fatalf("materialized = %t with %d files and outline %+v, want an outline and no files exactly when materialized",
+			got.Materialized, len(got.Files), got.Outline)
+	}
+	if len(res.Content) != 1 {
+		t.Fatalf("content items = %d, want exactly one", len(res.Content))
+	}
+	text, ok := res.Content[0].(*sdk.TextContent)
+	wantText := SuccessText(got)
+	if !ok || MaskFileCount(text.Text) != wantText {
+		t.Fatalf("text item = %#v, want %q", res.Content[0], wantText)
+	}
+}
+
+func FirstLine(text string) string {
+	line, _, _ := strings.Cut(text, "\n")
+	return line
+}
+
+// successText is the expected text item: the path line, then a
+// materialization's header and its outline as JSON. The header's file count
+// is N here; the scenarios that know it pin it.
+func SuccessText(got mcp.SuccessInfo) string {
+	text := PathSetText(got.Path, got.ReadOnly, got.Writable)
+	if got.Materialized {
+		outline, _ := json.Marshal(got.Outline)
+		text += "\nfirst pull: N files now on disk; outline of the largest entries, as JSON; list or read the directory for more\n" + string(outline)
+	}
+	return text
+}
+
+var HeaderFileCount = regexp.MustCompile(`(?m)^first pull: (1 file|\d+ files) `)
+
+// maskFileCount replaces the header's file count with the N of successText.
+func MaskFileCount(text string) string {
+	return HeaderFileCount.ReplaceAllString(text, "first pull: N files ")
+}
+
+// pathSetText is the expected success text item for the configured path
+// sets, writable first, and — when both are configured, where the sets can
+// name the same region at different depths — the rule that decides between
+// them (architecture/product-contract.md, Read-only and writable paths).
+// The wording is written out here rather than taken from the server, so the
+// black-box oracle is an independent expectation.
+func PathSetText(path string, entries, writable []string) string {
+	parts := make([]string, 0, 2)
+	if len(writable) > 0 {
+		parts = append(parts, "writable: "+strings.Join(writable, notebook.ReadOnlyListSeparator))
+	}
+	if len(entries) > 0 {
+		parts = append(parts, "read-only: "+strings.Join(entries, notebook.ReadOnlyListSeparator))
+	}
+	if len(parts) == 2 {
+		parts = append(parts, "longest match decides")
+	}
+	if len(parts) == 0 {
+		return path
+	}
+	return path + " (" + strings.Join(parts, "; ") + ")"
+}
+
+// successInfo decodes the structured content of a success result into the
+// SuccessInfo shape, failing the test when the result is an error, carries
+// no structured content, or is not the success shape.
+func (h *Harness) SuccessInfo(t *testing.T, res *sdk.CallToolResult) mcp.SuccessInfo {
+	t.Helper()
+	if res.IsError {
+		t.Fatalf("result is an error: %v", res.StructuredContent)
+	}
+	if res.StructuredContent == nil {
+		t.Fatal("success result carries no structured content")
+	}
+	data, err := json.Marshal(res.StructuredContent)
+	if err != nil {
+		t.Fatalf("marshal structured content: %v", err)
+	}
+	var got mcp.SuccessInfo
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("structured content is not the success shape: %v", err)
+	}
+	return got
+}
+
+// assertSuccessStat asserts the exact structured success envelope of one
+// call result: the accepted generation, the total counts, and the ordered
+// per-file change stat.
+func (h *Harness) assertSuccessStat(t *testing.T, call ToolCall, res *sdk.CallToolResult, exp SuccessExpectation) {
+	t.Helper()
+	got := h.SuccessInfo(t, res)
+	if got.Generation != exp.Generation {
+		t.Fatalf("call %s(%s) generation = %d, want %d", call.Tool, call.Path, got.Generation, exp.Generation)
+	}
+	if got.FilesChanged != exp.FilesChanged {
+		t.Fatalf("call %s(%s) filesChanged = %d, want %d", call.Tool, call.Path, got.FilesChanged, exp.FilesChanged)
+	}
+	if got.Insertions != exp.Insertions {
+		t.Fatalf("call %s(%s) insertions = %d, want %d", call.Tool, call.Path, got.Insertions, exp.Insertions)
+	}
+	if got.Deletions != exp.Deletions {
+		t.Fatalf("call %s(%s) deletions = %d, want %d", call.Tool, call.Path, got.Deletions, exp.Deletions)
+	}
+	if len(got.Files) != len(exp.Files) {
+		t.Fatalf("call %s(%s) stat files = %v, want %v", call.Tool, call.Path, got.Files, exp.Files)
+	}
+	for i := range exp.Files {
+		g, w := got.Files[i], exp.Files[i]
+		if g.Path != w.Path || g.Insertions != w.Insertions || g.Deletions != w.Deletions {
+			t.Fatalf("call %s(%s) stat file %d = %+v, want %+v", call.Tool, call.Path, i, g, w)
+		}
+	}
+	if got.Materialized != exp.Materialized || !reflect.DeepEqual(got.Outline, exp.Outline) {
+		t.Fatalf("call %s(%s) materialized = %t with outline %+v, want %t with %+v",
+			call.Tool, call.Path, got.Materialized, got.Outline, exp.Materialized, exp.Outline)
+	}
+}
+
+// assertEnvelope asserts the full envelope expectation of one call result.
+// Every error envelope is also checked for the shape invariants: a
+// non-empty message, the files key always present, and no recovery report
+// outside RECOVERY_FAILURE (architecture/product-contract.md).
+func (h *Harness) AssertEnvelope(t *testing.T, call ToolCall, res *sdk.CallToolResult) {
+	t.Helper()
+	exp := call.Expect
+	if exp.OK {
+		h.AssertOK(t, res)
+		if call.Path != "" {
+			if got := h.SuccessInfo(t, res).Path; got != call.Path {
+				t.Fatalf("call %s reports the directory %q, want %q", call.Tool, got, call.Path)
+			}
+		}
+		if exp.Success != nil {
+			h.assertSuccessStat(t, call, res, *exp.Success)
+		}
+		if exp.ReadOnly != nil {
+			got := h.SuccessInfo(t, res).ReadOnly
+			if !slices.Equal(got, exp.ReadOnly) {
+				t.Fatalf("call %s(%s) success readOnly = %v, want %v", call.Tool, call.Path, got, exp.ReadOnly)
+			}
+		}
+		if exp.Writable != nil {
+			got := h.SuccessInfo(t, res).Writable
+			if !slices.Equal(got, exp.Writable) {
+				t.Fatalf("call %s(%s) success writable = %v, want %v", call.Tool, call.Path, got, exp.Writable)
+			}
+		}
+		for _, sub := range exp.NoText {
+			text, ok := res.Content[0].(*sdk.TextContent)
+			if !ok || strings.Contains(text.Text, sub) {
+				t.Fatalf("call %s(%s) result contains forbidden substring %q", call.Tool, call.Path, sub)
+			}
+		}
+		return
+	}
+	env := DecodeEnvelope(t, call, res)
+	if env.Code != exp.ErrorCode {
+		t.Fatalf("call %s(%s) code = %q, want %q", call.Tool, call.Path, env.Code, exp.ErrorCode)
+	}
+	if exp.Reason != "" && env.Reason != exp.Reason {
+		t.Fatalf("call %s(%s) reason = %q, want %q", call.Tool, call.Path, env.Reason, exp.Reason)
+	}
+	if exp.Action != "" && env.Action != exp.Action {
+		t.Fatalf("call %s(%s) action = %q, want %q", call.Tool, call.Path, env.Action, exp.Action)
+	}
+	if exp.Retryable != nil && env.Retryable != *exp.Retryable {
+		t.Fatalf("call %s(%s) retryable = %v, want %v", call.Tool, call.Path, env.Retryable, *exp.Retryable)
+	}
+	if exp.Files != nil {
+		got := env.Files
+		if len(got) != len(exp.Files) {
+			t.Fatalf("call %s(%s) files = %v, want %v", call.Tool, call.Path, got, exp.Files)
+		}
+		for i := range exp.Files {
+			if got[i].Path != exp.Files[i].Path {
+				t.Fatalf("call %s(%s) file %d path = %q, want %q", call.Tool, call.Path, i, got[i].Path, exp.Files[i].Path)
+			}
+			if exp.Files[i].Reason != "" && got[i].Reason != exp.Files[i].Reason {
+				t.Fatalf("call %s(%s) file %d reason = %q, want %q", call.Tool, call.Path, i, got[i].Reason, exp.Files[i].Reason)
+			}
+			if exp.Files[i].Ranges == nil {
+				continue // the row asserts the path only
+			}
+			if len(got[i].Ranges) != len(exp.Files[i].Ranges) {
+				t.Fatalf("call %s(%s) file %d ranges = %v, want %v", call.Tool, call.Path, i, got[i].Ranges, exp.Files[i].Ranges)
+			}
+			for j := range exp.Files[i].Ranges {
+				if got[i].Ranges[j].Start != exp.Files[i].Ranges[j].Start || got[i].Ranges[j].End != exp.Files[i].Ranges[j].End {
+					t.Fatalf("call %s(%s) file %d range %d = %+v, want %+v", call.Tool, call.Path, i, j, got[i].Ranges[j], exp.Files[i].Ranges[j])
+				}
+			}
+		}
+	}
+	if exp.ReadOnly != nil && !slices.Equal(env.ReadOnly, exp.ReadOnly) {
+		t.Fatalf("call %s(%s) error readOnly = %v, want %v", call.Tool, call.Path, env.ReadOnly, exp.ReadOnly)
+	}
+	if exp.Writable != nil && !slices.Equal(env.Writable, exp.Writable) {
+		t.Fatalf("call %s(%s) error writable = %v, want %v", call.Tool, call.Path, env.Writable, exp.Writable)
+	}
+	if exp.Recovery != nil {
+		if env.Recovery == nil {
+			t.Fatalf("call %s(%s) carries no recovery report", call.Tool, call.Path)
+		}
+		if env.Recovery.Stage != exp.Recovery.Stage || env.Recovery.RemoteAccepted != exp.Recovery.RemoteAccepted {
+			t.Fatalf("call %s(%s) recovery = %+v, want stage=%s accepted=%s", call.Tool, call.Path, env.Recovery, exp.Recovery.Stage, exp.Recovery.RemoteAccepted)
+		}
+		if exp.Recovery.Resynchronized != nil && env.Recovery.Resynchronized != *exp.Recovery.Resynchronized {
+			t.Fatalf("call %s(%s) resynchronized = %v, want %v", call.Tool, call.Path, env.Recovery.Resynchronized, *exp.Recovery.Resynchronized)
+		}
+	}
+	for _, sub := range exp.NoText {
+		data, _ := json.Marshal(res.StructuredContent)
+		if strings.Contains(string(data), sub) || strings.Contains(env.Message, sub) {
+			t.Fatalf("call %s(%s) result contains forbidden substring %q", call.Tool, call.Path, sub)
+		}
+	}
+}
+
+// envelope is the structured error object of the tool-error shape
+// (architecture/product-contract.md): code, reason, action, diagnostic ID,
+// retryable, message, and files are always present; recovery appears only
+// for RECOVERY_FAILURE.
+type Envelope struct {
+	Code         string            `json:"code"`
+	Reason       string            `json:"reason"`
+	Action       string            `json:"action"`
+	DiagnosticID string            `json:"diagnosticId"`
+	Retryable    bool              `json:"retryable"`
+	Message      string            `json:"message"`
+	Files        []EnvelopeFile    `json:"files"`
+	Recovery     *EnvelopeRecovery `json:"recovery"`
+	ReadOnly     []string          `json:"readOnly"`
+	Writable     []string          `json:"writable"`
+}
+
+type EnvelopeFile struct {
+	Path   string          `json:"path"`
+	Reason string          `json:"reason"`
+	Ranges []EnvelopeRange `json:"ranges"`
+}
+
+type EnvelopeRange struct {
+	Start int `json:"start"`
+	End   int `json:"end"`
+}
+
+type EnvelopeRecovery struct {
+	Stage          string `json:"stage"`
+	RemoteAccepted string `json:"remoteAccepted"`
+	Resynchronized bool   `json:"resynchronized"`
+}
+
+// envelopeTokenViolation describes the first envelope shape invariant an
+// error envelope breaks, or returns "" (architecture/product-contract.md).
+func EnvelopeTokenViolation(env Envelope) string {
+	switch {
+	case env.Message == "":
+		return "carries an empty message"
+	case env.Reason == "":
+		return "carries an empty reason"
+	case env.Action == "":
+		return "carries an empty action"
+	case env.DiagnosticID == "":
+		return "carries an empty diagnosticId"
+	case env.Files == nil:
+		return "carries no files key"
+	case env.ReadOnly == nil:
+		return "carries no readOnly key"
+	case env.Writable == nil:
+		return "carries no writable key"
+	}
+	for i, f := range env.Files {
+		if f.Reason == "" {
+			return fmt.Sprintf("file %d carries an empty reason", i)
+		}
+	}
+	return ""
+}
+
+// DecodeEnvelope unmarshals the structured content of an error result and
+// proves the envelope shape invariants: non-empty message, reason, and
+// action, files always present with a non-empty reason on every entry, and
+// recovery only for RECOVERY_FAILURE.
+func DecodeEnvelope(t *testing.T, call ToolCall, res *sdk.CallToolResult) Envelope {
+	t.Helper()
+	if !res.IsError {
+		t.Fatalf("call %s(%s) must be an error result", call.Tool, call.Path)
+	}
+	if res.StructuredContent == nil {
+		t.Fatalf("call %s(%s) error result carries no structured content", call.Tool, call.Path)
+	}
+	data, err := json.Marshal(res.StructuredContent)
+	if err != nil {
+		t.Fatalf("marshal structured content: %v", err)
+	}
+	var env Envelope
+	if err := json.Unmarshal(data, &env); err != nil {
+		t.Fatalf("structured content = %s: %v", data, err)
+	}
+	if violation := EnvelopeTokenViolation(env); violation != "" {
+		t.Fatalf("call %s(%s) error envelope %s", call.Tool, call.Path, violation)
+	}
+	if env.Code != CodeRecoveryFailure && env.Recovery != nil {
+		t.Fatalf("call %s(%s) carries a recovery report for %s", call.Tool, call.Path, env.Code)
+	}
+	// The error envelope never carries the success shape: the success-only
+	// field names are absent from the raw structured content, so the two
+	// envelopes cannot be confused (architecture/product-contract.md).
+	raw, err := json.Marshal(res.StructuredContent)
+	if err != nil {
+		t.Fatalf("marshal structured content: %v", err)
+	}
+	for _, key := range []string{"\"generation\":", "\"filesChanged\":", "\"insertions\":", "\"deletions\":"} {
+		if bytes.Contains(raw, []byte(key)) {
+			t.Fatalf("call %s(%s) error envelope carries the success-only field %s in %s", call.Tool, call.Path, key, raw)
+		}
+	}
+	return env
+}
+
+// assertExpectations asserts the final state of a scenario: the visible
+// files, the authoritative manifest, the store counters, and the log
+// capture. Every condition polls until it settles; polling removes the
+// checked-too-early race, it does not mask a wrong final value.
+func (h *Harness) AssertExpectations(t *testing.T, exp Expectations) {
+	t.Helper()
+	h.Eventually(t, SettleTimeout, func() error {
+		for path, want := range exp.FS.Files {
+			got, err := os.ReadFile(path)
+			if err != nil {
+				return fmt.Errorf("file %s: %v", path, err)
+			}
+			if string(got) != want {
+				return fmt.Errorf("file %s = %q, want %q", path, got, want)
+			}
+		}
+		for path, sub := range exp.FS.Contains {
+			got, err := os.ReadFile(path)
+			if err != nil {
+				return fmt.Errorf("file %s: %v", path, err)
+			}
+			if !strings.Contains(string(got), sub) {
+				return fmt.Errorf("file %s does not contain %q", path, sub)
+			}
+		}
+		for _, path := range exp.FS.Missing {
+			if _, err := os.Stat(path); err == nil {
+				return fmt.Errorf("file %s exists, want absent", path)
+			} else if !os.IsNotExist(err) {
+				return fmt.Errorf("stat %s: %v", path, err)
+			}
+		}
+		if exp.S3.NoCurrent != nil && *exp.S3.NoCurrent != h.ManifestAbsent() {
+			return fmt.Errorf("current presence mismatch")
+		}
+		if exp.S3.NoPacks != nil && *exp.S3.NoPacks {
+			if len(h.ListObjects("packs/")) > 0 {
+				return fmt.Errorf("packs exist, want none")
+			}
+		}
+		if c := exp.S3.Counts; c != nil {
+			snap := h.store.Snapshot()
+			if c.AllZero {
+				for _, op := range AllOps {
+					if snap[op] != 0 {
+						return fmt.Errorf("store counter %s = %d, want 0", op, snap[op])
+					}
+				}
+			}
+			for op, want := range c.Ops {
+				if snap[op] != want {
+					return fmt.Errorf("store counter %s = %d, want %d", op, snap[op], want)
+				}
+			}
+		}
+		if logs := exp.Logs; logs != nil {
+			for _, sub := range logs.WarnContains {
+				if !AnyContains(h.logs.Warnings(), sub) {
+					return fmt.Errorf("no warning contains %q", sub)
+				}
+			}
+			for _, sub := range logs.NoSubstring {
+				if strings.Contains(h.logs.String(), sub) {
+					return fmt.Errorf("log capture contains forbidden substring %q", sub)
+				}
+			}
+		}
+		return nil
+	})
+}
+
+// anyContains reports whether any record's message or attribute text
+// contains sub.
+func AnyContains(records []Record, sub string) bool {
+	for _, r := range records {
+		if strings.Contains(r.Msg, sub) {
+			return true
+		}
+		for _, v := range r.Attrs {
+			if strings.Contains(fmt.Sprint(v), sub) {
+				return true
+			}
+		}
+	}
+	return false
+}

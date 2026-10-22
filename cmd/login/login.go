@@ -51,14 +51,8 @@ func LogoutCommand(opts app.ProcessOptions) *command {
 // SpaceCommand returns the space command over the process environment.
 func SpaceCommand(opts app.ProcessOptions) *command {
 	flags := app.NewSpaceFlags()
-	return newCommand("space", "list the login's spaces, or set the default one", spaceHelp, flags.Bind, 1,
-		func(args []string) (operation, error) {
-			name := ""
-			if len(args) > 0 {
-				name = args[0]
-			}
-			return app.PrepareSpace(flags, name, opts)
-		})
+	return newCommand("space", "list, create, or set the default of a hosted space or S3 bucket", spaceHelp, flags.Bind, 2,
+		func(args []string) (operation, error) { return app.PrepareSpace(flags, args, opts) })
 }
 
 func newCommand(name, describe, help string, bind func(*flag.FlagSet), positional int, prepare func([]string) (operation, error)) *command {
@@ -155,22 +149,62 @@ Flags:
   --site string     only log out of logins this site issued   SLIVINGDOC_SITE
 `
 
-const spaceHelp = `slivingdoc space - list the login's spaces, or set the default one
+const spaceHelp = `slivingdoc space - list, create, or set the default of a hosted space or
+S3 bucket
 
 Usage:
-  slivingdoc space [--endpoint <url>]
-  slivingdoc space [--endpoint <url>] <name>
+  slivingdoc space [--storage auto|hosted|s3] [--endpoint <url>]
+                   [--profile <name>] [--region <region>] [--path-style]
+                   [--prefix <prefix>]
+  slivingdoc space [flags] <name>
+  slivingdoc space [flags] new <name>
 
-Without a name, lists the spaces the stored login reaches, one per line
-with its access and owner, and marks the default space with *; when
-stdin, stdout and stderr are all a terminal, the list is numbered and the
-number you type becomes the default space (q changes nothing). With a
-name, checks that the login reaches that space and stores it as the
-default, which serve, pull and commit use when neither --space nor
-SLIVINGDOC_SPACE is given. The login key goes only to the site that
-issued it.
+Without a positional word, lists the targets of every backend the mode
+selects, one group per identity, and marks the active default with *. A
+hosted group is one stored login and its spaces; an S3 group is one
+resolved identity and its buckets. Rows carry the directories that
+remember them in parentheses; a hosted row also carries its access (write
+or read) and owner. A target the listing did not return, but a directory
+remembers or the settings file stores as the default, stays visible marked
+! and cannot be chosen as a default; its hint goes to stderr. When stdin,
+stdout and stderr are all a terminal, the targets appear as a numbered
+table with one create row after each backend instead: the number you type
+becomes that target's default, and a create row asks for a name, creates
+the target, and makes it the default (q changes nothing).
+
+With a name, checks that one identity lists that target and stores it as
+the one global default. A hosted name sets the selected login's default
+space and clears every stored S3 default; an S3 name stores the complete
+target and replaces every earlier S3 default. The S3 default is active
+while one exists, and otherwise the selected login's default space is.
+With 'new <name>', creates a hosted space through the site or an S3 bucket
+through the S3 API, on the identity the flags select, and leaves the
+default unchanged. A bare 'new' says how to create one. A create refuses
+--prefix, because it makes a new store rather than a notebook inside one.
+
+In auto mode a hosted group needs a stored login, and an S3 group needs an
+S3 flag, an AWS variable, an existing ~/.aws/credentials or ~/.aws/config
+file, or a recorded S3 target; shared AWS files alone do not select S3 for
+'space new'. Without an S3 signal, a machine with only a hosted login reads no
+AWS configuration. A group that cannot list keeps
+its default and recorded targets visible, marked !, and reports the reason
+on stderr. An S3 identity that the environment selects and auto cannot
+resolve degrades the same way; --storage s3, or a flag that names the
+identity, refuses instead. An S3 target stores the resolved endpoint,
+region, profile, path style, and the --prefix value. When no S3 flag or
+variable names an identity, the S3 group lists the active S3 default's
+own identity. A profile is a [profile <name>] section of ~/.aws/config; a
+bare [<name>] section there supplies no region, so the identity falls
+back to us-east-1.
+Listing an S3 account needs s3:ListAllMyBuckets and creating a bucket
+needs s3:CreateBucket. The login key goes only to the site that issued it.
 
 Flags:
-  --endpoint string  hosted storage API whose login to use     SLIVINGDOC_ENDPOINT
-                     (default: the only stored login)
+  --storage string   storage backend: auto, hosted, or s3          SLIVINGDOC_STORAGE
+  --endpoint string  hosted storage API whose login to use; the    SLIVINGDOC_ENDPOINT
+                     S3 endpoint selects S3
+  --profile string   AWS shared-config profile (S3 only)           AWS_PROFILE
+  --region string    S3 region (S3 only)                           AWS_REGION
+  --path-style       force S3 path-style addressing (S3 only)      SLIVINGDOC_PATH_STYLE
+  --prefix string    notebook prefix inside an S3 bucket           SLIVINGDOC_PREFIX
 `

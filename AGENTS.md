@@ -119,9 +119,10 @@ R  <bucket>/<prefix>/      current                manifest v1, strict; the only
                            packs/increments/<gen>-<id>.pack    one publication
 ```
 
-Beside them, `workspaces.json` in the configuration directory holds what
-hosted notebook each notebook directory remembers: no credential, never
-inside L or P. `internal/settings` owns that file.
+Beside them, `workspaces.json` in the configuration directory holds the target
+each notebook directory remembers, hosted or S3, and the one global S3
+default: no credential, never inside L or P. `internal/settings` owns that
+file.
 
 Supporting packages sit beside the main path. `internal/strictjson`
 supplies the strict JSON value tree shared by the manifest, the
@@ -197,10 +198,11 @@ slivingdoc/
     |-- credentials/         the stored logins: strict versioned
     |                        credentials.json (0600, temp file + rename)
     |-- settings/            the scoped settings registry: strict versioned
-    |                        workspaces.json, one record per directory, over
+    |                        workspaces.json, one record per directory and the
+    |                        one global S3 default, over
     |                        the hardened configuration file of
-    |                        internal/credentials; the remembered hosted
-    |                        notebook of a notebook directory
+    |                        internal/credentials; the remembered target of a
+    |                        notebook directory on either backend
     |-- sitelogin/           client of the site's CLI login routes (start,
     |   |                    key polling, spaces, space-token minting, revoke)
     |   `-- sitetest/        test-only reference site with scripted approvals
@@ -222,8 +224,14 @@ slivingdoc/
     |-- mcp/                 stdio MCP server: the two strict tool schemas,
     |                        strict decoding, self-contained safe error text,
     |                        the stable error envelope, and mcpReqID logging
-    `-- integrationtest/     test-only black-box MCP scenario suite: the
-                             behavioral contract of the whole server
+    `-- integrationtest/     test-only black-box scenario suite: the
+        |                    behavioral contract of the whole server
+        |-- itest/           the toolkit: harness, DSL, process helpers,
+        |                    fault store, recorder, log capture
+        |-- cli/             command surface, config, terminal, path security
+        |-- workspace/       visible directory, read-only and writable policy
+        |-- sync/            pull, commit, conflict, recovery, checkpoint
+        `-- hosted/          hosted API, stored logins, spaces, S3 bindings
 ```
 
 Interfaces belong to the package that consumes them. `internal/git` owns
@@ -234,10 +242,12 @@ the engine seam. `internal/workspace` owns its narrow `Engine` view.
 ### Event Flow
 
 ```text
-Public API:   notes_pull([path]) / notes_commit(message, [path])
+Public API:   notes_pull() / notes_commit(message)
               CLI mirror: slivingdoc pull [path] / commit [path] -m <message>
-              An omitted or empty MCP path is the workspace root, which
-              serve defaults to a per-process temporary session directory.
+              serve binds one notebook directory: --workspace-root, its
+              variable, the working directory when any root is configured,
+              or a per-process temporary session directory. No tool takes a
+              path; a present path member is MALFORMED_INPUT.
                                          |
                                          |  MCP stdio JSON-RPC or one-shot argv
                                          v
@@ -291,7 +301,9 @@ notebook operations. They share the serve flag set (`app.Flags`) and take
 one positional notebook path. A relative path resolves against the working
 directory, and flags can follow the path. Both commands run the same
 startup refusal surface through `app.Setup` and call `Runtime.Pull` /
-`Runtime.Commit`. `app.Report` prints the candid result: the `OK` status
+`Runtime.Commit`. A successful operation records the target a flag or
+slivingdoc variable named in the scoped settings of its directory; a failed
+one records nothing. `app.Report` prints the candid result: the `OK` status
 line with the generation and the resolved notebook path on stdout, or the
 structured error report from `app.Report`/`writeError` (code and reason, retryable, files with
 line ranges) with a nonzero exit. `commit` requires
@@ -303,8 +315,9 @@ line ranges) with a nonzero exit. `commit` requires
 1. **Configure.** `Flags.resolve` applies flags, then the environment, then
    the defaults. An explicitly empty flag value does not fall back to the
    environment. It normalizes the endpoint without echoing credentials, makes
-   both roots absolute, and refuses a private root at or below the workspace
-   root.
+   both roots absolute, refuses a private root at or below the workspace
+   root, and reads the scoped settings of a durable notebook directory (a
+   scratch server owns a per-process directory and consults none).
 2. **Early exit.** `version` and `serve -h` return zero from the router
    before `Setup` runs, so no native or network dependency is touched.
 3. **Open the native engine.** `git2.New().Open()` verifies that the linked
@@ -322,8 +335,9 @@ line ranges) with a nonzero exit. `commit` requires
    check). A failure exits nonzero with a redacted diagnostic **before** any
    transport serves a request.
 6. **Serve.** `mcp.NewServer` registers exactly `notes_pull` and
-   `notes_commit` and runs over stdio. Stdout carries protocol messages only;
-   logs go to stderr.
+   `notes_commit`, serving the one notebook directory resolved in step 1, and
+   runs over stdio. Stdout carries protocol messages only; logs go to
+   stderr.
 7. **Shut down.** A signal closes the live transport connection, which
    unwinds in-flight handlers. A bounded deadline (30 s) forces a nonzero
    exit for a handler that ignores cancellation. Client EOF is a clean exit.
@@ -348,9 +362,10 @@ copy is the authoritative one. Behavior worth remembering:
 - A stored login is an account key, sent only to the site that issued
   it. `serve`, `pull` and `commit` mint one-hour tokens for one space at
   that site and keep them in memory only; `serve` renews them. The space
-  is `--space`, then `SLIVINGDOC_SPACE`, then the default stored by
-  `slivingdoc space <name>`; with none, startup is refused. A minted token
-  is only sent to the login's endpoint.
+  is `--space`, then `SLIVINGDOC_SPACE`, then the target the directory
+  remembers, then the default stored by `slivingdoc space <name>`; with
+  none, startup is refused. A minted token is only sent to the login's
+  endpoint.
 - The token comes from `SLIVINGDOC_TOKEN` or a stored login only, never a
   flag. An environment token never reads `credentials.json`.
 - In `--storage auto`, an environment token beside `--endpoint`,
@@ -361,6 +376,13 @@ copy is the authoritative one. Behavior worth remembering:
   ambiguous, while the `--bucket` or `SLIVINGDOC_BUCKET` spelling of that
   setting selects S3. architecture/login.md has the exact table.
 - `--private-root` must not be at or below the workspace root.
+- Each target field resolves through the flag or slivingdoc variable, then
+  a record of the resolved kind, then the one global default (the stored S3
+  default, else the login's default space), then the ambient AWS
+  configuration. `pull`, `commit`, `status`, `log` and a durable `serve`
+  read that record; a successful `pull`, `commit` or durable-server tool
+  call records the complete target only where the directory remembered
+  nothing and a flag or variable named it.
 - `--commit-retries` exhaustion is `REMOTE_BUSY`.
 - An invalid `--read-only-paths` or `--writable-paths` entry refuses
   startup before any native or S3 dependency loads, as does a path named
@@ -404,6 +426,17 @@ integration scenarios in `internal/integrationtest/`. The scenarios ARE
 the feature's behavioral contract. Write them before or alongside the
 implementation, never after.
 
+The suite is a toolkit plus four concern packages. `internal/integrationtest/itest`
+is a real (non-test) package and the only shared surface: the harness, the
+scenario DSL types, the process helpers, the fault store, the recorder and
+the log capture. Every scenario file dot-imports it. The scenario packages
+`cli`, `workspace`, `sync` and `hosted` hold `_test.go` files only, one file
+per use case named `<topic>_integrationtest_test.go`, plus their own
+`main_test.go` calling `itest.Main`. Each is its own test binary and has its
+own 30 s deadline. Put a new scenario in the concern package it belongs to;
+a helper that more than one package needs goes into `itest`, never into a
+scenario file that another package would have to import.
+
 - **Black-box means events in → events out.**
 - **Scenarios carry the spec so prose does not have to.** The worklog
   phase can describe intent and touchpoints. The guaranteed behavior lives
@@ -443,6 +476,9 @@ the matching doc under `architecture/` in the same commit:
   the same two operations; `status` and `log` are read-only human commands
   with no MCP counterpart. The process never
   invokes Git and never imports `git2go`.
+- A `serve` process binds one notebook directory for its lifetime and no
+  MCP tool takes a path; a tool call cannot switch the directory or the
+  store. Two notebooks mean two servers.
 - All CGo and libgit2 types stay inside `internal/git2`. All production AWS SDK use
   stays inside `internal/s3store`.
 - `current` is the only accepted-state authority. State is never inferred
@@ -508,7 +544,7 @@ Use these principles to decide whether a reported clone needs fixing.
 
 - **Interface + fake mirroring.** A fake that mirrors an interface's method set is the proof that the contract is satisfiable. Examples: `internal/storage/fake` against the `ObjectStore` boundary, and the fake repositories in `internal/notebook` and `internal/workspace` against the `internal/git` engine seam. `dupl` reports the two fakes as clones; they belong to independent packages and must stay independent.
 - **Thin wrappers over a shared helper.** Several small functions that differ only in a key kind or namespace and all delegate to one implementation are the abstraction, not a clone.
-- **Cross-package contract assertions.** `assertProcessOK` in `internal/app` and `Harness.assertOK` in `internal/integrationtest` assert the same success envelope. The duplication is deliberate: merging them makes the black-box suite depend on a test helper of the package that it observes from outside.
+- **Cross-package contract assertions.** `assertProcessOK` in `internal/app` and `Harness.AssertOK` in `internal/integrationtest/itest` assert the same success envelope. The duplication is deliberate: merging them makes the black-box suite depend on a test helper of the package that it observes from outside.
 - **Test-setup boilerplate.** The per-test harness preamble (temp roots, store, engine, cleanup) is structural, not logical, duplication.
 - **Table-driven test loops.** `for _, tt := range tests { t.Run(tt.name, …` is the idiom, not a clone.
 

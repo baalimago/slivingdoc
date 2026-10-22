@@ -151,20 +151,8 @@ func TestSpacePicker(t *testing.T) {
 		if got := r.defaultSpace(t, DefaultHostedEndpoint); got != "team" {
 			t.Fatalf("default space = %q, want team", got)
 		}
-		if want := "\x1b[32m✓\x1b[0m Default space \x1b[1mteam\x1b[0m \x1b[2m· (read only), owned by bob@example.test\x1b[0m\n"; r.out.String() != want {
+		if want := "\x1b[32m✓\x1b[0m Default space \x1b[1mteam\x1b[0m \x1b[2m· (read, bob@example.test)\x1b[0m\n"; r.out.String() != want {
 			t.Fatalf("stdout = %q, want %q", r.out.String(), want)
-		}
-		r.out.Reset()
-		r.errOut.Reset()
-		r.answer = typed("q\n")
-		if err := r.space(t); err != nil {
-			t.Fatalf("space = %v", err)
-		}
-		if !strings.Contains(r.errOut.String(), "bob@example.test  default\n") || !strings.Contains(r.errOut.String(), "Nothing was changed") {
-			t.Fatalf("stderr = %q, want the default marked and nothing changed", r.errOut.String())
-		}
-		if got := r.defaultSpace(t, DefaultHostedEndpoint); got != "team" || r.out.String() != "" {
-			t.Fatalf("default space = %q, stdout %q; a left picker changes nothing", got, r.out.String())
 		}
 	})
 	t.Run("a broken terminal is an error", func(t *testing.T) {
@@ -182,9 +170,9 @@ func TestSpacePicker(t *testing.T) {
 		if err := r.space(t); err != nil {
 			t.Fatalf("space = %v", err)
 		}
-		want := "\x1b[2mSPACE\x1b[0m  \x1b[2mACCESS\x1b[0m          \x1b[2mOWNER\x1b[0m\n" +
-			"\x1b[1mnotes\x1b[0m  read and write  \x1b[2mada@example.test\x1b[0m\n" +
-			"\x1b[1mteam\x1b[0m   read only       \x1b[2mbob@example.test\x1b[0m  \x1b[32mdefault\x1b[0m\n"
+		want := "\x1b[34mHOSTED\x1b[0m  " + DefaultHostedEndpoint + "  ada@example.test\n" +
+			"  \x1b[1mnotes\x1b[0m  write  \x1b[2mada@example.test\x1b[0m\n" +
+			"* \x1b[1mteam\x1b[0m  read  \x1b[2mbob@example.test\x1b[0m\n"
 		if r.out.String() != want {
 			t.Fatalf("stdout = %q, want %q", r.out.String(), want)
 		}

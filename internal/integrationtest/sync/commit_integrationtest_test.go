@@ -1,0 +1,564 @@
+package sync
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"testing"
+	"time"
+
+	. "github.com/baalimago/slivingdoc/internal/integrationtest/itest"
+
+	"github.com/baalimago/slivingdoc/internal/storage"
+)
+
+// TestScenarioCommitFirstCommit proves the first publication: a root
+// commit, a state-complete checkpoint pack, If-None-Match creation, no
+// increment pack, and an independent pull that observes the files
+// (architecture/commit.md).
+func TestScenarioCommitFirstCommit(t *testing.T) {
+	t.Parallel()
+	h := NewFakeHarness(t, HarnessConfig{})
+	b := NewSharedHarness(t, h.Raw(), h.Cfg.Prefix, HarnessConfig{})
+	pathB := b.WorkspaceRoot()
+
+	CommitFirst(t, h, "a.md", "alpha", "first commit")
+
+	m := h.Manifest()
+	if m.Generation != 1 {
+		t.Fatalf("manifest generation = %d, want 1", m.Generation)
+	}
+	if m.Checkpoint.ID.String() == "" {
+		t.Fatal("manifest checkpoint carries no id")
+	}
+	if len(m.Increments) != 0 {
+		t.Fatalf("manifest increments = %d, want none", len(m.Increments))
+	}
+	rec := h.Recorder()
+	if got := rec.CountKey(OpCreate, storage.CurrentKey); got != 1 {
+		t.Fatalf("If-None-Match creations = %d, want 1", got)
+	}
+	if got := rec.Count(OpReplace); got != 0 {
+		t.Fatalf("replaces = %d, want none for the first publication", got)
+	}
+	if got := rec.CountKeyPrefix(OpPut, "packs/checkpoints/"); got != 1 {
+		t.Fatalf("checkpoint puts = %d, want the state-complete pack", got)
+	}
+	if got := rec.CountKeyPrefix(OpPut, "packs/increments/"); got != 0 {
+		t.Fatalf("increment puts = %d, want none for the first publication", got)
+	}
+
+	b.AssertOK(t, b.Pull(""))
+	if got := b.FSSnapshot(pathB); got["a.md"] != "alpha" {
+		t.Fatalf("independent pull observes %v, want a.md", got)
+	}
+}
+
+// TestScenarioCommitNormalCommit proves a normal publication: exactly one
+// incremental pack precedes the manifest CAS and no full checkpoint is
+// published for a single increment (architecture/commit.md).
+func TestScenarioCommitNormalCommit(t *testing.T) {
+	t.Parallel()
+	h := NewFakeHarness(t, HarnessConfig{})
+	CommitFirst(t, h, "a.md", "alpha", "c1")
+
+	CommitNext(t, h, "b.md", "beta", "c2")
+
+	m := h.Manifest()
+	if m.Generation != 2 {
+		t.Fatalf("manifest generation = %d, want 2", m.Generation)
+	}
+	if len(m.Increments) != 1 {
+		t.Fatalf("manifest increments = %d, want 1", len(m.Increments))
+	}
+	rec := h.Recorder()
+	if got := rec.CountKey(OpReplace, storage.CurrentKey); got != 1 {
+		t.Fatalf("replaces = %d, want the single manifest CAS", got)
+	}
+	if got := rec.CountKeyPrefix(OpPut, "packs/increments/"); got != 1 {
+		t.Fatalf("increment puts = %d, want one", got)
+	}
+	if got := rec.CountKeyPrefix(OpPut, "packs/checkpoints/"); got != 1 {
+		t.Fatalf("checkpoint puts = %d, want the first-commit pack only", got)
+	}
+	// The pack the manifest names exists, so the upload preceded the CAS
+	// that referenced it.
+	if !h.ObjectExists(m.Increments[0].Key.String()) {
+		t.Fatalf("increment pack %s is absent although the manifest references it", m.Increments[0].Key)
+	}
+	// An independent client observes the published change.
+	reader := NewSharedHarness(t, h.Raw(), h.Cfg.Prefix, HarnessConfig{})
+	reader.AssertOK(t, reader.Pull(""))
+	AssertVisibleFiles(t, reader, map[string]string{"a.md": "alpha", "b.md": "beta"})
+}
+
+// TestScenarioCommitNoChange proves that a commit whose local tree equals
+// the remote state synchronizes L and P without any publication ID, pack,
+// commit, or CAS request (architecture/commit.md), and returns
+// the accepted generation with an empty success stat.
+func TestScenarioCommitNoChange(t *testing.T) {
+	t.Parallel()
+	h := NewFakeHarness(t, HarnessConfig{})
+	path := h.WorkspaceRoot()
+	CommitFirst(t, h, "a.md", "alpha", "c1")
+
+	before := h.Recorder().Snapshot()
+	h.AssertEnvelope(t, ToolCall{
+		Tool: ToolCommit, Path: path, Message: "no changes here",
+		Expect: CallExpectation{
+			OK: true,
+			Success: &SuccessExpectation{
+				Generation: 1, FilesChanged: 0, Insertions: 0, Deletions: 0, Files: []FileStatExpectation{},
+			},
+		},
+	}, h.Commit("", "no changes here"))
+	after := h.Recorder().Snapshot()
+	for _, op := range []Op{OpPut, OpCreate, OpReplace, OpDelete} {
+		if after[op] != before[op] {
+			t.Fatalf("no-change commit mutated the store: %s %d -> %d", op, before[op], after[op])
+		}
+	}
+	AssertRemoteGeneration(t, h, 1)
+}
+
+// TestScenarioCommitWithoutPull proves that a commit on an unmanaged path
+// is refused as INVALID_REQUEST before any S3 access (architecture/commit.md).
+func TestScenarioCommitWithoutPull(t *testing.T) {
+	t.Parallel()
+	h := NewFakeHarness(t, HarnessConfig{})
+	path := h.WorkspaceRoot()
+	h.WriteFile(path+"/a.md", "alpha")
+
+	res := h.Commit("", "never pulled")
+	h.AssertEnvelope(t, ToolCall{
+		Tool: ToolCommit, Path: path, Message: "never pulled",
+		Expect: CallExpectation{ErrorCode: "INVALID_REQUEST", Reason: "PULL_REQUIRED", Action: "PULL", Files: []FileExpectation{}},
+	}, res)
+	h.AssertExpectations(t, Expectations{
+		S3: S3Assertions{Counts: &CountExpectation{AllZero: true}},
+	})
+}
+
+// TestScenarioCommitLRewriteAfterCommit proves that a conflict-free commit
+// rewrites L to the accepted merged tree: the caller's own edits survive and
+// the concurrent remote changes it never saw appear, so no stale bytes
+// outlive the acceptance (architecture/commit.md).
+//
+// B's L is genuinely stale at commit time: A advances the remote AFTER B
+// pulled, so the accepted merged tree is a strict superset of B's
+// possible local view.
+func TestScenarioCommitLRewriteAfterCommit(t *testing.T) {
+	t.Parallel()
+	h := NewFakeHarness(t, HarnessConfig{})
+	b := NewSharedHarness(t, h.Raw(), h.Cfg.Prefix, HarnessConfig{})
+	pathB := b.WorkspaceRoot()
+
+	CommitFirst(t, h, "a.md", "alpha", "c1")
+	b.AssertOK(t, b.Pull(""))
+
+	// B edits its now-stale view: it deletes a.md and adds b.md.
+	b.RemoveFile(pathB + "/a.md")
+	b.WriteFile(pathB+"/b.md", "beta")
+
+	// A publishes a disjoint file that B has never seen.
+	CommitNext(t, h, "remote.md", "from A", "c2")
+
+	// B's commit merges and is accepted, and B's L is rewritten to the
+	// accepted tree: its own delete and add stand, and A's file arrives.
+	b.AssertOK(t, b.Commit("", "delete a, add b"))
+	AssertVisibleFiles(t, b, map[string]string{
+		"b.md":      "beta",
+		"remote.md": "from A",
+	})
+	AssertRemoteGeneration(t, b, 3)
+
+	// The accepted state is exactly what B now sees.
+	reader := NewSharedHarness(t, h.Raw(), h.Cfg.Prefix, HarnessConfig{})
+	reader.AssertOK(t, reader.Pull(""))
+	AssertVisibleFiles(t, reader, map[string]string{
+		"b.md":      "beta",
+		"remote.md": "from A",
+	})
+}
+
+// TestScenarioCommitTwoDisjointCommitsRace proves that two concurrent
+// first publications on distinct notebook directories produce one linear
+// accepted state carrying both changes: exactly one writer wins the create,
+// the loser merges and retries through the manifest CAS, and no update is
+// lost (architecture/commit.md).
+//
+// The race is made deterministic by a barrier rather than by timing: B's
+// conditional create of `current` blocks until A's publication is accepted,
+// so B necessarily loses its first attempt and must retry.
+func TestScenarioCommitTwoDisjointCommitsRace(t *testing.T) {
+	t.Parallel()
+	a := NewHarness(t, HarnessConfig{})
+	b := NewSharedHarness(t, a.Raw(), a.Cfg.Prefix, HarnessConfig{})
+	pathA, pathB := a.WorkspaceRoot(), b.WorkspaceRoot()
+
+	a.AssertOK(t, a.Pull(""))
+	b.AssertOK(t, b.Pull(""))
+	a.WriteFile(pathA+"/a.md", "A")
+	b.WriteFile(pathB+"/b.md", "B")
+
+	// B reaches the conditional create first and parks there; A then
+	// publishes generation 1 unobstructed. When B is released, its create
+	// fails the If-None-Match precondition and B merges and retries.
+	b.Faults().BlockNext(OpCreate, storage.CurrentKey)
+	bCh := RunCall(t, b, "", ToolCommit, "B")
+	b.Eventually(t, SettleTimeout, func() error {
+		if !b.Faults().Waiting(OpCreate, storage.CurrentKey) {
+			return fmt.Errorf("B has not reached the conditional create")
+		}
+		return nil
+	})
+	a.AssertOK(t, a.Commit("", "A"))
+	b.Faults().Release(OpCreate, storage.CurrentKey)
+	b.AwaitCall(t, bCh, ToolCall{Tool: ToolCommit, Path: pathB, Message: "B", Expect: CallExpectation{OK: true}})
+
+	// One linear accepted state: A's root publication plus B's retried
+	// increment. Only the loser replaced the manifest.
+	m := a.Manifest()
+	if m.Generation != 2 || len(m.Increments) != 1 {
+		t.Fatalf("accepted state = gen %d with %d increments, want 2/1", m.Generation, len(m.Increments))
+	}
+	if got := a.Recorder().CountKey(OpCreate, storage.CurrentKey); got != 1 {
+		t.Fatalf("A's conditional creates = %d, want the winner's single create", got)
+	}
+	if got := b.Recorder().CountKey(OpCreate, storage.CurrentKey); got != 1 {
+		t.Fatalf("B's conditional creates = %d, want the single failed attempt", got)
+	}
+	if got := a.Recorder().CountKey(OpReplace, storage.CurrentKey); got != 0 {
+		t.Fatalf("A's manifest replaces = %d, want none for the winner", got)
+	}
+	if got := b.Recorder().CountKey(OpReplace, storage.CurrentKey); got != 1 {
+		t.Fatalf("B's manifest replaces = %d, want exactly the retry", got)
+	}
+
+	// No lost update: an independent reader observes both files.
+	reader := NewSharedHarness(t, a.Raw(), a.Cfg.Prefix, HarnessConfig{})
+	reader.AssertOK(t, reader.Pull(""))
+	AssertVisibleFiles(t, reader, map[string]string{"a.md": "A", "b.md": "B"})
+}
+
+// TestScenarioCommitTwoOverlappingCommitsRace proves that two concurrent
+// first publications of the same relative file with different content yield
+// exactly one OK and one CONTENT_CONFLICT naming the shared path: the
+// accepted state stays valid and no false success is reported
+// (architecture/commit.md and conflicts.md).
+//
+// The loser is chosen by a barrier, not by scheduling: B parks on the
+// conditional create until A's publication is accepted, so B is always the
+// writer that must merge and always the one that conflicts.
+func TestScenarioCommitTwoOverlappingCommitsRace(t *testing.T) {
+	t.Parallel()
+	a := NewHarness(t, HarnessConfig{})
+	b := NewSharedHarness(t, a.Raw(), a.Cfg.Prefix, HarnessConfig{})
+	pathA, pathB := a.WorkspaceRoot(), b.WorkspaceRoot()
+
+	a.AssertOK(t, a.Pull(""))
+	b.AssertOK(t, b.Pull(""))
+	a.WriteFile(pathA+"/shared.md", "content A\n")
+	b.WriteFile(pathB+"/shared.md", "content B\n")
+
+	b.Faults().BlockNext(OpCreate, storage.CurrentKey)
+	bCh := RunCall(t, b, "", ToolCommit, "B")
+	b.Eventually(t, SettleTimeout, func() error {
+		if !b.Faults().Waiting(OpCreate, storage.CurrentKey) {
+			return fmt.Errorf("B has not reached the conditional create")
+		}
+		return nil
+	})
+	a.AssertOK(t, a.Commit("", "A"))
+	b.Faults().Release(OpCreate, storage.CurrentKey)
+	b.AwaitCall(t, bCh, ToolCall{
+		Tool: ToolCommit, Path: pathB, Message: "B",
+		Expect: CallExpectation{
+			ErrorCode: "CONTENT_CONFLICT",
+			Retryable: new(false),
+			Files:     []FileExpectation{{Path: "shared.md"}},
+		},
+	})
+
+	// The accepted state is the winner's, unchanged by the conflicting
+	// writer, and an independent reader reads exactly it.
+	m := a.Manifest()
+	if m.Generation != 1 || len(m.Increments) != 0 {
+		t.Fatalf("accepted state = gen %d with %d increments, want the single winner at 1/0", m.Generation, len(m.Increments))
+	}
+	reader := NewSharedHarness(t, a.Raw(), a.Cfg.Prefix, HarnessConfig{})
+	reader.AssertOK(t, reader.Pull(""))
+	AssertVisibleFiles(t, reader, map[string]string{"shared.md": "content A\n"})
+}
+
+// TestScenarioCommitCASLossRetry proves that one injected precondition
+// failure on the manifest CAS triggers a fresh proposal with a new
+// publication ID, generation, key, commit, and pack, and that the losing
+// pack is never republished (architecture/commit.md).
+func TestScenarioCommitCASLossRetry(t *testing.T) {
+	t.Parallel()
+	h := NewFakeHarness(t, HarnessConfig{})
+	CommitFirst(t, h, "a.md", "alpha", "c1")
+
+	h.Faults().FailNext(OpReplace, storage.CurrentKey, storage.ErrPreconditionFailed)
+	CommitNext(t, h, "b.md", "beta", "c2")
+
+	m := h.Manifest()
+	if m.Generation != 2 {
+		t.Fatalf("manifest generation = %d, want 2", m.Generation)
+	}
+	if len(m.Increments) != 1 {
+		t.Fatalf("manifest increments = %d, want the retried proposal", len(m.Increments))
+	}
+	rec := h.Recorder()
+	if got := rec.CountKey(OpReplace, storage.CurrentKey); got != 2 {
+		t.Fatalf("manifest replaces = %d, want the lost attempt and the retry", got)
+	}
+
+	// The retry is a fresh proposal, not a republication: two DISTINCT
+	// gen-2 pack keys were uploaded, each exactly once, and the accepted
+	// manifest references exactly one of them. Counting calls alone cannot
+	// tell a new publication ID from the same key written twice.
+	uploaded := rec.KeysWithPrefix(OpPut, "packs/increments/2-")
+	if len(uploaded) != 2 {
+		t.Fatalf("distinct gen-2 increment keys = %v, want the losing and the retried publication", uploaded)
+	}
+	for _, key := range uploaded {
+		if got := rec.CountKey(OpPut, key); got != 1 {
+			t.Fatalf("pack %s was uploaded %d times, want once", key, got)
+		}
+	}
+	accepted := m.Increments[0].Key.String()
+	losing := ""
+	for _, key := range uploaded {
+		if key != accepted {
+			losing = key
+		}
+	}
+	if losing == "" {
+		t.Fatalf("the accepted key %s is not among the uploaded keys %v", accepted, uploaded)
+	}
+	// The losing pack is never republished at a later generation: it is
+	// unreferenced by the accepted state.
+	if m.Checkpoint.Key.String() == losing {
+		t.Fatalf("the losing pack %s became the checkpoint descriptor", losing)
+	}
+	if got := rec.CountKeyPrefix(OpPut, "packs/increments/3-"); got != 0 {
+		t.Fatalf("gen-3 increment uploads = %d, want none: the loser must not be republished later", got)
+	}
+}
+
+// TestScenarioCommitRetryExhaustion proves that a CAS losing every attempt
+// up to the configured bound returns REMOTE_BUSY, preserves the caller's
+// files, and never returns OK (architecture/commit.md).
+func TestScenarioCommitRetryExhaustion(t *testing.T) {
+	t.Parallel()
+	h := NewFakeHarness(t, HarnessConfig{RetryLimit: new(2)})
+	path := h.WorkspaceRoot()
+	CommitFirst(t, h, "a.md", "alpha", "c1")
+
+	h.WriteFile(path+"/b.md", "beta")
+	h.Faults().FailAlways(OpReplace, storage.CurrentKey, storage.ErrPreconditionFailed)
+	res := h.Commit("", "will never win")
+	h.AssertEnvelope(t, ToolCall{
+		Tool: ToolCommit, Path: path, Message: "will never win",
+		Expect: CallExpectation{ErrorCode: "REMOTE_BUSY", Reason: "RETRIES_EXHAUSTED", Action: "RETRY", Retryable: new(true)},
+	}, res)
+
+	got := h.FSSnapshot(path)
+	if got["a.md"] != "alpha" || got["b.md"] != "beta" {
+		t.Fatalf("L after exhaustion = %v, want the caller's files preserved", got)
+	}
+	if got := h.Recorder().CountKey(OpReplace, storage.CurrentKey); got != 3 {
+		t.Fatalf("manifest replaces = %d, want retryLimit+1 = 3 attempts", got)
+	}
+	m := h.Manifest()
+	if m.Generation != 1 {
+		t.Fatalf("manifest generation = %d, want the accepted state 1 unchanged", m.Generation)
+	}
+}
+
+// TestScenarioCommitAmbiguousPackUpload proves that a pack upload whose
+// response is lost is resolved by reading the unique key back and proving
+// its bytes: the commit succeeds and never treats the pack alone as a
+// publication (architecture/commit.md).
+func TestScenarioCommitAmbiguousPackUpload(t *testing.T) {
+	t.Parallel()
+	h := NewFakeHarness(t, HarnessConfig{})
+	path := h.WorkspaceRoot()
+	CommitFirst(t, h, "a.md", "alpha", "c1")
+
+	h.Faults().AmbiguousNextOp(OpPut)
+	CommitNext(t, h, "b.md", "beta", "c2")
+
+	m := h.Manifest()
+	if len(m.Increments) != 1 {
+		t.Fatalf("manifest increments = %d, want the accepted increment", len(m.Increments))
+	}
+	incKey := m.Increments[0].Key.String()
+	if !h.ObjectExists(incKey) {
+		t.Fatalf("the ambiguous increment pack %s is absent", incKey)
+	}
+	// The ambiguity is resolved by reading the unique key back exactly once
+	// and comparing the stored bytes; the pack alone is never treated as a
+	// publication, which the accepted manifest reference proves.
+	if got := h.Recorder().CountKey(OpGet, incKey); got != 1 {
+		t.Fatalf("read-backs of %s = %d, want exactly the unique-key proof", incKey, got)
+	}
+	data, err := h.ReadObject(incKey)
+	if err != nil {
+		t.Fatalf("read the accepted increment pack: %v", err)
+	}
+	if uint64(len(data)) != m.Increments[0].Size {
+		t.Fatalf("accepted pack size = %d, want the descriptor's %d", len(data), m.Increments[0].Size)
+	}
+	if got := sha256.Sum256(data); hex.EncodeToString(got[:]) != m.Increments[0].SHA256.String() {
+		t.Fatalf("accepted pack digest = %x, want the descriptor's %s", got, m.Increments[0].SHA256)
+	}
+
+	// The read-back must actually decide: when the stored bytes do not
+	// match, the commit refuses rather than accepting the upload.
+	h.Faults().AmbiguousNextOp(OpPut)
+	h.Faults().CorruptReadPrefix("packs/increments/")
+	h.WriteFile(path+"/c.md", "gamma")
+	res := h.Commit("", "c3")
+	env := DecodeEnvelope(t, ToolCall{Tool: ToolCommit, Path: path, Message: "c3"}, res)
+	switch env.Code {
+	case "STORAGE_INTEGRITY":
+		if env.Reason != "PACK_INVALID" || env.Action != "OPERATOR" {
+			t.Fatalf("mismatched read-back reason/action = %q/%q, want PACK_INVALID/OPERATOR", env.Reason, env.Action)
+		}
+	case "STORAGE_FAILURE":
+		if env.Reason != "PACK_UPLOAD" || env.Action != "RETRY" {
+			t.Fatalf("mismatched read-back reason/action = %q/%q, want PACK_UPLOAD/RETRY", env.Reason, env.Action)
+		}
+	default:
+		t.Fatalf("mismatched read-back code = %q, want a refusal category", env.Code)
+	}
+	if got := h.Manifest().Generation; got != 2 {
+		t.Fatalf("manifest generation = %d, want the unaccepted proposal to leave 2", got)
+	}
+}
+
+// TestScenarioCommitAmbiguousCASIDFound proves that a manifest CAS whose
+// response is lost succeeds when the publication ID is found in an accepted
+// descriptor, without a duplicate logical change (architecture/commit.md).
+func TestScenarioCommitAmbiguousCASIDFound(t *testing.T) {
+	t.Parallel()
+	h := NewFakeHarness(t, HarnessConfig{})
+	CommitFirst(t, h, "a.md", "alpha", "c1")
+
+	h.Faults().AmbiguousNext(OpReplace, storage.CurrentKey)
+	CommitNext(t, h, "b.md", "beta", "c2")
+
+	m := h.Manifest()
+	if m.Generation != 2 {
+		t.Fatalf("manifest generation = %d, want the ambiguous CAS landed at 2", m.Generation)
+	}
+	if len(m.Increments) != 1 {
+		t.Fatalf("manifest increments = %d, want exactly one publication", len(m.Increments))
+	}
+}
+
+// TestScenarioCommitUnprovableCAS proves that a landed manifest CAS whose
+// follow-up read fails returns STORAGE_FAILURE: the caller's files stay
+// preserved, P does not advance, and the proposal is never automatically
+// republished (architecture/commit.md).
+func TestScenarioCommitUnprovableCAS(t *testing.T) {
+	t.Parallel()
+	h := NewFakeHarness(t, HarnessConfig{})
+	path := h.WorkspaceRoot()
+	CommitFirst(t, h, "a.md", "alpha", "c1")
+
+	h.WriteFile(path+"/b.md", "beta")
+	h.Faults().UnprovableNext(storage.CurrentKey)
+	// UnprovableNext also fails the proof read, so this is MANIFEST_READ,
+	// not PUBLICATION_UNPROVEN (see TestScenarioCommitPublicationNotFound).
+	res := h.Commit("", "acceptance unprovable")
+	h.AssertEnvelope(t, ToolCall{
+		Tool: ToolCommit, Path: path, Message: "acceptance unprovable",
+		Expect: CallExpectation{ErrorCode: "STORAGE_FAILURE", Reason: "MANIFEST_READ", Action: "RETRY", Retryable: new(true)},
+	}, res)
+
+	got := h.FSSnapshot(path)
+	if got["a.md"] != "alpha" || got["b.md"] != "beta" {
+		t.Fatalf("L after the unprovable CAS = %v, want the caller's files preserved", got)
+	}
+	AssertRemoteGeneration(t, h, 1)
+	if got := h.Recorder().CountKey(OpReplace, storage.CurrentKey); got != 1 {
+		t.Fatalf("manifest replaces = %d, want exactly one without republication", got)
+	}
+	// The remote manifest did land: the honest assertion is the visible
+	// workspace and the replace count, not the remote generation.
+	if m := h.Manifest(); m.Generation != 2 {
+		t.Fatalf("remote manifest generation = %d, want the landed proposal at 2", m.Generation)
+	}
+}
+
+// TestScenarioCommitPublicationNotFound: a CAS that never lands and a
+// successful lookup that misses the ID is PUBLICATION_UNPROVEN
+// (architecture/commit.md).
+func TestScenarioCommitPublicationNotFound(t *testing.T) {
+	t.Parallel()
+	h := NewFakeHarness(t, HarnessConfig{})
+	path := h.WorkspaceRoot()
+	CommitFirst(t, h, "a.md", "alpha", "c1")
+
+	h.WriteFile(path+"/b.md", "beta")
+	h.Faults().FailNext(OpReplace, storage.CurrentKey, storage.ErrTransport)
+	res := h.Commit("", "never landed")
+	h.AssertEnvelope(t, ToolCall{
+		Tool: ToolCommit, Path: path, Message: "never landed",
+		Expect: CallExpectation{ErrorCode: "STORAGE_FAILURE", Reason: "PUBLICATION_UNPROVEN", Action: "PULL", Retryable: new(true)},
+	}, res)
+
+	got := h.FSSnapshot(path)
+	if got["a.md"] != "alpha" || got["b.md"] != "beta" {
+		t.Fatalf("L after the unproven CAS = %v, want the caller's files preserved", got)
+	}
+	if m := h.Manifest(); m.Generation != 1 {
+		t.Fatalf("remote manifest generation = %d, want the unlanded proposal to leave 1", m.Generation)
+	}
+}
+
+// TestScenarioOperationsOnOnePathDoNotInterleave proves the operation lock
+// spans a whole notes_pull or notes_commit (architecture/workspace.md): a
+// commit parked at its manifest create still holds the path, so a pull of
+// the same path from another session starts none of its work — not even
+// its read of current — until the commit has returned.
+func TestScenarioOperationsOnOnePathDoNotInterleave(t *testing.T) {
+	t.Parallel()
+	h := NewFakeHarness(t, HarnessConfig{})
+	path := h.WorkspaceRoot()
+	h.AssertOK(t, h.Pull("a"))
+	h.WriteFile(path+"/a.md", "A")
+
+	h.Faults().BlockNext(OpCreate, storage.CurrentKey)
+	commitCh := RunCall(t, h, "a", ToolCommit, "A")
+	h.Eventually(t, SettleTimeout, func() error {
+		if !h.Faults().Waiting(OpCreate, storage.CurrentKey) {
+			return fmt.Errorf("the commit has not reached the conditional create")
+		}
+		return nil
+	})
+	reads := h.Recorder().CountKey(OpGet, storage.CurrentKey)
+
+	pullCh := RunCall(t, h, "b", ToolPull, "")
+	time.Sleep(300 * time.Millisecond) // time for an unserialized pull to read current
+	if got := h.Recorder().CountKey(OpGet, storage.CurrentKey); got != reads {
+		t.Fatalf("reads of current while the commit held the path = %d, want %d: the pull interleaved", got, reads)
+	}
+	select {
+	case out := <-pullCh:
+		t.Fatalf("the pull returned while the commit held the path: %+v", out)
+	default:
+	}
+
+	h.Faults().Release(OpCreate, storage.CurrentKey)
+	h.AwaitCall(t, commitCh, ToolCall{Tool: ToolCommit, Path: path, Message: "A", Expect: CallExpectation{OK: true}})
+	h.AwaitCall(t, pullCh, ToolCall{Tool: ToolPull, Path: path, Expect: CallExpectation{OK: true}})
+	if got := h.ReadFile(path + "/a.md"); got != "A" {
+		t.Fatalf("a.md after both calls = %q, want the published content", got)
+	}
+	AssertRemoteGeneration(t, h, 1)
+}

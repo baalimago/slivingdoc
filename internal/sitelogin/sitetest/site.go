@@ -1,8 +1,8 @@
 // Package sitetest is a test-only reference server of the site's CLI login
 // routes (architecture/login.md): POST /cli/v1/start, /cli/v1/token,
-// GET /cli/v1/spaces, POST /cli/v1/space-token and /cli/v1/revoke over a
-// local httptest server, answering each approval with a scripted sequence
-// instead of a person in a browser.
+// GET /cli/v1/spaces, POST /cli/v1/spaces, /cli/v1/space-token and
+// /cli/v1/revoke over a local httptest server, answering each approval with a
+// scripted sequence instead of a person in a browser.
 package sitetest
 
 import (
@@ -69,6 +69,7 @@ type Minted struct {
 type key struct {
 	endpoint string
 	access   string
+	account  string
 	spaces   []Space
 	children []string
 }
@@ -131,6 +132,7 @@ type Site struct {
 	complete  string
 	revokeErr *refusal
 	mintErr   *refusal
+	createErr *refusal
 	mintBody  string
 	noIDs     bool
 	lifetime  time.Duration
@@ -159,6 +161,7 @@ func Start(t *testing.T) *Site {
 	mux.HandleFunc("POST /cli/v1/start", jsonOnly(s.start))
 	mux.HandleFunc("POST /cli/v1/token", jsonOnly(s.token))
 	mux.HandleFunc("GET /cli/v1/spaces", s.spaces)
+	mux.HandleFunc("POST /cli/v1/spaces", jsonOnly(s.create))
 	mux.HandleFunc("POST /cli/v1/space-token", jsonOnly(s.mint))
 	mux.HandleFunc("POST /cli/v1/revoke", s.revoke)
 	s.srv = httptest.NewServer(mux)
@@ -270,20 +273,20 @@ func (s *Site) Revoke(credential string) {
 func (s *Site) Close() { s.srv.Close() }
 
 // Issued marks key as issued by this site for endpoint, so it lists
-// spaces, mints tokens and can be revoked; a script's issue does this
-// itself. Its access is write.
+// spaces, mints tokens, creates spaces and can be revoked; a script's issue
+// does this itself. Its access is write and it has no account.
 func (s *Site) Issued(k, endpoint string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.issue(k, endpoint, "write")
+	s.issue(k, endpoint, "write", "")
 }
 
-func (s *Site) issue(k, endpoint, access string) {
+func (s *Site) issue(k, endpoint, access, account string) {
 	if old, ok := s.keys[k]; ok {
-		old.endpoint, old.access = endpoint, access
+		old.endpoint, old.access, old.account = endpoint, access, account
 		return
 	}
-	s.keys[k] = &key{endpoint: endpoint, access: access}
+	s.keys[k] = &key{endpoint: endpoint, access: access, account: account}
 }
 
 // SetSpaces sets the spaces key reaches, whether or not it is issued yet;
@@ -310,6 +313,13 @@ func (s *Site) RefuseMint(status int, code string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.mintErr = &refusal{status: status, code: code}
+}
+
+// RefuseCreate makes the next create answer status with the error code.
+func (s *Site) RefuseCreate(status int, code string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.createErr = &refusal{status: status, code: code}
 }
 
 // BreakMint makes the next successful mint answer body instead of its
@@ -416,7 +426,7 @@ func (s *Site) token(w http.ResponseWriter, r *http.Request) {
 	}
 	a.claimed = true
 	script := a.script
-	s.issue(script.Issue.Key, script.Issue.Endpoint, script.Issue.Access)
+	s.issue(script.Issue.Key, script.Issue.Endpoint, script.Issue.Access, script.Issue.Account)
 	release := s.join()
 	s.mu.Unlock()
 	if release != nil {
@@ -505,6 +515,80 @@ func (s *Site) spaces(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"spaces": list})
+}
+
+// create adds one space to the key's account. The owner is the key's account,
+// or empty when the account has none, as a team-owned space is.
+func (s *Site) create(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Name *string `json:"name"`
+	}
+	if err := decodeStrict(r, &body, "name"); err != nil || body.Name == nil {
+		writeError(w, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	name := *body.Name
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, k := s.liveKey(r)
+	if k == nil {
+		writeError(w, http.StatusUnauthorized, "invalid_token")
+		return
+	}
+	if rf := s.createErr; rf != nil {
+		s.createErr = nil
+		writeError(w, rf.status, rf.code)
+		return
+	}
+	if k.access == "read" {
+		writeError(w, http.StatusForbidden, "access_denied")
+		return
+	}
+	if !validNewSpaceName(name) {
+		writeError(w, http.StatusBadRequest, "invalid_name")
+		return
+	}
+	if slices.ContainsFunc(k.spaces, func(sp Space) bool { return sp.Name == name }) {
+		writeError(w, http.StatusConflict, "name_taken")
+		return
+	}
+	sp := Space{Name: name, Owner: k.account, Access: "write"}
+	k.spaces = append(k.spaces, sp)
+	writeJSON(w, http.StatusCreated, map[string]any{"space": sp})
+}
+
+// validNewSpaceName is the reference site's copy of the portable creation
+// grammar (storage.ValidateNewSpaceName): 3 to 63 characters, lowercase
+// letters, digits and inner hyphens, alphanumeric ends, and no S3 reserved
+// name.
+func validNewSpaceName(name string) bool {
+	if len(name) < 3 || len(name) > 63 {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		alnum := c >= 'a' && c <= 'z' || c >= '0' && c <= '9'
+		if i == 0 || i == len(name)-1 {
+			if !alnum {
+				return false
+			}
+			continue
+		}
+		if !alnum && c != '-' {
+			return false
+		}
+	}
+	for _, prefix := range []string{"xn--", "sthree-"} {
+		if strings.HasPrefix(name, prefix) {
+			return false
+		}
+	}
+	for _, suffix := range []string{"-s3alias", "--ol-s3", "--x-s3", "--table-s3"} {
+		if strings.HasSuffix(name, suffix) {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Site) mint(w http.ResponseWriter, r *http.Request) {
@@ -650,25 +734,18 @@ func jsonOnly(next http.HandlerFunc) http.HandlerFunc {
 
 // decodeStrict decodes a request body as strictly as the site does, or more:
 // one JSON object whose keys are among names, spelled exactly (encoding/json
-// alone would match them ignoring case), none of them null, each of v's JSON
-// type, and nothing after it. Anything else is an error, which each route
-// answers with 400 invalid_request. The real site is looser in one place: it
-// answers a null or non-string deviceCode with expired_token.
+// alone would match them ignoring case), no key repeated, none of them null,
+// each of v's JSON type, and nothing after it. Anything else is an error,
+// which each route answers with 400 invalid_request. The real site is looser
+// in one place: it answers a null or non-string deviceCode with expired_token.
 func decodeStrict(r *http.Request, v any, names ...string) error {
 	data, err := io.ReadAll(r.Body)
 	if err != nil {
 		return err
 	}
-	dec := json.NewDecoder(bytes.NewReader(data))
-	var fields map[string]json.RawMessage
-	if err := dec.Decode(&fields); err != nil {
+	fields, err := topLevelFields(data)
+	if err != nil {
 		return err
-	}
-	if fields == nil {
-		return errors.New("the body is not an object")
-	}
-	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
-		return errors.New("data after the object")
 	}
 	for name, value := range fields {
 		if !slices.Contains(names, name) {
@@ -679,6 +756,45 @@ func decodeStrict(r *http.Request, v any, names ...string) error {
 		}
 	}
 	return json.Unmarshal(data, v)
+}
+
+// topLevelFields walks one JSON object and returns its members. A repeated
+// key is refused here, because encoding/json would silently keep the last.
+func topLevelFields(data []byte) (map[string]json.RawMessage, error) {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	tok, err := dec.Token()
+	if err != nil {
+		return nil, err
+	}
+	if delim, ok := tok.(json.Delim); !ok || delim != '{' {
+		return nil, errors.New("the body is not an object")
+	}
+	fields := map[string]json.RawMessage{}
+	for dec.More() {
+		tok, err := dec.Token()
+		if err != nil {
+			return nil, err
+		}
+		name, ok := tok.(string)
+		if !ok {
+			return nil, errors.New("the object has a key that is not a string")
+		}
+		if _, seen := fields[name]; seen {
+			return nil, fmt.Errorf("field %q is repeated", name)
+		}
+		var value json.RawMessage
+		if err := dec.Decode(&value); err != nil {
+			return nil, err
+		}
+		fields[name] = value
+	}
+	if _, err := dec.Token(); err != nil {
+		return nil, err
+	}
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+		return nil, errors.New("data after the object")
+	}
+	return fields, nil
 }
 
 func writeError(w http.ResponseWriter, status int, code string) {

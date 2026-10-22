@@ -56,7 +56,7 @@ func (cfg config) probeProofs(now func() time.Time) probeProofStore {
 	return probeProofStore{
 		dir:     filepath.Join(cfg.packCacheRoot, workspace.SharedCacheDirName(cfg.serviceConfig().identity())),
 		version: Version,
-		store:   probedStore{cfg.endpoint, cfg.region, cfg.bucket, cfg.prefix, cfg.pathStyle},
+		store:   probedStore{cfg.endpoint, cfg.effectiveRegion(), cfg.bucket, cfg.prefix, cfg.pathStyle},
 		now:     now,
 	}
 }
@@ -68,7 +68,7 @@ func (cfg config) serviceConfig() ServiceConfig {
 		Bucket:              cfg.bucket,
 		SpaceID:             string(cfg.spaceID),
 		Prefix:              cfg.prefix,
-		Region:              cfg.region,
+		Region:              cfg.effectiveRegion(),
 		Endpoint:            cfg.endpoint,
 		PathStyle:           cfg.pathStyle,
 		WorkspaceRoot:       cfg.workspaceRoot,
@@ -94,10 +94,12 @@ type ServiceHooks struct {
 	Notebook *notebook.Failpoints
 }
 
-// Service is the MCP service view: one requested visible path resolves to
-// one workspace and notebook, opened lazily on first use and kept open
-// until Close. Calls for one path serialize on that workspace's operation
-// lock; distinct paths operate independently (architecture/workspace.md).
+// Service is the notebook view of the MCP server and the one-shot commands:
+// one notebook path resolves to one workspace and notebook, opened lazily on
+// first use and kept open until Close. The MCP server always passes Root;
+// the CLI passes its positional path. Calls for one path serialize on that
+// workspace's operation lock; distinct paths operate independently
+// (architecture/workspace.md).
 type Service struct {
 	engine git.Engine
 	store  storage.ObjectStore
@@ -148,9 +150,9 @@ func NewService(engine git.Engine, store storage.ObjectStore, cfg ServiceConfig,
 	}, nil
 }
 
-// Root is the notebook directory an omitted request path resolves to: the
-// configured workspace root, or the process-owned temporary notebook
-// directory when no root was configured (architecture/config.md).
+// Root is the one notebook directory the MCP server serves: the configured
+// workspace root, or the process-owned temporary notebook directory when no
+// root was configured (architecture/config.md).
 func (s *Service) Root() string { return s.cfg.WorkspaceRoot }
 
 // ReadOnlyPaths returns the normalized, sorted read-only entries; never nil.
@@ -159,9 +161,16 @@ func (s *Service) ReadOnlyPaths() []string { return s.policy.ReadOnly() }
 // WritablePaths returns the normalized, sorted writable entries; never nil.
 func (s *Service) WritablePaths() []string { return s.policy.Writable() }
 
-// Pull resolves path to its notebook, pulls it, and returns the operation
-// result: the accepted generation and the pull delta diffstat.
-func (s *Service) Pull(ctx context.Context, path string) (notebook.Result, error) {
+// Pull pulls the notebook at the service's own directory and returns the
+// operation result: the accepted generation and the pull delta diffstat.
+// The MCP server serves exactly that one directory.
+func (s *Service) Pull(ctx context.Context) (notebook.Result, error) {
+	return s.PullAt(ctx, s.Root())
+}
+
+// PullAt resolves path to its notebook, pulls it, and returns the
+// operation result. The CLI passes the directory it was given.
+func (s *Service) PullAt(ctx context.Context, path string) (notebook.Result, error) {
 	nb, err := s.notebookFor(ctx, path)
 	if err != nil {
 		return notebook.Result{}, err
@@ -169,10 +178,16 @@ func (s *Service) Pull(ctx context.Context, path string) (notebook.Result, error
 	return nb.Pull(ctx)
 }
 
-// Commit resolves path to its notebook, commits message, and returns the
+// Commit publishes the caller's changes at the service's own directory
+// with message and returns the operation result.
+func (s *Service) Commit(ctx context.Context, message string) (notebook.Result, error) {
+	return s.CommitAt(ctx, s.Root(), message)
+}
+
+// CommitAt resolves path to its notebook, commits message, and returns the
 // operation result: the accepted generation and the published-increment
 // diffstat.
-func (s *Service) Commit(ctx context.Context, path, message string) (notebook.Result, error) {
+func (s *Service) CommitAt(ctx context.Context, path, message string) (notebook.Result, error) {
 	nb, err := s.notebookFor(ctx, path)
 	if err != nil {
 		return notebook.Result{}, err
@@ -199,7 +214,7 @@ func (s *Service) Log(ctx context.Context, path string, limit int) (notebook.His
 	return nb.Log(ctx, limit)
 }
 
-// notebookFor returns the notebook for the request path, opening its
+// notebookFor returns the notebook for the notebook path, opening its
 // workspace and notebook on first use. The open runs under the map lock so
 // concurrent first use of the same path cannot open two workspaces. The
 // map key is the cleaned path, so spellings of one directory such as

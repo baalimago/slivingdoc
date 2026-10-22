@@ -55,8 +55,12 @@ func (c *command) Run(ctx context.Context) error {
 		return errors.New("status: Setup must run before Run")
 	}
 	defer c.runtime.Close()
-	st, err := c.runtime.Status(ctx, c.path)
-	return app.ReportStatus(c.opts.Out(), st, err, c.path, c.runtime.Target(), c.runtime.SpaceSource(), c.opts.Env, c.runtime.ReadOnlyPaths(), c.runtime.WritablePaths())
+	path := c.path
+	if path == "" {
+		path = c.runtime.NotebookDirectory()
+	}
+	st, err := c.runtime.Status(ctx, path)
+	return app.ReportStatus(c.opts.Out(), st, err, path, c.runtime.Target(), c.runtime.SpaceSource(), c.opts.Env, c.runtime.ReadOnlyPaths(), c.runtime.WritablePaths())
 }
 
 const helpText = `slivingdoc status - show what a notebook directory changed locally
@@ -73,9 +77,9 @@ like pull does, and reads no remote state; it opens the store only to check it, 
 directory that needs recovery says so instead of listing changes, and the
 next pull or commit repairs it.
 
-A notebook directory that already pulled a hosted space remembers it, so
-status there needs no --space and no --storage hosted, and it reports the
-source of a space the directory remembered.
+A notebook directory that already pulled a notebook remembers its target,
+hosted or S3, so status there needs no target flag, and it reports the
+source of a target the directory remembered.
 
 Takes the same flags as pull.
 

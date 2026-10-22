@@ -16,7 +16,7 @@ Read this when: adding log records, a new module, changing level parsing, timest
 | `internal/mcp/sdklog.go` | `sdkLogger`, `sdkLogHandler` (`Enabled`, `Handle`, `WithAttrs`, `WithGroup`), `emptyStringAttr` |
 | `internal/notebook/logger.go` | `WithLogger`, `LoggerFrom` (context-carried logger; discard fallback) |
 | `internal/app/perf.go` | `StartPerf` reports capture paths through the `cli` logger |
-| `internal/integrationtest/logcapture.go` | `LogCapture` (`Records`, `Warnings`, `ToolCalls`, `DistinctReqIDs`) for scenario assertions |
+| `internal/integrationtest/itest/logcapture.go` | `LogCapture` (`Records`, `Warnings`, `ToolCalls`, `DistinctReqIDs`) for scenario assertions |
 
 ## Flow
 

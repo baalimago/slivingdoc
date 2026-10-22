@@ -31,6 +31,10 @@ const (
 	defaultMultipartPartSize  = 16 << 20 // 16 MiB parts
 	minMultipartPartSize      = 5 << 20  // S3 minimum part size except the last
 
+	// DefaultRegion is the S3 default when neither the configuration nor the
+	// shared AWS configuration names a region (architecture/config.md).
+	DefaultRegion = "us-east-1"
+
 	// abortTimeout bounds the best-effort multipart abort, which runs on a
 	// context detached from the caller's cancellation.
 	abortTimeout = 10 * time.Second
@@ -71,10 +75,11 @@ func (o Options) withDefaults() (threshold, partSize int64, err error) {
 // All methods are safe for concurrent use; the store keeps no mutable
 // request state.
 type Store struct {
-	client  *s3.Client
-	bucket  string
-	prefix  string
-	options Options
+	client   *s3.Client
+	bucket   string
+	prefix   string
+	options  Options
+	resolved Resolved
 }
 
 // Config binds a store to one bucket and prefix with plain values only.
@@ -85,8 +90,12 @@ type Config struct {
 	Bucket string
 	// Prefix is the object prefix below the bucket; validated.
 	Prefix string
-	// Region is the S3 region; empty keeps the SDK resolution.
+	// Region is the S3 region; empty keeps the SDK resolution, including the
+	// selected profile's region, and the store then applies DefaultRegion.
 	Region string
+	// Profile is the AWS shared-config profile name: a selector, never a
+	// secret. Empty uses the ambient chain (and AWS_PROFILE).
+	Profile string
 	// Endpoint is a custom S3-compatible base endpoint URL. Empty means
 	// normal AWS resolution; a custom endpoint always uses path style.
 	Endpoint string
@@ -114,14 +123,45 @@ func New(ctx context.Context, cfg Config, opts ...Options) (*Store, error) {
 	if err := storage.ValidatePrefix(cfg.Prefix); err != nil {
 		return nil, err
 	}
-	var options Options
-	if len(opts) > 0 {
-		options = opts[0]
-	}
+	options := firstOptions(opts)
 	if _, _, err := options.withDefaults(); err != nil {
 		return nil, err
 	}
+	awsCfg, err := loadAWSConfig(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+	client, resolved := newClient(withDefaultRegion(awsCfg), cfg, options)
+	return &Store{
+		client: client, bucket: cfg.Bucket, prefix: cfg.Prefix,
+		options: options, resolved: resolved,
+	}, nil
+}
+
+// Resolved reports the values the store was built with.
+func (s *Store) Resolved() Resolved { return s.resolved }
+
+// firstOptions returns the first Options value, or the zero value when the
+// caller named none. The entry points take a slice for call-site symmetry with
+// New.
+func firstOptions(opts []Options) Options {
+	if len(opts) > 0 {
+		return opts[0]
+	}
+	return Options{}
+}
+
+// loadAWSConfig builds the AWS configuration every entry point shares: the
+// selected profile, the configured region and base endpoint, the static
+// credentials a test injects, and the test-only HTTP client and retry bound. It
+// retrieves no credential and sends no request.
+func loadAWSConfig(ctx context.Context, cfg Config) (aws.Config, error) {
 	var loadOpts []func(*awsconfig.LoadOptions) error
+	if cfg.Profile != "" {
+		// A flag or AWS_PROFILE resolved by the caller is explicit, so it
+		// beats the ambient profile the SDK would otherwise select.
+		loadOpts = append(loadOpts, awsconfig.WithSharedConfigProfile(cfg.Profile))
+	}
 	if cfg.Region != "" {
 		loadOpts = append(loadOpts, awsconfig.WithRegion(cfg.Region))
 	}
@@ -143,8 +183,31 @@ func New(ctx context.Context, cfg Config, opts ...Options) (*Store, error) {
 	}
 	awsCfg, err := awsconfig.LoadDefaultConfig(ctx, loadOpts...)
 	if err != nil {
-		return nil, fmt.Errorf("s3store: load AWS configuration: %w", err)
+		var missing awsconfig.SharedConfigProfileNotExistError
+		if errors.As(err, &missing) {
+			return aws.Config{}, fmt.Errorf("s3store: load AWS configuration: %w", ErrProfileNotFound)
+		}
+		return aws.Config{}, fmt.Errorf("s3store: load AWS configuration: %w", err)
 	}
+	return awsCfg, nil
+}
+
+// withDefaultRegion applies the S3 default region when the configuration and
+// the shared AWS configuration named none. New and NewAdmin call it; Resolve
+// reports the SDK's value as loaded, because its callers normalize it for
+// display and for a stored target (architecture/config.md).
+func withDefaultRegion(awsCfg aws.Config) aws.Config {
+	if awsCfg.Region == "" {
+		awsCfg.Region = DefaultRegion
+	}
+	return awsCfg
+}
+
+// newClient builds the S3 client over one loaded configuration and reports the
+// values it addresses. Path style follows a resolved base endpoint, which
+// covers a configured endpoint, AWS_ENDPOINT_URL_S3 and a profile's
+// services s3 endpoint_url, or an explicit request.
+func newClient(awsCfg aws.Config, cfg Config, options Options) (*s3.Client, Resolved) {
 	client := s3.NewFromConfig(awsCfg, func(o *s3.Options) {
 		if cfg.Endpoint != "" {
 			// Set again on the client: AWS_IGNORE_CONFIGURED_ENDPOINT_URLS
@@ -153,14 +216,19 @@ func New(ctx context.Context, cfg Config, opts ...Options) (*Store, error) {
 			// every request to AWS instead (architecture/config.md).
 			o.BaseEndpoint = aws.String(cfg.Endpoint)
 		}
-		if cfg.Endpoint != "" || options.ForcePathStyle {
+		if cfg.Endpoint != "" || aws.ToString(o.BaseEndpoint) != "" || options.ForcePathStyle {
 			// S3-compatible endpoints (SeaweedFS and similar) resolve
 			// bucket names only in path style; --path-style requests the
 			// same addressing for the default AWS endpoint.
 			o.UsePathStyle = true
 		}
 	})
-	return &Store{client: client, bucket: cfg.Bucket, prefix: cfg.Prefix, options: options}, nil
+	return client, Resolved{
+		Profile:   cfg.Profile,
+		Endpoint:  aws.ToString(client.Options().BaseEndpoint),
+		Region:    client.Options().Region,
+		PathStyle: client.Options().UsePathStyle,
+	}
 }
 
 var _ storage.ObjectStore = (*Store)(nil)

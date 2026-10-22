@@ -227,12 +227,12 @@ func TestStdioProcessServe(t *testing.T) {
 		}
 	}
 
-	path := filepath.Join(h.workspaceRoot, "notes")
+	path := h.workspaceRoot
 	pull := func() *sdk.CallToolResult {
 		t.Helper()
 		res, err := cs.CallTool(context.Background(), &sdk.CallToolParams{
 			Name:      "notes_pull",
-			Arguments: map[string]any{"path": path},
+			Arguments: map[string]any{},
 		})
 		if err != nil {
 			t.Fatalf("notes_pull = %v", err)
@@ -248,7 +248,7 @@ func TestStdioProcessServe(t *testing.T) {
 		t.Helper()
 		res, err := cs.CallTool(context.Background(), &sdk.CallToolParams{
 			Name:      "notes_commit",
-			Arguments: map[string]any{"path": path, "message": "stdio commit"},
+			Arguments: map[string]any{"message": "stdio commit"},
 		})
 		if err != nil {
 			t.Fatalf("notes_commit = %v", err)

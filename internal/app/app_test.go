@@ -63,11 +63,11 @@ func (fakeService) ReadOnlyPaths() []string { return []string{} }
 
 func (fakeService) WritablePaths() []string { return []string{} }
 
-func (fakeService) Pull(context.Context, string) (notebook.Result, error) {
+func (fakeService) Pull(context.Context) (notebook.Result, error) {
 	return notebook.Result{}, nil
 }
 
-func (fakeService) Commit(context.Context, string, string) (notebook.Result, error) {
+func (fakeService) Commit(context.Context, string) (notebook.Result, error) {
 	return notebook.Result{}, nil
 }
 
@@ -85,13 +85,13 @@ func (b *blockingService) ReadOnlyPaths() []string { return []string{} }
 
 func (b *blockingService) WritablePaths() []string { return []string{} }
 
-func (b *blockingService) Pull(context.Context, string) (notebook.Result, error) {
+func (b *blockingService) Pull(context.Context) (notebook.Result, error) {
 	close(b.started)
 	<-b.release
 	return notebook.Result{}, nil
 }
 
-func (b *blockingService) Commit(context.Context, string, string) (notebook.Result, error) {
+func (b *blockingService) Commit(context.Context, string) (notebook.Result, error) {
 	close(b.started)
 	<-b.release
 	return notebook.Result{}, nil
@@ -109,13 +109,13 @@ func (c *cancelingService) ReadOnlyPaths() []string { return []string{} }
 
 func (c *cancelingService) WritablePaths() []string { return []string{} }
 
-func (c *cancelingService) Pull(ctx context.Context, _ string) (notebook.Result, error) {
+func (c *cancelingService) Pull(ctx context.Context) (notebook.Result, error) {
 	close(c.started)
 	<-ctx.Done()
 	return notebook.Result{}, ctx.Err()
 }
 
-func (c *cancelingService) Commit(ctx context.Context, _, _ string) (notebook.Result, error) {
+func (c *cancelingService) Commit(ctx context.Context, _ string) (notebook.Result, error) {
 	close(c.started)
 	<-ctx.Done()
 	return notebook.Result{}, ctx.Err()
@@ -183,7 +183,7 @@ func TestRunServesMCPOverInjectedTransport(t *testing.T) {
 	// failure to the stable storage category.
 	call, err := cs.CallTool(context.Background(), &sdk.CallToolParams{
 		Name:      "notes_pull",
-		Arguments: map[string]any{"path": "/work/notes"},
+		Arguments: map[string]any{},
 	})
 	if err != nil {
 		t.Fatalf("CallTool() = %v", err)
@@ -273,7 +273,7 @@ func TestServeSignalCancelsInFlightRequests(t *testing.T) {
 		defer close(callDone)
 		_, _ = cs.CallTool(context.Background(), &sdk.CallToolParams{
 			Name:      "notes_pull",
-			Arguments: map[string]any{"path": "/work/notes"},
+			Arguments: map[string]any{},
 		})
 	}()
 	<-svc.started
@@ -317,7 +317,7 @@ func TestServeShutdownDeadlineExpires(t *testing.T) {
 	go func() {
 		_, _ = cs.CallTool(context.Background(), &sdk.CallToolParams{
 			Name:      "notes_pull",
-			Arguments: map[string]any{"path": "/work/notes"},
+			Arguments: map[string]any{},
 		})
 	}()
 	<-svc.started // the handler is blocked and ignores cancellation

@@ -16,7 +16,7 @@ Read this when: changing a stored format, a flag, an environment variable, a too
 | `internal/notebook/errors.go` | The `Code`, `Reason`, `Action` tokens; `ReasonUpgradeRequired` |
 | `internal/notebook/remote.go` | `manifestError`: a newer manifest is `UPGRADE_REQUIRED`, not corruption |
 | `internal/app/config.go` | The flag and environment reference (`FlagReference`) |
-| `internal/integrationtest/scenario_upgrade_test.go` | The newer-manifest scenario |
+| `internal/integrationtest/sync/upgrade_integrationtest_test.go` | The newer-manifest scenario |
 
 ## Flow
 
@@ -38,7 +38,7 @@ Within 1.x, these do not change in a way that breaks a working setup:
 
 - **Stored data.** Manifest version 1, the pack key grammar and the pack format stay readable and writable by every 1.x. A notebook written by any 1.x is read by every later 1.x, and one 1.x can publish over another's history. The hosted API's `/v1` routes keep their meaning ([hosted-mode.md](./hosted-mode.md)).
 - **Local state.** `state.json` version 1 and `credentials.json` at `credentials.FormatVersion` stay readable. Today a `credentials.json` of another version is refused (`ErrUnsupportedVersion`) and the login is repeated; a change to either format ships with a migration or a rebuild, never a silent discard (the private state is a cache of `current`, so it can be rebuilt).
-- **The tools.** `notes_pull` and `notes_commit` keep their names, their parameters, and the meaning of every parameter and success field. Fields may be added; none is removed or repurposed. A success field's meaning changes only in a major release, for example `files[]` of a first pull, which is empty while its totals still count the pull's diffstat ([product-contract.md](./product-contract.md#materialization)).
+- **The tools.** `notes_pull` and `notes_commit` keep their names and the meaning of every success field. The tool input parameters are not yet declared stable: `notes_pull` takes no parameter and `notes_commit` takes only `message`, and the per-call `path` was removed without a deprecation release, as the maintainer decided on 2026-10-21. A release may add a tool parameter; once a parameter is declared stable, it is removed only in a major release. A success field may be added; no field is removed or repurposed. A success field's meaning changes only in a major release, for example `files[]` of a first pull, which is empty while its totals still count the pull's diffstat ([product-contract.md](./product-contract.md#materialization)).
 - **The tokens.** `code`, `reason`, `action`, every `files[].reason` and the `retryable` rule keep their meaning. Tokens may be added; agents should treat an unknown `reason` as its `code` and follow `action`. The message text may change ([product-contract.md](./product-contract.md)).
 - **The command line.** Command names and shortcuts, flag names, environment variable names, the exit codes (0 success, 1 failure) and the shape of the success line stay. A flag may be added; one is removed only in a major release, after a release that still accepts it.
 - **Notebook rules.** The accepted content (valid UTF-8 text without U+0000), the path rules, the conflict marker format, and the meaning of read-only and writable paths stay; ignored names may be added ([workspace.md](./workspace.md)).
