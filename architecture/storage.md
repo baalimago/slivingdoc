@@ -2,7 +2,7 @@
 
 The storage model and its Go boundary. `internal/storage` owns the object layout, the protocol key grammar, the versioned `current` manifest, pack integrity values and metadata fields, the semantic errors every backend maps to, the startup compatibility probe, the ambiguity-resolving upload, and the `ObjectStore` interface every backend implements (S3 in `internal/s3store`, the hosted API in `internal/httpstore`). It answers "what is stored where, what makes stored state valid, and what must a new backend guarantee?"
 
-Read this when: implementing a new `ObjectStore` backend (this is the seam), adding a semantic storage error, changing the manifest schema or its validation, the key grammar, pack metadata, the probe, the upload retry rule, the contract suite, or the in-memory fake.
+Read this when: implementing a new `ObjectStore` backend (this is the seam), adding a semantic storage error, changing the manifest schema or its validation, the key grammar, pack metadata, the version-two wrapper, the `Encrypted` decorator, the probe, the upload retry rule, the contract suite, or the in-memory fake.
 
 ## Key files
 
@@ -11,7 +11,8 @@ Read this when: implementing a new `ObjectStore` backend (this is the seam), add
 | `internal/storage/store.go` | `ObjectStore` interface; sentinels `ErrNotFound`, `ErrPreconditionFailed`, `ErrTransport`, `ErrIncompatible`, `ErrQuotaExceeded`, `ErrRequestLimit`, `ErrRateLimited`, `ErrAccessDenied`, `ErrTooLarge`, `ErrCredentialRenewed`; `Refusal`; `ETag`, `Metadata`, `ObjectInfo` |
 | `internal/storage/metadata.go` | `MetaSHA256`, `MetaSize`, `MetaKind`, `MetaGeneration` (field names), `Metadata.Fields`, `ParseMetadata` |
 | `internal/storage/key.go` | `PackKind` (`KindCheckpoint`, `KindIncrement`), `Key` + `String`/`MarshalJSON`, `ParseKey`, `ValidatePrefix`, `JoinKey`, `ErrInvalidKey`, `ErrInvalidPrefix` |
-| `internal/storage/manifest.go` | `CurrentKey`, `Manifest`, `Checkpoint`, `Increment`, `Retained`, `ManifestVersion`, `DecodeManifest`, `EncodeManifest`, `validateManifest`, `checkDescriptorKey`, `ErrIntegrity`, `ErrUpgradeRequired`, `UpgradeRequiredError` |
+| `internal/storage/manifest.go` | `CurrentKey`, `Manifest`, `Checkpoint`, `Increment`, `Retained`, `ManifestVersion`, `ManifestWrapperVersion`, `CurrentEncoding` (`CurrentPlaintext`, `CurrentEncrypted`), `WrapCurrentEnvelope`, `ClassifyCurrent`, `CheckManifestRollback`, `DecodeManifest`, `EncodeManifest`, `validateManifest`, `checkDescriptorKey`, `ErrIntegrity`, `ErrUpgradeRequired`, `UpgradeRequiredError` |
+| `internal/storage/encrypted.go` | `Encrypted`, `encryptedStore`, `storeMode`, `ciphertextMeta`, `envelopeError`, `ErrKeyRequired`: the decorator that seals and opens object bodies ([encryption.md](./encryption.md)) |
 | `internal/storage/probe.go` | `Probe` (startup compatibility proof) |
 | `internal/app/probeproof.go` | `checkStoreWithProof`, `probeProofStore` (the recorded proof in the shared pack cache that stands in for the probe) |
 | `internal/storage/upload.go` | `UploadUnique` (ambiguous-put resolution), `VerifyObject` (streamed size + SHA-256 proof) |
@@ -76,6 +77,8 @@ S3 holds no bare repository and no `.git` directory. Protocol keys are relative 
 
 **Semantic errors.** Backends return errors wrapping these sentinels, and the notebook branches on them only: `ErrNotFound` (absent key), `ErrPreconditionFailed` (a conditional write did not hold, the only CAS loss), `ErrTransport` (failure with an unknown outcome, including a lost write response), `ErrIntegrity`, `ErrIncompatible` (startup only). `DecodeManifest`, not a backend, raises `ErrUpgradeRequired` (a manifest of a newer slivingdoc). The account refusals `ErrQuotaExceeded` (space or account full; nothing stored), `ErrRequestLimit` (request allowance used up), `ErrRateLimited` (throttled; nothing changed), `ErrAccessDenied` (credentials missing, revoked, read-only for a write, or not reaching the space) and `ErrTooLarge` (object larger than the store accepts) become their own `STORAGE_FAILURE` reasons ([errors.md](./errors.md)); the hosted adapter raises all of them, the S3 adapter only `ErrAccessDenied`. `ErrCredentialRenewed` is not classified as a refusal: the hosted adapter returns it, inside a `*Refusal` that keeps the server's message, for a streamed upload refused with 401 under a source of short-lived tokens (the token may have expired or been renewed, or been revoked), and the notebook keeps the retryable `PACK_UPLOAD` reason with a hint to retry and the server's line. A backend may wrap any sentinel in `*Refusal{Err, Detail, Message}` (`httpstore` does so for every classified status, `ErrNotFound`, `ErrPreconditionFailed` and `ErrTransport` included): `Unwrap` returns `Err`, `Detail` is diagnostic text, and `Message` is one sanitized line written by the store for the person running the client. The notebook appends a non-empty `Message` to its own message only when the cause is one of the five refusal sentinels or `ErrCredentialRenewed`.
 
+**Encrypted `current`.** An encrypted notebook stores `current` as the strict version-two wrapper `{"version":2,"envelope":"<Base64 envelope>"}` (`ManifestWrapperVersion`, `WrapCurrentEnvelope`); its decrypted payload is the unchanged version-one manifest below. `ClassifyCurrent` reads the version first, so a wrapper of a newer version is `*UpgradeRequiredError` before any other field is read, a malformed wrapper is `ErrIntegrity`, and a version-one manifest (or arbitrary bytes) stays plaintext for `DecodeManifest` to judge. The wrapper, the envelope and the `Encrypted` decorator are [encryption.md](./encryption.md)'s concern; above the store the manifest is always the version-one shape below.
+
 **`current` manifest.** `current` is the only authoritative state index. An absent `current` is the empty notebook at generation 0; the first successful `CreateObject` writes generation 1; every successful replacement, including a checkpoint, increments the generation by exactly one. Generations never reset; a generation that wrapped to 0 fails `validateManifest` on encode, so the operation is rejected. Correctness never uses `ListObjects` to discover accepted state. Version 1 shape (field order is normative and is the struct order in `manifest.go`):
 
 ```json
@@ -137,6 +140,7 @@ Prove it by calling `contract.Run(t, factory)` from the backend's tests with a f
 - `ReplaceObject` on a missing key must be `ErrPreconditionFailed`, not `ErrNotFound`; the CAS loop treats only the former as contention. `s3store` normalizes this explicitly.
 - A timeout after request bytes were sent is ambiguous (`ErrTransport`), never a precondition failure. The notebook resolves ambiguous manifest writes by reading `current` back (see [commit.md](./commit.md)).
 - `Key.String()` returns `""` for an invalid kind; always build keys from validated descriptors or `ParseKey`.
+- A process that reads `current` through the raw store sees the version-two wrapper as an unknown version and reports `UPGRADE_REQUIRED`; only a store decorated by `storage.Encrypted` reads the manifest inside it, and the application decorates every notebook it opens, so a process with a secret that opens a door reads an encrypted notebook like a plaintext one ([encryption.md](./encryption.md)).
 - The fake's ETag is the quoted MD5 of the bytes, like a single-part S3 PUT. Tests must not depend on that; it is a token.
 - `fake.Store.DeleteObjects` barriers and failures key on `""`, not on the deleted keys.
 - `internal/integrationtest/itest/faults.go` (`FaultStore`) reuses `fake.Injector` around any base store, including the real S3 adapter ([testing.md](./testing.md)).
@@ -146,5 +150,6 @@ Prove it by calling `contract.Run(t, factory)` from the backend's tests with a f
 - [s3store.md](./s3store.md): the AWS adapter and its S3 specifics.
 - [hosted-mode.md](./hosted-mode.md): the hosted storage adapter, its status mapping, and compaction of a full space.
 - [commit.md](./commit.md), [pull.md](./pull.md), [checkpoints.md](./checkpoints.md): the notebook side of the protocol.
+- [encryption.md](./encryption.md): the envelope, the wrapper and the decorator in full.
 - [errors.md](./errors.md): how storage sentinels become notebook codes.
 - [testing.md](./testing.md): contract suite and fault layers.

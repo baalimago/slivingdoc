@@ -85,9 +85,19 @@ const (
 	ReasonUpgradeRequired     Reason = "UPGRADE_REQUIRED"
 	ReasonManifestInvalid     Reason = "MANIFEST_INVALID"
 	ReasonPackInvalid         Reason = "PACK_INVALID"
+	ReasonEnvelopeInvalid     Reason = "ENVELOPE_INVALID"
 	ReasonHistoryInvalid      Reason = "HISTORY_INVALID"
 	ReasonEngineFailed        Reason = "ENGINE_FAILED"
 	ReasonLocalMutationFailed Reason = "LOCAL_MUTATION_FAILED"
+
+	// The encryption command reasons
+	// (worklogs/26-10-05-encrypted-notebooks/phase-4-command-surface.md).
+	ReasonKeyRequired              Reason = "KEY_REQUIRED"
+	ReasonKeyRejected              Reason = "KEY_REJECTED"
+	ReasonKeyMaterialInvalid       Reason = "KEY_MATERIAL_INVALID"
+	ReasonDoorLimit                Reason = "DOOR_LIMIT"
+	ReasonEncryptionAlreadyEnabled Reason = "ENCRYPTION_ALREADY_ENABLED"
+	ReasonEncryptionNotEnabled     Reason = "ENCRYPTION_NOT_ENABLED"
 )
 
 // FileReason classifies one file entry of a domain error.
@@ -155,8 +165,16 @@ var actionForPairing = map[codeReason]Action{
 	{CodeStorageFailure, ReasonUpgradeRequired}:     ActionOperator,
 	{CodeStorageIntegrity, ReasonManifestInvalid}:   ActionOperator,
 	{CodeStorageIntegrity, ReasonPackInvalid}:       ActionOperator,
+	{CodeStorageIntegrity, ReasonEnvelopeInvalid}:   ActionOperator,
 	{CodeStorageIntegrity, ReasonHistoryInvalid}:    ActionOperator,
 	{CodeStorageIntegrity, ReasonEngineFailed}:      ActionOperator,
+
+	{CodeStorageFailure, ReasonKeyRequired}:              ActionOperator,
+	{CodeStorageFailure, ReasonKeyRejected}:              ActionOperator,
+	{CodeStorageFailure, ReasonKeyMaterialInvalid}:       ActionOperator,
+	{CodeInvalidRequest, ReasonDoorLimit}:                ActionFixInput,
+	{CodeInvalidRequest, ReasonEncryptionAlreadyEnabled}: ActionFixInput,
+	{CodeInvalidRequest, ReasonEncryptionNotEnabled}:     ActionFixInput,
 }
 
 // errUnknownActionPairing marks a constructor-site programming error.

@@ -26,6 +26,7 @@ Read this when: changing the transport, the one notebook directory the server bi
 | `internal/s3store/store.go` | `New`: AWS default credential chain; static keys only in tests |
 | `internal/httpstore/store.go` | `New` and `newClient` (no-redirect client), `checkServer` (the tokenless `GET /v1` that startup runs before any use of the token), `DescribeToken`, `ValidateEndpoint`, `IsLoopback`, `ValidateToken`, `request` (the token only in `Authorization`, from the `TokenSource`), `send` (one resend after a 401, only with a new token), `Sanitize` (server and site text) |
 | `internal/mcp/errors.go` | `Redact`, `redactValues`, `invalidPathMessage`, `safeEngineDetail` |
+| `internal/crypt/`, `internal/keyrecord/`, `internal/app/encryption.go` | The encryption boundary: the envelope and keyring (`internal/crypt`), the passphrase settings and the hardened `notebooks.json` key record (`internal/keyrecord`), and the command that collects secrets and prints the one-time recovery code ([encryption.md](./encryption.md)) |
 
 ## Flow
 
@@ -68,6 +69,8 @@ tools/call {} | {message}
 
 **Redaction.** Caller-facing text (tool results, the CLI report, startup diagnostics) never contains a credential, an S3 key, a private path, a Git object ID, or Git vocabulary. Notebook messages are written without them, and `mcp.Redact` removes `sld_` hosted API tokens, pack keys, probe keys, 40-hex and 64-hex IDs, `AKIA...` key IDs and URL user information as defense in depth. The access key id is not a credential: `space` prints it in its S3 group header, while every path that runs through `mcp.Redact` strips it. In a tool result or CLI report the only remote text is a hosted store refusal's `message`, cut to one printable ASCII line by `httpstore.Sanitize`, redacted, and appended after `The storage says:`; it is untrusted server output. Startup diagnostics carry more remote text, all through `mcp.Redact`: the S3 probe diagnostic names the S3 error, and the hosted check names the server's error code, reason and message (sanitized) and, for an unknown server, its `api` field (quoted, not sanitized). Engine causes reach callers only through the `safeEngineDetail` allowlist; everything else is logged against the `diagnosticId`. Log `cause` fields additionally strip absolute paths (`redactValues`). See [errors.md](./errors.md).
 
+**Encryption secrets.** The encryption passphrases and recovery codes are the newest secret class. They come from `SLIVINGDOC_PASSPHRASE`, from the envfile named by `SLIVINGDOC_PASSPHRASE_FILE`, from the key record, or from the terminal; no flag names one, so a secret never appears in a process listing, and no command echoes one or prints the passphrase. The key record is a hardened private file (`notebooks.json`, mode 0600 in a 0700 directory) read through `credentials.PrivateFile`, and its refusals name the setting and never the path or the value. The notebook key exists in process memory only and is never written to the workspace, the private state, or the pack cache. Caller-facing text never carries a secret, a path or a key; `mcp.Redact` runs over every message. The stored envelope exposes only keys, sizes, timing, publication count and the public header fields to the storage operator: encryption protects the content of active objects, not the fact or shape of the traffic ([encryption.md](./encryption.md)).
+
 **Read-only paths are a guardrail, not a boundary.** The serve process holds the S3 credentials or the hosted token. An agent that can read that environment, or launch its own slivingdoc process, bypasses `--read-only-paths`/`--writable-paths`. The policy lives in the server configuration, never in the data ([running.md, Read-only paths](./running.md#read-only-paths)).
 
 ## Gotchas
@@ -86,3 +89,4 @@ tools/call {} | {message}
 - [running.md](./running.md): operator guidance on credentials and sharing.
 - [hosted-mode.md](./hosted-mode.md): the hosted adapter's token, endpoint and redirect rules.
 - [login.md](./login.md): the credentials file, the login site client, minted tokens, and storage selection.
+- [encryption.md](./encryption.md): the encryption secrets, the key record and the stored-envelope exposure.

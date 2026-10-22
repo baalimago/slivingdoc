@@ -35,7 +35,7 @@ func TestNewServiceRejectsInvalidReadOnlyPaths(t *testing.T) {
 	t.Cleanup(func() { _ = eng.Close() })
 	cfg := testServiceConfig(t).serviceConfig()
 	cfg.ReadOnlyPaths = []string{"../escape"}
-	if _, err := NewService(eng, fake.New(cfg.Prefix), cfg, nil); err == nil {
+	if _, err := NewService(eng, fake.New(cfg.Prefix), cfg, nil, nil); err == nil {
 		t.Fatal("NewService(invalid read-only path) = nil, want error")
 	}
 }
@@ -51,7 +51,7 @@ func TestNewServiceNormalizesReadOnlyPaths(t *testing.T) {
 
 	cfg := testServiceConfig(t).serviceConfig()
 	cfg.ReadOnlyPaths = []string{"docs/", "docs/sub", "faq.md"}
-	svc, err := NewService(eng, fake.New(cfg.Prefix), cfg, nil)
+	svc, err := NewService(eng, fake.New(cfg.Prefix), cfg, nil, nil)
 	if err != nil {
 		t.Fatalf("NewService() = %v", err)
 	}
@@ -61,7 +61,7 @@ func TestNewServiceNormalizesReadOnlyPaths(t *testing.T) {
 	}
 
 	emptyCfg := testServiceConfig(t).serviceConfig()
-	empty, err := NewService(eng, fake.New(emptyCfg.Prefix), emptyCfg, nil)
+	empty, err := NewService(eng, fake.New(emptyCfg.Prefix), emptyCfg, nil, nil)
 	if err != nil {
 		t.Fatalf("NewService(no read-only paths) = %v", err)
 	}
@@ -99,7 +99,7 @@ func TestNewServiceNormalizesWritablePaths(t *testing.T) {
 	cfg := testServiceConfig(t).serviceConfig()
 	cfg.ReadOnlyPaths = []string{"docs"}
 	cfg.WritablePaths = []string{"notes/", "notes/sub", "team.md"}
-	svc, err := NewService(eng, fake.New(cfg.Prefix), cfg, nil)
+	svc, err := NewService(eng, fake.New(cfg.Prefix), cfg, nil, nil)
 	if err != nil {
 		t.Fatalf("NewService() = %v", err)
 	}
@@ -112,7 +112,7 @@ func TestNewServiceNormalizesWritablePaths(t *testing.T) {
 	}
 
 	emptyCfg := testServiceConfig(t).serviceConfig()
-	empty, err := NewService(eng, fake.New(emptyCfg.Prefix), emptyCfg, nil)
+	empty, err := NewService(eng, fake.New(emptyCfg.Prefix), emptyCfg, nil, nil)
 	if err != nil {
 		t.Fatalf("NewService(no writable paths) = %v", err)
 	}
@@ -137,7 +137,7 @@ func TestServiceNestedEntriesSurviveRebuild(t *testing.T) {
 	cfg := testServiceConfig(t).serviceConfig()
 	cfg.ReadOnlyPaths = []string{"notes", "notes/agent-a/locked"}
 	cfg.WritablePaths = []string{"notes/agent-a"}
-	svc, err := NewService(eng, fake.New(cfg.Prefix), cfg, nil)
+	svc, err := NewService(eng, fake.New(cfg.Prefix), cfg, nil, nil)
 	if err != nil {
 		t.Fatalf("NewService() = %v", err)
 	}
@@ -191,7 +191,7 @@ func TestServicePolicyConstructionFailsSetup(t *testing.T) {
 			cfg := testServiceConfig(t).serviceConfig()
 			cfg.ReadOnlyPaths = tt.readOnly
 			cfg.WritablePaths = tt.writable
-			svc, err := NewService(eng, fake.New(cfg.Prefix), cfg, nil)
+			svc, err := NewService(eng, fake.New(cfg.Prefix), cfg, nil, nil)
 			if err == nil {
 				_ = svc.Close()
 				t.Fatal("NewService(unbuildable policy) = nil, want error")

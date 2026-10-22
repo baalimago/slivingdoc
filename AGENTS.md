@@ -149,6 +149,8 @@ slivingdoc/
 |   |-- log/                 log: recent accepted publications
 |   |-- login/               login, logout and space: browser device login,
 |   |                        stored account key, default space, revocation
+|   |-- encrypt/             encrypt: init, status, passwd, recovery, rekey;
+|   |                        CLI-only key-material management
 |   `-- version/             version|v: the exact "slivingdoc <semver>" line
 |-- release_test.go          release layer: dependency baselines, checksum
 |                            grammar, release reference, built binary
@@ -156,6 +158,7 @@ slivingdoc/
 |                            fmt / cover / build / qa / release / clean
 |-- scripts/                 build-libgit2.sh; per-platform check-deps-*.sh;
 |                            make-sha256sums.sh; check-release-ref.sh;
+|                            check-architecture-links.py;
 |                            release.go (the `make release` prompt flow)
 |-- npm/slivingdoc/          zero-dependency launcher: platform mapping,
 |                            verified download, cache, exec forwarding
@@ -169,7 +172,8 @@ slivingdoc/
 |-- worklogs/                phased worklog: the implementation record
 `-- internal/
     |-- app/                 process body: Flags, Setup -> Runtime, Serve;
-    |                        engine open / version / features / close
+    |                        engine open / version / features / close; the
+    |                        process keyring and the encrypted store view
     |-- cli/                 the command map, usage text, and router entry;
     |                        one definition shared by main and the scenarios
     |-- git/                 Go-facing engine seam and policy: BuildTree,
@@ -180,6 +184,9 @@ slivingdoc/
     |-- git2/                the ONLY CGo package: pinned libgit2 v1.9.6
     |                        boundary, version-verified at Open. There is no
     |                        pure-Go build: CGO_ENABLED=0 fails to compile
+    |-- crypt/               client-side encryption core: the binary
+    |                        envelope, the Argon2id KDF gate, the keyring
+    |-- recovery/            the one-time recovery code (BIP-39 words)
     |-- notebook/            orchestration: Pull, Commit (bounded CAS retry),
     |                        generic recovery, checkpoint compaction,
     |                        generation-fenced cleanup, metrics, failpoints,
@@ -197,6 +204,8 @@ slivingdoc/
     |                        join, multipart upload, semantic error mapping
     |-- credentials/         the stored logins: strict versioned
     |                        credentials.json (0600, temp file + rename)
+    |-- keyrecord/           the encryption key record: strict versioned
+    |                        notebooks.json, candidates from env, envfile, record
     |-- settings/            the scoped settings registry: strict versioned
     |                        workspaces.json, one record per directory and the
     |                        one global S3 default, over
@@ -220,7 +229,8 @@ slivingdoc/
     |                        `make test`
     |-- pathutil/            ExpandHome: ~ expansion for notebook paths and roots
     |-- tui/                 terminal presentation: palette, marks, columns,
-    |                        progress spinner, table picker (plain off a TTY)
+    |                        progress spinner, table picker, masked secret read
+    |                        (plain off a TTY)
     |-- mcp/                 stdio MCP server: the two strict tool schemas,
     |                        strict decoding, self-contained safe error text,
     |                        the stable error envelope, and mcpReqID logging
@@ -292,7 +302,7 @@ Checkpoint and cleanup (synchronous inside the triggering commit, best-effort)
 
 `main.go` is one call: `os.Exit(cli.Run(ctx, os.Args, git2.New(), opts))`.
 `internal/cli` holds the command map (`serve|s`, `pull|p`, `commit|c`,
-`status`, `log`, `login`, `logout`, `space`, `version|v`) and routes through its own `router` (`internal/cli/route.go`), over the `go_away_boilerplate/pkg/cmd` `Command` interface. Each `cmd/`
+`status`, `log`, `login`, `logout`, `space`, `encrypt`, `version|v`) and routes through its own `router` (`internal/cli/route.go`), over the `go_away_boilerplate/pkg/cmd` `Command` interface. Each `cmd/`
 package implements `cmd.Command`. The router parses the selected command's
 flag set, then calls `Setup` and `Run`.
 
@@ -473,9 +483,9 @@ architecture, and a change that touches one of them updates
 the matching doc under `architecture/` in the same commit:
 
 - The MCP tools and the one-shot `pull`/`commit` subcommands expose exactly
-  the same two operations; `status` and `log` are read-only human commands
-  with no MCP counterpart. The process never
-  invokes Git and never imports `git2go`.
+  the same two operations; `status` and `log` are read-only human commands,
+  and `encrypt` is a CLI-only command family, all with no MCP counterpart.
+  The process never invokes Git and never imports `git2go`.
 - A `serve` process binds one notebook directory for its lifetime and no
   MCP tool takes a path; a tool call cannot switch the directory or the
   store. Two notebooks mean two servers.

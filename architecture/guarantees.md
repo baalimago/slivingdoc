@@ -17,6 +17,7 @@ Read this when: adding a new failure point, touching recovery or failpoints, cha
 | `internal/workspace/workspace.go` | `Recover`, `withOpLock`, `openPrivateState` (recovery-required on open) |
 | `internal/storage/upload.go` | `UploadUnique`, `VerifyObject`: pack-upload ambiguity |
 | `internal/app/service.go` | `ServiceHooks` threads both failpoint sets in from tests |
+| `internal/notebook/encryption.go` | `publishRoot` (the encrypted root checkpoint), `EncryptDoors` (the header-only door rewrite), `cleanupCurrent` ([encryption.md](./encryption.md)) |
 | `internal/notebook/load_test.go` | `BenchmarkCommitLoadDistributed`, `BenchmarkCommitLoadBurst`, `BenchmarkPullCold`, `BenchmarkPullWarm`, `runWriterLoad` |
 
 ## Flow
@@ -56,6 +57,8 @@ Generic recovery:
 | Checkpoint failure | Accepted state unchanged; metrics + warning | `failCheckpoint` |
 | Cleanup failure | Accepted state unchanged; obsolete objects remain | `failCleanup` |
 | Corrupt pack or checksum | Refuse import; `STORAGE_INTEGRITY` | `ensurePack`, `git.ImportPack`, `git.ValidateHistory` |
+| Door-set rewrite (`encrypt passwd`/`recovery`) loses its CAS | Re-read `current`, rewrap the same header again, bounded retry; no pack object moves | `EncryptDoors` |
+| `encrypt init`/`rekey` fails after the CAS was accepted | `RECOVERY_FAILURE` stage `commit.accept`, `remoteAccepted=yes`; the untouched old packs are cleaned up best-effort | `publishRoot` → `cleanupCurrent` |
 
 `notes_commit` returns `OK` only when the CAS succeeded or a later manifest records its publication ID. An uncertain outcome is `STORAGE_FAILURE`/`PUBLICATION_UNPROVEN` (action `PULL`), or the reread's own error (`MANIFEST_READ`, `MANIFEST_INVALID`) if the lookup read fails; the visible directory is preserved, and the proposal is never republished automatically (it may still have landed).
 
@@ -101,6 +104,7 @@ Deterministic injection at operation boundaries, wired through `app.ServiceHooks
 ## Related
 
 - [notebook.md](./notebook.md), [commit.md](./commit.md), [pull.md](./pull.md), [workspace.md](./workspace.md), [checkpoints.md](./checkpoints.md)
+- [encryption.md](./encryption.md): the encrypted root checkpoint and the header-only door rewrite
 - [product-contract.md](./product-contract.md) for the `RECOVERY_FAILURE` envelope
 - [running.md](./running.md#conflict-recovery), [running.md](./running.md#checkpoints-and-retention), [running.md](./running.md#configuration) (`--commit-retries`)
 - `../AGENTS.md`: [Event Flow](../AGENTS.md#event-flow), [Conventions](../AGENTS.md#conventions) (invariants)

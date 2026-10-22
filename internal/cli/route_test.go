@@ -12,6 +12,7 @@ import (
 
 	"github.com/baalimago/slivingdoc/internal/app"
 	"github.com/baalimago/slivingdoc/internal/credentials"
+	"github.com/baalimago/slivingdoc/internal/notebook"
 	"github.com/baalimago/slivingdoc/internal/tui"
 )
 
@@ -82,6 +83,25 @@ func TestRouterPlainSurface(t *testing.T) {
 	}
 }
 
+// TestRouterPrintsADomainRefusalAsTokens proves a domain error that reaches
+// the router — a startup refusal, which no operation report renders — prints
+// its stable code and reason on one line, and never its cause.
+func TestRouterPrintsADomainRefusalAsTokens(t *testing.T) {
+	t.Parallel()
+	var out, errOut strings.Builder
+	opts := app.ProcessOptions{Stdout: &out, Stderr: &errOut}
+	r := newRouter(Commands(&stubEngine{}, opts), opts)
+	r.fail(&notebook.Error{
+		Code: notebook.CodeStorageFailure, Reason: notebook.ReasonKeyMaterialInvalid, Action: notebook.ActionOperator,
+		Message: "the notebook's key material cannot be used; correct the key record or the passphrase file without sharing its value",
+		Cause:   errors.New("keyrecord: /home/someone/.config/slivingdoc/notebooks.json is a symbolic link"),
+	})
+	want := "error: STORAGE_FAILURE · KEY_MATERIAL_INVALID  the notebook's key material cannot be used; correct the key record or the passphrase file without sharing its value\n"
+	if got := errOut.String(); got != want {
+		t.Fatalf("stderr = %q, want %q", got, want)
+	}
+}
+
 // styledRouter is a router whose streams render styled, as on a terminal.
 func styledRouter(t *testing.T, env []string) (router, *strings.Builder, *strings.Builder) {
 	t.Helper()
@@ -124,8 +144,9 @@ func TestHomeScreen(t *testing.T) {
 		for _, want := range []string{
 			"\x1b[34mslivingdoc\x1b[0m \x1b[2m· v" + app.Version + " · shared notes for agents\x1b[0m\n",
 			"Not logged in to hosted storage",
-			"\x1b[1mSync\x1b[0m     \x1b[34mpull\x1b[0m     write the current notebook",
-			"\x1b[1mAccount\x1b[0m  \x1b[34mlogin\x1b[0m",
+			"\x1b[1mSync\x1b[0m        \x1b[34mpull\x1b[0m     write the current notebook",
+			"\x1b[1mEncryption\x1b[0m  \x1b[34mencrypt\x1b[0m  manage the encryption of a notebook",
+			"\x1b[1mAccount\x1b[0m     \x1b[34mlogin\x1b[0m",
 			"slivingdoc <command> -h for its flags",
 		} {
 			if !strings.Contains(got, want) {

@@ -12,6 +12,7 @@ import (
 	"github.com/baalimago/go_away_boilerplate/pkg/cmd"
 
 	"github.com/baalimago/slivingdoc/cmd/commit"
+	"github.com/baalimago/slivingdoc/cmd/encrypt"
 	logcmd "github.com/baalimago/slivingdoc/cmd/log"
 	"github.com/baalimago/slivingdoc/cmd/login"
 	"github.com/baalimago/slivingdoc/cmd/pull"
@@ -45,6 +46,10 @@ one, and 'slivingdoc space new <name>' creates one; --storage
 auto|hosted|s3 chooses between a login and S3 explicitly. 'slivingdoc
 logout' revokes the login.
 
+'slivingdoc encrypt init|status|passwd|recovery|rekey' manages the
+encryption of a notebook's stored objects; the visible directory, private
+state and pack cache stay plaintext.
+
 Logging is configured by the environment; serve, pull, commit, status and log
 also take --log-level and --log-timestamp, which override it:
   LOG_LEVEL   per-module levels, for example "cli=warn,mcp=debug,info".
@@ -69,6 +74,7 @@ func Commands(engine git.Engine, opts app.ProcessOptions) map[string]cmd.Command
 		"login":     login.Command(opts),
 		"logout":    login.LogoutCommand(opts),
 		"space":     login.SpaceCommand(opts),
+		"encrypt":   encrypt.Command(engine, opts),
 		"version|v": version.Command(opts.Stdout),
 	}
 }

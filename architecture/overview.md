@@ -61,17 +61,19 @@ One line per `internal/` package.
 
 | Package | Owns |
 |---------|------|
-| `app` | Process body: flag/env resolution (`config.go`), storage selection (`storage.go`), login, logout and space (`login.go`, `space.go`), minted space tokens (`minted.go`), startup order (`app.go`), `Service` path-to-notebook map (`service.go`), CLI report rendering (`command.go`), logging, `DEBUG_PERF` profiling |
-| `cli` | The command map (`serve|s`, `pull|p`, `commit|c`, `status`, `log`, `login`, `logout`, `space`, `version|v`), usage text, `Run` and its `router` (help, the one-line error, the home screen) |
-| `tui` | The terminal presentation every command renders through: palette, status marks, columns, the progress spinner, the table picker; plain off a terminal. See [tui.md](./tui.md) |
+| `app` | Process body: flag/env resolution (`config.go`), storage selection (`storage.go`), login, logout and space (`login.go`, `space.go`), minted space tokens (`minted.go`), the `encrypt` command support (`encryption.go`), startup order and the process keyring (`app.go`), `Service` path-to-notebook map with the encrypted decorator (`service.go`), CLI report rendering (`command.go`), logging, `DEBUG_PERF` profiling |
+| `cli` | The command map (`serve|s`, `pull|p`, `commit|c`, `status`, `log`, `login`, `logout`, `space`, `encrypt`, `version|v`), usage text, `Run` and its `router` (help, the one-line error, the home screen) |
+| `tui` | The terminal presentation every command renders through: palette, status marks, columns, the progress spinner, the table picker, the masked secret read; plain off a terminal. See [tui.md](./tui.md) |
 | `sitelogin` | Client of the site's CLI login routes (start, key polling, spaces, space creation, space-token minting, revoke) that validates every answer and never follows a redirect. See [login.md](./login.md) |
 | `sitelogin/sitetest` | Test-only reference server of the site's CLI login routes with scripted approvals |
 | `git` | Go-facing engine seam (`Engine`, `Repository`) and all Git policy: trees, snapshots, merge structuring, packs, history validation, path/content rules, read-only/writable `PathPolicy`, diffstat. See [git-engine.md](./git-engine.md) |
 | `git/gittest` | Deterministic fake object hashing shared by fakes in higher packages (test-only) |
 | `git2` | The only CGo package: pinned libgit2 v1.9.6 behind the `git` seam. See [git-engine.md](./git-engine.md) |
-| `notebook` | Pull, Commit, bounded CAS retry, publication proof, generic recovery, checkpoints, cleanup, metrics, failpoints, domain error taxonomy. See [notebook.md](./notebook.md) |
+| `crypt` | The client-side encryption core: the binary envelope, the Argon2id KDF and its `KDFGate`, the keyring and its doors, the notebook key. See [encryption.md](./encryption.md) |
+| `recovery` | The recovery code: 128 entropy bits as twelve canonical BIP-39 words with the 4-bit checksum; generate and parse. See [encryption.md](./encryption.md) |
+| `notebook` | Pull, Commit, bounded CAS retry, publication proof, generic recovery, checkpoints, cleanup, the encrypted root checkpoint and door rewrite (`encryption.go`), metrics, failpoints, domain error taxonomy. See [notebook.md](./notebook.md), [encryption.md](./encryption.md) |
 | `workspace` | L/P layout, `os.Root` scans, strict `state.json`, baseline authority, staged in-place materialization, op lock, recovery-required mode. See [workspace.md](./workspace.md) |
-| `storage` | `ObjectStore` boundary, semantic errors (including the store refusals and `Refusal`), pack metadata fields, strict manifest v1, pack key grammar, `UploadUnique`, startup `Probe`, UUIDv7, SHA-256 type |
+| `storage` | `ObjectStore` boundary, semantic errors (including the store refusals and `Refusal`), pack metadata fields, strict manifest v1, the version-two encrypted `current` wrapper, the `Encrypted` decorator, pack key grammar, `UploadUnique`, startup `Probe`, UUIDv7, SHA-256 type. See [storage.md](./storage.md), [encryption.md](./encryption.md) |
 | `storage/fake` | Deterministic in-memory `ObjectStore` with fault injection (tests) |
 | `storage/contract` | One contract suite run against every `ObjectStore` (tests) |
 | `s3store` | The only production AWS SDK package (test-only `tests3/s3.go` also uses the SDK to create its bucket): S3 adapter, prefix join, multipart upload, semantic error mapping |
@@ -79,6 +81,7 @@ One line per `internal/` package.
 | `httpstore/gatewaytest` | Test-only reference server of the hosted API over `storage/fake` |
 | `mcp` | stdio MCP server: two strict tool schemas, strict decoding, error/success envelopes, redaction, `mcpReqID` logging |
 | `credentials` | The stored account logins of `slivingdoc login` and their default spaces, the strict versioned `credentials.json`. See [login.md](./login.md) |
+| `keyrecord` | The encryption key record: the strict versioned `notebooks.json`, its hardened file with the locked update/forget, and the candidate resolver that orders the environment, its envfile and the record. See [encryption.md](./encryption.md) |
 | `settings` | The scoped settings registry: the strict versioned `workspaces.json`, one backend-aware target per directory and the one global S3 default, sharing the credentials file's hardened handling. `pull`, `commit`, `status`, `log` and a durable `serve` read the remembered target of their directory from it, `space` reads every entry for its directory column and marks the active default, and a successful `pull`, `commit` or durable-server tool call writes it. See [config.md](./config.md) |
 | `strictjson` | Strict JSON value tree shared by the manifest and `state.json` (rejects unknown, duplicate, missing, null) |
 | `pathutil` | `ExpandHome` for `~/` notebook paths and roots |
@@ -109,9 +112,10 @@ Rules the import graph follows (verified by `grep` over non-test imports):
 - `httpstore` imports only `storage` (and the standard library); in production `app` (`realStoreFactory`, `validateHosted`, `PrepareLogin`), `credentials` and `sitelogin` (its validators and `Sanitize`) import it.
 - `credentials` imports `httpstore` and `strictjson`; `settings` imports `credentials` (the shared hardened handling and the configuration directory rule) and `strictjson`; `sitelogin` imports `credentials` and `httpstore`; only `app` imports any of them in production, and `sitelogin/sitetest` only tests (`sitelogin`, `app`, `integrationtest/itest`). `httpstore/gatewaytest` imports `storage` and `storage/fake` and is imported only by tests (`httpstore`, `app` and `notebook` in their `hosted_test.go`, `integrationtest/itest`).
 - `tui` imports no internal package (only `go_away_boilerplate/pkg/table`); in production `app` and `cli` import it.
-- `notebook` imports `workspace`, `git`, `storage`; it never imports `mcp` or `app`.
+- `notebook` imports `workspace`, `git`, `storage` and `crypt`; it never imports `mcp` or `app`.
 - `workspace` imports `git` and `strictjson`; it never reads remote state.
-- `storage` imports `git` (for `git.OID` in the manifest) and `strictjson`.
+- `storage` imports `git` (for `git.OID` in the manifest), `strictjson` and `crypt` (the envelope and the wrapper bound).
+- `crypt` and `recovery` import no internal package; `keyrecord` imports `credentials`, `crypt`, `pathutil`, `strictjson` and `workspace`; only `app` imports `keyrecord` and `recovery` in production, and `app`, `cmd/encrypt`, `notebook`, `storage` and `keyrecord` import `crypt` (the `scripts/encryption-perf` harness too).
 - Interfaces belong to their consumer: `notebook.Workspace`, `workspace.Engine`, `storage.ObjectStore`, `git.Repository`. No package exists only to forward a function.
 
 ## Flow

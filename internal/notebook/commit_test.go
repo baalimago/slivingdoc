@@ -766,7 +766,7 @@ func TestLookupPublicationSearchesRetained(t *testing.T) {
 	}
 
 	for _, id := range []storage.UUID{activePub, cpPub, incPub} {
-		found, err := nb.lookupPublication(context.Background(), id)
+		found, err := nb.lookupPublication(context.Background(), nil, id)
 		if err != nil {
 			t.Fatalf("lookupPublication(%s) = %v", id, err)
 		}
@@ -774,7 +774,7 @@ func TestLookupPublicationSearchesRetained(t *testing.T) {
 			t.Fatalf("lookupPublication(%s) = false, want the descriptor found", id)
 		}
 	}
-	found, err := nb.lookupPublication(context.Background(), testUUIDv7(99))
+	found, err := nb.lookupPublication(context.Background(), nil, testUUIDv7(99))
 	if err != nil {
 		t.Fatalf("lookupPublication(absent) = %v", err)
 	}

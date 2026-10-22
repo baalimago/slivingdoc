@@ -30,7 +30,7 @@ func newTestService(t *testing.T, cfg config) (*Service, *mcp.Server) {
 		t.Fatalf("git2.Open() = %v", err)
 	}
 	t.Cleanup(func() { _ = eng.Close() })
-	svc, err := NewService(eng, fake.New(cfg.prefix), cfg.serviceConfig(), nil)
+	svc, err := NewService(eng, fake.New(cfg.prefix), cfg.serviceConfig(), nil, nil)
 	if err != nil {
 		t.Fatalf("NewService() = %v", err)
 	}
@@ -155,7 +155,7 @@ func TestServiceCloseIsIdempotent(t *testing.T) {
 		t.Fatalf("git2.Open() = %v", err)
 	}
 	t.Cleanup(func() { _ = eng.Close() })
-	svc, err := NewService(eng, fake.New(""), cfg.serviceConfig(), nil)
+	svc, err := NewService(eng, fake.New(""), cfg.serviceConfig(), nil, nil)
 	if err != nil {
 		t.Fatalf("NewService() = %v", err)
 	}

@@ -20,7 +20,9 @@ import (
 	"github.com/baalimago/slivingdoc/internal/app"
 	"github.com/baalimago/slivingdoc/internal/cli"
 	"github.com/baalimago/slivingdoc/internal/credentials"
+	"github.com/baalimago/slivingdoc/internal/crypt"
 	"github.com/baalimago/slivingdoc/internal/git2"
+	"github.com/baalimago/slivingdoc/internal/keyrecord"
 	"github.com/baalimago/slivingdoc/internal/scratch"
 	"github.com/baalimago/slivingdoc/internal/storage"
 	"github.com/baalimago/slivingdoc/internal/storage/fake"
@@ -86,6 +88,13 @@ func HelperMain(mode string) int {
 	if os.Getenv(HelperSignalsEnv) != "" {
 		opts.Signals = nil
 	}
+	// A scenario that mints or opens a door asks for the cheap Argon2id cost
+	// the strict package budget can afford; every other helper keeps the
+	// canonical production cost.
+	if os.Getenv(HelperKDFEnv) != "" {
+		cheap := crypt.KDFParams{MemoryKiB: 64, Iterations: 1, Parallelism: 1}
+		opts.KDFParams = &cheap
+	}
 	// A scenario of the default site routes its requests to a reference
 	// site that answers with the default site's addresses.
 	if to := os.Getenv(HelperSiteRouteEnv); to != "" {
@@ -131,12 +140,14 @@ func MustGetwd() string {
 	return dir
 }
 
-// helperSignalsEnv makes the helper take the operating system's
-// termination signals; helperSiteRouteEnv sends the requests for any site
-// to the reference site at its URL.
+// HelperSignalsEnv makes the helper take the operating system's
+// termination signals; HelperSiteRouteEnv sends the requests for any site
+// to the reference site at its URL; HelperKDFEnv makes the helper write and
+// accept the cheap Argon2id cost instead of the canonical production one.
 const (
 	HelperSignalsEnv   = "SLIVINGDOC_INTEGRATION_OS_SIGNALS"
 	HelperSiteRouteEnv = "SLIVINGDOC_INTEGRATION_SITE_ROUTE"
+	HelperKDFEnv       = "SLIVINGDOC_INTEGRATION_CHEAP_KDF"
 )
 
 // routedSite sends a login request to the reference site whatever origin
@@ -315,7 +326,7 @@ func SanitizedEnv() []string {
 			"SLIVINGDOC_PATH_STYLE", "SLIVINGDOC_BUCKET", "SLIVINGDOC_SPACE", "SLIVINGDOC_PREFIX",
 			"SLIVINGDOC_WORKSPACE_ROOT", "SLIVINGDOC_PRIVATE_ROOT",
 			"SLIVINGDOC_TOKEN", "SLIVINGDOC_ENDPOINT",
-			"SLIVINGDOC_STORAGE", "SLIVINGDOC_SITE", credentials.DirEnv, "NO_COLOR", "COLORTERM", "HOME":
+			"SLIVINGDOC_STORAGE", "SLIVINGDOC_SITE", credentials.DirEnv, keyrecord.PassphraseEnv, keyrecord.PassphraseFileEnv, "NO_COLOR", "COLORTERM", "HOME":
 			continue
 		}
 		if strings.HasPrefix(name, "AWS_CONTAINER_CREDENTIALS_") {

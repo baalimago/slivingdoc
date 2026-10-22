@@ -194,7 +194,10 @@ func retryable(code notebook.Code, reason notebook.Reason) bool {
 // cannot change.
 func permanentRefusal(reason notebook.Reason) bool {
 	switch reason {
-	case notebook.ReasonStorageFull, notebook.ReasonRequestLimit, notebook.ReasonAccessDenied, notebook.ReasonObjectTooLarge, notebook.ReasonUpgradeRequired:
+	case notebook.ReasonStorageFull, notebook.ReasonRequestLimit, notebook.ReasonAccessDenied, notebook.ReasonObjectTooLarge, notebook.ReasonUpgradeRequired,
+		// The encryption key-material refusals: no retry changes a missing,
+		// rejected or invalid secret (phase-4-command-surface.md).
+		notebook.ReasonKeyRequired, notebook.ReasonKeyRejected, notebook.ReasonKeyMaterialInvalid:
 		return true
 	default:
 		return false

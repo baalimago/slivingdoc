@@ -186,6 +186,20 @@ func Report(out io.Writer, result notebook.Result, err error, path string, env [
 	return reportError(out, err, p, readOnly, writable)
 }
 
+// RefusalLine renders one error as the single line a refused command prints.
+// A domain error leads with its stable code and reason, so a script can branch
+// on the same tokens the operation report carries; any other error prints its
+// own text. Neither form carries the cause, so no credential or private path
+// reaches the caller.
+func RefusalLine(err error) string {
+	var nb *notebook.Error
+	if !errors.As(err, &nb) {
+		return err.Error()
+	}
+	te, _ := mcp.MapError(err)
+	return te.Code + statusSeparator + te.Reason + "  " + te.Message
+}
+
 // reportError renders a domain error and returns its terse category; an
 // error that is not a domain error is returned unchanged.
 func reportError(out io.Writer, err error, p tui.Style, readOnly, writable []string) error {

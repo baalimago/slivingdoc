@@ -8,7 +8,8 @@ Read this when: changing a stored format, a flag, an environment variable, a too
 
 | File | Purpose |
 |------|---------|
-| `internal/storage/manifest.go` | `ManifestVersion`, `DecodeManifest`, `UpgradeRequiredError`, `ErrUpgradeRequired` |
+| `internal/storage/manifest.go` | `ManifestVersion`, `ManifestWrapperVersion`, `ClassifyCurrent`, `DecodeManifest`, `UpgradeRequiredError`, `ErrUpgradeRequired` |
+| `internal/storage/encrypted.go` | `Encrypted`, `envelopeError`: an unsupported envelope is `UPGRADE_REQUIRED`, a secret that opens no door is a key-material refusal |
 | `internal/storage/key.go` | The object key grammar (`current`, `packs/checkpoints/`, `packs/increments/`) |
 | `internal/workspace/state.go` | `state.json` version 1 |
 | `internal/credentials/credentials.go` | `FormatVersion`, `ErrUnsupportedVersion` for `credentials.json` |
@@ -21,11 +22,14 @@ Read this when: changing a stored format, a flag, an environment variable, a too
 ## Flow
 
 ```text
-any command → readRemote → read current → DecodeManifest
-  version == 1  → proceed
-  version  > 1  → UpgradeRequiredError → STORAGE_FAILURE / UPGRADE_REQUIRED (OPERATOR, not retryable)
-                  no pack read, no manifest write, L and P untouched
-  version  < 1  → ErrIntegrity → STORAGE_INTEGRITY / MANIFEST_INVALID
+any command → readRemote → read current → ClassifyCurrent / DecodeManifest
+  version == 1, or no wrapper  → proceed
+  version == 2 wrapper        → decorated store opens the door and reads the manifest inside;
+                                 a plain reader sees version 2 as newer than 1
+  version  > this build's max → UpgradeRequiredError → STORAGE_FAILURE / UPGRADE_REQUIRED
+                                 (OPERATOR, not retryable)
+                                 no pack read, no manifest write, L and P untouched
+  version  < 1                 → ErrIntegrity → STORAGE_INTEGRITY / MANIFEST_INVALID
 ```
 
 ## Behavior
@@ -47,18 +51,21 @@ What is not promised: message wording, log record text and fields, the terminal 
 
 ### An older slivingdoc meets a newer notebook
 
-A change that older builds cannot read is a new manifest version, and only a major release writes one. A build that reads `current` and finds a version it does not know stops: `DecodeManifest` reads the version first and returns `UpgradeRequiredError` before it looks at any other field, `manifestError` turns it into `STORAGE_FAILURE`/`UPGRADE_REQUIRED` (action `OPERATOR`, `retryable: false`) with the version found and the fix, and no pack is read, no object written and no local file changed. The notebook is intact and the old build cannot damage it, because publication starts with a read of `current` and replaces it only by ETag from that read. Upgrading that machine resolves it. Builds before this refusal existed report `STORAGE_INTEGRITY`/`MANIFEST_INVALID` for the same manifest and are equally read-only in effect.
+A change that older builds cannot read is a new manifest version, and only a major release writes one. A build that reads `current` and finds a version it does not know stops: `ClassifyCurrent` and `DecodeManifest` read the version first and return `UpgradeRequiredError` before they look at any other field, `manifestError` turns it into `STORAGE_FAILURE`/`UPGRADE_REQUIRED` (action `OPERATOR`, `retryable: false`) with the version found and the fix, and no pack is read, no object written and no local file changed. The notebook is intact and the old build cannot damage it, because publication starts with a read of `current` and replaces it only by ETag from that read. Upgrading that machine resolves it. Builds before this refusal existed report `STORAGE_INTEGRITY`/`MANIFEST_INVALID` for the same manifest and are equally read-only in effect. `TestScenarioUpgradeRequiredForNewerManifest` proves a hand-written wrapper of a version above this build's, and `TestScenarioEncryptedNotebookRequiresKeyMaterial` and `TestScenarioEncryptedNotebookRejectsWrongSecret` prove the version-two encrypted wrapper: a process with no secret, or with one that opens no door, refuses it before any pack read or write.
+
+Enabling encryption is the change that writes the version-two wrapper. `encrypt init` publishes the first encrypted checkpoint, and from then on the notebook is unreadable to any older build; the transition is one-way ([encryption.md](./encryption.md)).
 
 ### A newer slivingdoc meets an older notebook
 
-A build reads every manifest version it supports. A release that adds manifest version 2 keeps reading version 1; it writes version 2 only on the first publication that needs it, which is when older builds start to answer `UPGRADE_REQUIRED`. `slivingdoc version` prints the build; the release notes name any release that moves a notebook to a newer format.
+A build reads every manifest version it supports. This build reads both manifest version 1 and the version-two encrypted wrapper; it writes the wrapper only on the first encrypted publication, which is when older builds start to answer `UPGRADE_REQUIRED`. `slivingdoc version` prints the build; the release notes name any release that moves a notebook to a newer format.
 
 ## Gotchas
 
 - `UPGRADE_REQUIRED` says nothing about the hosted service's availability. A hosted space is refused the same way when the manifest in it is newer than the client.
+- A locked encrypted notebook is refused before pack access too, through `KEY_REQUIRED`, `KEY_REJECTED` or `KEY_MATERIAL_INVALID` rather than `UPGRADE_REQUIRED`; both leave the store untouched ([encryption.md](./encryption.md)).
 - The promise covers what a person or an agent scripts against. Anything the [Behavior](#the-promise-from-100) list does not name (for example a log line) may change in a minor release.
 - A new reason token is additive, but a new `code` is not: the seven codes in [errors.md](./errors.md) are fixed for 1.x.
 
 ## Related
 
-- [errors.md](./errors.md), [product-contract.md](./product-contract.md), [storage.md](./storage.md), [workspace.md](./workspace.md), [config.md](./config.md), [releasing.md](./releasing.md)
+- [errors.md](./errors.md), [product-contract.md](./product-contract.md), [storage.md](./storage.md), [encryption.md](./encryption.md), [workspace.md](./workspace.md), [config.md](./config.md), [releasing.md](./releasing.md)

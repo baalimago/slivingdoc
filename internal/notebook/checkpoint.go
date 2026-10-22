@@ -230,15 +230,24 @@ func (n *Notebook) compactManifest(latest storage.Manifest, plan checkpointPlan,
 	return next
 }
 
+// cleanupRootsFunc returns the pack keys the current accepted manifest
+// references. cleanupPacks calls it before every delete batch, so a stale
+// listing can never delete an object a newer manifest references.
+type cleanupRootsFunc func(context.Context) (map[string]struct{}, error)
+
 // cleanup performs the best-effort garbage collection after a successful
-// checkpoint CAS (architecture/checkpoints.md). It lists only the checkpoint
-// and increment namespaces, parses candidate generations from valid keys
-// (malformed keys are ignored), considers only objects at or before the
-// successful checkpoint cutoff, and — before each delete batch — rereads
-// and validates current and rebuilds the complete active and retained root
-// set. Cleanup failure is observable in metrics only and never fails a
-// commit or checkpoint.
+// checkpoint CAS (architecture/checkpoints.md).
 func (n *Notebook) cleanup(ctx context.Context, cutoff uint64) {
+	n.cleanupPacks(ctx, cutoff, n.cleanupRoots)
+}
+
+// cleanupPacks lists only the checkpoint and increment namespaces, parses
+// candidate generations from valid keys (malformed keys are ignored),
+// considers only objects at or before cutoff, and — before each delete batch —
+// rereads the roots and rebuilds the complete active and retained root set.
+// Cleanup failure is observable in metrics only and never fails a commit,
+// checkpoint, or root publication (architecture/checkpoints.md).
+func (n *Notebook) cleanupPacks(ctx context.Context, cutoff uint64, roots cleanupRootsFunc) {
 	n.metrics.CleanupRuns.Add(1)
 	logger := LoggerFrom(ctx)
 	var candidates []string
@@ -263,14 +272,14 @@ func (n *Notebook) cleanup(ctx context.Context, cutoff uint64) {
 		end := min(start+cleanupBatchSize, len(candidates))
 		batch := candidates[start:end]
 
-		roots, err := n.cleanupRoots(ctx)
+		active, err := roots(ctx)
 		if err != nil {
 			n.failCleanup(logger, "reread cleanup roots", err)
 			return
 		}
 		doomed := make([]string, 0, len(batch))
 		for _, key := range batch {
-			if _, referenced := roots[key]; !referenced {
+			if _, referenced := active[key]; !referenced {
 				doomed = append(doomed, key)
 			}
 		}
@@ -280,9 +289,9 @@ func (n *Notebook) cleanup(ctx context.Context, cutoff uint64) {
 		if err := n.store.DeleteObjects(ctx, doomed); err != nil {
 			// The semantic boundary cannot name which keys of a partial
 			// batch landed; the failure is recorded at batch granularity
-			// and retried on a later checkpoint cleanup. The warning is the
+			// and retried on a later cleanup. The warning is the
 			// observable record the contract requires; the failure never
-			// changes the commit result.
+			// changes the operation result.
 			n.failCleanup(logger, "delete cleanup batch", err)
 			continue
 		}
@@ -299,10 +308,9 @@ func (n *Notebook) failCleanup(logger *slog.Logger, reason string, cause error) 
 	logger.Warn("cleanup failed", "reason", reason, "cause", cause.Error())
 }
 
-// cleanupRoots rereads and validates current and returns the complete set
-// of pack keys referenced by the active and retained descriptors. The
-// reread before every delete batch prevents a stale listing from deleting
-// an object a newer manifest references.
+// cleanupRoots rereads and validates current through the notebook's store and
+// returns the complete set of pack keys referenced by the active and retained
+// descriptors.
 func (n *Notebook) cleanupRoots(ctx context.Context) (map[string]struct{}, error) {
 	data, _, present, err := n.readCurrent(ctx)
 	if err != nil {
@@ -315,6 +323,12 @@ func (n *Notebook) cleanupRoots(ctx context.Context) (map[string]struct{}, error
 	if err != nil {
 		return nil, fmt.Errorf("cleanup: current is not a valid manifest: %w", err)
 	}
+	return manifestRoots(m), nil
+}
+
+// manifestRoots returns every pack key the active and retained descriptors of
+// one manifest reference.
+func manifestRoots(m storage.Manifest) map[string]struct{} {
 	roots := make(map[string]struct{}, 1+len(m.Increments)+2*len(m.Retained))
 	roots[m.Checkpoint.Key.String()] = struct{}{}
 	for _, inc := range m.Increments {
@@ -326,7 +340,7 @@ func (n *Notebook) cleanupRoots(ctx context.Context) (map[string]struct{}, error
 			roots[inc.Key.String()] = struct{}{}
 		}
 	}
-	return roots, nil
+	return roots
 }
 
 // recordTail updates the tail metrics from one validated authoritative
