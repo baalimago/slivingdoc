@@ -87,6 +87,14 @@ type Login struct {
 	// save writes the credentials file; nil is File.Save. Tests make it
 	// fail.
 	save func(credentials.Set) error
+	// started is told the approval once the site answered, before the
+	// wait; nil tells nobody. The first-use sign-in of serve shows it in
+	// a tool result (signin.go).
+	started func(sitelogin.Approval)
+	// createSpace is the space a login that reaches none creates and makes
+	// the default; empty creates none. Only the first-use sign-in sets it,
+	// because an agent cannot run 'slivingdoc space new'.
+	createSpace string
 }
 
 // PrepareLogin validates the login flags against the environment and
@@ -175,6 +183,9 @@ func (l *Login) Run(ctx context.Context) error {
 		fmt.Fprintf(errOut, "%sThe host name is unknown (%s); the login is labelled \"CLI login\" without it.\n", es.Mark(tui.Caution), mcp.Redact(l.hostErr.Error()))
 	}
 	io.WriteString(errOut, showApproval(es, approval))
+	if l.started != nil {
+		l.started(approval)
+	}
 	if l.browser {
 		if err := l.opts.openBrowser(approval.CompleteURI); err != nil {
 			fmt.Fprintf(errOut, "%sCould not open a browser (%s); open the page yourself.\n", es.Mark(tui.Caution), mcp.Redact(err.Error()))
@@ -230,6 +241,9 @@ func (l *Login) Run(ctx context.Context) error {
 	// termination signal is still consumed by the login: an interrupt
 	// never skips the revocation (revocationContext).
 	l.revokeReplaced(ctx, stored, outcome.replaced)
+	if outcome.defaultSpace == "" && len(spaces) == 0 && l.createSpace != "" && outcome.unlockErr == nil {
+		spaces, outcome.defaultSpace = l.createFirst(ctx, stored, spaces)
+	}
 	// A failed unlock leaves this process holding the credentials lock,
 	// which the picker's store would wait on forever.
 	if outcome.defaultSpace == "" && len(spaces) > 1 && outcome.unlockErr == nil && ctx.Err() == nil && l.opts.terminal() == OnTerminal {
@@ -251,6 +265,25 @@ func (l *Login) Run(ctx context.Context) error {
 			outcome.unlockErr)
 	}
 	return nil
+}
+
+// createFirst creates the first space of a login that reaches none and
+// makes it the default. The login is stored already, so a failure is
+// told, not returned: the login stands, and the refusal that follows names
+// the fix.
+func (l *Login) createFirst(ctx context.Context, stored credentials.Login, spaces []sitelogin.Space) ([]sitelogin.Space, string) {
+	errOut, es := l.opts.ErrOut(), l.opts.errStyle()
+	created, err := l.client.CreateSpace(ctx, stored.Key, l.createSpace)
+	if err != nil {
+		fmt.Fprintf(errOut, "%sThe space %q could not be created (%s).\n", es.Mark(tui.Caution), l.createSpace, mcp.Redact(err.Error()))
+		return spaces, ""
+	}
+	if err := storeDefault(ctx, l.file, stored, created.Name); err != nil {
+		fmt.Fprintf(errOut, "%sThe default space was not stored (%s).\n", es.Mark(tui.Caution), mcp.Redact(err.Error()))
+		return append(spaces, created), ""
+	}
+	fmt.Fprintf(errOut, "%sCreated the space %q.\n", es.Mark(tui.Done), created.Name)
+	return append(spaces, created), created.Name
 }
 
 // accept checks an issued key against what this login asked for and

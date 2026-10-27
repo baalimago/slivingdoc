@@ -343,7 +343,11 @@ line ranges) with a nonzero exit. `commit` requires
    in for it, so only the first process of a store identity probes. A hosted store
    runs its `CheckAccess` instead (server description plus a read-only space
    check). A failure exits nonzero with a redacted diagnostic **before** any
-   transport serves a request.
+   transport serves a request. A `serve` under `--login auto` (the
+   default) that finds no credential for hosted storage skips steps 4
+   and 5 instead: it serves the tools and signs in through the device
+   login when a tool is first called (architecture/login.md, Sign in on
+   first use).
 6. **Serve.** `mcp.NewServer` registers exactly `notes_pull` and
    `notes_commit`, serving the one notebook directory resolved in step 1, and
    runs over stdio. Stdout carries protocol messages only; logs go to

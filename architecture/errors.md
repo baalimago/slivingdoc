@@ -15,6 +15,7 @@ Read this when: adding a failure mode, a reason or action token, a store refusal
 | `internal/storage/store.go`, `manifest.go`, `key.go`, `sha256.go`, `uuid.go`, `encrypted.go` | Storage sentinels `ErrNotFound`, `ErrPreconditionFailed`, `ErrTransport`, `ErrIncompatible`, `ErrQuotaExceeded`, `ErrRequestLimit`, `ErrRateLimited`, `ErrAccessDenied`, `ErrTooLarge`, `ErrCredentialRenewed`, `ErrIntegrity`, `ErrUpgradeRequired`, `ErrKeyRequired`, `ErrInvalidKey`, `ErrInvalidPrefix`, `ErrInvalidSHA256`, `ErrInvalidUUID`; the `Refusal` type; `envelopeError` (a key-material refusal — `ErrKeyRequired` when the process holds no secret at all — or `ErrUpgradeRequired` for an unsupported envelope) |
 | `internal/crypt/keyring.go`, `kdf.go`, `envelope.go` | `ErrKeyRejected`, `ErrKeyringLocked`, `ErrCandidateLimit`, `ErrKDFGate`, `ErrKDFParams`, `ErrSecretBounds`, `ErrMalformedEnvelope`, `ErrUnsupportedFormat`, `ErrAuthentication`, `ErrEnvelopeTooLarge` |
 | `internal/keyrecord/`, `internal/recovery/` | The key-record and recovery-code refusals: `ErrNoMaterial`, `ErrEnvfile`, `ErrUnsupportedVersion`, `ErrExposed`, `ErrTooLarge` (module-internal, re-worded by the command) |
+| `internal/app/signin.go` | The first-use sign-in reasons `SIGN_IN_REQUIRED` (`signIn.signInRequired`) and `SETUP_REQUIRED` (`setupRequired`), raised before a `serve` without a credential has a store ([login.md](./login.md), Sign in on first use); `SETUP_REQUIRED` is a permanent refusal (`mcp.permanentRefusal`) |
 | `internal/notebook/encryption.go`, `internal/app/encryption.go` | The encryption reasons `KEY_REQUIRED`, `KEY_REJECTED`, `KEY_MATERIAL_INVALID`, `DOOR_LIMIT`, `ENCRYPTION_ALREADY_ENABLED`, `ENCRYPTION_NOT_ENABLED` ([encryption.md](./encryption.md)) |
 | `internal/workspace/path.go`, `scan.go` | `ErrInvalidPath`, `PathEscapeError`, `ErrSymlink`, `ErrUnsupportedFile`, `ErrInvalidContent`, `ScanError` |
 | `internal/strictjson/json.go` | `Parse` rejections (malformed, duplicate field, `null`, non-`uint64` number, trailing data), `RejectUnknown` |
@@ -77,6 +78,8 @@ Startup: Setup error → router prints `error: <err>` on stderr (`✗ <err>` on 
 | `RECOVERY_FAILURE` | `RATE_LIMITED` | `RETRY` (the store refused the resynchronizing read) |
 | `RECOVERY_FAILURE` | `STORAGE_FULL`, `REQUEST_LIMIT`, `ACCESS_DENIED`, `OBJECT_TOO_LARGE`, `UPGRADE_REQUIRED` | `OPERATOR` (the store refused the resynchronizing read) |
 | `STORAGE_FAILURE` | `KEY_REQUIRED`, `KEY_REJECTED`, `KEY_MATERIAL_INVALID` | `OPERATOR` (no retry changes a missing, rejected or unusable secret) |
+| `STORAGE_FAILURE` | `SIGN_IN_REQUIRED` | `RETRY` (a `serve` without a credential waits for the person to approve its sign-in, [login.md](./login.md)) |
+| `STORAGE_FAILURE` | `SETUP_REQUIRED` | `OPERATOR` (that `serve` cannot sign in, or its login reaches no space it can use) |
 | `INVALID_REQUEST` | `DOOR_LIMIT`, `ENCRYPTION_ALREADY_ENABLED`, `ENCRYPTION_NOT_ENABLED` | `FIX_INPUT` |
 
 An unmapped pairing is a programming error: `actionFor` returns `RETRY` plus `errUnknownActionPairing`; the constructors discard that error, so tests must cover every pairing.
