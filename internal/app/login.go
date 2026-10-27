@@ -233,6 +233,12 @@ func (l *Login) Run(ctx context.Context) error {
 			return l.discard(ctx, stored.Key, errors.New("login: not confirmed; nothing was stored and the new login key was revoked"))
 		}
 	}
+	if len(spaces) == 0 && l.createSpace != "" {
+		// Created before the login is stored, so the stored login names it
+		// as its only space and default at once: a server resolving the
+		// file meanwhile never reads a login without a default space.
+		spaces = l.createFirst(ctx, stored, spaces)
+	}
 	outcome, err := l.store(ctx, stored, spaces, agreed)
 	if err != nil {
 		return l.discard(ctx, stored.Key, err)
@@ -241,9 +247,6 @@ func (l *Login) Run(ctx context.Context) error {
 	// termination signal is still consumed by the login: an interrupt
 	// never skips the revocation (revocationContext).
 	l.revokeReplaced(ctx, stored, outcome.replaced)
-	if outcome.defaultSpace == "" && len(spaces) == 0 && l.createSpace != "" && outcome.unlockErr == nil {
-		spaces, outcome.defaultSpace = l.createFirst(ctx, stored, spaces)
-	}
 	// A failed unlock leaves this process holding the credentials lock,
 	// which the picker's store would wait on forever.
 	if outcome.defaultSpace == "" && len(spaces) > 1 && outcome.unlockErr == nil && ctx.Err() == nil && l.opts.terminal() == OnTerminal {
@@ -267,23 +270,19 @@ func (l *Login) Run(ctx context.Context) error {
 	return nil
 }
 
-// createFirst creates the first space of a login that reaches none and
-// makes it the default. The login is stored already, so a failure is
-// told, not returned: the login stands, and the refusal that follows names
-// the fix.
-func (l *Login) createFirst(ctx context.Context, stored credentials.Login, spaces []sitelogin.Space) ([]sitelogin.Space, string) {
+// createFirst creates the first space of a login that reaches none, which
+// the store then makes the default as the only space listed. A failure is
+// told, not returned: the login is still stored, and the refusal that
+// follows names the fix.
+func (l *Login) createFirst(ctx context.Context, stored credentials.Login, spaces []sitelogin.Space) []sitelogin.Space {
 	errOut, es := l.opts.ErrOut(), l.opts.errStyle()
 	created, err := l.client.CreateSpace(ctx, stored.Key, l.createSpace)
 	if err != nil {
 		fmt.Fprintf(errOut, "%sThe space %q could not be created (%s).\n", es.Mark(tui.Caution), l.createSpace, mcp.Redact(err.Error()))
-		return spaces, ""
-	}
-	if err := storeDefault(ctx, l.file, stored, created.Name); err != nil {
-		fmt.Fprintf(errOut, "%sThe default space was not stored (%s).\n", es.Mark(tui.Caution), mcp.Redact(err.Error()))
-		return append(spaces, created), ""
+		return spaces
 	}
 	fmt.Fprintf(errOut, "%sCreated the space %q.\n", es.Mark(tui.Done), created.Name)
-	return append(spaces, created), created.Name
+	return append(spaces, created)
 }
 
 // accept checks an issued key against what this login asked for and
