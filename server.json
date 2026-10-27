@@ -7,13 +7,13 @@
     "url": "https://github.com/baalimago/slivingdoc",
     "source": "github"
   },
-  "version": "1.2.0",
+  "version": "1.3.0",
   "websiteUrl": "https://slivingdoc.dev/",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "slivingdoc",
-      "version": "1.2.0",
+      "version": "1.3.0",
       "runtimeHint": "npx",
       "runtimeArguments": [
         {
