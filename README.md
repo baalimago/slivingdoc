@@ -1,4 +1,4 @@
-Test coverage: 87.5% 😍👌
+Test coverage: 87.4% 😍👌
 
 [![slivingdoc banner](img/banner.svg)](https://slivingdoc.dev)
 
