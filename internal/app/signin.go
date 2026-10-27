@@ -14,6 +14,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/baalimago/slivingdoc/internal/credentials"
@@ -48,6 +50,23 @@ type needsSignIn struct{ err error }
 
 func (e needsSignIn) Error() string { return e.err.Error() }
 func (e needsSignIn) Unwrap() error { return e.err }
+
+// noDefaultSpace marks the refusal of a usable stored login that names no
+// default space. serve resolves it on the first tool call by choosing one
+// (adoptDefault); every other command keeps the refusal.
+type noDefaultSpace struct {
+	login credentials.Login
+	err   error
+}
+
+func (e noDefaultSpace) Error() string { return e.err.Error() }
+func (e noDefaultSpace) Unwrap() error { return e.err }
+
+// pendsOnFirstUse reports whether serve starts with err pending and
+// resolves it when a tool is first called.
+func pendsOnFirstUse(err error) bool {
+	return errors.As(err, new(needsSignIn)) || errors.As(err, new(noDefaultSpace))
+}
 
 // signInSpace is the space a first sign-in creates when the account has
 // none yet, so a new account works without a visit to the site.
@@ -147,6 +166,16 @@ func (s *signIn) await(ctx context.Context) error {
 		if err == nil {
 			return nil
 		}
+		var none noDefaultSpace
+		if errors.As(err, &none) {
+			if err := s.adoptDefault(ctx, none.login); err != nil {
+				return setupRequired(err)
+			}
+			if err := s.build(); err != nil {
+				return setupRequired(err)
+			}
+			return nil
+		}
 		if !errors.As(err, new(needsSignIn)) {
 			return setupRequired(err)
 		}
@@ -203,6 +232,50 @@ func (s *signIn) build() error {
 	logStorage(s.rt.logger, cfg, environ(s.rt.p.env))
 	s.rt.logger.Info("signed in", "space", resolved.bucket, "from", resolved.bucketFrom.String())
 	logStoreCheck(s.rt.logger, check)
+	return nil
+}
+
+// adoptDefault stores a default space for a stored login that has none:
+// its only space, else the space every account starts with
+// (signInSpace) when it is listed, else that space, created, when the
+// login reaches none. A login reaching several spaces without it is left
+// for the person to choose.
+func (s *signIn) adoptDefault(ctx context.Context, login credentials.Login) error {
+	client, err := siteClient(login.Site, s.rt.p.login)
+	if err != nil {
+		return err
+	}
+	spaces, err := client.Spaces(ctx, login.Key)
+	if err != nil {
+		return fmt.Errorf("list the spaces of the stored login for %s: %w", login.Endpoint, err)
+	}
+	name := chooseDefault("", spaces, "")
+	switch {
+	case name != "":
+	case len(spaces) == 0:
+		created, err := client.CreateSpace(ctx, login.Key, signInSpace)
+		if err != nil {
+			return fmt.Errorf("create the space %q for the stored login for %s: %w", signInSpace, login.Endpoint, err)
+		}
+		name = created.Name
+	case slices.ContainsFunc(spaces, func(sp sitelogin.Space) bool { return sp.Name == signInSpace }):
+		name = signInSpace
+	default:
+		names := make([]string, len(spaces))
+		for i, sp := range spaces {
+			names[i] = sp.Name
+		}
+		return fmt.Errorf("the stored login for %s has no default space and reaches several (%s); run 'slivingdoc space <name>' to choose one",
+			login.Endpoint, strings.Join(names, ", "))
+	}
+	file, err := credentialsFile(environ(s.rt.p.env))
+	if err != nil {
+		return err
+	}
+	if err := storeDefault(ctx, file, login, name); err != nil {
+		return err
+	}
+	s.rt.logger.Info("default space chosen", "space", name)
 	return nil
 }
 

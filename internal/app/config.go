@@ -280,8 +280,9 @@ func (f *Flags) resolve(environment []string, cwd, cacheDir string, ephemeral bo
 }
 
 // resolveTarget resolves the store and every other setting over roots that
-// are already resolved. With signIn, a refusal a first sign-in resolves
-// (needsSignIn) is kept in config.signIn instead of returned.
+// are already resolved. With signIn, a refusal a first tool call resolves
+// (needsSignIn, noDefaultSpace) is kept in config.signIn instead of
+// returned.
 func (f *Flags) resolveTarget(env map[string]string, cwd, cacheDir string, roots resolvedRoots, assoc settingsAssociation, signIn bool) (config, error) {
 	var err error
 	// A scratch server owns a directory that does not survive it, so it
@@ -298,7 +299,7 @@ func (f *Flags) resolveTarget(env map[string]string, cwd, cacheDir string, roots
 		remembered: remembered,
 	})
 	var pending error
-	if signIn && errors.As(err, new(needsSignIn)) {
+	if signIn && pendsOnFirstUse(err) {
 		// The space a flag or variable names is still the one asked for,
 		// which the sign-in makes the login's default.
 		sel, pending = storageSelection{kind: settings.KindHosted}, err

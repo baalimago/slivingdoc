@@ -1,12 +1,14 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
 
 	"github.com/baalimago/slivingdoc/internal/credentials"
 	"github.com/baalimago/slivingdoc/internal/notebook"
+	"github.com/baalimago/slivingdoc/internal/sitelogin/sitetest"
 )
 
 // TestLoadConfigSignIn proves which startups a serve that may sign in keeps
@@ -85,5 +87,52 @@ func TestSignInAnswers(t *testing.T) {
 	if err := setupRequired(errors.New("no default space")); !errors.As(err, &nb) || nb.Reason != notebook.ReasonSetupRequired || nb.Action != notebook.ActionOperator ||
 		!strings.Contains(nb.Message, "no default space") {
 		t.Fatalf("setupRequired() = %v, want the refusal for the person", err)
+	}
+}
+
+// TestSignInAdoptsADefaultSpace pins the default a serve stores for a
+// login that has none: the only space, notes among several, notes created
+// when the login reaches none; and what it refuses: several spaces without
+// notes, a listing or a creation the site refuses.
+func TestSignInAdoptsADefaultSpace(t *testing.T) {
+	t.Parallel()
+	other := space("other", "bob@example.test", "read")
+	team := space("team", "ada@example.test", "write")
+	for _, row := range []struct {
+		name    string
+		spaces  []sitetest.Space
+		refuse  func(*sitetest.Site)
+		want    string
+		refusal string
+	}{
+		{name: "the only space", spaces: []sitetest.Space{team}, want: "team"},
+		{name: "notes among several", spaces: []sitetest.Space{team, notesSpace, other}, want: "notes"},
+		{name: "notes created", want: "notes"},
+		{name: "several without notes", spaces: []sitetest.Space{team, other}, refusal: "reaches several (team, other)"},
+		{name: "listing refused", spaces: []sitetest.Space{team}, refuse: func(s *sitetest.Site) { s.Revoke(loginToken) }, refusal: "list the spaces"},
+		{name: "creation refused", refuse: func(s *sitetest.Site) { s.RefuseCreate(403, "space_limit") }, refusal: `create the space "notes"`},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			r := newLoginRig(t)
+			r.loginOnce(t, loginToken, []sitetest.Space{team, other})
+			r.site.SetSpaces(loginToken, row.spaces...)
+			if row.refuse != nil {
+				row.refuse(r.site)
+			}
+			opts := r.opts()
+			s := &signIn{rt: &Runtime{p: process{env: opts.Env, login: opts}, logger: discardLogger()}}
+			err := s.adoptDefault(context.Background(), r.stored(t))
+			got := r.defaultSpace(t, DefaultHostedEndpoint)
+			if row.refusal != "" {
+				if err == nil || !strings.Contains(err.Error(), row.refusal) || got != "" {
+					t.Fatalf("adoptDefault() = %v, default %q; want the refusal %q and no default", err, got, row.refusal)
+				}
+				return
+			}
+			if err != nil || got != row.want {
+				t.Fatalf("adoptDefault() = %v, default %q; want %q", err, got, row.want)
+			}
+		})
 	}
 }
