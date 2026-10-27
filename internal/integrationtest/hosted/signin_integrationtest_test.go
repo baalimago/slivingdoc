@@ -176,3 +176,60 @@ func TestScenarioServeSignInDeniedThenRetried(t *testing.T) {
 		t.Fatalf("start requests = %d, want the denied one and the next", len(starts))
 	}
 }
+
+// TestScenarioServeAdoptsADefaultSpace proves a serve whose stored login
+// names no default space stores one on the first tool call and serves it:
+// the only space the login reaches, notes among several, or notes created
+// when it reaches none. Several spaces without notes stay the person's
+// choice, answered SETUP_REQUIRED with the command that makes it.
+func TestScenarioServeAdoptsADefaultSpace(t *testing.T) {
+	t.Parallel()
+	const second = "second-space"
+	notes := sitetest.Space{Name: "notes", Owner: LoginAccount, Access: "write"}
+	other := sitetest.Space{Name: second, Owner: "bob@example.test", Access: "read"}
+	for _, tc := range []struct {
+		name   string
+		spaces []sitetest.Space
+		want   string
+	}{
+		{"the only space", []sitetest.Space{TeamNotes}, HostedSpace},
+		{"notes among several", []sitetest.Space{TeamNotes, notes, other}, "notes"},
+		{"notes created", nil, "notes"},
+		{"several without notes", []sitetest.Space{TeamNotes, other}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			g, site, env, root := LoginEnv(t)
+			g.AddSpace("notes", 1<<20)
+			g.AddSpace(second, 1<<20)
+			Approve(site, g, LoginKey, "write", LoginExpiry)
+			// Two spaces at login time store no default.
+			site.SetSpaces(LoginKey, TeamNotes, other)
+			RunLogin(t, env, site, LoggedIn(g, "read and write", "until 2026-12-26 09:00 UTC"), "--no-browser")
+			site.SetSpaces(LoginKey, tc.spaces...)
+
+			served := filepath.Join(root, "served")
+			h := SpawnHelper(t, "real", append(append([]string(nil), env...), "SLIVINGDOC_WORKSPACE_ROOT="+served), "serve")
+			cs := h.ConnectClient(t)
+			if tc.want == "" {
+				te, text := CallToolError(t, cs, ToolPull)
+				h.CloseClient(t, cs)
+				if te.Reason != "SETUP_REQUIRED" || te.Retryable || !strings.Contains(text, "reaches several ("+HostedSpace+", "+second+")") ||
+					!strings.Contains(text, "'slivingdoc space <name>'") {
+					t.Fatalf("pull = %+v, text %q; want SETUP_REQUIRED naming both spaces and the command", te, text)
+				}
+				return
+			}
+			AssertProcessCallOK(t, cs, ToolPull, served, "")
+			h.CloseClient(t, cs)
+			if mints := site.Mints(); len(mints) == 0 || mints[0].Space != tc.want {
+				t.Fatalf("mints = %+v, want tokens for %s", mints, tc.want)
+			}
+			// The default is stored: a one-shot pull uses it.
+			RunCLIOK(t, "real", env, nil, "pull", filepath.Join(root, "notes"))
+			if starts := site.Starts(); len(starts) != 1 {
+				t.Fatalf("start requests = %d, want only the login's", len(starts))
+			}
+		})
+	}
+}
