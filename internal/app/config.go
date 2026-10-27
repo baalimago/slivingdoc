@@ -90,6 +90,15 @@ type config struct {
 	// configured (architecture/config.md). It is removed at shutdown; the
 	// notebook itself lives in S3.
 	sessionDir string
+
+	// signIn is the refusal a first sign-in resolves, set only for a serve
+	// process that may sign in (signInAllowed) and found no credential;
+	// the process then starts without a store, and reresolve resolves the
+	// storage again once a login is stored (architecture/login.md, Sign in
+	// on first use).
+	signIn        error
+	signInAllowed bool
+	reresolve     func() (config, error)
 }
 
 // packCacheMode records why packCacheRoot is empty when it is: the shared
@@ -136,6 +145,9 @@ type Flags struct {
 	ignore              stringFlag
 	logLevel            stringFlag
 	logTimestamp        boolFlag
+	// login is serve's --login: whether a serve without a credential signs
+	// in on first use (BindServe).
+	login stringFlag
 }
 
 // NewFlags returns an unbound flag holder for the serve command.
@@ -163,6 +175,13 @@ func (f *Flags) Bind(fs *flag.FlagSet) {
 	fs.Var(&f.ignore, "ignore", "extra file names or paths the notebook never reads, publishes or removes")
 	fs.Var(&f.logLevel, "log-level", "per-module log levels (LOG_LEVEL grammar)")
 	fs.Var(&f.logTimestamp, "log-timestamp", "include the time= field in log records")
+}
+
+// BindServe registers every serve flag on fs: the shared flags, and --login,
+// which only serve has.
+func (f *Flags) BindServe(fs *flag.FlagSet) {
+	f.Bind(fs)
+	fs.Var(&f.login, "login", "without a credential, sign in on first use (auto) or refuse to start (never)")
 }
 
 func (f *Flags) regionSet() bool    { return f.region.set }
@@ -194,12 +213,16 @@ func loadConfig(p process) (config, error) {
 		f = NewFlags()
 		fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 		fs.SetOutput(io.Discard) // diagnostics are formatted by this package
-		f.Bind(fs)
+		if p.signIn {
+			f.BindServe(fs)
+		} else {
+			f.Bind(fs)
+		}
 		if err := fs.Parse(p.args); err != nil {
 			return config{}, err
 		}
 	}
-	return f.resolve(p.env, p.cwd, p.cacheDir, p.ephemeral, p.newSessionDir, p.association)
+	return f.resolve(p.env, p.cwd, p.cacheDir, p.ephemeral, p.newSessionDir, p.association, p.signIn)
 }
 
 // resolve applies the documented precedence — an explicitly set flag over
@@ -212,7 +235,7 @@ func loadConfig(p process) (config, error) {
 // The roots resolve before the store does, because the notebook directory
 // of an omitted path is the workspace root, and that root is the key the
 // remembered space of this directory is stored under.
-func (f *Flags) resolve(environment []string, cwd, cacheDir string, ephemeral bool, newSessionDir func() (string, error), assoc settingsAssociation) (cfgOut config, errOut error) {
+func (f *Flags) resolve(environment []string, cwd, cacheDir string, ephemeral bool, newSessionDir func() (string, error), assoc settingsAssociation, signIn bool) (cfgOut config, errOut error) {
 	var session string
 	defer func() {
 		if errOut != nil {
@@ -234,6 +257,33 @@ func (f *Flags) resolve(environment []string, cwd, cacheDir string, ephemeral bo
 	if roots.workspaceRoot, err = absolute(cwd, roots.workspaceRoot); err != nil {
 		return config{}, fmt.Errorf("workspace root: %w", err)
 	}
+	if signIn {
+		mode, err := parseLoginMode(resolveString(&f.login, env[LoginEnv], loginAuto))
+		if err != nil {
+			return config{}, err
+		}
+		signIn = mode == loginAuto
+	}
+	cfg, err := f.resolveTarget(env, cwd, cacheDir, roots, assoc, signIn)
+	if err != nil {
+		return config{}, err
+	}
+	if cfg.signIn != nil {
+		// The roots are this process's for its lifetime, so resolving the
+		// storage again after a sign-in keeps them and never removes the
+		// session directory, whatever that resolution answers.
+		cfg.reresolve = func() (config, error) {
+			return f.resolveTarget(env, cwd, cacheDir, roots, assoc, false)
+		}
+	}
+	return cfg, nil
+}
+
+// resolveTarget resolves the store and every other setting over roots that
+// are already resolved. With signIn, a refusal a first sign-in resolves
+// (needsSignIn) is kept in config.signIn instead of returned.
+func (f *Flags) resolveTarget(env map[string]string, cwd, cacheDir string, roots resolvedRoots, assoc settingsAssociation, signIn bool) (config, error) {
+	var err error
 	// A scratch server owns a directory that does not survive it, so it
 	// consults no record and no stored default (I8). Every other process
 	// reads both, keyed by its notebook directory, which the resolution
@@ -247,6 +297,13 @@ func (f *Flags) resolve(environment []string, cwd, cacheDir string, ephemeral bo
 		now:        time.Now(),
 		remembered: remembered,
 	})
+	var pending error
+	if signIn && errors.As(err, new(needsSignIn)) {
+		// The space a flag or variable names is still the one asked for,
+		// which the sign-in makes the login's default.
+		sel, pending = storageSelection{kind: settings.KindHosted}, err
+		sel.bucket, sel.bucketFrom, err = resolveBucket(f, env)
+	}
 	if err != nil {
 		return config{}, err
 	}
@@ -263,6 +320,9 @@ func (f *Flags) resolve(environment []string, cwd, cacheDir string, ephemeral bo
 		login:       sel.login,
 		tokenOrigin: sel.origin,
 		bucketFrom:  sel.bucketFrom,
+
+		signIn:        pending,
+		signInAllowed: signIn,
 	}
 	cfg.sessionDir, cfg.workspaceRoot, cfg.privateRoot = roots.session, roots.workspaceRoot, roots.privateRoot
 	// The shared pack cache is always on when the host has a user cache
@@ -347,8 +407,14 @@ func resolveRoots(cwd, cacheDir string, ephemeral bool, newSessionDir func() (st
 // numeric bounds. The endpoint and roots normalize before any engine or S3
 // work; diagnostics never echo credentials or private values.
 func (cfg config) finish(cwd string) (config, error) {
-	if cfg.bucket == "" && !cfg.hosted() {
-		return config{}, errors.New("bucket is required (pass --bucket for S3, or --space or 'slivingdoc login' for hosted storage)")
+	if cfg.bucket == "" && !cfg.hosted() && cfg.signIn == nil {
+		// S3 cannot work without a bucket, so a login is what this
+		// process lacks: a serve that may sign in does so on first use.
+		missing := needsSignIn{errors.New("bucket is required (pass --bucket for S3, or --space or 'slivingdoc login' for hosted storage)")}
+		if !cfg.signInAllowed {
+			return config{}, missing
+		}
+		cfg.signIn = missing
 	}
 	if err := storage.ValidatePrefix(cfg.prefix); err != nil {
 		return config{}, err
@@ -358,7 +424,7 @@ func (cfg config) finish(cwd string) (config, error) {
 		return config{}, err
 	}
 	cfg.endpoint = endpoint
-	if cfg.hosted() {
+	if cfg.hosted() && cfg.signIn == nil {
 		if err := validateHosted(cfg); err != nil {
 			return config{}, err
 		}
@@ -826,7 +892,15 @@ and the resolved directory is reported in the server instructions and in
 every tool result. Setting --workspace-root keeps the shared-directory
 behaviour instead.
 
+Without SLIVINGDOC_TOKEN, a stored login, or a bucket, the server still
+starts, and signs in when a tool is first called: the call answers with an
+approval page for the person to open, and the login it stores serves every
+later process.
+
 Flags take precedence over environment variables, which override defaults.
 An explicitly empty flag value does not fall back to an environment value.
 
+  --login string                sign in on first use without a credential    SLIVINGDOC_LOGIN
+                                (default "auto"; "never" refuses to start
+                                instead, as pull and commit do)
 ` + FlagReference

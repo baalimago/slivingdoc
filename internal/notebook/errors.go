@@ -90,6 +90,13 @@ const (
 	ReasonEngineFailed        Reason = "ENGINE_FAILED"
 	ReasonLocalMutationFailed Reason = "LOCAL_MUTATION_FAILED"
 
+	// ReasonSignInRequired and ReasonSetupRequired are a serve process
+	// that started without a credential (architecture/login.md, Sign in on
+	// first use): the person must approve the sign-in, or fix what keeps
+	// the stored login from reaching a space.
+	ReasonSignInRequired Reason = "SIGN_IN_REQUIRED"
+	ReasonSetupRequired  Reason = "SETUP_REQUIRED"
+
 	// The encryption command reasons
 	// (worklogs/26-10-05-encrypted-notebooks/phase-4-command-surface.md).
 	ReasonKeyRequired              Reason = "KEY_REQUIRED"
@@ -163,6 +170,8 @@ var actionForPairing = map[codeReason]Action{
 	{CodeStorageFailure, ReasonAccessDenied}:        ActionOperator,
 	{CodeStorageFailure, ReasonObjectTooLarge}:      ActionOperator,
 	{CodeStorageFailure, ReasonUpgradeRequired}:     ActionOperator,
+	{CodeStorageFailure, ReasonSignInRequired}:      ActionRetry,
+	{CodeStorageFailure, ReasonSetupRequired}:       ActionOperator,
 	{CodeStorageIntegrity, ReasonManifestInvalid}:   ActionOperator,
 	{CodeStorageIntegrity, ReasonPackInvalid}:       ActionOperator,
 	{CodeStorageIntegrity, ReasonEnvelopeInvalid}:   ActionOperator,

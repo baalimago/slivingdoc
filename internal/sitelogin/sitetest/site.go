@@ -139,6 +139,7 @@ type Site struct {
 	minter    func(Minted)
 	suspended map[string]bool
 	hold      *barrier
+	undecided bool
 	approvals map[string]*approval
 	keys      map[string]*key
 	minted    map[string]bool
@@ -226,6 +227,21 @@ func (s *Site) HoldIssues(n int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.hold = &barrier{n: n, release: make(chan struct{})}
+}
+
+// Undecided makes every poll answer authorization_pending, as while the
+// person has not opened the page yet, until Decide.
+func (s *Site) Undecided() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.undecided = true
+}
+
+// Decide ends Undecided: later polls follow their approval's script.
+func (s *Site) Decide() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.undecided = false
 }
 
 // SetTiming sets the interval and lifetime, in seconds, that later starts
@@ -410,6 +426,11 @@ func (s *Site) token(w http.ResponseWriter, r *http.Request) {
 	if !ok || a.claimed {
 		s.mu.Unlock()
 		writeError(w, http.StatusBadRequest, "expired_token")
+		return
+	}
+	if s.undecided {
+		s.mu.Unlock()
+		writeError(w, http.StatusBadRequest, "authorization_pending")
 		return
 	}
 	if a.polls < len(a.script.Pending) {

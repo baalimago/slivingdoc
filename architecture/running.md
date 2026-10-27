@@ -201,6 +201,7 @@ makes the choice explicit ([Choosing the storage](#choosing-the-storage)).
 | Encryption passphrase envfile     | none                     | `SLIVINGDOC_PASSPHRASE_FILE`      | empty (terminal or key record) |
 | Log levels                        | `--log-level`            | `LOG_LEVEL`                       | `info`                       |
 | Log timestamps                    | `--log-timestamp`        | `SLIVINGDOC_LOG_TIMESTAMP`        | `true`                       |
+| Sign in on first use (serve only) | `--login`                | `SLIVINGDOC_LOGIN`                | `auto` (or `never`)          |
 
 The two encryption settings carry a secret and no flag can name one; they
 belong to the `encrypt` command and to a process that unlocks the notebook

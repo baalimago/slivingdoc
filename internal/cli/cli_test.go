@@ -100,6 +100,13 @@ func TestRouterRefusals(t *testing.T) {
 		{
 			name: "invalid configuration",
 			args: []string{"serve"},
+			env:  []string{"SLIVINGDOC_BUCKET=", "SLIVINGDOC_CHECKPOINT_PACKS=0"},
+		},
+		{
+			// Without --login never, a serve with no bucket and no login
+			// starts and signs in on first use (architecture/login.md).
+			name: "no bucket and no sign-in",
+			args: []string{"serve", "--login", "never"},
 			env:  []string{"SLIVINGDOC_BUCKET="},
 		},
 	} {

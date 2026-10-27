@@ -542,20 +542,38 @@ func TestReleaseBinaryCommandSurface(t *testing.T) {
 		})
 	}
 
-	// The serve command without a bucket is a refusal, not a server that
-	// waits on stdin: a hanging process here is indistinguishable from
-	// a working one until the suite times out.
-	t.Run("serve without a bucket refuses", func(t *testing.T) {
+	// The serve command without a bucket or a login is a refusal under
+	// --login never, not a server that waits on stdin: a hanging process
+	// here is indistinguishable from a working one until the suite times
+	// out.
+	t.Run("serve --login never without a bucket refuses", func(t *testing.T) {
+		t.Parallel()
+		stdout, stderr, code, err := startAndWait(bin, "serve", "--login", "never", "--workspace-root="+t.TempDir())
+		if err != nil {
+			t.Fatalf("run serve: %v", err)
+		}
+		if code == 0 {
+			t.Fatalf("serve --login never without --bucket = exit 0, want a refusal; stdout %q", stdout)
+		}
+		if !strings.Contains(stderr, "bucket is required") {
+			t.Fatalf("serve stderr = %q, want the required-bucket diagnostic", stderr)
+		}
+	})
+
+	// Without --login never it starts, to sign in on first use
+	// (architecture/login.md), and still ends cleanly when the client
+	// closes stdin.
+	t.Run("serve without a bucket waits for its first sign-in", func(t *testing.T) {
 		t.Parallel()
 		stdout, stderr, code, err := startAndWait(bin, "serve", "--workspace-root="+t.TempDir())
 		if err != nil {
 			t.Fatalf("run serve: %v", err)
 		}
-		if code == 0 {
-			t.Fatalf("serve without --bucket = exit 0, want a refusal; stdout %q", stdout)
+		if code != 0 || stdout != "" {
+			t.Fatalf("serve without --bucket = exit %d, stdout %q; want a clean exit at the end of stdin", code, stdout)
 		}
-		if !strings.Contains(stderr, "bucket is required") {
-			t.Fatalf("serve stderr = %q, want the required-bucket diagnostic", stderr)
+		if !strings.Contains(stderr, "sign-in required on first use") {
+			t.Fatalf("serve stderr = %q, want the sign-in it waits for", stderr)
 		}
 	})
 }

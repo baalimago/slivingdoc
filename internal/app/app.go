@@ -138,6 +138,12 @@ type ProcessOptions struct {
 	// Terminal says whether a person can answer a prompt. Nil checks that
 	// the process stdin and stderr are both terminals.
 	Terminal func() TerminalState
+
+	// SignIn lets a process without a credential for hosted storage start
+	// and sign in on first use, unless --login never (architecture/login.md,
+	// Sign in on first use). The serve command sets it; the one-shot
+	// commands keep the startup refusal.
+	SignIn bool
 }
 
 // TerminalState says whether a prompt can ask the person at the keyboard.
@@ -192,6 +198,16 @@ type process struct {
 	// token's renewal; nil is time.Now.
 	siteClient sitelogin.Doer
 	now        func() time.Time
+
+	// signIn is ProcessOptions.SignIn. login is the environment of the
+	// first-use sign-in: the process options with stdout replaced by
+	// stderr, which the MCP protocol owns, and no terminal, because stdin
+	// is the protocol's too. A tool call waits up to signInWait for the
+	// approval, checking every signInPoll.
+	signIn     bool
+	login      ProcessOptions
+	signInWait time.Duration
+	signInPoll time.Duration
 }
 
 // Setup resolves the configuration, opens the pinned native engine, builds
@@ -280,7 +296,22 @@ func Setup(engine git.Engine, flags *Flags, opts ProcessOptions) (*Runtime, erro
 		newSessionDir:    opts.NewSessionDir,
 		association:      opts.association(),
 		siteClient:       opts.SiteClient,
+		signIn:           opts.SignIn,
+		login:            opts.signInOptions(env, stderr),
+		signInWait:       signInWait,
+		signInPoll:       signInPoll,
 	})
+}
+
+// signInOptions are the options of the first-use sign-in's login: the
+// login writes everything to stderr, never asks a question, and never
+// takes a termination signal from the serve process, which ends it through
+// its context instead.
+func (o ProcessOptions) signInOptions(env []string, stderr io.Writer) ProcessOptions {
+	o.Env, o.Stdout, o.Stderr = env, stderr, stderr
+	o.Signals = make(chan os.Signal)
+	o.Terminal = func() TerminalState { return NoTerminal }
+	return o
 }
 
 // Runtime is a constructed process body: the configuration is validated,
@@ -298,6 +329,9 @@ type Runtime struct {
 	// gate bounds Argon2id derivations process-wide: the encryption commands
 	// and every keyring they build share it (phase-4-command-surface.md).
 	gate *crypt.KDFGate
+	// signIn is set while a serve process waits for its first sign-in;
+	// svc is nil until it builds the store (signin.go).
+	signIn *signIn
 	// kdfParams is the cost a new door is written with.
 	kdfParams crypt.KDFParams
 }
@@ -305,6 +339,9 @@ type Runtime struct {
 // Serve runs the MCP server until the client disconnects, ctx is cancelled,
 // or a termination signal starts the bounded shutdown.
 func (r *Runtime) Serve(ctx context.Context) error {
+	if r.signIn != nil {
+		return r.serveSignIn(ctx)
+	}
 	r.logger.Info("serving",
 		"bucket", r.cfg.bucket,
 		"hosted", r.cfg.hosted(),
@@ -316,6 +353,23 @@ func (r *Runtime) Serve(ctx context.Context) error {
 	// nothing new (architecture/tui.md). Stdout stays the protocol's.
 	s := tui.Detect(r.p.stderr, EnvLookup(r.p.env))
 	io.WriteString(r.p.stderr, s.Header("serve", fmt.Sprintf("%s · %s · waiting for an MCP client on stdio", r.Target(), r.cfg.workspaceRoot)))
+	return serve(ctx, r.p, srv, r.logger)
+}
+
+// serveSignIn serves a process that has not signed in yet: the tools start
+// the sign-in when first called (signin.go), and the background login ends
+// with the server.
+func (r *Runtime) serveSignIn(ctx context.Context) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	r.signIn.ctx = ctx
+	r.logger.Info("serving",
+		"signIn", "on first use",
+		"notebookRoot", r.cfg.workspaceRoot,
+		"ephemeral", r.cfg.sessionDir != "")
+	srv := mcp.NewServer(signInService{r.signIn}, Version, Module(r.base, ModuleMCP))
+	s := tui.Detect(r.p.stderr, EnvLookup(r.p.env))
+	io.WriteString(r.p.stderr, s.Header("serve", fmt.Sprintf("not signed in yet; the first tool call signs in · %s · waiting for an MCP client on stdio", r.cfg.workspaceRoot)))
 	return serve(ctx, r.p, srv, r.logger)
 }
 
@@ -394,7 +448,9 @@ func (r *Runtime) resolve(path string) string {
 // the ephemeral session directory when the process owns one. It is safe to
 // call once per successful Setup.
 func (r *Runtime) Close() error {
-	r.svc.Close()
+	if r.svc != nil {
+		r.svc.Close()
+	}
 	err := r.p.engine.Close()
 	if rmErr := removeSessionDir(r.cfg.sessionDir); rmErr != nil && err == nil {
 		err = fmt.Errorf("app: remove session directory: %w", rmErr)
@@ -431,7 +487,9 @@ func setup(p process) (*Runtime, error) {
 		base = rebuilt
 		logger = Module(base, ModuleApp)
 	}
-	logStorage(logger, cfg, environ(p.env))
+	if cfg.signIn == nil {
+		logStorage(logger, cfg, environ(p.env))
+	}
 	if err := p.engine.Open(); err != nil {
 		removeSessionDir(cfg.sessionDir)
 		return nil, fmt.Errorf("app: open native engine: %w", err)
@@ -459,6 +517,14 @@ func setup(p process) (*Runtime, error) {
 		p.engine.Close()
 		removeSessionDir(cfg.sessionDir)
 		return nil, fmt.Errorf("app: create the key-derivation gate: %w", err)
+	}
+	if cfg.signIn != nil {
+		// No credential reaches hosted storage: the process serves the
+		// tools and signs in on first use (signin.go).
+		logger.Info("sign-in required on first use", "reason", mcp.Redact(cfg.signIn.Error()))
+		rt := &Runtime{p: p, cfg: cfg, base: base, logger: logger, gate: gate, kdfParams: params}
+		rt.signIn = newSignIn(rt)
+		return rt, nil
 	}
 	svc, resolved, check, err := buildService(p, cfg, gate)
 	if err != nil {
