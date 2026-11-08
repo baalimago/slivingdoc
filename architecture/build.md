@@ -56,7 +56,7 @@ sh setup.sh
 
 ## Behavior
 
-**Requirements.** Go `1.26.5`, Node.js `22.23.2`, `curl`, `tar`, `cmake` everywhere. Linux: `sha256sum` and a C toolchain (no `pkg-config`: `native.go` links `.build/libgit2` directly). macOS: Xcode command-line tools and `shasum`. Windows: Git Bash and mingw-w64 gcc; the build script downloads a pinned, SHA-256-verified `pkg-config-lite` because Windows runners have no usable `pkg-config`, and the cgo build drives the same mingw-w64 gcc that built the archive.
+**Requirements.** Go `1.27.3`, Node.js `22.23.2`, `curl`, `tar`, `cmake` everywhere. Linux: `sha256sum` and a C toolchain (no `pkg-config`: `native.go` links `.build/libgit2` directly). macOS: Xcode command-line tools and `shasum`. Windows: Git Bash and mingw-w64 gcc; the build script downloads a pinned, SHA-256-verified `pkg-config-lite` because Windows runners have no usable `pkg-config`, and the cgo build drives the same mingw-w64 gcc that built the archive.
 
 **Pinned libgit2.** Version `v1.9.6` from `https://github.com/libgit2/libgit2/archive/refs/tags/v1.9.6.tar.gz`, SHA-256 `a88a42a4ea9bdab7aa8686eead3bf7d9c6dd74529caca16ab22eaa92433d31d9`, GPL v2 with linking exception (see `NOTICE`). `git2.PinnedVersion` must match; `Engine.Open` refuses any other ABI at startup ([git-engine.md](./git-engine.md)).
 

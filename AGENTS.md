@@ -599,8 +599,8 @@ diagnostic rather than skipping the storage protocol.
 
 | Tool        | Command                                                        |
 | ----------- | -------------------------------------------------------------- |
-| Format      | `go run mvdan.cc/gofumpt@v0.11.0 -w -l .`                      |
-| Staticcheck | `go run honnef.co/go/tools/cmd/staticcheck@v0.7.0 ./...`       |
+| Format      | `go run mvdan.cc/gofumpt@v0.12.0 -w -l .`                      |
+| Staticcheck | `go run honnef.co/go/tools/cmd/staticcheck@v0.8.2 ./...`       |
 | Lint        | `go vet ./...`                                                 |
 | Fix         | `go fix -diff ./...` (must print nothing)                      |
 | Test        | `make test` (race, 3 counts, 30 s, coverage with a 70 % floor) |

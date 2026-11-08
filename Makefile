@@ -5,8 +5,8 @@
 # flag: `make test` runs every Go test that exists.
 
 GO ?= go
-GOFUMPT := go run mvdan.cc/gofumpt@v0.11.0
-STATICCHECK := go run honnef.co/go/tools/cmd/staticcheck@v0.7.0
+GOFUMPT := go run mvdan.cc/gofumpt@latest
+STATICCHECK := go run honnef.co/go/tools/cmd/staticcheck@latest
 
 BUILD_DIR := .build
 BIN := $(BUILD_DIR)/slivingdoc
