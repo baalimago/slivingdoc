@@ -87,6 +87,14 @@ type Login struct {
 	// save writes the credentials file; nil is File.Save. Tests make it
 	// fail.
 	save func(credentials.Set) error
+	// started is told the approval once the site answered, before the
+	// wait; nil tells nobody. The first-use sign-in of serve shows it in
+	// a tool result (signin.go).
+	started func(sitelogin.Approval)
+	// createSpace is the space a login that reaches none creates and makes
+	// the default; empty creates none. Only the first-use sign-in sets it,
+	// because an agent cannot run 'slivingdoc space new'.
+	createSpace string
 }
 
 // PrepareLogin validates the login flags against the environment and
@@ -175,6 +183,9 @@ func (l *Login) Run(ctx context.Context) error {
 		fmt.Fprintf(errOut, "%sThe host name is unknown (%s); the login is labelled \"CLI login\" without it.\n", es.Mark(tui.Caution), mcp.Redact(l.hostErr.Error()))
 	}
 	io.WriteString(errOut, showApproval(es, approval))
+	if l.started != nil {
+		l.started(approval)
+	}
 	if l.browser {
 		if err := l.opts.openBrowser(approval.CompleteURI); err != nil {
 			fmt.Fprintf(errOut, "%sCould not open a browser (%s); open the page yourself.\n", es.Mark(tui.Caution), mcp.Redact(err.Error()))
@@ -190,8 +201,7 @@ func (l *Login) Run(ctx context.Context) error {
 	// The waiting line is decoration: a terminal that refuses it never
 	// changes the login.
 	_ = waiting.Stop()
-	var rejected *sitelogin.RejectedError
-	if errors.As(err, &rejected) {
+	if rejected, ok := errors.AsType[*sitelogin.RejectedError](err); ok {
 		return l.discard(ctx, rejected.Credential, fmt.Errorf("login: %s; nothing was stored", mcp.Redact(err.Error())))
 	}
 	if err != nil {
@@ -221,6 +231,12 @@ func (l *Login) Run(ctx context.Context) error {
 		if agreed != confirmed {
 			return l.discard(ctx, stored.Key, errors.New("login: not confirmed; nothing was stored and the new login key was revoked"))
 		}
+	}
+	if len(spaces) == 0 && l.createSpace != "" {
+		// Created before the login is stored, so the stored login names it
+		// as its only space and default at once: a server resolving the
+		// file meanwhile never reads a login without a default space.
+		spaces = l.createFirst(ctx, stored, spaces)
 	}
 	outcome, err := l.store(ctx, stored, spaces, agreed)
 	if err != nil {
@@ -253,6 +269,21 @@ func (l *Login) Run(ctx context.Context) error {
 	return nil
 }
 
+// createFirst creates the first space of a login that reaches none, which
+// the store then makes the default as the only space listed. A failure is
+// told, not returned: the login is still stored, and the refusal that
+// follows names the fix.
+func (l *Login) createFirst(ctx context.Context, stored credentials.Login, spaces []sitelogin.Space) []sitelogin.Space {
+	errOut, es := l.opts.ErrOut(), l.opts.errStyle()
+	created, err := l.client.CreateSpace(ctx, stored.Key, l.createSpace)
+	if err != nil {
+		fmt.Fprintf(errOut, "%sThe space %q could not be created (%s).\n", es.Mark(tui.Caution), l.createSpace, mcp.Redact(err.Error()))
+		return spaces
+	}
+	fmt.Fprintf(errOut, "%sCreated the space %q.\n", es.Mark(tui.Done), created.Name)
+	return append(spaces, created)
+}
+
 // accept checks an issued key against what this login asked for and
 // where it came from, and returns the login to store.
 func (l *Login) accept(issued sitelogin.Issued) (credentials.Login, error) {
@@ -267,7 +298,7 @@ func (l *Login) accept(issued sitelogin.Issued) (credentials.Login, error) {
 		return credentials.Login{}, fmt.Errorf("login: %s issued a login for %s, not %s; nothing was stored", sitelogin.DefaultSite, endpoint, DefaultHostedEndpoint)
 	}
 	return credentials.Login{
-		ID:      credentials.ID{Site: l.client.Site(), Endpoint: endpoint},
+		Site: l.client.Site(), Endpoint: endpoint,
 		Key:     issued.Key,
 		Access:  issued.Access,
 		Expires: issued.Expires,

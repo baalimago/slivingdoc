@@ -167,10 +167,10 @@ func TestHomeScreen(t *testing.T) {
 		}
 		var set credentials.Set
 		for _, l := range []credentials.Login{
-			{ID: credentials.ID{Site: "https://www.slivingdoc.dev", Endpoint: app.DefaultHostedEndpoint}, Key: "k1", Access: credentials.AccessWrite, Account: "a@x"},
-			{ID: credentials.ID{Site: "https://www.dev.slivingdoc.dev", Endpoint: "https://api.dev.slivingdoc.dev"}, Key: "k2", Access: credentials.AccessRead, Account: "b@x"},
+			{Site: "https://www.slivingdoc.dev", Endpoint: app.DefaultHostedEndpoint, Key: "k1", Access: credentials.AccessWrite, Account: "a@x"},
+			{Site: "https://www.dev.slivingdoc.dev", Endpoint: "https://api.dev.slivingdoc.dev", Key: "k2", Access: credentials.AccessRead, Account: "b@x"},
 			{
-				ID: credentials.ID{Site: "https://site.test", Endpoint: "https://api.test"}, Key: "k3", Access: credentials.AccessRead, Account: "c@x",
+				Site: "https://site.test", Endpoint: "https://api.test", Key: "k3", Access: credentials.AccessRead, Account: "c@x",
 				Expires: credentials.ExpiresAt(time.Now().Add(-time.Hour)),
 			},
 		} {

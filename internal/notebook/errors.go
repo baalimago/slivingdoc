@@ -90,6 +90,13 @@ const (
 	ReasonEngineFailed        Reason = "ENGINE_FAILED"
 	ReasonLocalMutationFailed Reason = "LOCAL_MUTATION_FAILED"
 
+	// ReasonSignInRequired and ReasonSetupRequired are a serve process
+	// that started without a credential (architecture/login.md, Sign in on
+	// first use): the person must approve the sign-in, or fix what keeps
+	// the stored login from reaching a space.
+	ReasonSignInRequired Reason = "SIGN_IN_REQUIRED"
+	ReasonSetupRequired  Reason = "SETUP_REQUIRED"
+
 	// The encryption command reasons
 	// (worklogs/26-10-05-encrypted-notebooks/phase-4-command-surface.md).
 	ReasonKeyRequired              Reason = "KEY_REQUIRED"
@@ -163,6 +170,8 @@ var actionForPairing = map[codeReason]Action{
 	{CodeStorageFailure, ReasonAccessDenied}:        ActionOperator,
 	{CodeStorageFailure, ReasonObjectTooLarge}:      ActionOperator,
 	{CodeStorageFailure, ReasonUpgradeRequired}:     ActionOperator,
+	{CodeStorageFailure, ReasonSignInRequired}:      ActionRetry,
+	{CodeStorageFailure, ReasonSetupRequired}:       ActionOperator,
 	{CodeStorageIntegrity, ReasonManifestInvalid}:   ActionOperator,
 	{CodeStorageIntegrity, ReasonPackInvalid}:       ActionOperator,
 	{CodeStorageIntegrity, ReasonEnvelopeInvalid}:   ActionOperator,
@@ -350,8 +359,7 @@ const upgradeFix = "Upgrade slivingdoc (npm install -g slivingdoc@latest, or htt
 // upgradeVersion names the manifest version a newer slivingdoc wrote, or
 // nothing when the cause does not carry it.
 func upgradeVersion(cause error) string {
-	var upgrade *storage.UpgradeRequiredError
-	if errors.As(cause, &upgrade) {
+	if upgrade, ok := errors.AsType[*storage.UpgradeRequiredError](cause); ok {
 		return fmt.Sprintf(" (notebook format %d, this build reads %d)", upgrade.Version, storage.ManifestVersion)
 	}
 	return ""

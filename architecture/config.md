@@ -97,6 +97,7 @@ app.Setup(engine, flags, opts) → setup(process)
 | Ignore patterns | `--ignore` | `SLIVINGDOC_IGNORE` | none, on top of `workspace.DefaultIgnore` | comma-separated (`splitPathEntries`); `workspace.NewIgnore` in `finish` |
 | Log level | `--log-level` | `LOG_LEVEL` | info | flag: `slogcolor.ParseLevels`, fatal; env: lenient |
 | Log timestamp | `--log-timestamp` | `SLIVINGDOC_LOG_TIMESTAMP` | `true` | `ParseBool` |
+| Sign in on first use | `--login` (serve only, `Flags.BindServe`) | `SLIVINGDOC_LOGIN` (read by serve only) | `auto` | `parseLoginMode`: `auto` or `never` ([login.md](./login.md), Sign in on first use) |
 
 Not flags: `NO_COLOR` and `DEBUG_PERF` are read from the environment only ([logging.md](./logging.md), [cli.md](./cli.md)), and so are the two encryption settings `SLIVINGDOC_PASSPHRASE` and `SLIVINGDOC_PASSPHRASE_FILE`, which no command-line flag can name ([encryption.md](./encryption.md)).
 

@@ -78,6 +78,7 @@ tools/call notes_commit {message}
 
 ## Related
 
+- [login.md](./login.md): `signInService`, the `Service` of a `serve` that started without a credential, and its `SIGN_IN_REQUIRED` and `SETUP_REQUIRED` tool errors (Sign in on first use).
 - [product-contract.md](./product-contract.md): the public contract of the two tools.
 - [errors.md](./errors.md): `ToolError`, codes, reasons, actions, redaction.
 - [cli.md](./cli.md): how `serve` runs the server and shuts it down.

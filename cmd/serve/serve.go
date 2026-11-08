@@ -30,13 +30,17 @@ func Command(engine git.Engine, opts app.ProcessOptions) *command {
 	// package: a startup refusal is one redacted line on stderr.
 	fs.SetOutput(io.Discard)
 	flags := app.NewFlags()
-	flags.Bind(fs)
+	flags.BindServe(fs)
 	// With no configured root the server owns a temporary notebook
 	// directory: every agent gets a private one and the tools need no path.
 	opts.Ephemeral = true
 	// A durable directory reads and writes the record of its workspace
 	// root; the resolution skips the association for a scratch directory.
 	opts = opts.WithAssociation("")
+	// Without a credential for hosted storage, serve starts anyway and
+	// signs in when a tool is first called, unless --login never
+	// (architecture/login.md, Sign in on first use).
+	opts.SignIn = true
 	return &command{engine: engine, opts: opts, flags: flags, flagset: fs}
 }
 

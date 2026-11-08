@@ -147,8 +147,7 @@ func (m *mintedTokens) Rejected(token string) {
 func (m *mintedTokens) mint(ctx context.Context) (string, error) {
 	asked := m.wallNow()
 	minted, err := m.client.Mint(ctx, m.key, m.space, m.access)
-	var rejected *sitelogin.RejectedError
-	if errors.As(err, &rejected) {
+	if rejected, ok := errors.AsType[*sitelogin.RejectedError](err); ok {
 		m.discard(ctx, rejected.Credential)
 	}
 	if err != nil {

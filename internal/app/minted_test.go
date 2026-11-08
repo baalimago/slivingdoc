@@ -50,7 +50,7 @@ func mintRig(t *testing.T, access credentials.Access) (*sitetest.Site, *mintedTo
 	site.Issued(loginToken, mintEndpoint)
 	site.SetSpaces(loginToken, notesSpace, space("team", "bob@example.test", "read"))
 	clock := &testClock{at: time.Now()}
-	login := credentials.Login{ID: credentials.ID{Site: site.URL(), Endpoint: mintEndpoint}, Key: loginToken, Access: access, Account: "ada@example.test"}
+	login := credentials.Login{Site: site.URL(), Endpoint: mintEndpoint, Key: loginToken, Access: access, Account: "ada@example.test"}
 	tokens, err := newMintedTokens(login, "notes", nil, clock.now)
 	if err != nil {
 		t.Fatalf("newMintedTokens() = %v", err)
@@ -249,14 +249,14 @@ func TestMintedTokensRevokeWhatTheyCannotUse(t *testing.T) {
 		}
 	})
 	t.Run("an unusable site", func(t *testing.T) {
-		if _, err := newMintedTokens(credentials.Login{ID: credentials.ID{Site: "http://www.example.test"}}, "notes", nil, nil); err == nil {
+		if _, err := newMintedTokens(credentials.Login{Site: "http://www.example.test"}, "notes", nil, nil); err == nil {
 			t.Fatal("newMintedTokens() with a plain http site = nil, want a refusal")
 		}
 	})
 }
 
 func TestMintRefusalNamesTheFix(t *testing.T) {
-	login := &credentials.Login{ID: credentials.ID{Site: "https://site.example.test"}}
+	login := &credentials.Login{Site: "https://site.example.test"}
 	for _, row := range []struct {
 		err  error
 		cfg  config
@@ -330,7 +330,7 @@ func TestSetupRefusesALoginThatCannotMint(t *testing.T) {
 // TestNewMintedTokensUsesTheDefaults proves a nil client and clock take
 // the production defaults.
 func TestNewMintedTokensUsesTheDefaults(t *testing.T) {
-	tokens, err := newMintedTokens(credentials.Login{ID: credentials.ID{Site: sitelogin.DefaultSite}}, "notes", nil, nil)
+	tokens, err := newMintedTokens(credentials.Login{Site: sitelogin.DefaultSite}, "notes", nil, nil)
 	if err != nil || tokens.now == nil || tokens.client.Site() != sitelogin.DefaultSite {
 		t.Fatalf("newMintedTokens() = %+v, %v", tokens, err)
 	}
@@ -431,7 +431,7 @@ func TestStreamedUploadRefusedUnderAStoredLogin(t *testing.T) {
 	site.Issued(loginToken, g.URL())
 	site.SetSpaces(loginToken, notesSpace)
 	site.OnMint(func(m sitetest.Minted) { g.Grant(m.Token, m.Space, m.Access == "read") })
-	login := credentials.Login{ID: credentials.ID{Site: site.URL(), Endpoint: g.URL()}, Key: loginToken, Access: credentials.AccessWrite, Account: "ada@example.test"}
+	login := credentials.Login{Site: site.URL(), Endpoint: g.URL(), Key: loginToken, Access: credentials.AccessWrite, Account: "ada@example.test"}
 	tokens, err := newMintedTokens(login, "notes", nil, nil)
 	if err != nil {
 		t.Fatalf("newMintedTokens() = %v", err)

@@ -376,8 +376,7 @@ func (c *Client) Wait(ctx context.Context, a Approval) (Issued, error) {
 		if errors.Is(err, ErrBrokenAnswer) || errors.Is(err, ErrProtocol) {
 			return Issued{}, fmt.Errorf("%w; %s", err, TokenHint)
 		}
-		var refusal *Refusal
-		if errors.As(err, &refusal) {
+		if refusal, ok := errors.AsType[*Refusal](err); ok {
 			switch refusal.Code {
 			case "authorization_pending":
 				continue

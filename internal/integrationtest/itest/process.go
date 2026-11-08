@@ -317,7 +317,7 @@ func OverrideEnv(env, overrides []string) []string {
 func SanitizedEnv() []string {
 	var out []string
 	for _, kv := range os.Environ() {
-		name := strings.SplitN(kv, "=", 2)[0]
+		name, _, _ := strings.Cut(kv, "=")
 		switch name {
 		case "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
 			"AWS_PROFILE", "AWS_DEFAULT_REGION", "AWS_REGION", "AWS_ENDPOINT_URL_S3",

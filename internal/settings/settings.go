@@ -154,9 +154,9 @@ func (s Set) Defaults() []Target { return slices.Clone(s.defaults) }
 // S3Default returns the active stored S3 default: the last one in file
 // order, because the last selection wins.
 func (s Set) S3Default() (Target, bool) {
-	for i := len(s.defaults) - 1; i >= 0; i-- {
-		if s.defaults[i].Kind == KindS3 {
-			return s.defaults[i], true
+	for _, v := range slices.Backward(s.defaults) {
+		if v.Kind == KindS3 {
+			return v, true
 		}
 	}
 	return Target{}, false
@@ -252,8 +252,7 @@ func (f File) Load() (Set, error) {
 		return Set{}, nil
 	}
 	set, err := decode(data)
-	var version *versionError
-	if errors.As(err, &version) {
+	if version, ok := errors.AsType[*versionError](err); ok {
 		return Set{}, version.withFix(f.Path())
 	}
 	if err != nil {

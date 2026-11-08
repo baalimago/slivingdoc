@@ -263,8 +263,7 @@ func (n *Notebook) applyLocal(ctx context.Context, stage string, accepted Remote
 		return nil
 	}
 	if !n.ws.RecoveryRequired() {
-		var ic *workspace.IgnoredConflictError
-		if errors.As(err, &ic) {
+		if ic, ok := errors.AsType[*workspace.IgnoredConflictError](err); ok {
 			return invalidRequest(ReasonIgnoredConflict, err, []ErrorFile{{Path: ic.Path, Reason: FileReasonPathConflict}},
 				"%s must become a file, but the directory of that name holds ignored files; move them away and pull again", ic.Path)
 		}

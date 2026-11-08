@@ -352,7 +352,7 @@ func selectKind(f *Flags, env map[string]string, in storageInputs, mode storageM
 		if sel.recorded && view.record.Kind == settings.KindHosted {
 			refusal = noCredentialRefusal(logins, explicit, view.record.Name)
 		}
-		return loginFor(logins, explicit, refusal)
+		return loginFor(logins, explicit, needsSignIn{refusal})
 	}
 	if sel.bucketFrom.namedAsBucket() && len(s3Signals(f, env, in)) > 0 {
 		sel.kind = settings.KindS3
@@ -363,7 +363,7 @@ func selectKind(f *Flags, env map[string]string, in storageInputs, mode storageM
 		if sel.kind == settings.KindS3 {
 			return nil, nil
 		}
-		return loginFor(logins, explicit, noCredentialRefusal(logins, explicit, view.record.Name))
+		return loginFor(logins, explicit, needsSignIn{noCredentialRefusal(logins, explicit, view.record.Name)})
 	}
 	if view.defaultFound {
 		sel.kind = settings.KindS3
@@ -423,9 +423,12 @@ func resolveHostedTarget(f *Flags, env map[string]string, sel storageSelection, 
 		}
 	}
 	if sel.bucket == "" {
-		return storageSelection{}, fmt.Errorf(
+		if err := login.Usable(in.now); err != nil {
+			return storageSelection{}, signInAgain(err)
+		}
+		return storageSelection{}, noDefaultSpace{login: *login, err: fmt.Errorf(
 			"the stored login for %s has no default space; run 'slivingdoc space' to list its spaces and 'slivingdoc space <name>' to choose one, or pass --space (for S3, pass --storage s3 and --bucket)",
-			login.Endpoint)
+			login.Endpoint)}
 	}
 	// Beside S3 settings the spelling decides: --space and SLIVINGDOC_SPACE
 	// name a hosted space, which is a refusal rather than a guess, while the
@@ -441,7 +444,7 @@ func resolveHostedTarget(f *Flags, env map[string]string, sel storageSelection, 
 		}
 	}
 	if err := login.Usable(in.now); err != nil {
-		return storageSelection{}, fmt.Errorf("%w; run 'slivingdoc login' again, or pass --storage s3 to use S3", err)
+		return storageSelection{}, signInAgain(err)
 	}
 	sel.login, sel.origin, sel.endpoint = login, originLogin, login.Endpoint
 	sameRecord := sel.recorded && sel.remembered.Kind == settings.KindHosted && sel.remembered.Name == sel.bucket
@@ -450,6 +453,11 @@ func resolveHostedTarget(f *Flags, env map[string]string, sel storageSelection, 
 		record = sel.remembered
 	}
 	return resolveTargetPrefix(f, env, sel, record, sameRecord, settings.Target{}, false)
+}
+
+// signInAgain is the refusal of a stored login that is no longer usable.
+func signInAgain(err error) error {
+	return needsSignIn{fmt.Errorf("%w; run 'slivingdoc login' again, or pass --storage s3 to use S3", err)}
 }
 
 // resolveS3Target resolves every field of an S3 target from its flag or

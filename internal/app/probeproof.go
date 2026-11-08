@@ -150,12 +150,10 @@ func (s probeProofStore) record() error {
 // pathless strips the file name from an os error so a diagnostic or log
 // record never carries a private path; the underlying errno stays.
 func pathless(err error) error {
-	var pe *os.PathError
-	if errors.As(err, &pe) {
+	if pe, ok := errors.AsType[*os.PathError](err); ok {
 		return pe.Err
 	}
-	var le *os.LinkError
-	if errors.As(err, &le) {
+	if le, ok := errors.AsType[*os.LinkError](err); ok {
 		return le.Err
 	}
 	return err

@@ -77,7 +77,7 @@ func testFile(t *testing.T) File {
 }
 
 func login(endpoint, key string, access Access) Login {
-	return Login{ID: ID{Site: site, Endpoint: endpoint}, Key: key, Access: access, Account: "ada@example.test"}
+	return Login{Site: site, Endpoint: endpoint, Key: key, Access: access, Account: "ada@example.test"}
 }
 
 func TestMissingFileIsEmpty(t *testing.T) {

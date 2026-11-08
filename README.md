@@ -1,4 +1,4 @@
-Test coverage: 87.5% 😍👌
+Test coverage: 87.4% 😍👌
 
 [![slivingdoc banner](img/banner.svg)](https://slivingdoc.dev)
 
@@ -51,6 +51,11 @@ claude mcp add slivingdoc \
   --env SLIVINGDOC_TOKEN=<your-api-token> \
   -- npx -y slivingdoc serve
 ```
+
+Or skip the token: `npx -y slivingdoc serve` with no credential signs in on
+first use. The first tool call answers with an approval page to open in the
+browser, and every later server on the machine uses that login
+(`--login never` turns this off).
 
 Free for one space, 10 MB and 250,000 requests a month
 ([pricing](https://slivingdoc.dev/pricing/)).
