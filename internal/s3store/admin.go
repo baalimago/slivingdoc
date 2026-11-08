@@ -116,8 +116,7 @@ func (a *Admin) Identity(ctx context.Context) (Identity, error) {
 // principal already owns is reported as owned even when the service names the
 // generic exists code too, because the fix is to use it.
 func mapCreateError(err error) error {
-	var api smithy.APIError
-	if errors.As(err, &api) {
+	if api, ok := errors.AsType[smithy.APIError](err); ok {
 		switch api.ErrorCode() {
 		case "BucketAlreadyOwnedByYou":
 			return fmt.Errorf("s3store: create bucket: %w", ErrBucketOwned)

@@ -192,8 +192,7 @@ func Report(out io.Writer, result notebook.Result, err error, path string, env [
 // own text. Neither form carries the cause, so no credential or private path
 // reaches the caller.
 func RefusalLine(err error) string {
-	var nb *notebook.Error
-	if !errors.As(err, &nb) {
+	if _, ok := errors.AsType[*notebook.Error](err); !ok {
 		return err.Error()
 	}
 	te, _ := mcp.MapError(err)

@@ -296,8 +296,7 @@ func (e NoConfigDir) Error() string { return "no configuration directory: " + e.
 // NoDirectory words err from ConfigDir in the caller's own
 // no-configuration-directory error.
 func NoDirectory(missing error, err error) error {
-	var cause NoConfigDir
-	if errors.As(err, &cause) {
+	if cause, ok := errors.AsType[NoConfigDir](err); ok {
 		return fmt.Errorf("%w: %s", missing, cause.Reason)
 	}
 	return fmt.Errorf("%w: %w", missing, err)

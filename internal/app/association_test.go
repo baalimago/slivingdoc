@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -553,6 +554,293 @@ func TestResolveS3RecordFields(t *testing.T) {
 			}
 			if got != row.want {
 				t.Fatalf("config = %+v, want %+v", got, row.want)
+			}
+		})
+	}
+}
+
+// bareProcessIn is the process of a bare command standing in cwd, which
+// consults the record of whatever directory above it remembers one.
+func bareProcessIn(env []string, cwd string, path string, args ...string) process {
+	p := testProcess(env, args...)
+	p.cwd = cwd
+	p.association = ProcessOptions{Env: env}.WithAssociation(path).association()
+	return p
+}
+
+// rememberedS3Entry is an S3 target whose resolution needs no credential,
+// so a walk scenario stays hermetic.
+func rememberedS3Entry(path, bucket string) settings.Entry {
+	return settings.Entry{Path: path, Target: settings.Target{Kind: settings.KindS3, Name: bucket, Prefix: "notes"}}
+}
+
+// TestBareCommandTakesTheEnclosingNotebook proves the walk of a bare
+// command: the nearest directory above it that remembers a target becomes
+// the notebook directory, while a configured root and a named path address
+// their own directory, and the home directory and the filesystem root are
+// never adopted (architecture/config.md, The remembered target of a
+// directory). A row with no bucket proves which record the resolution did
+// not reach, because reaching one would have supplied it.
+func TestBareCommandTakesTheEnclosingNotebook(t *testing.T) {
+	t.Parallel()
+	const home = "/home/u"
+	const noBucket = "bucket is required"
+	for _, row := range []struct {
+		name       string
+		cwd        string
+		path       string
+		args       []string
+		entries    []settings.Entry
+		wantRoot   string
+		wantBucket string
+		wantFrom   bucketSource
+		wantErr    string
+	}{
+		{
+			name: "the notebook directory itself", cwd: "/work/notes", entries: []settings.Entry{rememberedS3Entry("/work/notes", "own-bucket")},
+			wantRoot: "/work/notes", wantBucket: "own-bucket", wantFrom: bucketFromRemembered,
+		},
+		{
+			name: "one directory above", cwd: "/work/notes/projects", entries: []settings.Entry{rememberedS3Entry("/work/notes", "parent-bucket")},
+			wantRoot: "/work/notes", wantBucket: "parent-bucket", wantFrom: bucketFromRemembered,
+		},
+		{
+			name: "the nearest of two", cwd: "/work/notes/projects/deep",
+			entries:  []settings.Entry{rememberedS3Entry("/work", "outer-bucket"), rememberedS3Entry("/work/notes", "inner-bucket")},
+			wantRoot: "/work/notes", wantBucket: "inner-bucket", wantFrom: bucketFromRemembered,
+		},
+		{
+			name: "a configured root is used as given", cwd: "/work/notes/projects",
+			args: []string{"--workspace-root", "/work/notes/projects"}, entries: []settings.Entry{rememberedS3Entry("/work/notes", "parent-bucket")},
+			wantErr: noBucket,
+		},
+		{
+			name: "a named path is used as given", cwd: "/work/notes/projects", path: "/work/notes/projects",
+			entries: []settings.Entry{rememberedS3Entry("/work/notes", "parent-bucket")},
+			wantErr: noBucket,
+		},
+		{
+			name: "the home directory is not adopted", cwd: home + "/notes", entries: []settings.Entry{rememberedS3Entry(home, "home-bucket")},
+			wantErr: noBucket,
+		},
+		{
+			name: "the home directory as the working directory counts", cwd: home, entries: []settings.Entry{rememberedS3Entry(home, "home-bucket")},
+			wantRoot: home, wantBucket: "home-bucket", wantFrom: bucketFromRemembered,
+		},
+		{
+			name: "the directory above the home directory is not adopted", cwd: home, entries: []settings.Entry{rememberedS3Entry(filepath.Dir(home), "above-bucket")},
+			wantErr: noBucket,
+		},
+		{
+			name: "the filesystem root is not adopted", cwd: "/work", entries: []settings.Entry{rememberedS3Entry("/", "root-bucket")},
+			wantErr: noBucket,
+		},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			env := []string{
+				credentials.DirEnv + "=" + filepath.Join(t.TempDir(), "cfg"),
+				"HOME=" + home,
+				"SLIVINGDOC_PRIVATE_ROOT=/cache/slivingdoc",
+			}
+			storeEntries(t, env, row.entries...)
+			cfg, err := loadConfig(bareProcessIn(env, row.cwd, row.path, row.args...))
+			if row.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), row.wantErr) {
+					t.Fatalf("loadConfig() = %v, want it to contain %q", err, row.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("loadConfig() = %v", err)
+			}
+			if cfg.workspaceRoot != row.wantRoot {
+				t.Fatalf("workspaceRoot = %q, want %q", cfg.workspaceRoot, row.wantRoot)
+			}
+			if cfg.bucket != row.wantBucket || cfg.bucketFrom != row.wantFrom {
+				t.Fatalf("space = %q from %v, want %q from %v", cfg.bucket, cfg.bucketFrom, row.wantBucket, row.wantFrom)
+			}
+		})
+	}
+}
+
+// TestEnclosingTable proves the walk itself over a set the way it reads:
+// dir counts, the nearest match wins, and the home directory and the
+// filesystem root end the walk without being consulted.
+func TestEnclosingTable(t *testing.T) {
+	t.Parallel()
+	const home = "/home/u"
+	set := settings.Set{}
+	for _, entry := range []settings.Entry{
+		rememberedS3Entry("/work", "outer"), rememberedS3Entry("/work/notes", "near"),
+		rememberedS3Entry(home, "home"), rememberedS3Entry("/", "root"),
+	} {
+		set = set.Put(entry)
+	}
+	association := settingsAssociation{load: func() (settings.Set, error) { return set, nil }}
+	for _, row := range []struct {
+		name string
+		dir  string
+		want string
+	}{
+		{name: "the directory itself", dir: "/work/notes", want: "/work/notes"},
+		{name: "the nearest above it", dir: "/work/notes/a/b", want: "/work/notes"},
+		{name: "the home directory as the directory", dir: home, want: home},
+		{name: "the home directory is not walked into", dir: home + "/notes"},
+		{name: "the filesystem root as the directory", dir: "/"},
+		{name: "the filesystem root is not walked into", dir: "/elsewhere/notes"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			got, ok, err := association.enclosing(row.dir, home)
+			if err != nil {
+				t.Fatalf("enclosing(%q) = %v", row.dir, err)
+			}
+			if row.want == "" {
+				if ok {
+					t.Fatalf("enclosing(%q) = %q, want none", row.dir, got)
+				}
+				return
+			}
+			if !ok || got != row.want {
+				t.Fatalf("enclosing(%q) = %q, %v; want %q", row.dir, got, ok, row.want)
+			}
+		})
+	}
+}
+
+// TestEnclosingStopsAtTheBoundaries proves the two ends of the walk: standing
+// in the home directory checks it and stops there, so a record above it is not
+// adopted, and the filesystem root is never consulted even when a command
+// stands in it (architecture/config.md, The remembered target of a
+// directory).
+func TestEnclosingStopsAtTheBoundaries(t *testing.T) {
+	t.Parallel()
+	const home = "/home/u"
+	set := settings.Set{}
+	for _, entry := range []settings.Entry{rememberedS3Entry(filepath.Dir(home), "above"), rememberedS3Entry("/", "root")} {
+		set = set.Put(entry)
+	}
+	association := settingsAssociation{load: func() (settings.Set, error) { return set, nil }}
+	for _, dir := range []string{home, "/"} {
+		got, ok, err := association.enclosing(dir, home)
+		if err != nil {
+			t.Fatalf("enclosing(%q) = %v", dir, err)
+		}
+		if ok {
+			t.Fatalf("enclosing(%q) = %q, want none: neither the home directory's parent nor the filesystem root is adopted", dir, got)
+		}
+	}
+}
+
+// TestHomeDirTable proves the boundary the enclosing walk stops before: the
+// home directory the environment names. An absent or relative value names no
+// boundary, so the walk ends at the filesystem root instead, and Windows reads
+// USERPROFILE rather than HOME (architecture/config.md, The remembered target
+// of a directory).
+func TestHomeDirTable(t *testing.T) {
+	t.Parallel()
+	for _, row := range []struct {
+		name string
+		env  map[string]string
+		goos string
+		want string
+	}{
+		{name: "the home directory of the environment", env: map[string]string{"HOME": "/home/u"}, goos: "linux", want: "/home/u"},
+		{name: "a redundant separator", env: map[string]string{"HOME": "/home/u/"}, goos: "linux", want: "/home/u"},
+		{name: "no home directory", env: map[string]string{}, goos: "linux"},
+		{name: "a relative home directory", env: map[string]string{"HOME": "home/u"}, goos: "linux"},
+		{name: "windows reads USERPROFILE", env: map[string]string{"USERPROFILE": "/home/u", "HOME": "/other"}, goos: "windows", want: "/home/u"},
+		{name: "windows reads USERPROFILE whatever its case", env: map[string]string{"UserProfile": "/home/u"}, goos: "windows", want: "/home/u"},
+		{name: "windows ignores HOME", env: map[string]string{"HOME": "/home/u"}, goos: "windows"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			if got := homeDir(row.env, row.goos); got != row.want {
+				t.Fatalf("homeDir(%v, %q) = %q, want %q", row.env, row.goos, got, row.want)
+			}
+		})
+	}
+}
+
+// TestEnclosingAnswersAnUnreadableFile proves the walk refuses a settings
+// file this build cannot read instead of answering with an empty set.
+func TestEnclosingAnswersAnUnreadableFile(t *testing.T) {
+	t.Parallel()
+	association := settingsAssociation{load: func() (settings.Set, error) {
+		return settings.Set{}, settings.ErrMalformed
+	}}
+	if _, _, err := association.enclosing("/work/notes", ""); err == nil {
+		t.Fatal("enclosing() = nil, want the refusal of an unreadable settings file")
+	}
+	if _, ok, err := (settingsAssociation{}).enclosing("/work/notes", ""); ok || err != nil {
+		t.Fatalf("enclosing() of a process that consults no settings = %v, %v; want none", ok, err)
+	}
+}
+
+// TestNamedByOperatorTable proves which sources may record a directory: a
+// name the operator supplied, never one a default supplied.
+func TestNamedByOperatorTable(t *testing.T) {
+	t.Parallel()
+	for from, want := range map[bucketSource]bool{
+		bucketNone:           false,
+		bucketCleared:        false,
+		bucketFromFlag:       true,
+		bucketFromSpaceFlag:  true,
+		bucketFromEnv:        true,
+		bucketFromSpaceEnv:   true,
+		bucketFromLogin:      false,
+		bucketFromToken:      true,
+		bucketFromRemembered: false,
+		bucketFromDefault:    false,
+	} {
+		if got := from.namedByOperator(); got != want {
+			t.Fatalf("%v.namedByOperator() = %v, want %v", from, got, want)
+		}
+	}
+}
+
+// TestRecordEntryTable proves the gate of the recorder: an entry is written
+// for a name the operator supplied — a flag, a variable, or the space the
+// token proved — and never for a default, a directory that remembers one, a
+// process that owns its directory, or one that consults no settings.
+func TestRecordEntryTable(t *testing.T) {
+	t.Parallel()
+	association := settingsAssociation{
+		load:   func() (settings.Set, error) { return settings.Set{}, nil },
+		record: func(context.Context, settings.Entry) error { return nil },
+	}
+	hosted := settings.Target{Kind: settings.KindHosted, Name: "team", Prefix: "notes"}
+	s3 := settings.Target{Kind: settings.KindS3, Name: "team", Prefix: "notes"}
+	for _, row := range []struct {
+		name       string
+		cfg        config
+		assoc      settingsAssociation
+		want       bool
+		wantTarget settings.Target
+	}{
+		{name: "a flagged name", cfg: config{bucket: "team", bucketFrom: bucketFromSpaceFlag, prefix: "notes", workspaceRoot: "/work"}, assoc: association, want: true, wantTarget: s3},
+		{name: "a variable's name", cfg: config{bucket: "team", bucketFrom: bucketFromEnv, prefix: "notes", workspaceRoot: "/work"}, assoc: association, want: true, wantTarget: s3},
+		{name: "the token's proven space", cfg: config{token: "t", bucket: "team", bucketFrom: bucketFromToken, prefix: "notes", workspaceRoot: "/work"}, assoc: association, want: true, wantTarget: hosted},
+		{name: "the login's default space", cfg: config{login: &credentials.Login{}, bucket: "team", bucketFrom: bucketFromLogin, prefix: "notes", workspaceRoot: "/work"}, assoc: association},
+		{name: "the stored S3 default", cfg: config{bucket: "team", bucketFrom: bucketFromDefault, prefix: "notes", workspaceRoot: "/work"}, assoc: association},
+		{name: "a directory that remembers one", cfg: config{bucket: "team", bucketFrom: bucketFromRemembered, prefix: "notes", workspaceRoot: "/work", recorded: true}, assoc: association},
+		{name: "no name at all", cfg: config{workspaceRoot: "/work"}, assoc: association},
+		{name: "a process with a session directory", cfg: config{bucket: "team", bucketFrom: bucketFromSpaceFlag, prefix: "notes", workspaceRoot: "/work", sessionDir: "/tmp/s"}, assoc: association},
+		{name: "a process that consults no settings", cfg: config{bucket: "team", bucketFrom: bucketFromSpaceFlag, prefix: "notes", workspaceRoot: "/work"}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			rt := &Runtime{p: process{association: row.assoc}, cfg: row.cfg}
+			entry, ok := rt.recordEntry()
+			if ok != row.want {
+				t.Fatalf("recordEntry() = %+v, %v; want %v", entry, ok, row.want)
+			}
+			if !ok {
+				return
+			}
+			if entry.Path != "/work" || entry.Target != row.wantTarget {
+				t.Fatalf("recordEntry() = %+v, want /work and %+v", entry, row.wantTarget)
 			}
 		})
 	}

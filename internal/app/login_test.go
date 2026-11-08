@@ -816,7 +816,7 @@ func TestLoginRefusesWhatItDidNotAskFor(t *testing.T) {
 }
 
 func TestLoggedInNamesAnotherEndpointAndTheDefault(t *testing.T) {
-	l := credentials.Login{ID: credentials.ID{Endpoint: devEndpoint}, Access: credentials.AccessRead, Account: "a@x"}
+	l := credentials.Login{Endpoint: devEndpoint, Access: credentials.AccessRead, Account: "a@x"}
 	if got, want := loggedIn(tui.Style{}, l, ""), `Logged in as a@x at `+devEndpoint+` (read only) with no expiry`+"\n"; got != want {
 		t.Fatalf("loggedIn() = %q, want %q", got, want)
 	}

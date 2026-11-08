@@ -106,7 +106,10 @@ Usage:
 
 [path] is the notebook directory of an earlier 'slivingdoc pull' and
 defaults to the workspace root, which is the working directory unless
---workspace-root says otherwise. A relative path resolves against the
+--workspace-root says otherwise. A bare command standing inside a notebook
+uses the nearest directory above it that remembers one, so running it
+anywhere in the notebook is enough; the home directory and the filesystem
+root are only used when they are named. A relative path resolves against the
 working directory; the resolved path must stay at or below the workspace
 root. Concurrent non-conflicting
 changes are incorporated; a conflict rewrites the files with visible

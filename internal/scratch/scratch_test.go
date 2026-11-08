@@ -24,8 +24,7 @@ func TestUseMovesTmpdirOrSaysWhy(t *testing.T) {
 		t.Fatal(err)
 	}
 	cleanup, err := Use()
-	var unavailable *Unavailable
-	if errors.As(err, &unavailable) {
+	if unavailable, ok := errors.AsType[*Unavailable](err); ok {
 		if unavailable.Error() == "" || os.Getenv("TMPDIR") != "" {
 			t.Fatalf("Use() = %v with TMPDIR %q, want the default kept", err, os.Getenv("TMPDIR"))
 		}

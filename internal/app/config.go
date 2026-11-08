@@ -257,6 +257,21 @@ func (f *Flags) resolve(environment []string, cwd, cacheDir string, ephemeral bo
 	if roots.workspaceRoot, err = absolute(cwd, roots.workspaceRoot); err != nil {
 		return config{}, fmt.Errorf("workspace root: %w", err)
 	}
+	// A bare command standing anywhere inside a notebook takes the one the
+	// nearest directory above it remembers, so the operator does not have to
+	// stand in its root. A configured root and a named path both address
+	// their directory as given (architecture/config.md, The remembered
+	// target of a directory). The root is final here, because a sign-in
+	// resolves the storage again over the same roots.
+	if roots.session == "" && !wsSet && assoc.path == "" {
+		root, ok, err := assoc.enclosing(roots.workspaceRoot, homeDir(env, runtime.GOOS))
+		if err != nil {
+			return config{}, err
+		}
+		if ok {
+			roots.workspaceRoot = root
+		}
+	}
 	if signIn {
 		mode, err := parseLoginMode(resolveString(&f.login, env[LoginEnv], loginAuto))
 		if err != nil {
@@ -488,8 +503,7 @@ func resolvePolicy(readOnly, writable []string) (git.PathPolicy, error) {
 	}
 	policy, err := git.NewPolicy(readOnly, writable)
 	if err != nil {
-		var overlap *git.OverlapError
-		if errors.As(err, &overlap) {
+		if overlap, ok := errors.AsType[*git.OverlapError](err); ok {
 			return git.PathPolicy{}, fmt.Errorf(
 				"--read-only-paths %q and --writable-paths %q name the same path",
 				overlap.ReadOnly, overlap.Writable)
@@ -878,6 +892,11 @@ beside credentials.json, so a later command in that directory needs no target
 flag; pull, commit, status, log and a serve with a durable directory read
 that file and record what they prove, while a serve with a temporary
 directory uses neither.
+
+A bare pull, commit, status or log standing inside a notebook takes the
+nearest directory above it that remembers one, so every directory of the
+notebook works the same; a configured workspace root and a named path are
+used exactly as given.
 `
 
 // HelpText is the serve-command help (architecture/config.md).

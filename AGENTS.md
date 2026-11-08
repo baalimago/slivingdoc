@@ -255,9 +255,11 @@ the engine seam. `internal/workspace` owns its narrow `Engine` view.
 Public API:   notes_pull() / notes_commit(message)
               CLI mirror: slivingdoc pull [path] / commit [path] -m <message>
               serve binds one notebook directory: --workspace-root, its
-              variable, the working directory when any root is configured,
-              or a per-process temporary session directory. No tool takes a
-              path; a present path member is MALFORMED_INPUT.
+              variable, the nearest directory above the working directory
+              that remembers a notebook when only the private root is
+              configured, the working directory, or a per-process temporary
+              session directory. No tool takes a path; a present path member
+              is MALFORMED_INPUT.
                                          |
                                          |  MCP stdio JSON-RPC or one-shot argv
                                          v
@@ -311,9 +313,10 @@ notebook operations. They share the serve flag set (`app.Flags`) and take
 one positional notebook path. A relative path resolves against the working
 directory, and flags can follow the path. Both commands run the same
 startup refusal surface through `app.Setup` and call `Runtime.Pull` /
-`Runtime.Commit`. A successful operation records the target a flag or
-slivingdoc variable named in the scoped settings of its directory; a failed
-one records nothing. `app.Report` prints the candid result: the `OK` status
+`Runtime.Commit`. A successful operation records in the scoped settings of
+its directory the target a flag, a slivingdoc variable or the space
+`SLIVINGDOC_TOKEN` proved named; a failed one records nothing. `app.Report`
+prints the candid result: the `OK` status
 line with the generation and the resolved notebook path on stdout, or the
 structured error report from `app.Report`/`writeError` (code and reason, retryable, files with
 line ranges) with a nonzero exit. `commit` requires
@@ -396,7 +399,7 @@ copy is the authoritative one. Behavior worth remembering:
   configuration. `pull`, `commit`, `status`, `log` and a durable `serve`
   read that record; a successful `pull`, `commit` or durable-server tool
   call records the complete target only where the directory remembered
-  nothing and a flag or variable named it.
+  nothing and a flag, a variable or the token's own space named it.
 - `--commit-retries` exhaustion is `REMOTE_BUSY`.
 - An invalid `--read-only-paths` or `--writable-paths` entry refuses
   startup before any native or S3 dependency loads, as does a path named
@@ -596,8 +599,8 @@ diagnostic rather than skipping the storage protocol.
 
 | Tool        | Command                                                        |
 | ----------- | -------------------------------------------------------------- |
-| Format      | `go run mvdan.cc/gofumpt@v0.11.0 -w -l .`                      |
-| Staticcheck | `go run honnef.co/go/tools/cmd/staticcheck@v0.7.0 ./...`       |
+| Format      | `go run mvdan.cc/gofumpt@v0.12.0 -w -l .`                      |
+| Staticcheck | `go run honnef.co/go/tools/cmd/staticcheck@v0.8.2 ./...`       |
 | Lint        | `go vet ./...`                                                 |
 | Fix         | `go fix -diff ./...` (must print nothing)                      |
 | Test        | `make test` (race, 3 counts, 30 s, coverage with a 70 % floor) |

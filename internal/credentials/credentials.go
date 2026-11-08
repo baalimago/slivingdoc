@@ -381,8 +381,7 @@ func (f File) Load() (Set, error) {
 		return Set{location: f.Path()}, nil
 	}
 	set, err := decode(data)
-	var version *versionError
-	if errors.As(err, &version) {
+	if version, ok := errors.AsType[*versionError](err); ok {
 		return Set{}, version.withFix(f.Path())
 	}
 	if err != nil {
@@ -606,7 +605,7 @@ func decodeLogin(v strictjson.Value) (Login, error) {
 	if account == "" {
 		return Login{}, fmt.Errorf("field %q is empty", fieldAccount)
 	}
-	l := Login{ID: ID{Site: site, Endpoint: endpoint}, Key: key, Access: access, Account: account}
+	l := Login{Site: site, Endpoint: endpoint, Key: key, Access: access, Account: account}
 	if _, ok := v.Field(fieldExpiresAt); ok {
 		stamp, err := stringField(v, fieldExpiresAt)
 		if err != nil {

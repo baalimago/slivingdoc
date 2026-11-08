@@ -359,8 +359,7 @@ const upgradeFix = "Upgrade slivingdoc (npm install -g slivingdoc@latest, or htt
 // upgradeVersion names the manifest version a newer slivingdoc wrote, or
 // nothing when the cause does not carry it.
 func upgradeVersion(cause error) string {
-	var upgrade *storage.UpgradeRequiredError
-	if errors.As(cause, &upgrade) {
+	if upgrade, ok := errors.AsType[*storage.UpgradeRequiredError](cause); ok {
 		return fmt.Sprintf(" (notebook format %d, this build reads %d)", upgrade.Version, storage.ManifestVersion)
 	}
 	return ""

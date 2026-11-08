@@ -68,7 +68,9 @@ const helpText = `slivingdoc status - show what a notebook directory changed loc
 Usage:
   slivingdoc status [flags] [path]
 
-[path] is the notebook directory and defaults to the workspace root. Prints
+[path] is the notebook directory and defaults to the workspace root, or to
+the nearest directory above the working directory that remembers a notebook.
+Prints
 the accepted generation and one line per file that differs from the accepted state
 (added, modified or deleted, with its line counts). Paths that
 --read-only-paths or --writable-paths protect are listed too, though a commit

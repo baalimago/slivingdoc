@@ -89,8 +89,7 @@ func (w *Workspace) scanLocked(ctx context.Context) (git.Snapshot, error) {
 		err = git.ValidateFoldedDirectories(snap)
 	}
 	if err != nil {
-		var collision *git.PathCollisionError
-		if errors.As(err, &collision) {
+		if collision, ok := errors.AsType[*git.PathCollisionError](err); ok {
 			other := ""
 			if collision.First != collision.Path {
 				other = collision.First

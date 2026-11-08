@@ -79,8 +79,7 @@ func (f File) Load() (Set, error) {
 		return Set{}, nil
 	}
 	set, err := decode(data)
-	var version *versionError
-	if errors.As(err, &version) {
+	if version, ok := errors.AsType[*versionError](err); ok {
 		return Set{}, version.withFix(f.Path())
 	}
 	if err != nil {

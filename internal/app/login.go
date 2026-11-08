@@ -201,8 +201,7 @@ func (l *Login) Run(ctx context.Context) error {
 	// The waiting line is decoration: a terminal that refuses it never
 	// changes the login.
 	_ = waiting.Stop()
-	var rejected *sitelogin.RejectedError
-	if errors.As(err, &rejected) {
+	if rejected, ok := errors.AsType[*sitelogin.RejectedError](err); ok {
 		return l.discard(ctx, rejected.Credential, fmt.Errorf("login: %s; nothing was stored", mcp.Redact(err.Error())))
 	}
 	if err != nil {
@@ -299,7 +298,7 @@ func (l *Login) accept(issued sitelogin.Issued) (credentials.Login, error) {
 		return credentials.Login{}, fmt.Errorf("login: %s issued a login for %s, not %s; nothing was stored", sitelogin.DefaultSite, endpoint, DefaultHostedEndpoint)
 	}
 	return credentials.Login{
-		ID:      credentials.ID{Site: l.client.Site(), Endpoint: endpoint},
+		Site: l.client.Site(), Endpoint: endpoint,
 		Key:     issued.Key,
 		Access:  issued.Access,
 		Expires: issued.Expires,

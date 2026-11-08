@@ -183,8 +183,7 @@ func loadAWSConfig(ctx context.Context, cfg Config) (aws.Config, error) {
 	}
 	awsCfg, err := awsconfig.LoadDefaultConfig(ctx, loadOpts...)
 	if err != nil {
-		var missing awsconfig.SharedConfigProfileNotExistError
-		if errors.As(err, &missing) {
+		if _, ok := errors.AsType[awsconfig.SharedConfigProfileNotExistError](err); ok {
 			return aws.Config{}, fmt.Errorf("s3store: load AWS configuration: %w", ErrProfileNotFound)
 		}
 		return aws.Config{}, fmt.Errorf("s3store: load AWS configuration: %w", err)
@@ -457,8 +456,7 @@ func mapError(op string, err error) error {
 	if err == nil {
 		return nil
 	}
-	var api smithy.APIError
-	if errors.As(err, &api) {
+	if api, ok := errors.AsType[smithy.APIError](err); ok {
 		switch api.ErrorCode() {
 		case "NoSuchKey", "NotFound":
 			return fmt.Errorf("s3store: %s: %w", op, storage.ErrNotFound)
@@ -578,8 +576,7 @@ func httpErrorDetail(err error) (string, bool) {
 	}
 	snippet := bodySnippet(de.Snapshot)
 	status := 0
-	var respErr *smithyhttp.ResponseError
-	if errors.As(err, &respErr) {
+	if respErr, ok := errors.AsType[*smithyhttp.ResponseError](err); ok {
 		status = respErr.HTTPStatusCode()
 	}
 	switch {

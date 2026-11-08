@@ -77,8 +77,7 @@ type RecoveryInfo struct {
 // the error a protocol error (request cancellation), so the SDK reports it
 // outside the tool-error envelope.
 func MapError(err error) (*ToolError, bool) {
-	var nb *notebook.Error
-	if errors.As(err, &nb) {
+	if nb, ok := errors.AsType[*notebook.Error](err); ok {
 		return mapNotebookError(nb), true
 	}
 	if errors.Is(err, workspace.ErrInvalidPath) || errors.Is(err, workspace.ErrSymlink) {
@@ -212,8 +211,7 @@ func permanentRefusal(reason notebook.Reason) bool {
 // correct the command; every other case keeps the generic text. No message
 // echoes the rejected path, because it may be a guess at private state.
 func invalidPathMessage(err error) string {
-	var esc *workspace.PathEscapeError
-	if errors.As(err, &esc) {
+	if esc, ok := errors.AsType[*workspace.PathEscapeError](err); ok {
 		return fmt.Sprintf("the notebook path must stay at or below the workspace root %q", esc.Root)
 	}
 	return "the notebook path is not valid"
@@ -222,8 +220,7 @@ func invalidPathMessage(err error) string {
 // decodeFailureError maps a decode failure: a *notebook.Error (a rejected
 // commit message) keeps its own tokens, anything else is MALFORMED_INPUT.
 func decodeFailureError(err error) *ToolError {
-	var nb *notebook.Error
-	if errors.As(err, &nb) {
+	if nb, ok := errors.AsType[*notebook.Error](err); ok {
 		return mapNotebookError(nb)
 	}
 	return invalidRequest(err)

@@ -166,8 +166,7 @@ func (s *signIn) await(ctx context.Context) error {
 		if err == nil {
 			return nil
 		}
-		var none noDefaultSpace
-		if errors.As(err, &none) {
+		if none, ok := errors.AsType[noDefaultSpace](err); ok {
 			if err := s.adoptDefault(ctx, none.login); err != nil {
 				return setupRequired(err)
 			}
