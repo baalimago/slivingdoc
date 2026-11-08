@@ -10,6 +10,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"runtime"
 	"sync"
 
@@ -72,6 +73,56 @@ func (a settingsAssociation) read(workspaceRoot string) (settingsView, error) {
 	return view, nil
 }
 
+// enclosing answers the nearest directory at or above dir that remembers a
+// target, and whether it found one. dir itself counts unless it is the
+// filesystem root, so a directory with a record keeps it. The walk stops
+// before home and never consults the root, because an implicit notebook root
+// is always a directory the operator stood inside, while those two are named
+// with an explicit path; a record on home counts only when the operator
+// stands in home itself (architecture/config.md, The remembered target of a
+// directory).
+func (a settingsAssociation) enclosing(dir, home string) (string, bool, error) {
+	if a.load == nil {
+		return "", false, nil
+	}
+	set, err := a.load()
+	if err != nil {
+		return "", false, unusableSettings(err)
+	}
+	if filepath.Dir(dir) == dir {
+		return "", false, nil
+	}
+	if _, ok := set.Lookup(dir); ok {
+		return dir, true, nil
+	}
+	if dir == home {
+		return "", false, nil
+	}
+	for candidate := filepath.Dir(dir); candidate != home; candidate = filepath.Dir(candidate) {
+		if filepath.Dir(candidate) == candidate {
+			return "", false, nil
+		}
+		if _, ok := set.Lookup(candidate); ok {
+			return candidate, true, nil
+		}
+	}
+	return "", false, nil
+}
+
+// homeDir is the home directory the environment names, the boundary the
+// enclosing walk stops at. A value that is not absolute names no boundary,
+// and the walk still ends at the filesystem root.
+func homeDir(env map[string]string, goos string) string {
+	home := env["HOME"]
+	if goos == "windows" {
+		home = lookupFold(env, "USERPROFILE")
+	}
+	if !filepath.IsAbs(home) {
+		return ""
+	}
+	return filepath.Clean(home)
+}
+
 // rememberSpace stores the notebook a successful pull or commit proved the
 // directory holds, so a later bare command in it reaches the same target with
 // no flag. A failed operation proves nothing and records nothing, and a write
@@ -92,18 +143,17 @@ func (r *Runtime) rememberSpace(ctx context.Context, err error) {
 
 // recordEntry is the entry a successful operation stores, and whether it
 // stores one at all. A record is written only where the directory remembers
-// nothing and a flag or a slivingdoc variable named the target: the login's
-// default space, the global S3 default and a variable's token are answers for
-// this run alone, and a record beside a flag is what the directory already
-// holds rather than a choice this run may overwrite (I3, I6, I7). A scratch
-// server owns no directory that survives it, so it records nothing (I8).
+// nothing and the operator supplied the name: a flag, a slivingdoc variable,
+// or the space SLIVINGDOC_TOKEN proved it reaches. A default is an answer for
+// the whole machine, not for this directory, and a record beside a flag is
+// what the directory already holds rather than a choice this run may
+// overwrite (I3, I6, I7). A scratch server owns no directory that survives
+// it, so it records nothing (I8).
 func (r *Runtime) recordEntry() (settings.Entry, bool) {
 	switch {
 	case r.p.association.record == nil, r.cfg.sessionDir != "", r.cfg.recorded:
 		return settings.Entry{}, false
-	case r.cfg.token != "":
-		return settings.Entry{}, false
-	case r.cfg.bucketFrom.kind() == kindOther, r.cfg.bucket == "":
+	case !r.cfg.bucketFrom.namedByOperator(), r.cfg.bucket == "":
 		return settings.Entry{}, false
 	}
 	return settings.Entry{

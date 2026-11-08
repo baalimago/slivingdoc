@@ -22,10 +22,10 @@ import (
 )
 
 // TestScenarioRecordFirstTarget proves the gate of the recorder over both
-// backends: a directory that remembers nothing records the complete target
-// a flag or a variable named, while a target the global default supplied and
-// a token's own space are answers for one run and are never recorded (I3,
-// I4, I6, I7).
+// backends: a directory that remembers nothing records the complete target a
+// flag or a variable named, and the space a token proved, while a target the
+// global default supplied is an answer for the whole machine and is never
+// recorded (I3, I4, I6, I7).
 func TestScenarioRecordFirstTarget(t *testing.T) {
 	t.Parallel()
 	suite := tests3.Ensure(t)
@@ -51,8 +51,8 @@ func TestScenarioRecordFirstTarget(t *testing.T) {
 		t.Fatalf("the settings file after a default-named pull = %s, want it unchanged (%s)", after, before)
 	}
 
-	// A token names its own space for one run, so no S3 default and no
-	// record may pin it to the directory.
+	// The token proves one space, and the pull proved this directory holds
+	// it, so the record names it. The S3 default is still no record.
 	g := gatewaytest.Start(t)
 	g.AddSpace(HostedSpace, 1<<20)
 	g.Grant(HostedToken, HostedSpace, false)
@@ -60,10 +60,11 @@ func TestScenarioRecordFirstTarget(t *testing.T) {
 		"SLIVINGDOC_TOKEN="+HostedToken, "SLIVINGDOC_ENDPOINT="+g.URL())
 	fromToken := filepath.Join(root, "from-token")
 	RunCLIOK(t, "real", tokenEnv, nil, "pull", fromToken)
-	if after := ReadSettings(t, env); after != before {
-		t.Fatalf("the settings file after a token pull = %s, want it unchanged (%s)", after, before)
+	fromTokenEntry := settings.Entry{
+		Path:   fromToken,
+		Target: settings.Target{Kind: settings.KindHosted, Name: HostedSpace, Prefix: "slivingdoc"},
 	}
-	AssertRecords(t, env, want)
+	AssertRecords(t, env, want, fromTokenEntry)
 }
 
 // TestScenarioBareCommandUsesTheS3Default proves the one global default is

@@ -240,6 +240,20 @@ func (f *Flags) resolve(environment []string, cwd, cacheDir string, ephemeral bo
 	// above made absolute.
 	var remembered func() (settingsView, error)
 	if roots.session == "" {
+		// A bare command standing anywhere inside a notebook takes the one
+		// the nearest directory above it remembers, so the operator does not
+		// have to stand in its root. A configured root and a named path both
+		// address their directory as given (architecture/config.md, The
+		// remembered target of a directory).
+		if !wsSet && assoc.path == "" {
+			root, ok, err := assoc.enclosing(roots.workspaceRoot, homeDir(env, runtime.GOOS))
+			if err != nil {
+				return config{}, err
+			}
+			if ok {
+				roots.workspaceRoot = root
+			}
+		}
 		remembered = func() (settingsView, error) { return assoc.read(roots.workspaceRoot) }
 	}
 	sel, err := resolveStorage(f, env, storageInputs{
@@ -811,6 +825,11 @@ beside credentials.json, so a later command in that directory needs no target
 flag; pull, commit, status, log and a serve with a durable directory read
 that file and record what they prove, while a serve with a temporary
 directory uses neither.
+
+A bare pull, commit, status or log standing inside a notebook takes the
+nearest directory above it that remembers one, so every directory of the
+notebook works the same; a configured workspace root and a named path are
+used exactly as given.
 `
 
 // HelpText is the serve-command help (architecture/config.md).

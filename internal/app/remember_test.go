@@ -323,9 +323,11 @@ func TestDefaultSpaceIsNotRecorded(t *testing.T) {
 	rec.recorded(t)
 }
 
-// TestTokenSpaceIsNotRecorded proves a token's own space is never recorded:
-// a token names exactly one space, and it ignores the record for that run.
-func TestTokenSpaceIsNotRecorded(t *testing.T) {
+// TestTokenSpaceIsRecorded proves a token run records the space it proved:
+// the token names exactly one space, the pull proved this directory holds
+// it, and the record is what a later run without the token reads
+// (architecture/config.md, Recording the association).
+func TestTokenSpaceIsRecorded(t *testing.T) {
 	g := gatewaytest.Start(t)
 	g.AddSpace("notes", 1<<20)
 	g.Grant(hostedTestToken, "notes", false)
@@ -348,7 +350,10 @@ func TestTokenSpaceIsNotRecorded(t *testing.T) {
 	if _, err := rt.Pull(context.Background(), ""); err != nil {
 		t.Fatalf("Pull() = %v", err)
 	}
-	rec.recorded(t)
+	rec.recorded(t, settings.Entry{
+		Path:   p.cwd,
+		Target: settings.Target{Kind: settings.KindHosted, Name: "notes", Prefix: defaultPrefix},
+	})
 }
 
 // TestExplicitChoiceRecordsAnEmptyDirectory proves the recording half of F15

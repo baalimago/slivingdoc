@@ -56,7 +56,7 @@ never names encryption; only a locked notebook's refusal (a key-material
 reason) or a newer-format refusal (`UPGRADE_REQUIRED`) reaches a caller
 ([encryption.md](./encryption.md)).
 
-- One `serve` process binds exactly one notebook directory for its lifetime: the configured workspace root; with neither `--workspace-root` nor `--private-root`, a process-owned temporary session directory; otherwise the working directory (see [running.md](./running.md#the-session-directory)). A tool call cannot switch it.
+- One `serve` process binds exactly one notebook directory for its lifetime: the configured workspace root; with neither `--workspace-root` nor `--private-root`, a process-owned temporary session directory; otherwise the nearest directory at or above the working directory that remembers a notebook, and the working directory when none does (see [running.md](./running.md#the-session-directory)). A tool call cannot switch it.
 - Neither tool takes a path. A present `path` member of any JSON type, `null` included, is `INVALID_REQUEST`/`MALFORMED_INPUT` before an unknown member is considered; the refusal names `--workspace-root` and echoes no path (`rejectPath`). Every success names the server's directory, and so do the server `instructions`.
 - CLI mirror: `slivingdoc pull [path]`, `slivingdoc commit [path] -m <message>`. The path may be relative (resolved against the working directory) and must stay at or below the workspace root; the one-shot commands never use a temporary directory.
 

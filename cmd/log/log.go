@@ -77,7 +77,9 @@ const helpText = `slivingdoc log - list the recent publications of a notebook
 Usage:
   slivingdoc log [flags] [path]
 
-[path] is the notebook directory and defaults to the workspace root. Prints
+[path] is the notebook directory and defaults to the workspace root, or to
+the nearest directory above the working directory that remembers a notebook.
+Prints
 the message of each accepted publication this machine holds, newest first.
 History older than a checkpoint may not be held here; log says when older
 publications exist.

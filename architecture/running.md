@@ -768,6 +768,22 @@ slivingdoc pull                            # the same space, no flag
 slivingdoc status                          # ... space: remembered space
 ```
 
+Any directory inside the notebook is enough: a bare command takes the
+notebook of the nearest directory above it that remembers one, so a pull run
+in `~/work/team/projects` materializes the notebook in `~/work/team` and
+reports that directory. The home directory and the filesystem root are never
+adopted that way, so a stray record there cannot capture a whole home
+directory; pass the path when a notebook is rooted in one of them.
+
+```text
+cd ~/work/team/projects
+slivingdoc pull                            # ~/work/team materialized, no flag
+```
+
+Pull makes the visible directory match the accepted state, so an empty
+subdirectory that holds no note is removed like any other obsolete directory;
+a shell standing in one keeps the removed directory as its working directory.
+
 The same holds for an S3 target, whose complete identity the record keeps:
 
 ```text
@@ -779,9 +795,9 @@ slivingdoc status                          # ... bucket: remembered bucket
 
 To see which target a directory uses and where it came from, run `slivingdoc status` there: the first line names the store, and a target the directory remembered is followed by `space: remembered space` or `bucket: remembered bucket`. A target named by a flag, a variable or the global default gets no trailer, because the operator can see that choice already.
 
-A durable `serve` uses the same record: with `--workspace-root` (or `SLIVINGDOC_WORKSPACE_ROOT`, or the working directory when the other root is configured) it reads the record before the transport starts and records the target a successful tool call proved. A server with no root configured owns a per-process scratch directory, so it neither reads nor writes the file.
+A durable `serve` uses the same record: with `--workspace-root` or `SLIVINGDOC_WORKSPACE_ROOT` it binds that directory; with only `--private-root` (or `SLIVINGDOC_PRIVATE_ROOT`) it binds the nearest directory above the working directory that remembers a notebook, and the working directory when none does. Either way it reads the record before the transport starts and records the target a successful tool call proved. A server with no root configured owns a per-process scratch directory, so it neither reads nor writes the file.
 
-To change a directory's target, pass the target flag (or set its variable) for that run, or change the global default with `slivingdoc space <name>`. A flag, a variable or a token always wins for its own run and changes nothing that is recorded; a record-sourced run leaves the file byte-identical. Deleting the line for a directory from `workspaces.json`, or the file itself, makes that directory use the global default again. A remembered hosted space the credentials no longer reach refuses startup and names the space and `slivingdoc login`, so notes are never pulled into another notebook silently ([login.md](./login.md)).
+To change a directory's target, pass the target flag (or set its variable) for that run, or change the global default with `slivingdoc space <name>`. A flag, a variable or a token always wins for its own run; where the directory remembers nothing, that winning name is also what it records, so a later run without it reads the record. A record-sourced run leaves the file byte-identical. Deleting the line for a directory from `workspaces.json`, or the file itself, makes that directory use the global default again. A remembered hosted space the credentials no longer reach refuses startup and names the space and `slivingdoc login`, so notes are never pulled into another notebook silently ([login.md](./login.md)).
 
 ### Choosing the storage
 

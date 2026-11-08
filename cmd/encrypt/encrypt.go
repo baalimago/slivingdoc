@@ -159,10 +159,11 @@ const helpText = `slivingdoc encrypt - manage the encryption of a notebook
 Usage:
   slivingdoc encrypt <subcommand> [flags] [path]
 
-[path] is the notebook directory and defaults to the workspace root. Only the
-stored objects are encrypted; the visible directory, the private state and the
-pack cache stay plaintext always. There is no command that returns a notebook
-to plaintext.
+[path] is the notebook directory and defaults to the workspace root, or to the
+nearest directory above the working directory that remembers a notebook. Only
+the stored objects are encrypted; the visible directory, the private state and
+the pack cache stay plaintext always. There is no command that returns a
+notebook to plaintext.
 
 Subcommands:
   init       establish encryption and publish a checkpoint; print the
