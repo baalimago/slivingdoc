@@ -91,6 +91,8 @@ curl -fsSL https://raw.githubusercontent.com/baalimago/slivingdoc/refs/heads/mas
 
 It installs into `$HOME/.local/bin` (or `/usr/local/bin` when run as root).
 
+Then run:
+
 ```sh
 slivingdoc login
 slivingdoc pull notes
