@@ -44,18 +44,14 @@ The [docs](https://slivingdoc.dev/docs/) cover
 ## Get started
 
 **Hosted.** Sign in at [slivingdoc.dev](https://slivingdoc.dev) with GitHub
-or Google, create a token, and add the server to your agent:
+or Google then run:
 
 ```sh
 claude mcp add slivingdoc \
-  --env SLIVINGDOC_TOKEN=<your-api-token> \
   -- npx -y slivingdoc serve
 ```
 
-Or skip the token: `npx -y slivingdoc serve` with no credential signs in on
-first use. The first tool call answers with an approval page to open in the
-browser, and every later server on the machine uses that login
-(`--login never` turns this off).
+It will prompt you to bind a token on initial run.
 
 Free for one space, 10 MB and 250,000 requests a month
 ([pricing](https://slivingdoc.dev/pricing/)).
