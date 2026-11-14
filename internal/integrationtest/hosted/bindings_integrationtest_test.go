@@ -23,9 +23,9 @@ import (
 
 // TestScenarioRecordFirstTarget proves the gate of the recorder over both
 // backends: a directory that remembers nothing records the complete target a
-// flag or a variable named, and the space a token proved, while a target the
-// global default supplied is an answer for the whole machine and is never
-// recorded (I3, I4, I6, I7).
+// successful operation proved, whether a flag or a variable named it, a token
+// proved it, or a global default supplied it (architecture/config.md,
+// Recording the association).
 func TestScenarioRecordFirstTarget(t *testing.T) {
 	t.Parallel()
 	suite := tests3.Ensure(t)
@@ -42,17 +42,18 @@ func TestScenarioRecordFirstTarget(t *testing.T) {
 	want := settings.Entry{Path: notes, Target: target}
 	AssertRecords(t, env, want)
 
-	// The global default names the next directory's target, and that run
-	// records nothing.
-	before := PlantTarget(t, env, nil, &target)
+	// The global default names the next directory's target too. The pull
+	// proves that directory holds it, so it records. This process names its
+	// root, so the walk does not run here: that adoption is
+	// TestScenarioDefaultSpaceRootIsAdoptedFromASubdirectory.
+	PlantTarget(t, env, nil, &target)
 	fromDefault := filepath.Join(root, "from-default")
 	RunCLIOK(t, "real", env, nil, "pull", fromDefault)
-	if after := ReadSettings(t, env); after != before {
-		t.Fatalf("the settings file after a default-named pull = %s, want it unchanged (%s)", after, before)
-	}
+	defaultEntry := settings.Entry{Path: fromDefault, Target: target}
+	AssertRecords(t, env, want, defaultEntry)
 
 	// The token proves one space, and the pull proved this directory holds
-	// it, so the record names it. The S3 default is still no record.
+	// it, so the record names it too.
 	g := gatewaytest.Start(t)
 	g.AddSpace(HostedSpace, 1<<20)
 	g.Grant(HostedToken, HostedSpace, false)
@@ -64,7 +65,7 @@ func TestScenarioRecordFirstTarget(t *testing.T) {
 		Path:   fromToken,
 		Target: settings.Target{Kind: settings.KindHosted, Name: HostedSpace, Prefix: "slivingdoc"},
 	}
-	AssertRecords(t, env, want, fromTokenEntry)
+	AssertRecords(t, env, want, defaultEntry, fromTokenEntry)
 }
 
 // TestScenarioBareCommandUsesTheS3Default proves the one global default is
@@ -79,21 +80,16 @@ func TestScenarioBareCommandUsesTheS3Default(t *testing.T) {
 	configDir, root := BindingDir(t), t.TempDir()
 	env := BindingEnv(t, configDir, t.TempDir(), root)
 	target := S3Target(suite, bucket, prefix)
-	before := PlantTarget(t, env, nil, &target)
+	PlantTarget(t, env, nil, &target)
 
 	notes := filepath.Join(root, "notes")
 	RunCLIOK(t, "real", env, nil, "pull", notes)
 	WriteCLIFile(t, filepath.Join(notes, "a.md"), "the default's note\n")
 	RunCLIOK(t, "real", env, nil, "commit", notes, "-m", "default target")
-	if after := ReadSettings(t, env); after != before {
-		t.Fatalf("the settings file after a default-sourced pull = %s, want it unchanged (%s)", after, before)
-	}
 	if keys := S3Keys(t, suite, bucket, prefix); !slices.Contains(keys, prefix+"/current") {
 		t.Fatalf("objects below %q = %v, want the accepted state at the default's prefix", prefix, keys)
 	}
-	if entries := LoadSettings(t, env).Entries(); len(entries) != 0 {
-		t.Fatalf("records = %v, want a default-named run to record nothing", entries)
-	}
+	AssertRecords(t, env, settings.Entry{Path: notes, Target: target})
 }
 
 // TestScenarioRecordWriteFailures proves the recorder never changes an

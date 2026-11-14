@@ -57,6 +57,47 @@ func TestScenarioBarePullFromASubdirectoryTakesTheEnclosingNotebook(t *testing.T
 	}
 }
 
+// TestScenarioDefaultSpaceRootIsAdoptedFromASubdirectory proves the walk
+// finds a root whose first pull used the login's default space: the record
+// that pull wrote is what the bare command below reads, so the notebook
+// materializes at the root instead of nesting a second one.
+func TestScenarioDefaultSpaceRootIsAdoptedFromASubdirectory(t *testing.T) {
+	t.Parallel()
+	_, site, env, root := RememberedEnv(t)
+	notes := filepath.Join(root, "notes")
+	deep := filepath.Join(notes, "projects", "deep")
+	RunCLIOK(t, "real", env, nil, "pull", notes)
+	AssertReachedSpace(t, site, HostedSpace)
+	AssertRecords(t, env, Recorded(notes, HostedSpace))
+	WriteCLIFile(t, filepath.Join(notes, "a.md"), "the default's note\n")
+	RunCLIOK(t, "real", env, nil, "commit", notes, "-m", "the default's note")
+	if err := os.Remove(filepath.Join(notes, "a.md")); err != nil {
+		t.Fatalf("remove the local note: %v", err)
+	}
+	if err := os.MkdirAll(deep, 0o755); err != nil {
+		t.Fatalf("create the subdirectory: %v", err)
+	}
+	before := ReadSettings(t, env)
+
+	bare := append(append([]string(nil), env...), "SLIVINGDOC_WORKSPACE_ROOT=", "SLIVINGDOC_PRIVATE_ROOT=")
+	code, stdout, stderr := SpawnHelperIn(t, deep, "real", bare, "pull").RunStdioProcess(t, nil)
+	if code != 0 {
+		t.Fatalf("the bare pull from the subdirectory = exit %d, stdout %q, stderr %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, notes+"\n") {
+		t.Fatalf("the bare pull reported %q, want the enclosing notebook %q", stdout, notes)
+	}
+	if _, err := os.Stat(filepath.Join(notes, "a.md")); err != nil {
+		t.Fatalf("the notebook root after the pull = %v, want the published note materialized there", err)
+	}
+	if _, err := os.Stat(filepath.Join(deep, "a.md")); err == nil {
+		t.Fatal("the pull materialized the note in the working directory, want the enclosing notebook")
+	}
+	if after := ReadSettings(t, env); after != before {
+		t.Fatalf("the settings file after the enclosed pull = %s, want it unchanged (%s)", after, before)
+	}
+}
+
 // TestScenarioNamedPathInsideANotebookStaysThere proves the other half of the
 // rule: a positional path is used exactly as given, so a pull of a directory
 // inside a recorded notebook materializes and records that directory instead
@@ -73,8 +114,6 @@ func TestScenarioNamedPathInsideANotebookStaysThere(t *testing.T) {
 	if err := os.MkdirAll(nested, 0o755); err != nil {
 		t.Fatalf("create the nested directory: %v", err)
 	}
-	before := ReadSettings(t, env)
-
 	code, stdout, stderr := RunCLI(t, "real", env, "pull", nested)
 	if code != 0 {
 		t.Fatalf("the pull of the nested directory = exit %d, stdout %q, stderr %q", code, stdout, stderr)
@@ -83,9 +122,7 @@ func TestScenarioNamedPathInsideANotebookStaysThere(t *testing.T) {
 		t.Fatalf("the pull reported %q, want the named directory %q", stdout, nested)
 	}
 	AssertReachedSpace(t, site, HostedSpace)
-	if after := ReadSettings(t, env); after != before {
-		t.Fatalf("the settings file after the nested pull = %s, want it unchanged (%s)", after, before)
-	}
+	AssertRecords(t, env, Recorded(notes, SecondSpace), Recorded(nested, HostedSpace))
 	if _, err := os.Stat(filepath.Join(notes, "a.md")); err != nil {
 		t.Fatalf("the notebook root after the nested pull = %v, want the note untouched", err)
 	}
@@ -107,8 +144,6 @@ func TestScenarioHomeDirectoryIsNoImplicitNotebook(t *testing.T) {
 		t.Fatalf("create the working directory: %v", err)
 	}
 	Remember(t, env, home, SecondSpace, HostedPrefix)
-	before := ReadSettings(t, env)
-
 	bare := append(append([]string(nil), env...), "HOME="+home, "SLIVINGDOC_WORKSPACE_ROOT=", "SLIVINGDOC_PRIVATE_ROOT=")
 	code, stdout, stderr := SpawnHelperIn(t, work, "real", bare, "pull").RunStdioProcess(t, nil)
 	if code != 0 {
@@ -118,9 +153,7 @@ func TestScenarioHomeDirectoryIsNoImplicitNotebook(t *testing.T) {
 		t.Fatalf("the bare pull reported %q, want the working directory %q", stdout, work)
 	}
 	AssertReachedSpace(t, site, HostedSpace)
-	if after := ReadSettings(t, env); after != before {
-		t.Fatalf("the settings file after the pull below home = %s, want it unchanged (%s)", after, before)
-	}
+	AssertRecords(t, env, Recorded(home, SecondSpace), Recorded(work, HostedSpace))
 }
 
 // TestScenarioTokenPullRecordsTheSpace proves the space a token proved is

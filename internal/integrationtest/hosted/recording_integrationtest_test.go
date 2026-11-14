@@ -18,7 +18,7 @@ import (
 // outside: one pull with --space records the notebook it reached, and every
 // later bare command in that directory reaches the same space with no space
 // and no storage flag, while a sibling directory keeps the login's default
-// space and records nothing.
+// space and records the notebook it proved there.
 func TestScenarioPullRecordsTheHostedNotebook(t *testing.T) {
 	t.Parallel()
 	g, site, env, root := RememberedEnv(t)
@@ -56,15 +56,41 @@ func TestScenarioPullRecordsTheHostedNotebook(t *testing.T) {
 		t.Fatalf("the settings file after four bare commands = %s, want it unchanged (%s)", after, before)
 	}
 
-	// A sibling directory has no record, so it keeps the login's default
-	// space, which no directory may pin.
+	// A sibling directory has no record, so its pull keeps the login's
+	// default space, and the record it writes names that space.
 	other := filepath.Join(root, "other")
 	RunCLIOK(t, "real", env, nil, "pull", other)
 	AssertReachedSpace(t, site, HostedSpace)
 	if g.Stored(HostedSpace) != 0 {
 		t.Fatal("a pull wrote into the default space")
 	}
-	AssertRecords(t, env, Recorded(notes, SecondSpace))
+	AssertRecords(t, env, Recorded(notes, SecondSpace), Recorded(other, HostedSpace))
+}
+
+// TestScenarioDefaultRecordOutlivesTheDefaultChange proves the notebook a
+// default-named pull recorded stays with the directory when the default
+// moves: the pull proved which notebook it holds, so the record outranks the
+// new default, while a directory that remembers nothing follows it
+// (architecture/running.md, A directory remembers its target).
+func TestScenarioDefaultRecordOutlivesTheDefaultChange(t *testing.T) {
+	t.Parallel()
+	_, site, env, root := RememberedEnv(t)
+	notes := filepath.Join(root, "notes")
+	RunCLIOK(t, "real", env, nil, "pull", notes)
+	AssertReachedSpace(t, site, HostedSpace)
+	AssertRecords(t, env, Recorded(notes, HostedSpace))
+	before := ReadSettings(t, env)
+	RunCLIExact(t, "real", env, "The default space is now "+SecondSpace+" (write, "+LoginAccount+").\n", "space", SecondSpace)
+
+	RunCLIOK(t, "real", env, nil, "pull", notes)
+	AssertReachedSpace(t, site, HostedSpace)
+	if after := ReadSettings(t, env); after != before {
+		t.Fatalf("the settings file after the default change = %s, want the pull to leave it unchanged (%s)", after, before)
+	}
+	fresh := filepath.Join(root, "fresh")
+	RunCLIOK(t, "real", env, nil, "pull", fresh)
+	AssertReachedSpace(t, site, SecondSpace)
+	AssertRecords(t, env, Recorded(notes, HostedSpace), Recorded(fresh, SecondSpace))
 }
 
 // TestScenarioFailedOperationRecordsNothing proves the gate of the
@@ -212,10 +238,12 @@ func TestScenarioStatusNamesTheRememberedSource(t *testing.T) {
 	remembered := filepath.Join(root, "remembered")
 	Remember(t, env, remembered, SecondSpace, HostedPrefix)
 	RunCLIOK(t, "real", env, nil, "pull", remembered)
-	// A directory that never named a space keeps the login's default one,
-	// and records nothing.
+	// A pull with the login's default space records the notebook it proved,
+	// and a directory that was never pulled resolves the default without a
+	// source of its own.
 	other := filepath.Join(root, "other")
 	RunCLIOK(t, "real", env, nil, "pull", other)
+	fresh := filepath.Join(root, "fresh")
 
 	for _, row := range []struct {
 		name string
@@ -240,9 +268,14 @@ func TestScenarioStatusNamesTheRememberedSource(t *testing.T) {
 			want: remembered + "  space " + SecondSpace + "\ngeneration ",
 		},
 		{
-			name: "the login's default space names no source",
+			name: "a default-sourced record names its source",
 			args: []string{"status", other},
-			want: other + "  space " + HostedSpace + "\ngeneration ",
+			want: other + "  space " + HostedSpace + "\nspace: remembered space\n",
+		},
+		{
+			name: "the login's default space names no source",
+			args: []string{"status", fresh},
+			want: fresh + "  space " + HostedSpace + "\nnot pulled yet",
 		},
 	} {
 		t.Run(row.name, func(t *testing.T) {

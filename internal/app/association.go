@@ -142,18 +142,17 @@ func (r *Runtime) rememberSpace(ctx context.Context, err error) {
 }
 
 // recordEntry is the entry a successful operation stores, and whether it
-// stores one at all. A record is written only where the directory remembers
-// nothing and the operator supplied the name: a flag, a slivingdoc variable,
-// or the space SLIVINGDOC_TOKEN proved it reaches. A default is an answer for
-// the whole machine, not for this directory, and a record beside a flag is
-// what the directory already holds rather than a choice this run may
-// overwrite (I3, I6, I7). A scratch server owns no directory that survives
-// it, so it records nothing (I8).
+// stores one at all. A record is written where the directory remembers
+// nothing: the successful operation proved which notebook it holds, whatever
+// named the target, so a default-space pull becomes the root the enclosing
+// walk finds (architecture/config.md, Recording the association). A default
+// still applies to every directory that remembers nothing, and a record
+// beside a flag is what the directory already holds rather than a choice this
+// run may overwrite. A scratch server owns no directory that survives it, so
+// it records nothing.
 func (r *Runtime) recordEntry() (settings.Entry, bool) {
 	switch {
-	case r.p.association.record == nil, r.cfg.sessionDir != "", r.cfg.recorded:
-		return settings.Entry{}, false
-	case !r.cfg.bucketFrom.namedByOperator(), r.cfg.bucket == "":
+	case r.p.association.record == nil, r.cfg.sessionDir != "", r.cfg.recorded, r.cfg.bucket == "":
 		return settings.Entry{}, false
 	}
 	return settings.Entry{

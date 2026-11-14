@@ -309,18 +309,21 @@ func TestS3ModeRecordsTheTarget(t *testing.T) {
 	})
 }
 
-// TestDefaultSpaceIsNotRecorded proves the login's default space is never
-// pinned to a directory: changing the default must keep working everywhere.
-func TestDefaultSpaceIsNotRecorded(t *testing.T) {
+// TestDefaultSpaceIsRecorded proves a directory that pulled the login's
+// default space remembers it: the pull proved which notebook the directory
+// holds, so a bare command below it adopts that root (architecture/config.md,
+// Recording the association).
+func TestDefaultSpaceIsRecorded(t *testing.T) {
+	rig := hostedRigs(t)
 	rec := &recording{}
-	rt := hostedRigs(t).runtime(t, rec.record, "")
+	rt := rig.runtime(t, rec.record, "")
 	if rt.SpaceSource() != "default space" {
 		t.Fatalf("space source = %q, want the login's default space", rt.SpaceSource())
 	}
 	if _, err := rt.Pull(context.Background(), ""); err != nil {
 		t.Fatalf("Pull() = %v", err)
 	}
-	rec.recorded(t)
+	rec.recorded(t, remembered(rig.root, "notes", defaultPrefix))
 }
 
 // TestTokenSpaceIsRecorded proves a token run records the space it proved:

@@ -778,32 +778,10 @@ func TestEnclosingAnswersAnUnreadableFile(t *testing.T) {
 	}
 }
 
-// TestNamedByOperatorTable proves which sources may record a directory: a
-// name the operator supplied, never one a default supplied.
-func TestNamedByOperatorTable(t *testing.T) {
-	t.Parallel()
-	for from, want := range map[bucketSource]bool{
-		bucketNone:           false,
-		bucketCleared:        false,
-		bucketFromFlag:       true,
-		bucketFromSpaceFlag:  true,
-		bucketFromEnv:        true,
-		bucketFromSpaceEnv:   true,
-		bucketFromLogin:      false,
-		bucketFromToken:      true,
-		bucketFromRemembered: false,
-		bucketFromDefault:    false,
-	} {
-		if got := from.namedByOperator(); got != want {
-			t.Fatalf("%v.namedByOperator() = %v, want %v", from, got, want)
-		}
-	}
-}
-
 // TestRecordEntryTable proves the gate of the recorder: an entry is written
-// for a name the operator supplied — a flag, a variable, or the space the
-// token proved — and never for a default, a directory that remembers one, a
-// process that owns its directory, or one that consults no settings.
+// for any target a successful operation proved, whatever named it, and never
+// for a directory that remembers one, a process that owns its directory, or
+// one that consults no settings.
 func TestRecordEntryTable(t *testing.T) {
 	t.Parallel()
 	association := settingsAssociation{
@@ -822,8 +800,8 @@ func TestRecordEntryTable(t *testing.T) {
 		{name: "a flagged name", cfg: config{bucket: "team", bucketFrom: bucketFromSpaceFlag, prefix: "notes", workspaceRoot: "/work"}, assoc: association, want: true, wantTarget: s3},
 		{name: "a variable's name", cfg: config{bucket: "team", bucketFrom: bucketFromEnv, prefix: "notes", workspaceRoot: "/work"}, assoc: association, want: true, wantTarget: s3},
 		{name: "the token's proven space", cfg: config{token: "t", bucket: "team", bucketFrom: bucketFromToken, prefix: "notes", workspaceRoot: "/work"}, assoc: association, want: true, wantTarget: hosted},
-		{name: "the login's default space", cfg: config{login: &credentials.Login{}, bucket: "team", bucketFrom: bucketFromLogin, prefix: "notes", workspaceRoot: "/work"}, assoc: association},
-		{name: "the stored S3 default", cfg: config{bucket: "team", bucketFrom: bucketFromDefault, prefix: "notes", workspaceRoot: "/work"}, assoc: association},
+		{name: "the login's default space", cfg: config{login: &credentials.Login{}, bucket: "team", bucketFrom: bucketFromLogin, prefix: "notes", workspaceRoot: "/work"}, assoc: association, want: true, wantTarget: hosted},
+		{name: "the stored S3 default", cfg: config{bucket: "team", bucketFrom: bucketFromDefault, prefix: "notes", workspaceRoot: "/work"}, assoc: association, want: true, wantTarget: s3},
 		{name: "a directory that remembers one", cfg: config{bucket: "team", bucketFrom: bucketFromRemembered, prefix: "notes", workspaceRoot: "/work", recorded: true}, assoc: association},
 		{name: "no name at all", cfg: config{workspaceRoot: "/work"}, assoc: association},
 		{name: "a process with a session directory", cfg: config{bucket: "team", bucketFrom: bucketFromSpaceFlag, prefix: "notes", workspaceRoot: "/work", sessionDir: "/tmp/s"}, assoc: association},

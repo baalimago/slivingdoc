@@ -41,18 +41,19 @@ func TestScenarioRememberedSpaceReachesTheHostedStore(t *testing.T) {
 	if code, _, stderr = RunCLI(t, "real", env, "log", notes); code != 0 {
 		t.Fatalf("log = exit %d, stderr %q; want 0 in the remembered space", code, stderr)
 	}
+	if after := ReadSettings(t, env); after != before {
+		t.Fatalf("settings file after four commands on the remembered notebook = %q, want it unchanged (%q)", after, before)
+	}
 
 	// A sibling directory has no entry, so it keeps the login's default
-	// space and never reaches the remembered one.
+	// space, and its own pull records the notebook it proved there.
 	other := filepath.Join(root, "other")
 	RunCLIOK(t, "real", env, nil, "pull", other)
 	AssertReachedSpace(t, site, HostedSpace)
 	if g.Stored(HostedSpace) != 0 {
 		t.Fatal("a pull wrote into the default space")
 	}
-	if after := ReadSettings(t, env); after != before {
-		t.Fatalf("settings file after five commands = %q, want it unchanged (%q)", after, before)
-	}
+	AssertRecords(t, env, Recorded(notes, SecondSpace), Recorded(other, HostedSpace))
 }
 
 // TestScenarioExplicitChoiceBeatsTheRememberedSpace proves the precedence
@@ -317,7 +318,7 @@ func TestScenarioUnusableSettingsFileRefusesStartup(t *testing.T) {
 // starts, reaches that notebook with no target flag, and records the target
 // a flag-named operation proved. A record write that fails after a
 // successful call changes no result and is logged. A scratch server is the
-// other half, in TestScenarioEphemeralNotebook (I3, I6, I7, I8).
+// other half, in TestScenarioEphemeralNotebook (I8).
 func TestScenarioServeReadsTheRecord(t *testing.T) {
 	t.Parallel()
 	g, site, env, root := RememberedEnv(t)

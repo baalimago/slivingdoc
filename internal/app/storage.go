@@ -182,15 +182,6 @@ func (b bucketSource) kind() settingKind {
 	}
 }
 
-// namedByOperator says whether the operator supplied this name: a flag, a
-// slivingdoc variable, or the space the hosted API proved the token reaches.
-// A name a default supplied is not, because a default applies to every
-// directory and must stay free to move (architecture/config.md, Recording
-// the association).
-func (b bucketSource) namedByOperator() bool {
-	return b.kind() != kindOther || b == bucketFromToken
-}
-
 // namedAsBucket says whether the space was named with the S3 spelling of
 // the setting, which beside S3 settings selects S3 (architecture/login.md,
 // Which storage a process uses).

@@ -558,8 +558,9 @@ func TestScenarioTwoLoginsNeedAnEndpoint(t *testing.T) {
 		!strings.Contains(stderr, "pass --endpoint") {
 		t.Fatalf("pull with two logins = exit %d, stdout %q, stderr %s", code, stdout, stderr)
 	}
-	RunCLIOK(t, "real", env, nil, "pull", "--endpoint", g2.URL(), filepath.Join(root, "second"))
-	RunCLIExact(t, "real", env, "HOSTED  "+g2.URL()+"  "+LoginAccount+"\n* team-notes  read  "+LoginAccount+"\n", "space", "--endpoint", g2.URL())
+	second := filepath.Join(root, "second")
+	RunCLIOK(t, "real", env, nil, "pull", "--endpoint", g2.URL(), second)
+	RunCLIExact(t, "real", env, "HOSTED  "+g2.URL()+"  "+LoginAccount+"\n* team-notes ("+second+")  read  "+LoginAccount+"\n", "space", "--endpoint", g2.URL())
 	if mints := site.Mints(); len(mints) != 1 || mints[0].Key != SecondKey || mints[0].Endpoint != g2.URL() || mints[0].Access != "read" {
 		t.Fatalf("mints = %+v, want one read token of the second login", mints)
 	}
